@@ -149,11 +149,14 @@ function renderSummary(c: { category: string; summary: string; oldValue: string 
   return s;
 }
 
-// Column value the Summary filter sees. Groups volatile summaries (budgets)
-// under a single canonical label so the filter dropdown stays useable.
+// Column value the Summary filter sees. Groups volatile summaries (budgets,
+// renames) under a single canonical label so the filter dropdown stays
+// useable — without grouping, every unique amount/name pair shows up as
+// its own filter option.
 function filterSummaryKey(r: { category: string; summary: string }): string {
   if (r.category === "budget") return "Budget changed";
   if (r.category === "creative") return "Creative swapped";
+  if (/^Renamed\b/i.test(r.summary)) return "Renamed";
   return r.summary;
 }
 
@@ -303,7 +306,7 @@ export default function ChangeLog() {
     {
       accessorKey: "eventTimeISO",
       header: "Time",
-      meta: { maxWidth: "140px", description: "When Meta recorded this change" },
+      meta: { maxWidth: "110px", description: "When Meta recorded this change" },
       cell: ({ getValue }) => {
         const v = getValue() as string;
         if (!v) return "—";
@@ -318,7 +321,7 @@ export default function ChangeLog() {
     {
       accessorKey: "categoryLabel",
       header: "Category",
-      meta: { maxWidth: "140px", filterType: "multi-select", description: "Normalised category for this change" },
+      meta: { maxWidth: "110px", filterType: "multi-select", description: "Normalised category for this change" },
       filterFn: "multiSelect" as any,
       cell: ({ row }) => {
         const cat = row.original.category as string;
@@ -339,13 +342,13 @@ export default function ChangeLog() {
     {
       accessorKey: "objectTypeLabel",
       header: "Level",
-      meta: { maxWidth: "90px", filterType: "multi-select", description: "Whether the change targeted a campaign, ad set, or single ad" },
+      meta: { maxWidth: "70px", filterType: "multi-select", description: "Whether the change targeted a campaign, ad set, or single ad" },
       filterFn: "multiSelect" as any,
     },
     {
       accessorKey: "objectName",
       header: "Object",
-      meta: { maxWidth: "220px", description: "Name of the campaign/ad set/ad at the time the change was made. Click to open the full timeline." },
+      meta: { maxWidth: "320px", description: "Name of the campaign/ad set/ad at the time the change was made. Click to open the full timeline." },
       cell: ({ row, getValue }) => {
         const value = getValue() || "—";
         const r = row.original;
@@ -369,14 +372,14 @@ export default function ChangeLog() {
     {
       accessorKey: "summary",
       header: "Summary",
-      meta: { filterType: "multi-select", description: "Human-readable description of the change. Filter groups volatile summaries (e.g. budget amounts) under a single canonical label." },
+      meta: { maxWidth: "520px", filterType: "multi-select", description: "Human-readable description of the change. Filter groups volatile summaries (e.g. budget amounts, renames) under a single canonical label." },
       filterFn: "multiSelect" as any,
       cell: ({ row }) => row.original.summaryDisplay || "—",
     },
     {
       accessorKey: "actor",
       header: "By",
-      meta: { maxWidth: "110px", description: "User who made the change. 'System' = Meta automation" },
+      meta: { maxWidth: "80px", description: "User who made the change. 'System' = Meta automation" },
       cell: ({ getValue }) => getValue() || "—",
     },
     {
