@@ -1,6 +1,7 @@
 import db from "../db.server";
 import { setProgress, completeProgress, failProgress } from "./progress.server";
 import { shopLocalDayKey } from "../utils/shopTime.server";
+import { invalidateShop } from "./queryCache.server";
 
 /**
  * Lucidly Attribution Matcher
@@ -642,6 +643,7 @@ export async function runAttribution(shopDomain) {
   const { enrichAll } = await import("./attributionEnrichment.server.js");
   const enrichResult = await enrichAll(shopDomain);
 
+  invalidateShop(shopDomain);
   completeProgress(`runAttribution:${shopDomain}`, { matched: totalMatched, unmatched: totalUnmatched, ...enrichResult });
   console.log(`[Attribution] Complete: ${totalMatched} matched, ${totalUnmatched} unmatched, ${enrichResult.enriched} demographics enriched`);
   return { matched: totalMatched, unmatched: totalUnmatched, ...enrichResult };
@@ -999,6 +1001,7 @@ export async function runDateRangeRematch(shopDomain, fromDate, toDate) {
   const { enrichAll } = await import("./attributionEnrichment.server.js");
   const enrichResult = await enrichAll(shopDomain);
 
+  invalidateShop(shopDomain);
   completeProgress(taskKey, { matched: totalMatched, unmatched: totalUnmatched, deleted: idsToDelete.length, ...enrichResult });
   console.log(`[Attribution] Date range re-match complete: ${totalMatched} matched, ${totalUnmatched} unmatched, ${idsToDelete.length} old attributions replaced, ${enrichResult.enriched} demographics enriched`);
   return { matched: totalMatched, unmatched: totalUnmatched, deleted: idsToDelete.length, ...enrichResult };
@@ -1508,6 +1511,12 @@ export async function runFillGaps(shopDomain, lookbackDays = 30) {
   setProgress(taskKey, { status: "running", message: "Enriching attribution demographics..." });
   const { enrichAll } = await import("./attributionEnrichment.server.js");
   const enrichResult = await enrichAll(shopDomain);
+
+  // Drop cached loader reads for this shop so the Orders / Campaigns pages
+  // pick up the new attributions on the next render. Without this the UI
+  // served stale "Meta Unmatched" rows for up to 2 hours after a successful
+  // sweep.
+  invalidateShop(shopDomain);
 
   const gapSummary = gapDays.map(g => g.day).join(", ");
   completeProgress(taskKey, { matched: totalMatched, unmatched: totalUnmatched, gapDays: gapDays.length, days: gapSummary, ...enrichResult });
