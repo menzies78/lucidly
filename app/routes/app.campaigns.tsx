@@ -1852,38 +1852,52 @@ function WastedSpendList({ items, cs }: { items: { name: string; spend: number; 
 // Scrollable list of every ad with its age, spend, ROAS, and creative-fatigue
 // flag. Header shows a colour-coded "X days since last new ad launched"
 // callout — green if recent, amber if drifting, red if it's been a while.
-function AdAgeTile({ adRows, cs }: { adRows: any[]; cs: string }) {
-  // Sort by age ascending so newest are easy to scan; we still highlight
-  // ageing creatives via a colour band on each row.
+//
+// Per-row signals:
+//   • Frequency badge (avg in-period frequency) — highlighted ≥ 3 since
+//     that's the textbook fatigue threshold.
+//   • Hover → small popover with a 90-day ROAS sparkline pulled from
+//     /app/api/entity-timeline. Cached so re-hover doesn't refetch.
+//   • Click → opens the EntityTimelineDrawer for the ad.
+function AdAgeTile({ adRows, cs, onAdClick }: { adRows: any[]; cs: string; onAdClick?: (adId: string, adName: string) => void }) {
   const rows = (adRows || []).slice().sort((a, b) => {
     const ax = a.adAgeDays == null ? Infinity : a.adAgeDays;
     const bx = b.adAgeDays == null ? Infinity : b.adAgeDays;
     return ax - bx;
   });
 
-  // "Days since last new ad" — minimum age across ads that actually have an
-  // age. Active filter doesn't matter here; we want to know creative
-  // freshness regardless of whether the ad is still spending.
   const dated = rows.filter(r => r.adAgeDays != null);
   const newestAge = dated.length > 0 ? dated[0].adAgeDays : null;
-
-  // Fatigue counts — quick "how stale is the account" read.
   const fatigueOver30 = rows.filter(r => (r.adAgeDays ?? 0) >= 30).length;
   const fatigueOver60 = rows.filter(r => (r.adAgeDays ?? 0) >= 60).length;
 
-  // Colour band thresholds for the per-row marker — kept in sync with the
-  // header callout below.
   const ageColor = (days: number | null) => {
-    if (days == null) return "#9CA3AF";       // unknown
-    if (days < 7) return "#059669";           // fresh
-    if (days < 21) return "#65A30D";          // healthy
-    if (days < 45) return "#D97706";          // ageing
-    return "#B91C1C";                         // fatigued
+    if (days == null) return "#9CA3AF";
+    if (days < 7) return "#059669";
+    if (days < 21) return "#65A30D";
+    if (days < 45) return "#D97706";
+    return "#B91C1C";
   };
   const headerColor = newestAge == null ? "#6B7280"
     : newestAge < 7 ? "#059669"
     : newestAge < 14 ? "#D97706"
     : "#B91C1C";
+
+  // Hover state + per-ad daily series cache. We fetch lazily on hover so
+  // first paint stays cheap; once we have the data, the popover renders
+  // instantly on subsequent hovers.
+  const [hoverAdId, setHoverAdId] = useState<string | null>(null);
+  const [hoverAnchor, setHoverAnchor] = useState<{ x: number; y: number } | null>(null);
+  const [seriesCache, setSeriesCache] = useState<Record<string, Array<{ date: string; spend: number; revenue: number }> | "loading" | "error">>({});
+
+  const requestSeries = (adId: string) => {
+    if (seriesCache[adId]) return; // cached or in flight
+    setSeriesCache((prev) => ({ ...prev, [adId]: "loading" }));
+    fetch(`/app/api/entity-timeline?type=ad&id=${encodeURIComponent(adId)}`)
+      .then((r) => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
+      .then((d) => setSeriesCache((prev) => ({ ...prev, [adId]: d.daily || [] })))
+      .catch(() => setSeriesCache((prev) => ({ ...prev, [adId]: "error" })));
+  };
 
   return (
     <BlockStack gap="300">
@@ -1906,30 +1920,61 @@ function AdAgeTile({ adRows, cs }: { adRows: any[]; cs: string }) {
       {rows.length === 0 ? (
         <div style={{ color: "#999", fontSize: 13, padding: "8px 0" }}>No ads in this period.</div>
       ) : (
-        <div style={{ maxHeight: 240, overflowY: "auto", display: "flex", flexDirection: "column", gap: 4 }}>
+        <div style={{ maxHeight: 240, overflowY: "auto", display: "flex", flexDirection: "column", gap: 4, position: "relative" }}>
           {rows.map((r, idx) => {
             const days = r.adAgeDays;
             const colour = ageColor(days);
             const ageLabel = days == null ? "—" : days === 0 ? "Today" : `${days}d`;
             const roas = r.spend > 0 ? ((r.attributedRevenue + (r.unverifiedRevenue || 0)) / r.spend) : 0;
             const newCust = r.newCustomerOrders || 0;
+            const freq = r.avgFrequency || 0;
+            const freqHigh = freq >= 3;
+            const adId = r.id;
+            const interactive = !!adId;
             return (
-              <div key={r.id || idx} style={{
-                display: "flex", alignItems: "center", gap: 10,
-                padding: "6px 8px", borderRadius: 6,
-                background: idx % 2 === 0 ? "#fafafa" : "#fff",
-                borderLeft: `3px solid ${colour}`,
-              }}>
+              <div
+                key={adId || idx}
+                onMouseEnter={(e) => {
+                  if (!interactive) return;
+                  setHoverAdId(adId);
+                  const rect = (e.currentTarget as HTMLDivElement).getBoundingClientRect();
+                  setHoverAnchor({ x: rect.right + 8, y: rect.top + rect.height / 2 });
+                  requestSeries(adId);
+                }}
+                onMouseLeave={() => { setHoverAdId(null); setHoverAnchor(null); }}
+                onClick={() => interactive && onAdClick?.(adId, r.name)}
+                title={interactive ? "Click for full timeline" : undefined}
+                style={{
+                  display: "flex", alignItems: "center", gap: 10,
+                  padding: "6px 8px", borderRadius: 6,
+                  background: idx % 2 === 0 ? "#fafafa" : "#fff",
+                  borderLeft: `3px solid ${colour}`,
+                  cursor: interactive ? "pointer" : "default",
+                  transition: "background 0.12s ease",
+                }}
+                onMouseOver={(e) => { if (interactive) (e.currentTarget as HTMLDivElement).style.background = "#f1f5f9"; }}
+                onMouseOut={(e) => { (e.currentTarget as HTMLDivElement).style.background = idx % 2 === 0 ? "#fafafa" : "#fff"; }}
+              >
                 <div style={{
                   fontSize: 11, fontWeight: 700, color: colour,
                   minWidth: 44, textAlign: "right", fontVariantNumeric: "tabular-nums",
                 }}>{ageLabel}</div>
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontSize: 12, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={r.name}>{r.name}</div>
-                  <div style={{ display: "flex", gap: 12, marginTop: 2 }}>
+                  <div style={{ display: "flex", gap: 12, marginTop: 2, alignItems: "center" }}>
                     <span style={{ fontSize: 11, color: "#6B7280" }}>Spend: <strong>{cs}{Math.round(r.spend || 0).toLocaleString()}</strong></span>
                     <span style={{ fontSize: 11, color: "#6B7280" }}>ROAS: <strong>{roas > 0 ? `${roas.toFixed(2)}x` : "0x"}</strong></span>
                     <span style={{ fontSize: 11, color: "#6B7280" }}>New cust: <strong>{newCust}</strong></span>
+                    {freq > 0 && (
+                      <span style={{
+                        fontSize: 10, fontWeight: 700,
+                        padding: "1px 6px", borderRadius: 8,
+                        background: freqHigh ? "#FEE2E2" : "#E5E7EB",
+                        color: freqHigh ? "#B91C1C" : "#374151",
+                      }} title={freqHigh ? "Average frequency ≥ 3 — fatigue likely" : "Average impressions per unique reach in period"}>
+                        Freq {freq.toFixed(1)}{freqHigh ? "⚠" : ""}
+                      </span>
+                    )}
                   </div>
                 </div>
               </div>
@@ -1937,7 +1982,68 @@ function AdAgeTile({ adRows, cs }: { adRows: any[]; cs: string }) {
           })}
         </div>
       )}
+      {hoverAdId && hoverAnchor && (
+        <RoasHoverPopover
+          x={hoverAnchor.x}
+          y={hoverAnchor.y}
+          state={seriesCache[hoverAdId]}
+        />
+      )}
     </BlockStack>
+  );
+}
+
+// Tiny floating popover with a 90-day ROAS sparkline. Renders one of:
+//   • spinner-style "loading"
+//   • "no data" if the entity has no spend in the lookback
+//   • the line itself with an avg ROAS callout
+function RoasHoverPopover({ x, y, state }: {
+  x: number; y: number;
+  state: Array<{ date: string; spend: number; revenue: number }> | "loading" | "error" | undefined;
+}) {
+  const w = 220, h = 70, padX = 6, padY = 6;
+  let body: React.ReactNode;
+  if (!state || state === "loading") {
+    body = <div style={{ fontSize: 11, color: "#9CA3AF", padding: "12px 8px" }}>Loading…</div>;
+  } else if (state === "error") {
+    body = <div style={{ fontSize: 11, color: "#B91C1C", padding: "12px 8px" }}>Couldn't load chart</div>;
+  } else {
+    const points = state.map((d) => ({ date: d.date, roas: d.spend > 0 ? d.revenue / d.spend : 0 }));
+    const positive = points.filter((p) => p.roas > 0);
+    if (points.length === 0 || positive.length === 0) {
+      body = <div style={{ fontSize: 11, color: "#9CA3AF", padding: "12px 8px" }}>No spend in last 90 days</div>;
+    } else {
+      const max = Math.max(...positive.map((p) => p.roas));
+      const stepX = (w - padX * 2) / Math.max(1, points.length - 1);
+      const path = points.map((p, i) => {
+        const px = padX + i * stepX;
+        const py = h - padY - (max > 0 ? (p.roas / max) * (h - padY * 2) : 0);
+        return `${i === 0 ? "M" : "L"}${px},${py}`;
+      }).join(" ");
+      const avg = positive.reduce((s, p) => s + p.roas, 0) / positive.length;
+      body = (
+        <>
+          <div style={{ fontSize: 10, color: "#9CA3AF", padding: "4px 8px 0" }}>
+            ROAS · last {points.length} days · avg {avg.toFixed(2)}x
+          </div>
+          <svg width={w} height={h} preserveAspectRatio="none" viewBox={`0 0 ${w} ${h}`}>
+            <path d={path} stroke="#2563EB" strokeWidth="1.5" fill="none" />
+          </svg>
+        </>
+      );
+    }
+  }
+  return (
+    <div style={{
+      position: "fixed", left: x, top: y,
+      transform: "translate(0, -50%)",
+      background: "#fff", border: "1px solid #E5E7EB", borderRadius: 8,
+      boxShadow: "0 6px 20px rgba(0,0,0,0.12)",
+      zIndex: 9999, pointerEvents: "none",
+      minWidth: w,
+    }}>
+      {body}
+    </div>
   );
 }
 
@@ -2748,7 +2854,7 @@ export default function Campaigns() {
               )},
               { id: "adAge", label: "Ad Age", span: 2, render: () => (
                 <Card>
-                  <AdAgeTile adRows={adRows} cs={cs} />
+                  <AdAgeTile adRows={adRows} cs={cs} onAdClick={(id, name) => setDrawerEntity({ objectType: "ad", objectId: id, objectName: name })} />
                 </Card>
               )},
               { id: "platformPerf", label: "Platform Performance", span: 2, render: () => (
