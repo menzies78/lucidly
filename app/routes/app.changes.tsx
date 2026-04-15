@@ -31,39 +31,116 @@ const CATEGORY_META: Record<string, { label: string; icon: string; color: string
 // Patterns that mark an event as "routine" — billing, run-status tweaks that
 // don't reflect operator intent, and anything whose whole content is "event"
 // / "spec" noise from Meta's internal pipeline. Filtered out by default;
-// toggleable via the "Hide routine events" checkbox.
+// toggleable via the "Hide routine events" checkbox. Patterns run against
+// the rendered display summary (after prefix stripping + budget rewrite).
 const NOISE_PATTERNS: Array<RegExp> = [
-  /Run status changed: Pending process → Pending Review/i,
-  /Run status changed: Active → Pending process/i,
+  /→ Pending process\b/i,         // any status transition landing in "Pending process"
+  /Pending process → Pending review/i,
   /\bcharge\b/i,
   /\bevent\b/i,
   /\bspec\b/i,
 ];
 
-// Meta delivers budgets in minor units (cents/pence) in the ad-account
-// currency. Numeric-looking values get formatted; anything else passes
-// through untouched.
-function formatBudgetValue(v: string | null): string {
-  if (v == null || v === "") return "—";
-  const num = Number(v);
-  if (!isFinite(num)) return v;
-  // If the raw value is > 100 and has no decimal, assume minor units.
-  const looksMinor = !v.includes(".") && Math.abs(num) >= 100;
-  const display = looksMinor ? num / 100 : num;
+// Meta's /activities extra_data for budget changes is an object keyed by
+// old/new that itself contains the amount in minor units:
+//   old: { type: "payment_amount", currency: "USD", old_value: 140000, ... }
+//   new: { type: "payment_amount", currency: "USD", new_value: 70000, ... }
+// Dig out the minor-units number and render it as major units with two
+// decimal places. Returns null if we can't find a number.
+function extractBudgetMinorUnits(v: string | null, side: "old" | "new"): number | null {
+  if (v == null || v === "") return null;
+  // Already a bare number
+  if (/^-?\d+(\.\d+)?$/.test(v)) return Number(v);
+  try {
+    const parsed = JSON.parse(v);
+    if (parsed && typeof parsed === "object") {
+      const direct =
+        side === "old"
+          ? (parsed.old_value ?? parsed.value ?? parsed.amount)
+          : (parsed.new_value ?? parsed.value ?? parsed.amount);
+      if (typeof direct === "number") return direct;
+      if (typeof direct === "string" && /^-?\d+(\.\d+)?$/.test(direct)) return Number(direct);
+    }
+  } catch {}
+  return null;
+}
+
+function formatBudgetMajor(minorUnits: number | null): string {
+  if (minorUnits == null) return "—";
+  const display = minorUnits / 100;
   return display.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+// Pull the "New → Old" transition if present in the raw summary or the
+// stored old/new pair (run-status events). Used for both display and
+// recategorising paused vs resumed.
+function statusTransition(c: {
+  summary: string; oldValue: string | null; newValue: string | null;
+}): { from: string | null; to: string | null } {
+  // Try to parse "Run status changed: X → Y" first (our classifier output).
+  const m = c.summary?.match(/Run status changed:\s*(.+?)\s*→\s*(.+)/i);
+  if (m) return { from: m[1].trim(), to: m[2].trim() };
+  // Fall back to the raw extra_data old_value/new_value strings.
+  const readStatus = (v: string | null): string | null => {
+    if (!v) return null;
+    if (/^[A-Z _-]+$/.test(v)) return v;
+    try {
+      const parsed = JSON.parse(v);
+      if (typeof parsed === "string") return parsed;
+      if (parsed?.old_value || parsed?.new_value) return parsed.old_value ?? parsed.new_value ?? null;
+    } catch {}
+    return null;
+  };
+  return { from: readStatus(c.oldValue), to: readStatus(c.newValue) };
+}
+
+function titleStatus(s: string | null): string {
+  if (!s) return "—";
+  return s.replace(/_/g, " ").toLowerCase().replace(/\b\w/g, (ch) => ch.toUpperCase());
+}
+
+// Infer the right category from raw event + values. Meta emits a single
+// update_*_run_status type for both paused and resumed transitions, so
+// we have to inspect the destination state.
+function recategorise(
+  storedCategory: string,
+  c: { summary: string; oldValue: string | null; newValue: string | null; rawEventType?: string | null },
+): string {
+  if (storedCategory !== "paused" && storedCategory !== "resumed") return storedCategory;
+  const t = statusTransition(c);
+  const to = (t.to || "").toUpperCase();
+  if (to.includes("ACTIVE")) return "resumed";
+  if (to.includes("PAUSED") || to.includes("ARCHIVED") || to.includes("DELETED")) return "paused";
+  if (to.includes("PENDING")) return "paused"; // inflight; treat as paused for chart colour
+  return storedCategory;
 }
 
 function renderSummary(c: { category: string; summary: string; oldValue: string | null; newValue: string | null }): string {
   let s = c.summary || "";
-  // Strip the "Run status changed: " prefix — show just the state transition.
-  s = s.replace(/^Run status changed:\s*/i, "");
 
   if (c.category === "budget") {
-    const oldFmt = formatBudgetValue(c.oldValue);
-    const newFmt = formatBudgetValue(c.newValue);
-    return `Budget changed: old: ${oldFmt} | new: ${newFmt}`;
+    const oldMinor = extractBudgetMinorUnits(c.oldValue, "old");
+    const newMinor = extractBudgetMinorUnits(c.newValue, "new");
+    return `Budget changed: old: ${formatBudgetMajor(oldMinor)} | new: ${formatBudgetMajor(newMinor)}`;
   }
+
+  // Strip "Run status changed: " prefix and render the transition with
+  // tidy title-case on each side. E.g. "Active → Pending review".
+  if (/^Run status changed:/i.test(s) || c.category === "paused" || c.category === "resumed") {
+    const { from, to } = statusTransition({ summary: s, oldValue: c.oldValue, newValue: c.newValue });
+    if (from || to) return `${titleStatus(from)} → ${titleStatus(to)}`;
+    return s.replace(/^Run status changed:\s*/i, "");
+  }
+
   return s;
+}
+
+// Column value the Summary filter sees. Groups volatile summaries (budgets)
+// under a single canonical label so the filter dropdown stays useable.
+function filterSummaryKey(r: { category: string; summary: string }): string {
+  if (r.category === "budget") return "Budget changed";
+  if (r.category === "creative") return "Creative swapped";
+  return r.summary;
 }
 
 function isNoiseSummary(summary: string): boolean {
@@ -87,15 +164,22 @@ export const loader = async ({ request }: { request: Request }) => {
   ]);
 
   const rows = changes.map((c) => {
+    // Fix up miscategorised run-status events (Meta emits one event type for
+    // both paused and resumed; the stored category can't always tell which).
+    const category = recategorise(c.category, {
+      summary: c.summary, oldValue: c.oldValue, newValue: c.newValue,
+      rawEventType: c.rawEventType,
+    });
     const displaySummary = renderSummary({
-      category: c.category, summary: c.summary,
+      category, summary: c.summary,
       oldValue: c.oldValue, newValue: c.newValue,
     });
+    const summaryFilterKey = filterSummaryKey({ category, summary: displaySummary });
     return {
       id: c.id,
       eventTimeISO: c.eventTime.toISOString(),
-      category: c.category,
-      categoryLabel: CATEGORY_META[c.category]?.label || c.category,
+      category,
+      categoryLabel: CATEGORY_META[category]?.label || category,
       objectType: c.objectType,
       objectTypeLabel:
         c.objectType === "campaign" ? "Campaign" :
@@ -104,6 +188,7 @@ export const loader = async ({ request }: { request: Request }) => {
       objectName: c.objectName || c.objectId,
       objectId: c.objectId,
       summary: displaySummary,
+      summaryFilterKey,
       isNoise: isNoiseSummary(displaySummary),
       actor: c.actorName || c.actorId || "",
       oldValue: c.oldValue || "",
@@ -265,11 +350,16 @@ export default function ChangeLog() {
       },
     },
     {
-      accessorKey: "summary",
+      id: "summary",
+      // Accessor returns the grouped filter key so the multi-select
+      // dropdown shows one "Budget changed" entry rather than hundreds of
+      // unique "Budget changed: old:X | new:Y" variants. The cell still
+      // renders the full formatted summary for humans.
+      accessorFn: (row: any) => row.summaryFilterKey,
       header: "Summary",
-      meta: { filterType: "multi-select", description: "Human-readable description of the change" },
+      meta: { filterType: "multi-select", description: "Human-readable description of the change. Filter groups volatile summaries (e.g. budget amounts) under a single canonical label." },
       filterFn: "multiSelect" as any,
-      cell: ({ getValue }) => getValue() || "—",
+      cell: ({ row }) => row.original.summary || "—",
     },
     {
       accessorKey: "actor",
