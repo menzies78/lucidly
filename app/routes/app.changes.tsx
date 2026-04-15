@@ -28,6 +28,48 @@ const CATEGORY_META: Record<string, { label: string; icon: string; color: string
   other:        { label: "Other",        icon: "·",  color: "#6B7280" },
 };
 
+// Patterns that mark an event as "routine" — billing, run-status tweaks that
+// don't reflect operator intent, and anything whose whole content is "event"
+// / "spec" noise from Meta's internal pipeline. Filtered out by default;
+// toggleable via the "Hide routine events" checkbox.
+const NOISE_PATTERNS: Array<RegExp> = [
+  /Run status changed: Pending process → Pending Review/i,
+  /Run status changed: Active → Pending process/i,
+  /\bcharge\b/i,
+  /\bevent\b/i,
+  /\bspec\b/i,
+];
+
+// Meta delivers budgets in minor units (cents/pence) in the ad-account
+// currency. Numeric-looking values get formatted; anything else passes
+// through untouched.
+function formatBudgetValue(v: string | null): string {
+  if (v == null || v === "") return "—";
+  const num = Number(v);
+  if (!isFinite(num)) return v;
+  // If the raw value is > 100 and has no decimal, assume minor units.
+  const looksMinor = !v.includes(".") && Math.abs(num) >= 100;
+  const display = looksMinor ? num / 100 : num;
+  return display.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function renderSummary(c: { category: string; summary: string; oldValue: string | null; newValue: string | null }): string {
+  let s = c.summary || "";
+  // Strip the "Run status changed: " prefix — show just the state transition.
+  s = s.replace(/^Run status changed:\s*/i, "");
+
+  if (c.category === "budget") {
+    const oldFmt = formatBudgetValue(c.oldValue);
+    const newFmt = formatBudgetValue(c.newValue);
+    return `Budget changed: old: ${oldFmt} | new: ${newFmt}`;
+  }
+  return s;
+}
+
+function isNoiseSummary(summary: string): boolean {
+  return NOISE_PATTERNS.some((p) => p.test(summary));
+}
+
 export const loader = async ({ request }: { request: Request }) => {
   const { session } = await authenticate.admin(request);
   const shopDomain = session.shop;
@@ -44,41 +86,51 @@ export const loader = async ({ request }: { request: Request }) => {
     db.metaChange.count({ where: { shopDomain } }),
   ]);
 
-  // Summary tile math — cheap enough over the (capped) in-range rows.
+  const rows = changes.map((c) => {
+    const displaySummary = renderSummary({
+      category: c.category, summary: c.summary,
+      oldValue: c.oldValue, newValue: c.newValue,
+    });
+    return {
+      id: c.id,
+      eventTimeISO: c.eventTime.toISOString(),
+      category: c.category,
+      categoryLabel: CATEGORY_META[c.category]?.label || c.category,
+      objectType: c.objectType,
+      objectTypeLabel:
+        c.objectType === "campaign" ? "Campaign" :
+        c.objectType === "adset" ? "Ad Set" :
+        c.objectType === "ad" ? "Ad" : "Account",
+      objectName: c.objectName || c.objectId,
+      objectId: c.objectId,
+      summary: displaySummary,
+      isNoise: isNoiseSummary(displaySummary),
+      actor: c.actorName || c.actorId || "",
+      oldValue: c.oldValue || "",
+      newValue: c.newValue || "",
+      rawEventType: c.rawEventType,
+    };
+  });
+
+  // Tile maths — count against the signal rows (excluding noise) so the
+  // header numbers match what the user sees by default.
+  const signalRows = rows.filter((r) => !r.isNoise);
   const byCategory: Record<string, number> = {};
   const daysWithActivity = new Set<string>();
-  for (const c of changes) {
-    byCategory[c.category] = (byCategory[c.category] || 0) + 1;
-    daysWithActivity.add(shopLocalDayKey(tz, c.eventTime));
+  for (const r of signalRows) {
+    byCategory[r.category] = (byCategory[r.category] || 0) + 1;
+    daysWithActivity.add(r.eventTimeISO.slice(0, 10));
   }
-
-  const rows = changes.map((c) => ({
-    id: c.id,
-    eventTimeISO: c.eventTime.toISOString(),
-    category: c.category,
-    categoryLabel: CATEGORY_META[c.category]?.label || c.category,
-    objectType: c.objectType,
-    objectTypeLabel:
-      c.objectType === "campaign" ? "Campaign" :
-      c.objectType === "adset" ? "Ad Set" :
-      c.objectType === "ad" ? "Ad" : "Account",
-    objectName: c.objectName || c.objectId,
-    objectId: c.objectId,
-    summary: c.summary,
-    actor: c.actorName || c.actorId || "",
-    oldValue: c.oldValue || "",
-    newValue: c.newValue || "",
-    rawEventType: c.rawEventType,
-  }));
 
   return json({
     shopDomain,
     rows,
+    noiseCount: rows.length - signalRows.length,
     totalEver,
     fromKey,
     toKey,
     summary: {
-      total: rows.length,
+      total: signalRows.length,
       launched: byCategory.launched || 0,
       killed: (byCategory.killed || 0) + (byCategory.paused || 0),
       budget: byCategory.budget || 0,
@@ -116,16 +168,19 @@ export const action = async ({ request }: { request: Request }) => {
 };
 
 export default function ChangeLog() {
-  const { rows, totalEver, summary, fromKey, toKey, shopDomain } = useLoaderData<typeof loader>();
+  const { rows, noiseCount, totalEver, summary, fromKey, toKey, shopDomain } = useLoaderData<typeof loader>();
   const submit = useSubmit();
   const revalidator = useRevalidator();
   const [importState, setImportState] = useState<"idle" | "running" | "done" | "error">("idle");
   const [importMessage, setImportMessage] = useState<string>("");
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [drawerEntity, setDrawerEntity] = useState<EntityRef | null>(null);
+  const [hideRoutine, setHideRoutine] = useState(true);
+
+  const visibleRows = useMemo(() => hideRoutine ? rows.filter(r => !r.isNoise) : rows, [rows, hideRoutine]);
 
   const dayKeyForEvent = (iso: string) => iso.slice(0, 10);
-  const annotationChanges = rows.map(r => ({
+  const annotationChanges = visibleRows.map(r => ({
     id: r.id, eventTimeISO: r.eventTimeISO, category: r.category,
     objectType: r.objectType, objectName: r.objectName, summary: r.summary,
     rawEventType: r.rawEventType, actor: r.actor,
@@ -146,14 +201,14 @@ export default function ChangeLog() {
     {
       accessorKey: "eventTimeISO",
       header: "Time",
-      meta: { description: "When Meta recorded this change" },
+      meta: { maxWidth: "140px", description: "When Meta recorded this change" },
       cell: ({ getValue }) => {
         const v = getValue() as string;
         if (!v) return "—";
         const d = new Date(v);
         return (
           <span style={{ whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums" }}>
-            {d.toLocaleString("en-GB", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" })}
+            {d.toLocaleString("en-GB", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}
           </span>
         );
       },
@@ -161,7 +216,7 @@ export default function ChangeLog() {
     {
       accessorKey: "categoryLabel",
       header: "Category",
-      meta: { filterType: "multi-select", description: "Normalised category for this change" },
+      meta: { maxWidth: "140px", filterType: "multi-select", description: "Normalised category for this change" },
       filterFn: "multiSelect" as any,
       cell: ({ row }) => {
         const cat = row.original.category as string;
@@ -182,13 +237,13 @@ export default function ChangeLog() {
     {
       accessorKey: "objectTypeLabel",
       header: "Level",
-      meta: { filterType: "multi-select", description: "Whether the change targeted a campaign, ad set, or single ad" },
+      meta: { maxWidth: "90px", filterType: "multi-select", description: "Whether the change targeted a campaign, ad set, or single ad" },
       filterFn: "multiSelect" as any,
     },
     {
       accessorKey: "objectName",
       header: "Object",
-      meta: { maxWidth: "320px", description: "Name of the campaign/ad set/ad at the time the change was made. Click to open the full timeline." },
+      meta: { maxWidth: "220px", description: "Name of the campaign/ad set/ad at the time the change was made. Click to open the full timeline." },
       cell: ({ row, getValue }) => {
         const value = getValue() || "—";
         const r = row.original;
@@ -212,19 +267,20 @@ export default function ChangeLog() {
     {
       accessorKey: "summary",
       header: "Summary",
-      meta: { maxWidth: "400px", description: "Human-readable description of the change" },
+      meta: { filterType: "multi-select", description: "Human-readable description of the change" },
+      filterFn: "multiSelect" as any,
       cell: ({ getValue }) => getValue() || "—",
     },
     {
       accessorKey: "actor",
       header: "By",
-      meta: { maxWidth: "160px", description: "User who made the change. 'System' = Meta automation" },
+      meta: { maxWidth: "110px", description: "User who made the change. 'System' = Meta automation" },
       cell: ({ getValue }) => getValue() || "—",
     },
     {
       accessorKey: "oldValue",
       header: "Before",
-      meta: { maxWidth: "200px", description: "Previous value before the change (where applicable)" },
+      meta: { maxWidth: "120px", description: "Previous value before the change (where applicable)" },
       cell: ({ getValue }) => {
         const v = getValue();
         if (!v) return "—";
@@ -234,7 +290,7 @@ export default function ChangeLog() {
     {
       accessorKey: "newValue",
       header: "After",
-      meta: { maxWidth: "200px", description: "New value after the change (where applicable)" },
+      meta: { maxWidth: "120px", description: "New value after the change (where applicable)" },
       cell: ({ getValue }) => {
         const v = getValue();
         if (!v) return "—";
@@ -244,7 +300,8 @@ export default function ChangeLog() {
     {
       accessorKey: "rawEventType",
       header: "Event",
-      meta: { maxWidth: "240px", description: "Meta's raw event_type — useful when filtering to a specific kind of change" },
+      meta: { maxWidth: "180px", filterType: "multi-select", description: "Meta's raw event_type — useful when filtering to a specific kind of change" },
+      filterFn: "multiSelect" as any,
       cell: ({ getValue }) => <span style={{ fontFamily: "monospace", fontSize: 11 }}>{String(getValue() || "—")}</span>,
     },
   ], []);
@@ -376,14 +433,27 @@ export default function ChangeLog() {
             <>
               <Card>
                 <BlockStack gap="200">
-                  <Text as="h3" variant="headingMd">Activity by day</Text>
+                  <InlineStack align="space-between" blockAlign="center">
+                    <Text as="h3" variant="headingMd">Activity by day</Text>
+                    {noiseCount > 0 && (
+                      <label style={{ fontSize: 12, color: "#6b7280", cursor: "pointer" }}>
+                        <input
+                          type="checkbox"
+                          checked={hideRoutine}
+                          onChange={(e) => setHideRoutine(e.target.checked)}
+                          style={{ marginRight: 6, verticalAlign: "middle" }}
+                        />
+                        Hide routine events ({noiseCount} hidden)
+                      </label>
+                    )}
+                  </InlineStack>
                   <ChangesAnnotationStrip
                     changes={annotationChanges}
                     fromKey={fromKey}
                     toKey={toKey}
                     dayKeyForEvent={dayKeyForEvent}
                     onEventClick={(ev) => {
-                      const row = rows.find(r => r.id === ev.id);
+                      const row = visibleRows.find(r => r.id === ev.id);
                       if (row) openDrawerFor(row);
                     }}
                   />
@@ -392,7 +462,7 @@ export default function ChangeLog() {
               <Card padding="0">
                 <InteractiveTable
                   columns={columns}
-                  data={rows}
+                  data={visibleRows}
                   defaultVisibleColumns={defaultVisibleColumns}
                   tableId="changes-table"
                   initialSorting={[{ id: "eventTimeISO", desc: true }]}
