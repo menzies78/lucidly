@@ -11,6 +11,7 @@ import type { TileDef } from "../components/TileGrid";
 import { authenticate } from "../shopify.server";
 import db from "../db.server";
 import { parseDateRange } from "../utils/dateRange.server";
+import { shopLocalDayKey, shopRangeBounds } from "../utils/shopTime.server";
 import { cached as queryCached, DEFAULT_TTL } from "../services/queryCache.server";
 import type { ColumnDef } from "@tanstack/react-table";
 import { getCachedInsights, computeDataHash, generateInsights } from "../services/aiAnalysis.server";
@@ -46,16 +47,29 @@ function toParentProduct(name: string): string {
 export const loader = async ({ request }) => {
   const { admin, session } = await authenticate.admin(request);
   const shopDomain = session.shop;
-  const { fromDate, toDate } = parseDateRange(request);
+  const shopForTz = await db.shop.findUnique({ where: { shopDomain } });
+  const tz = shopForTz?.shopifyTimezone || "UTC";
+  const { fromDate, toDate, fromKey, toKey } = parseDateRange(request, tz);
 
-  // ── Compute previous period dates upfront ──
-  const dayCount = Math.round((toDate.getTime() - fromDate.getTime()) / 86400000) + 1;
-  const prevTo = new Date(fromDate);
-  prevTo.setUTCDate(prevTo.getUTCDate() - 1);
-  prevTo.setUTCHours(23, 59, 59, 999);
-  const prevFrom = new Date(prevTo);
-  prevFrom.setUTCDate(prevFrom.getUTCDate() - dayCount + 1);
-  prevFrom.setUTCHours(0, 0, 0, 0);
+  const addDaysKey = (key: string, delta: number): string => {
+    const [y, m, d] = key.split("-").map(Number);
+    const anchor = new Date(Date.UTC(y, m - 1, d, 12, 0, 0, 0));
+    anchor.setUTCDate(anchor.getUTCDate() + delta);
+    return shopLocalDayKey(tz, anchor);
+  };
+  const diffDays = (a: string, b: string): number => {
+    const [ay, am, ad] = a.split("-").map(Number);
+    const [by, bm, bd] = b.split("-").map(Number);
+    return Math.round((Date.UTC(by, bm - 1, bd) - Date.UTC(ay, am - 1, ad)) / 86400000);
+  };
+
+  // ── Compute previous period dates upfront (shop-local) ──
+  const dayCount = diffDays(fromKey, toKey) + 1;
+  const prevToKey = addDaysKey(fromKey, -1);
+  const prevFromKey = addDaysKey(prevToKey, -(dayCount - 1));
+  const prevBounds = shopRangeBounds(tz, prevFromKey, prevToKey);
+  const prevFrom = prevBounds.gte;
+  const prevTo = prevBounds.lte;
 
   // ── Fetch product images from Shopify (generic, per-shop via authenticated session) ──
   // 3-tier cache:
@@ -138,12 +152,7 @@ export const loader = async ({ request }) => {
   const _t0 = Date.now();
 
   // Cache the per-window rollup queries (date-keyed) and the analysis blob (per-shop)
-  const fromKey = fromDate.toISOString().split("T")[0];
-  const toKey = toDate.toISOString().split("T")[0];
-  const prevFromKey = prevFrom.toISOString().split("T")[0];
-  const prevToKey = prevTo.toISOString().split("T")[0];
-  const [shop, currentRollup, prevRollup, analysisCacheRow, unmatchedAgg, imageMap] = await Promise.all([
-    db.shop.findUnique({ where: { shopDomain } }),
+  const [currentRollup, prevRollup, analysisCacheRow, unmatchedAgg, imageMap] = await Promise.all([
     queryCached(`${shopDomain}:productRollup:${fromKey}:${toKey}`, DEFAULT_TTL, () =>
       db.dailyProductRollup.findMany({
         where: { shopDomain, date: { gte: fromDate, lte: toDate } },
@@ -168,6 +177,7 @@ export const loader = async ({ request }) => {
   ]);
   console.log(`[products] db ${Date.now() - _t0}ms (rollup=${currentRollup.length}, prevRollup=${prevRollup.length})`);
 
+  const shop = shopForTz;
   const cs = (shop?.shopifyCurrency || "GBP") === "GBP" ? "\u00a3"
     : (shop?.shopifyCurrency || "GBP") === "EUR" ? "\u20ac" : "$";
 
@@ -245,7 +255,7 @@ export const loader = async ({ request }) => {
       for (const c of r.collections.split(", ")) if (c) pd.collections.add(c);
     }
 
-    const dateStr = r.date.toISOString().split("T")[0];
+    const dateStr = shopLocalDayKey(tz, r.date);
     if (!dailyProductSales[r.product]) dailyProductSales[r.product] = {};
     if (!dailyProductSales[r.product][dateStr]) dailyProductSales[r.product][dateStr] = { orders: 0, revenue: 0, refunds: 0 };
     dailyProductSales[r.product][dateStr].orders += r.orders;
@@ -261,12 +271,10 @@ export const loader = async ({ request }) => {
   }
 
   // ── Basket stats from analysis blob (per-day distinct order counts) ──
-  const fromStr = fromDate.toISOString().split("T")[0];
-  const toStr = toDate.toISOString().split("T")[0];
   let totalOrderCount = 0, metaOrderCount = 0, totalItemCount = 0, metaItemCount = 0;
   const dailyMetaItems: Record<string, number> = {};
   for (const dateStr of Object.keys(blob.dailyBasketStats || {})) {
-    if (dateStr < fromStr || dateStr > toStr) continue;
+    if (dateStr < fromKey || dateStr > toKey) continue;
     const s = blob.dailyBasketStats[dateStr];
     totalOrderCount += s.totalOrders || 0;
     metaOrderCount += s.metaOrders || 0;
@@ -320,13 +328,13 @@ export const loader = async ({ request }) => {
   const topSecondAll = blob.allJourney?.topSecond || [];
   const flowsAll = blob.allJourney?.flows || [];
 
-  // ── Chart dates ──
+  // ── Chart dates (shop-local) ──
   const chartDates: string[] = [];
   {
-    const startD = new Date(fromDate);
-    const endD = new Date(toDate);
-    for (let d = new Date(startD); d <= endD; d.setUTCDate(d.getUTCDate() + 1)) {
-      chartDates.push(d.toISOString().split("T")[0]);
+    let key = fromKey;
+    while (key <= toKey) {
+      chartDates.push(key);
+      key = addDaysKey(key, 1);
     }
   }
   const dailyMetaOrdersChart = chartDates.map(date => ({
@@ -370,13 +378,11 @@ export const loader = async ({ request }) => {
   }).sort((a, b) => b.metaRevenue - a.metaRevenue);
 
   // ── Previous period stats (from rollup + blob) ──
-  const prevFromStr = prevFrom.toISOString().split("T")[0];
-  const prevToStr = prevTo.toISOString().split("T")[0];
   let prevMetaOrderCount = 0;
   let prevMetaItemCount = 0;
   const prevDailyMetaItems: Record<string, number> = {};
   for (const dateStr of Object.keys(blob.dailyBasketStats || {})) {
-    if (dateStr < prevFromStr || dateStr > prevToStr) continue;
+    if (dateStr < prevFromKey || dateStr > prevToKey) continue;
     const s = blob.dailyBasketStats[dateStr];
     prevMetaOrderCount += s.metaOrders || 0;
     prevMetaItemCount += s.metaItems || 0;
@@ -384,7 +390,7 @@ export const loader = async ({ request }) => {
   }
   const prevRefundData: Record<string, { refunded: number; total: number }> = {};
   for (const dateStr of Object.keys(blob.dailyRefundByProduct || {})) {
-    if (dateStr < prevFromStr || dateStr > prevToStr) continue;
+    if (dateStr < prevFromKey || dateStr > prevToKey) continue;
     const prodMap = blob.dailyRefundByProduct[dateStr];
     for (const product of Object.keys(prodMap)) {
       const d = prodMap[product];
@@ -394,8 +400,12 @@ export const loader = async ({ request }) => {
     }
   }
   const prevChartDates: string[] = [];
-  for (let d = new Date(prevFrom); d <= prevTo; d.setUTCDate(d.getUTCDate() + 1)) {
-    prevChartDates.push(d.toISOString().split("T")[0]);
+  {
+    let key = prevFromKey;
+    while (key <= prevToKey) {
+      prevChartDates.push(key);
+      key = addDaysKey(key, 1);
+    }
   }
   const prevDailyMetaOrdersChart = prevChartDates.map(date => ({
     date, metaOrders: prevDailyMetaItems[date] || 0,
@@ -474,8 +484,8 @@ export const loader = async ({ request }) => {
   const metaAvgItemsPerBasket = metaOrderCount > 0 ? Math.round((metaItemCount / metaOrderCount) * 10) / 10 : 0;
 
   // ── AI Insights cache ──
-  const dateFromStr = fromDate.toISOString().split("T")[0];
-  const dateToStr = toDate.toISOString().split("T")[0];
+  const dateFromStr = fromKey;
+  const dateToStr = toKey;
   const aiCached = await getCachedInsights(shopDomain, "products", dateFromStr, dateToStr);
   const aiCurrentHash = computeDataHash({
     totalProductCount, totalMetaOrders, totalOrganicOrders, totalMetaRevenue, totalOrganicRevenue,
@@ -540,11 +550,9 @@ export const action = async ({ request }) => {
 
     (async () => {
       try {
-        const { fromDate, toDate } = parseDateRange(request);
-        const dateFromStr = fromDate.toISOString().split("T")[0];
-        const dateToStr = toDate.toISOString().split("T")[0];
-
         const shop = await db.shop.findUnique({ where: { shopDomain } });
+        const tz = shop?.shopifyTimezone || "UTC";
+        const { fromDate, toDate, fromKey: dateFromStr, toKey: dateToStr } = parseDateRange(request, tz);
         const cs = (shop?.shopifyCurrency || "GBP") === "GBP" ? "\u00a3" : (shop?.shopifyCurrency || "GBP") === "EUR" ? "\u20ac" : "$";
 
         const orders = await db.order.findMany({ where: { shopDomain, isOnlineStore: true, createdAt: { gte: fromDate, lte: toDate } } });

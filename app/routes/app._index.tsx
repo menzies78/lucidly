@@ -17,7 +17,10 @@ export const loader = async ({ request }) => {
   const { admin, session } = await authenticate.admin(request);
   const shopDomain = session.shop;
 
-  const { fromDate, toDate } = parseDateRange(request);
+  const shop = await db.shop.findUnique({ where: { shopDomain } });
+  const tz = shop?.shopifyTimezone || "UTC";
+
+  const { fromDate, toDate, fromKey, toKey } = parseDateRange(request, tz);
   const dateFilter = { gte: fromDate, lte: toDate };
 
   // Parallel batch 1: all independent DB queries
@@ -31,7 +34,6 @@ export const loader = async ({ request }) => {
     orderIdsInRange,
     allAttrs,
     utmOnlyOrders,
-    shop,
   ] = await Promise.all([
     db.order.count({ where: { shopDomain, createdAt: dateFilter } }),
     db.order.findMany({
@@ -71,7 +73,6 @@ export const loader = async ({ request }) => {
       where: { shopDomain, utmConfirmedMeta: true, createdAt: dateFilter },
       select: { shopifyOrderId: true, frozenTotalPrice: true, totalRefunded: true },
     }),
-    db.shop.findUnique({ where: { shopDomain } }),
   ]);
 
   // Count distinct customers who placed orders in this date range
@@ -82,8 +83,8 @@ export const loader = async ({ request }) => {
 
   // Filter attributions to orders within date range
   const orderIdSet = new Set(orderIdsInRange.map(o => o.shopifyOrderId));
-  const fromStr = fromDate.toISOString().split("T")[0];
-  const toStr = toDate.toISOString().split("T")[0];
+  const fromStr = fromKey;
+  const toStr = toKey;
   const attrsInRange = allAttrs.filter(a => {
     if (a.confidence > 0) return orderIdSet.has(a.shopifyOrderId);
     // Unmatched: parse date from shopifyOrderId (format: unmatched_adId_YYYY-MM-DD_hour)

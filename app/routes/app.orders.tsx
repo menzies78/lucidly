@@ -9,6 +9,7 @@ import InteractiveTable from "../components/InteractiveTable";
 import { authenticate } from "../shopify.server";
 import db from "../db.server";
 import { parseDateRange } from "../utils/dateRange.server";
+import { shopLocalDayKey } from "../utils/shopTime.server";
 import { cached as queryCached } from "../services/queryCache.server";
 
 export const loader = async ({ request }) => {
@@ -19,13 +20,14 @@ export const loader = async ({ request }) => {
   const tagFilter = url.searchParams.get("tag") || "meta";
   const campaignFilter = url.searchParams.get("campaign") || "all";
 
-  const { fromDate, toDate } = parseDateRange(request);
-  const fromKey = fromDate.toISOString().split("T")[0];
-  const toKey = toDate.toISOString().split("T")[0];
+  const shop = await db.shop.findUnique({ where: { shopDomain } });
+  const tz = shop?.shopifyTimezone || "UTC";
+
+  const { fromDate, toDate, fromKey, toKey } = parseDateRange(request, tz);
   const { DEFAULT_TTL } = await import("../services/queryCache.server");
 
   // Date-scoped queries with caching
-  const [orders, customers, shop] = await Promise.all([
+  const [orders, customers] = await Promise.all([
     queryCached(`${shopDomain}:ordersExplorer:${fromKey}:${toKey}`, DEFAULT_TTL, () =>
       db.order.findMany({
         where: { shopDomain, createdAt: { gte: fromDate, lte: toDate } },
@@ -38,7 +40,6 @@ export const loader = async ({ request }) => {
         select: { shopifyCustomerId: true, firstOrderDate: true, metaSegment: true },
       }),
     ),
-    db.shop.findUnique({ where: { shopDomain } }),
   ]);
   // Only fetch attributions for orders in the date window (not all-time)
   const orderIdsInRange = orders.map(o => o.shopifyOrderId);
@@ -74,7 +75,7 @@ export const loader = async ({ request }) => {
   // Build Difference % lookup: group matched attributions by metaAdId+date
   const metaValueByAdDay = {};
   for (const ins of metaInsights) {
-    const key = `${ins.adId}_${ins.date.toISOString().split("T")[0]}`;
+    const key = `${ins.adId}_${shopLocalDayKey(tz, ins.date)}`;
     metaValueByAdDay[key] = (metaValueByAdDay[key] || 0) + ins.conversionValue;
   }
   const shopifyValueByAdDay = {};
@@ -83,7 +84,7 @@ export const loader = async ({ request }) => {
     if (attr.confidence === 0 || !attr.metaAdId) continue;
     const order = orderMap[attr.shopifyOrderId];
     if (!order) continue;
-    const orderDate = order.createdAt.toISOString().split("T")[0];
+    const orderDate = shopLocalDayKey(tz, order.createdAt);
     const key = `${attr.metaAdId}_${orderDate}`;
     shopifyValueByAdDay[key] = (shopifyValueByAdDay[key] || 0) + (order.frozenTotalPrice || 0);
     attrGroupKeys[attr.shopifyOrderId] = key;
@@ -145,8 +146,8 @@ export const loader = async ({ request }) => {
       const isMetaAcquired = metaAcquiredCustomers.has(custId);
       if (isMetaAcquired) {
         const custFirstDate = customer.firstOrderDate
-          ? customer.firstOrderDate.toISOString().split("T")[0] : "";
-        const orderDate = order.createdAt.toISOString().split("T")[0];
+          ? shopLocalDayKey(tz, customer.firstOrderDate) : "";
+        const orderDate = shopLocalDayKey(tz, order.createdAt);
         tag = custFirstDate === orderDate ? "Meta New" : "Meta Repeat";
       } else {
         tag = "Meta Retargeted";
@@ -164,7 +165,7 @@ export const loader = async ({ request }) => {
     const refunded = order.totalRefunded || 0;
 
     rows.push({
-      date: order.createdAt.toISOString().split("T")[0],
+      date: shopLocalDayKey(tz, order.createdAt),
       createdAtISO: order.createdAt.toISOString(),
       orderNumber: order.orderNumber || order.shopifyOrderId,
       country: order.country || "", city: order.city || "",
@@ -190,9 +191,8 @@ export const loader = async ({ request }) => {
     if (tagFilter !== "all" && tagFilter !== "meta" && tagFilter !== "Unattributed") continue;
     if (campaignFilter !== "all" && attr.metaCampaignName !== campaignFilter) continue;
     const parts = attr.shopifyOrderId.split("_");
-    const extractedDate = parts.length >= 3 ? parts[2] : attr.matchedAt.toISOString().split("T")[0];
-    const attrDate = new Date(extractedDate + "T00:00:00Z");
-    if (attrDate < fromDate || attrDate > toDate) continue;
+    const extractedDate = parts.length >= 3 ? parts[2] : shopLocalDayKey(tz, attr.matchedAt);
+    if (extractedDate < fromKey || extractedDate > toKey) continue;
     rows.push({
       date: extractedDate, createdAtISO: "",
       orderNumber: "", country: "", city: "",
@@ -224,8 +224,8 @@ export const loader = async ({ request }) => {
       const isMetaAcquired = metaAcquiredCustomers.has(custId);
       if (isMetaAcquired) {
         const custFirstDate = customer.firstOrderDate
-          ? customer.firstOrderDate.toISOString().split("T")[0] : "";
-        const orderDate = order.createdAt.toISOString().split("T")[0];
+          ? shopLocalDayKey(tz, customer.firstOrderDate) : "";
+        const orderDate = shopLocalDayKey(tz, order.createdAt);
         tag = custFirstDate === orderDate ? "Meta Unmatched New" : "Meta Unmatched Repeat";
       } else {
         tag = "Meta Unmatched Retargeted";
@@ -246,7 +246,7 @@ export const loader = async ({ request }) => {
     const refunded = order.totalRefunded || 0;
 
     rows.push({
-      date: order.createdAt.toISOString().split("T")[0],
+      date: shopLocalDayKey(tz, order.createdAt),
       createdAtISO: order.createdAt.toISOString(),
       orderNumber: order.orderNumber || order.shopifyOrderId,
       country: order.country || "", city: order.city || "",
@@ -277,8 +277,8 @@ export const loader = async ({ request }) => {
 
     if (custId && metaAcquiredCustomers.has(custId) && customer) {
       const custFirstDate = customer.firstOrderDate
-        ? customer.firstOrderDate.toISOString().split("T")[0] : "";
-      const orderDate = order.createdAt.toISOString().split("T")[0];
+        ? shopLocalDayKey(tz, customer.firstOrderDate) : "";
+      const orderDate = shopLocalDayKey(tz, order.createdAt);
       if (orderDate !== custFirstDate) {
         tag = "Meta Repeat";
       }
@@ -295,7 +295,7 @@ export const loader = async ({ request }) => {
     const refunded = order.totalRefunded || 0;
 
     rows.push({
-      date: order.createdAt.toISOString().split("T")[0],
+      date: shopLocalDayKey(tz, order.createdAt),
       createdAtISO: order.createdAt.toISOString(),
       orderNumber: order.orderNumber || order.shopifyOrderId,
       country: order.country || "", city: order.city || "",

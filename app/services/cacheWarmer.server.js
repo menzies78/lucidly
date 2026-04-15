@@ -16,50 +16,51 @@
 import db from "../db.server.js";
 import { cached as queryCached, DEFAULT_TTL } from "./queryCache.server.js";
 import { loadLtvSnapshot } from "./ltvSnapshot.server.js";
+import { shopLocalToday, shopLocalDayKey, shopRangeBounds } from "../utils/shopTime.server";
 
 const TTL = DEFAULT_TTL;
 
-// Compute the date ranges for every preset the date selector exposes.
-// Mirror of parseDateRange in app/utils/dateRange.server.ts.
-function computeRanges() {
-  const today = new Date();
-  today.setUTCHours(0, 0, 0, 0);
-  const yesterday = new Date(today);
-  yesterday.setUTCDate(yesterday.getUTCDate() - 1);
-  yesterday.setUTCHours(23, 59, 59, 999);
-
-  const ranges = [];
-  const dayBack = (n) => {
-    const to = new Date(yesterday);
-    const from = new Date(yesterday);
-    from.setUTCDate(from.getUTCDate() - n + 1);
-    from.setUTCHours(0, 0, 0, 0);
-    return { from, to };
+// Compute the date ranges for every preset the date selector exposes,
+// bucketed in the shop's local timezone so cache keys align with the keys
+// produced by parseDateRange(request, tz) in loaders.
+function computeRanges(tz) {
+  const todayKey = shopLocalToday(tz);
+  const addDaysKey = (key, delta) => {
+    const [y, m, d] = key.split("-").map(Number);
+    const anchor = new Date(Date.UTC(y, m - 1, d, 12, 0, 0, 0));
+    anchor.setUTCDate(anchor.getUTCDate() + delta);
+    return shopLocalDayKey(tz, anchor);
   };
+  const yesterdayKey = addDaysKey(todayKey, -1);
+  const toBounds = (fromKey, toKey) => {
+    const b = shopRangeBounds(tz, fromKey, toKey);
+    return { fromKey, toKey, from: b.gte, to: b.lte };
+  };
+  const dayBack = (n) => toBounds(addDaysKey(yesterdayKey, -(n - 1)), yesterdayKey);
 
-  ranges.push({ name: "last7", ...dayBack(7) });
-  ranges.push({ name: "last14", ...dayBack(14) });
-  ranges.push({ name: "last30", ...dayBack(30) });
-  ranges.push({ name: "last90", ...dayBack(90) });
-  ranges.push({ name: "last365", ...dayBack(365) });
+  const ranges = [
+    { name: "last7", ...dayBack(7) },
+    { name: "last14", ...dayBack(14) },
+    { name: "last30", ...dayBack(30) },
+    { name: "last90", ...dayBack(90) },
+    { name: "last365", ...dayBack(365) },
+  ];
 
-  // thisMonth: 1st of current month → yesterday
+  const [ty, tm] = todayKey.split("-").map(Number);
+  ranges.push({
+    name: "thisMonth",
+    ...toBounds(`${ty}-${String(tm).padStart(2, "0")}-01`, yesterdayKey),
+  });
   {
-    const from = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), 1));
-    ranges.push({ name: "thisMonth", from, to: new Date(yesterday) });
+    const prevAnchor = new Date(Date.UTC(ty, tm - 2, 1, 12, 0, 0, 0));
+    const prevY = prevAnchor.getUTCFullYear();
+    const prevM = prevAnchor.getUTCMonth() + 1;
+    const fromKey = `${prevY}-${String(prevM).padStart(2, "0")}-01`;
+    const lastDayAnchor = new Date(Date.UTC(ty, tm - 1, 0, 12, 0, 0, 0));
+    const toKey = shopLocalDayKey(tz, lastDayAnchor);
+    ranges.push({ name: "lastMonth", ...toBounds(fromKey, toKey) });
   }
-  // lastMonth: 1st of previous month → last day of previous month
-  {
-    const from = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth() - 1, 1));
-    const to = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), 0));
-    to.setUTCHours(23, 59, 59, 999);
-    ranges.push({ name: "lastMonth", from, to });
-  }
-  // thisYear: Jan 1 of current year → yesterday
-  {
-    const from = new Date(Date.UTC(today.getUTCFullYear(), 0, 1));
-    ranges.push({ name: "thisYear", from, to: new Date(yesterday) });
-  }
+  ranges.push({ name: "thisYear", ...toBounds(`${ty}-01-01`, yesterdayKey) });
 
   return ranges;
 }
@@ -161,7 +162,9 @@ function aggregateRollupAllLevels(rows) {
 
 async function warmShop(shopDomain) {
   const t0 = Date.now();
-  const ranges = computeRanges();
+  const shopRow = await db.shop.findUnique({ where: { shopDomain }, select: { shopifyTimezone: true } });
+  const tz = shopRow?.shopifyTimezone || "UTC";
+  const ranges = computeRanges(tz);
 
   // 1. Customer-level caches (no date key)
   const tasks = [];
@@ -205,14 +208,14 @@ async function warmShop(shopDomain) {
         const refundRate = totalRevenue > 0 ? Math.round((totalRefunded / totalRevenue) * 100) : 0;
         return {
           customerId: c.shopifyCustomerId, tag,
-          acquisitionDate: c.firstOrderDate?.toISOString().split("T")[0] || "",
+          acquisitionDate: c.firstOrderDate ? shopLocalDayKey(tz, c.firstOrderDate) : "",
           acquisitionCampaign: c.acquisitionCampaign || "",
           acquisitionAdSet: c.acquisitionAdSet || "",
           totalOrders: orderCount, metaOrders: c.metaOrders || 0,
           organicOrders: orderCount - (c.metaOrders || 0),
           grossRevenue: r2(totalRevenue), totalRefunded: r2(totalRefunded), netRevenue: r2(netRevenue),
           avgOrderValue, firstOrderValue: r2(firstOrderValue),
-          lastOrderDate: c.lastOrderDate?.toISOString().split("T")[0] || "",
+          lastOrderDate: c.lastOrderDate ? shopLocalDayKey(tz, c.lastOrderDate) : "",
           daysSinceLastOrder, daysSinceAcquisition, timeTo2ndOrder,
           country: c.country || "", city: c.city || "",
           ltvMultiplier, avgConfidence: c.avgConfidence,
@@ -271,17 +274,27 @@ async function warmShop(shopDomain) {
   // so the first user click finds it cached.
   tasks.push(() => queryCached(`${shopDomain}:ltvSnapshot`, TTL, () => loadLtvSnapshot(shopDomain)));
 
-  // 2. Per-range caches
-  for (const { from, to } of ranges) {
-    const fromKey = from.toISOString().split("T")[0];
-    const toKey = to.toISOString().split("T")[0];
+  const addDaysKey = (key, delta) => {
+    const [y, m, d] = key.split("-").map(Number);
+    const anchor = new Date(Date.UTC(y, m - 1, d, 12, 0, 0, 0));
+    anchor.setUTCDate(anchor.getUTCDate() + delta);
+    return shopLocalDayKey(tz, anchor);
+  };
+  const diffDays = (a, b) => {
+    const [ay, am, ad] = a.split("-").map(Number);
+    const [by, bm, bd] = b.split("-").map(Number);
+    return Math.round((Date.UTC(by, bm - 1, bd) - Date.UTC(ay, am - 1, ad)) / 86400000);
+  };
 
-    // Prev period (same size, immediately before)
-    const days = Math.round((to.getTime() - from.getTime()) / 86400000) + 1;
-    const prevTo = new Date(from); prevTo.setUTCDate(prevTo.getUTCDate() - 1); prevTo.setUTCHours(23, 59, 59, 999);
-    const prevFrom = new Date(prevTo); prevFrom.setUTCDate(prevFrom.getUTCDate() - days + 1); prevFrom.setUTCHours(0, 0, 0, 0);
-    const prevFromKey = prevFrom.toISOString().split("T")[0];
-    const prevToKey = prevTo.toISOString().split("T")[0];
+  // 2. Per-range caches
+  for (const { from, to, fromKey, toKey } of ranges) {
+    // Prev period (same size, immediately before) in shop-local time
+    const days = diffDays(fromKey, toKey) + 1;
+    const prevToKey = addDaysKey(fromKey, -1);
+    const prevFromKey = addDaysKey(prevToKey, -(days - 1));
+    const prevBounds = shopRangeBounds(tz, prevFromKey, prevToKey);
+    const prevFrom = prevBounds.gte;
+    const prevTo = prevBounds.lte;
 
     // customers: age + gender breakdowns
     tasks.push(() => queryCached(`${shopDomain}:mbAge:${fromKey}:${toKey}`, TTL, () =>
@@ -345,8 +358,8 @@ async function warmShop(shopDomain) {
     // windowStart = prevFrom (earlier of the two), windowEnd = to (later of the two).
     const windowStart = prevFrom < from ? prevFrom : from;
     const windowEnd = to > prevTo ? to : prevTo;
-    const windowStartKey = windowStart.toISOString().split("T")[0];
-    const windowEndKey = windowEnd.toISOString().split("T")[0];
+    const windowStartKey = prevFromKey < fromKey ? prevFromKey : fromKey;
+    const windowEndKey = toKey > prevToKey ? toKey : prevToKey;
     // Sequential sub-task: orders first, then attributions using the fetched order IDs.
     // Wrapped so the outer Promise.allSettled still handles failure isolation.
     tasks.push(async () => {

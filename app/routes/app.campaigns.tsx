@@ -16,6 +16,7 @@ import { type ColumnDef } from "@tanstack/react-table";
 import { authenticate } from "../shopify.server";
 import db from "../db.server";
 import { parseDateRange } from "../utils/dateRange.server";
+import { shopLocalDayKey, shopRangeBounds } from "../utils/shopTime.server";
 import { getCachedInsights, computeDataHash, generateInsights } from "../services/aiAnalysis.server";
 import { setProgress, failProgress, completeProgress } from "../services/progress.server";
 import { cached as queryCached, DEFAULT_TTL } from "../services/queryCache.server";
@@ -311,26 +312,43 @@ export const loader = async ({ request }) => {
   const url = new URL(request.url);
   const breakdown = url.searchParams.get("breakdown") || "none";
 
-  const { fromDate, toDate, compareFrom, compareTo, hasComparison, compareLabel } = parseDateRange(request);
+  // Load shop first so we can do every date-bucket decision in its timezone.
+  const shop = await db.shop.findUnique({ where: { shopDomain } });
+  const tz = shop?.shopifyTimezone || "UTC";
+
+  const { fromDate, toDate, fromKey, toKey, compareFrom, compareTo, compareFromKey, compareToKey, hasComparison, compareLabel } = parseDateRange(request, tz);
 
   const _t0 = Date.now();
 
-  // Pre-compute the previous period here so we can scope DB queries to the
-  // union of current + previous (+ optional comparison) windows in a single
-  // pull, instead of loading all-time orders and filtering in JS.
-  const _dayCount = Math.round((toDate.getTime() - fromDate.getTime()) / 86400000) + 1;
-  const _prevTo = new Date(fromDate);
-  _prevTo.setUTCDate(_prevTo.getUTCDate() - 1);
-  _prevTo.setUTCHours(23, 59, 59, 999);
-  const _prevFrom = new Date(_prevTo);
-  _prevFrom.setUTCDate(_prevFrom.getUTCDate() - _dayCount + 1);
-  _prevFrom.setUTCHours(0, 0, 0, 0);
+  // Day arithmetic on shop-local day keys. Storage stays UTC;
+  // bounds are derived from shop-local keys via shopRangeBounds.
+  const addDaysKey = (key: string, delta: number): string => {
+    const [y, m, d] = key.split("-").map(Number);
+    const anchor = new Date(Date.UTC(y, m - 1, d, 12, 0, 0, 0));
+    anchor.setUTCDate(anchor.getUTCDate() + delta);
+    return shopLocalDayKey(tz, anchor);
+  };
+  const diffDays = (a: string, b: string): number => {
+    const [ay, am, ad] = a.split("-").map(Number);
+    const [by, bm, bd] = b.split("-").map(Number);
+    return Math.round((Date.UTC(by, bm - 1, bd) - Date.UTC(ay, am - 1, ad)) / 86400000);
+  };
+  const _dayCount = diffDays(fromKey, toKey) + 1;
+  const _prevToKey = addDaysKey(fromKey, -1);
+  const _prevFromKey = addDaysKey(_prevToKey, -(_dayCount - 1));
+  const _prevBounds = shopRangeBounds(tz, _prevFromKey, _prevToKey);
+  const _prevFrom = _prevBounds.gte;
+  const _prevTo = _prevBounds.lte;
 
   let windowStart = _prevFrom < fromDate ? _prevFrom : fromDate;
   let windowEnd = toDate > _prevTo ? toDate : _prevTo;
-  if (hasComparison && compareFrom && compareTo) {
+  let windowStartKey = _prevFromKey < fromKey ? _prevFromKey : fromKey;
+  let windowEndKey = toKey > _prevToKey ? toKey : _prevToKey;
+  if (hasComparison && compareFrom && compareTo && compareFromKey && compareToKey) {
     if (compareFrom < windowStart) windowStart = compareFrom;
     if (compareTo > windowEnd) windowEnd = compareTo;
+    if (compareFromKey < windowStartKey) windowStartKey = compareFromKey;
+    if (compareToKey > windowEndKey) windowEndKey = compareToKey;
   }
 
   // Use DailyAdRollup which has all the same fields (renamed conversions→metaConversions)
@@ -357,25 +375,14 @@ export const loader = async ({ request }) => {
   // - Attributions: confident ones for window orders, plus all placeholders
   //   (placeholders are a small set)
   // - LTV snapshot: cached, runs at most once per 5 min per shop
-  // Pre-compute previous period (used for rollup fetch + downstream comparison).
-  const _dayCountRP = Math.round((toDate.getTime() - fromDate.getTime()) / 86400000) + 1;
-  const _prevToRP = new Date(fromDate);
-  _prevToRP.setUTCDate(_prevToRP.getUTCDate() - 1);
-  _prevToRP.setUTCHours(23, 59, 59, 999);
-  const _prevFromRP = new Date(_prevToRP);
-  _prevFromRP.setUTCDate(_prevFromRP.getUTCDate() - _dayCountRP + 1);
-  _prevFromRP.setUTCHours(0, 0, 0, 0);
-
-  // Cache all major queries by date range. TTL 5 min, invalidated on sync.
-  const fromKey = fromDate.toISOString().split("T")[0];
-  const toKey = toDate.toISOString().split("T")[0];
-  const prevFromKey = _prevFromRP.toISOString().split("T")[0];
-  const prevToKey = _prevToRP.toISOString().split("T")[0];
-  const compareKey = (hasComparison && compareFrom && compareTo)
-    ? `${compareFrom.toISOString().split("T")[0]}:${compareTo.toISOString().split("T")[0]}`
+  // Prev-period DB-fetch window (alias the earlier computation).
+  const _prevFromRP = _prevFrom;
+  const _prevToRP = _prevTo;
+  const prevFromKey = _prevFromKey;
+  const prevToKey = _prevToKey;
+  const compareKey = (hasComparison && compareFromKey && compareToKey)
+    ? `${compareFromKey}:${compareToKey}`
     : "none";
-  const windowStartKey = windowStart.toISOString().split("T")[0];
-  const windowEndKey = windowEnd.toISOString().split("T")[0];
 
   // Loader helpers — fetch rollup then pre-aggregate at all 3 levels in a single pass.
   // The output (thousands of aggregated rows) is much smaller than the raw 31k+ rollup rows,
@@ -393,8 +400,7 @@ export const loader = async ({ request }) => {
     return r;
   };
 
-  const [shop, currentAggRaw, prevAggRaw, compareAggRaw, metaEntities, ltvSnapshot, dailyChart, windowOrdersRaw] = await Promise.all([
-    time("shop", db.shop.findUnique({ where: { shopDomain } })),
+  const [currentAggRaw, prevAggRaw, compareAggRaw, metaEntities, ltvSnapshot, dailyChart, windowOrdersRaw] = await Promise.all([
     time("campAgg", queryCached(`${shopDomain}:campAgg:${fromKey}:${toKey}`, DEFAULT_TTL, fetchAndAggregate(fromDate, toDate))),
     time("campAggPrev", queryCached(`${shopDomain}:campAgg:${prevFromKey}:${prevToKey}`, DEFAULT_TTL, fetchAndAggregate(_prevFromRP, _prevToRP))),
     (hasComparison && compareFrom && compareTo)
@@ -464,13 +470,11 @@ export const loader = async ({ request }) => {
 
   const ordersInRange = allOrders.filter(o => o.createdAt >= fromDate && o.createdAt <= toDate);
   const orderIdsInRange = new Set(ordersInRange.map(o => o.shopifyOrderId));
-  const fromStr = fromDate.toISOString().split("T")[0];
-  const toStr = toDate.toISOString().split("T")[0];
   const attrsInRange = attributions.filter(a => {
     if (a.confidence > 0) return orderIdsInRange.has(a.shopifyOrderId);
     const match = a.shopifyOrderId.match(/(\d{4}-\d{2}-\d{2})/);
     if (!match) return false;
-    return match[1] >= fromStr && match[1] <= toStr;
+    return match[1] >= fromKey && match[1] <= toKey;
   });
 
   // Total store revenue in reporting period (all orders, not just Meta-attributed)
@@ -548,18 +552,14 @@ export const loader = async ({ request }) => {
   const adRows = addAdAge(computeRows(currentAgg.ad), "ad");
 
   // ── Comparison + Previous period queries (run in parallel) ──
-  const dayCount = Math.round((toDate.getTime() - fromDate.getTime()) / 86400000) + 1;
-  const prevTo = new Date(fromDate);
-  prevTo.setUTCDate(prevTo.getUTCDate() - 1);
-  prevTo.setUTCHours(23, 59, 59, 999);
-  const prevFrom = new Date(prevTo);
-  prevFrom.setUTCDate(prevFrom.getUTCDate() - dayCount + 1);
-  prevFrom.setUTCHours(0, 0, 0, 0);
+  // Re-use the shop-tz previous-period bounds we already computed at the top of the loader.
+  const prevFrom = _prevFromRP;
+  const prevTo = _prevToRP;
 
   // prevInsights: only used for daily chart (spend/impressions per day). groupBy = days-in-window rows.
   // compInsightsResult: kept for future use but returned as null (was unused in loader output).
   const prevInsights = await queryCached(
-    `${shopDomain}:campPrevDailyChart:${prevFrom.toISOString().split("T")[0]}:${prevTo.toISOString().split("T")[0]}`,
+    `${shopDomain}:campPrevDailyChart:${prevFromKey}:${prevToKey}`,
     DEFAULT_TTL,
     () => db.dailyAdRollup.groupBy({
       by: ["date"],
@@ -575,13 +575,11 @@ export const loader = async ({ request }) => {
     const compInsights = compInsightsResult;
     const compOrdersInRange = allOrders.filter(o => o.createdAt >= compareFrom && o.createdAt <= compareTo);
     const compOrderIds = new Set(compOrdersInRange.map(o => o.shopifyOrderId));
-    const compFromStr = compareFrom.toISOString().split("T")[0];
-    const compToStr = compareTo.toISOString().split("T")[0];
     const compAttrs = attributions.filter(a => {
       if (a.confidence > 0) return compOrderIds.has(a.shopifyOrderId);
       const match = a.shopifyOrderId.match(/(\d{4}-\d{2}-\d{2})/);
       if (!match) return false;
-      return match[1] >= compFromStr && match[1] <= compToStr;
+      return !!(compareFromKey && compareToKey && match[1] >= compareFromKey && match[1] <= compareToKey);
     });
     const compAggregated = compareAgg?.campaign || {};
     const compRows = computeRows(compAggregated);
@@ -591,13 +589,11 @@ export const loader = async ({ request }) => {
   // ── Previous period (auto-computed for Performance Shift) ──
   const prevOrdersInRange = allOrders.filter(o => o.createdAt >= prevFrom && o.createdAt <= prevTo);
   const prevOrderIds = new Set(prevOrdersInRange.map(o => o.shopifyOrderId));
-  const prevFromStr = prevFrom.toISOString().split("T")[0];
-  const prevToStr = prevTo.toISOString().split("T")[0];
   const prevAttrs = attributions.filter(a => {
     if (a.confidence > 0) return prevOrderIds.has(a.shopifyOrderId);
     const match = a.shopifyOrderId.match(/(\d{4}-\d{2}-\d{2})/);
     if (!match) return false;
-    return match[1] >= prevFromStr && match[1] <= prevToStr;
+    return match[1] >= prevFromKey && match[1] <= prevToKey;
   });
   // prevAgg is cached (same pattern as currentAgg) — just compute rows on the small aggregated output.
   const prevCampaignRows = computeRows(prevAgg.campaign);
@@ -675,7 +671,7 @@ export const loader = async ({ request }) => {
             : bdLevel === "adset" ? bd.adSetId
             : bd.adId;
           if (!entityId) continue;
-          const lookupKey = `${entityId}||${bd.date.toISOString().split("T")[0]}`;
+          const lookupKey = `${entityId}||${shopLocalDayKey(tz, bd.date)}`;
           if (!bdLookup[lookupKey]) bdLookup[lookupKey] = [];
           bdLookup[lookupKey].push({
             breakdownValue: bd.breakdownValue,
@@ -705,7 +701,7 @@ export const loader = async ({ request }) => {
             : attr.metaAdId;
           const order = orderMap[attr.shopifyOrderId];
           if (!order || !entityId) continue;
-          const dateStr = order.createdAt.toISOString().split("T")[0];
+          const dateStr = shopLocalDayKey(tz, order.createdAt);
           const weights = getWeights(entityId, dateStr);
           if (!weights) continue;
 
@@ -797,13 +793,17 @@ export const loader = async ({ request }) => {
   // Pre-populate with every day in range so charts always show all days
   const emptyDay = (date: string) => ({ date, spend: 0, impressions: 0, attributedRevenue: 0, unverifiedRevenue: 0, newCustomerOrders: 0, newCustomerRevenue: 0, attributedOrders: 0 });
   const dailyMap: Record<string, any> = {};
-  for (let d = new Date(fromDate); d <= toDate; d.setUTCDate(d.getUTCDate() + 1)) {
-    const key = d.toISOString().split("T")[0];
-    dailyMap[key] = emptyDay(key);
+  {
+    // Iterate shop-local day keys fromKey..toKey inclusive.
+    let key = fromKey;
+    while (key <= toKey) {
+      dailyMap[key] = emptyDay(key);
+      key = addDaysKey(key, 1);
+    }
   }
   // insights is now a groupBy result: { date, _sum: { spend, impressions } }
   for (const ins of insights as any[]) {
-    const day = ins.date.toISOString().split("T")[0];
+    const day = shopLocalDayKey(tz, ins.date);
     if (!dailyMap[day]) dailyMap[day] = { date: day, spend: 0, impressions: 0, attributedRevenue: 0, unverifiedRevenue: 0, newCustomerOrders: 0, newCustomerRevenue: 0, attributedOrders: 0 };
     dailyMap[day].spend += (ins._sum?.spend || 0);
     dailyMap[day].impressions += (ins._sum?.impressions || 0);
@@ -811,13 +811,13 @@ export const loader = async ({ request }) => {
   // Build order lookup by date
   const ordersByDate = {};
   for (const o of ordersInRange) {
-    ordersByDate[o.shopifyOrderId] = o.createdAt.toISOString().split("T")[0];
+    ordersByDate[o.shopifyOrderId] = shopLocalDayKey(tz, o.createdAt);
   }
   for (const attr of attrsInRange) {
     if (attr.confidence > 0) {
       const order = orderMap[attr.shopifyOrderId];
       if (!order) continue;
-      const day = order.createdAt.toISOString().split("T")[0];
+      const day = shopLocalDayKey(tz, order.createdAt);
       if (!dailyMap[day]) dailyMap[day] = { date: day, spend: 0, impressions: 0, attributedRevenue: 0, unverifiedRevenue: 0, newCustomerOrders: 0, newCustomerRevenue: 0, attributedOrders: 0 };
       const rev = order.frozenTotalPrice || 0;
       dailyMap[day].attributedRevenue += rev;
@@ -844,12 +844,15 @@ export const loader = async ({ request }) => {
 
   // ── Previous period daily data for chart overlay ──
   const prevDailyMap: Record<string, any> = {};
-  for (let d = new Date(prevFrom); d <= prevTo; d.setUTCDate(d.getUTCDate() + 1)) {
-    const key = d.toISOString().split("T")[0];
-    prevDailyMap[key] = emptyDay(key);
+  {
+    let key = prevFromKey;
+    while (key <= prevToKey) {
+      prevDailyMap[key] = emptyDay(key);
+      key = addDaysKey(key, 1);
+    }
   }
   for (const ins of prevInsights as any[]) {
-    const day = ins.date.toISOString().split("T")[0];
+    const day = shopLocalDayKey(tz, ins.date);
     if (!prevDailyMap[day]) prevDailyMap[day] = { date: day, spend: 0, impressions: 0, attributedRevenue: 0, unverifiedRevenue: 0, newCustomerOrders: 0, newCustomerRevenue: 0, attributedOrders: 0 };
     prevDailyMap[day].spend += (ins._sum?.spend || 0);
     prevDailyMap[day].impressions += (ins._sum?.impressions || 0);
@@ -858,7 +861,7 @@ export const loader = async ({ request }) => {
     if (attr.confidence > 0) {
       const order = orderMap[attr.shopifyOrderId];
       if (!order) continue;
-      const day = order.createdAt.toISOString().split("T")[0];
+      const day = shopLocalDayKey(tz, order.createdAt);
       if (!prevDailyMap[day]) prevDailyMap[day] = { date: day, spend: 0, impressions: 0, attributedRevenue: 0, unverifiedRevenue: 0, newCustomerOrders: 0, newCustomerRevenue: 0, attributedOrders: 0 };
       const rev = order.frozenTotalPrice || 0;
       prevDailyMap[day].attributedRevenue += rev;
@@ -1006,8 +1009,8 @@ export const loader = async ({ request }) => {
   const placementPerf = enrichBreakdownWithNewCustomers(placementPerfRaw, placementNewCustMaps);
 
   // ── AI Insights cache ──
-  const dateFromStr = fromDate.toISOString().split("T")[0];
-  const dateToStr = toDate.toISOString().split("T")[0];
+  const dateFromStr = fromKey;
+  const dateToStr = toKey;
   const cached = await getCachedInsights(shopDomain, "campaigns", dateFromStr, dateToStr);
   const currentHash = computeDataHash({ campaignRows, dailyData, totalStoreRevenue, platformPerf, placementPerf, compareTotals });
   const aiCachedInsights = cached?.insights || null;
@@ -1046,11 +1049,9 @@ export const action = async ({ request }) => {
     // Fire and forget — build data and generate in background
     (async () => {
       try {
-        const { fromDate, toDate } = parseDateRange(request);
-        const dateFromStr = fromDate.toISOString().split("T")[0];
-        const dateToStr = toDate.toISOString().split("T")[0];
-
         const shop = await db.shop.findUnique({ where: { shopDomain } });
+        const tz = shop?.shopifyTimezone || "UTC";
+        const { fromDate, toDate, fromKey: dateFromStr, toKey: dateToStr } = parseDateRange(request, tz);
         const cs = (shop?.shopifyCurrency || "GBP") === "GBP" ? "£"
           : (shop?.shopifyCurrency || "GBP") === "EUR" ? "€" : "$";
 

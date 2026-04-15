@@ -1,102 +1,111 @@
-// Server-side date range parser — used by all report loaders
+// Server-side date range parser — used by all report loaders.
+//
+// All day boundaries are computed in the shop's timezone (falls back to
+// UTC if the shop has no timezone set). The returned `fromDate` / `toDate`
+// are real UTC instants (start of shop-local fromKey / end of shop-local
+// toKey) and can be fed directly into Prisma `gte` / `lte` filters.
+//
+// `fromKey` / `toKey` are the shop-local YYYY-MM-DD strings — handy for
+// keys in in-memory maps.
+
+import {
+  shopLocalDayKey,
+  shopLocalToday,
+  shopLocalWeekMonday,
+  shopRangeBounds,
+} from "./shopTime.server";
 
 export interface DateRange {
   fromDate: Date;
   toDate: Date;
+  fromKey: string;
+  toKey: string;
   compareFrom: Date | null;
   compareTo: Date | null;
+  compareFromKey: string | null;
+  compareToKey: string | null;
   hasComparison: boolean;
   compareLabel: string;
+  timeZone: string;
 }
 
-function startOfDay(d: Date): Date {
-  const copy = new Date(d);
-  copy.setUTCHours(0, 0, 0, 0);
-  return copy;
+type Tz = string | null | undefined;
+
+function addDaysKey(tz: Tz, key: string, delta: number): string {
+  // Do arithmetic on a shop-local noon anchor so DST can't flip the result.
+  const [y, m, d] = key.split("-").map(Number);
+  const anchor = new Date(Date.UTC(y, m - 1, d, 12, 0, 0, 0));
+  anchor.setUTCDate(anchor.getUTCDate() + delta);
+  return shopLocalDayKey(tz, anchor);
 }
 
-function endOfDay(d: Date): Date {
-  const copy = new Date(d);
-  copy.setUTCHours(23, 59, 59, 999);
-  return copy;
-}
+function computePresetRange(
+  preset: string,
+  todayKey: string,
+  tz: Tz,
+): { fromKey: string; toKey: string } {
+  const yesterdayKey = addDaysKey(tz, todayKey, -1);
 
-function computePresetRange(preset: string, today: Date): { from: Date; to: Date } {
-  // "today" preset includes today; all others end at yesterday
-  const yesterday = new Date(today);
-  yesterday.setUTCDate(today.getUTCDate() - 1);
-
-  if (preset === "today") {
-    return { from: new Date(today), to: new Date(today) };
-  }
-
-  if (preset === "yesterday") {
-    return { from: new Date(yesterday), to: new Date(yesterday) };
-  }
-
-  const to = new Date(yesterday);
-  const from = new Date(yesterday);
+  if (preset === "today") return { fromKey: todayKey, toKey: todayKey };
+  if (preset === "yesterday") return { fromKey: yesterdayKey, toKey: yesterdayKey };
 
   switch (preset) {
     case "last7":
-      from.setUTCDate(to.getUTCDate() - 6);
-      break;
+      return { fromKey: addDaysKey(tz, yesterdayKey, -6), toKey: yesterdayKey };
     case "last14":
-      from.setUTCDate(to.getUTCDate() - 13);
-      break;
+      return { fromKey: addDaysKey(tz, yesterdayKey, -13), toKey: yesterdayKey };
     case "last30":
-      from.setUTCDate(to.getUTCDate() - 29);
-      break;
+      return { fromKey: addDaysKey(tz, yesterdayKey, -29), toKey: yesterdayKey };
     case "last90":
-      from.setUTCDate(to.getUTCDate() - 89);
-      break;
+      return { fromKey: addDaysKey(tz, yesterdayKey, -89), toKey: yesterdayKey };
     case "last365":
-      from.setUTCDate(to.getUTCDate() - 364);
-      break;
+      return { fromKey: addDaysKey(tz, yesterdayKey, -364), toKey: yesterdayKey };
     case "thisWeek": {
-      const dow = yesterday.getUTCDay();
-      const mondayOffset = dow === 0 ? 6 : dow - 1;
-      from.setUTCDate(yesterday.getUTCDate() - mondayOffset);
-      break;
+      const monday = shopLocalWeekMonday(tz, yesterdayKey);
+      return { fromKey: monday, toKey: yesterdayKey };
     }
     case "lastWeek": {
-      const dow2 = yesterday.getUTCDay();
-      const mondayOffset2 = dow2 === 0 ? 6 : dow2 - 1;
-      const thisMonday = new Date(yesterday);
-      thisMonday.setUTCDate(yesterday.getUTCDate() - mondayOffset2);
-      const lastMonday = new Date(thisMonday);
-      lastMonday.setUTCDate(thisMonday.getUTCDate() - 7);
-      const lastSunday = new Date(thisMonday);
-      lastSunday.setUTCDate(thisMonday.getUTCDate() - 1);
-      return { from: lastMonday, to: lastSunday };
+      const thisMonday = shopLocalWeekMonday(tz, yesterdayKey);
+      const lastMonday = addDaysKey(tz, thisMonday, -7);
+      const lastSunday = addDaysKey(tz, thisMonday, -1);
+      return { fromKey: lastMonday, toKey: lastSunday };
     }
-    case "thisMonth":
-      from.setUTCFullYear(today.getUTCFullYear(), today.getUTCMonth(), 1);
-      break;
+    case "thisMonth": {
+      const [y, m] = todayKey.split("-").map(Number);
+      return { fromKey: `${y}-${String(m).padStart(2, "0")}-01`, toKey: yesterdayKey };
+    }
     case "lastMonth": {
-      const lastMonth = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth() - 1, 1));
-      const lastDay = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), 0));
-      return { from: lastMonth, to: lastDay };
+      const [y, m] = todayKey.split("-").map(Number);
+      const prevMonthAnchor = new Date(Date.UTC(y, m - 2, 1, 12, 0, 0, 0));
+      const prevY = prevMonthAnchor.getUTCFullYear();
+      const prevM = prevMonthAnchor.getUTCMonth() + 1;
+      const fromKey = `${prevY}-${String(prevM).padStart(2, "0")}-01`;
+      // Last day of prev month = day 0 of this month
+      const lastDayAnchor = new Date(Date.UTC(y, m - 1, 0, 12, 0, 0, 0));
+      const toKey = shopLocalDayKey(tz, lastDayAnchor);
+      return { fromKey, toKey };
     }
-    case "thisYear":
-      from.setUTCFullYear(today.getUTCFullYear(), 0, 1);
-      break;
+    case "thisYear": {
+      const [y] = todayKey.split("-").map(Number);
+      return { fromKey: `${y}-01-01`, toKey: yesterdayKey };
+    }
     case "lastYear": {
-      const yearStart = new Date(Date.UTC(today.getUTCFullYear() - 1, 0, 1));
-      const yearEnd = new Date(Date.UTC(today.getUTCFullYear() - 1, 11, 31));
-      return { from: yearStart, to: yearEnd };
+      const [y] = todayKey.split("-").map(Number);
+      return { fromKey: `${y - 1}-01-01`, toKey: `${y - 1}-12-31` };
     }
     case "all":
-      from.setUTCFullYear(2020, 0, 1);
-      break;
+      return { fromKey: "2020-01-01", toKey: yesterdayKey };
     default:
-      from.setUTCDate(to.getUTCDate() - 29);
+      return { fromKey: addDaysKey(tz, yesterdayKey, -29), toKey: yesterdayKey };
   }
-
-  return { from, to };
 }
 
-function parseCookieDateRange(request: Request): { from: string | null; to: string | null; preset: string; compare: string } {
+function parseCookieDateRange(request: Request): {
+  from: string | null;
+  to: string | null;
+  preset: string;
+  compare: string;
+} {
   const cookieHeader = request.headers.get("Cookie") || "";
   const match = cookieHeader.match(/lucidly_date=([^;]+)/);
   if (!match) return { from: null, to: null, preset: "", compare: "none" };
@@ -113,18 +122,19 @@ function parseCookieDateRange(request: Request): { from: string | null; to: stri
   }
 }
 
-export function parseDateRange(request: Request): DateRange {
+export function parseDateRange(request: Request, tz: Tz = "UTC"): DateRange {
   const url = new URL(request.url);
   let fromParam = url.searchParams.get("from");
   let toParam = url.searchParams.get("to");
   let preset = url.searchParams.get("preset") || "";
   let compare = url.searchParams.get("compare") || "none";
 
-  // Fall back to cookie if no URL params
   if (!fromParam && !toParam && !preset) {
     const cookie = parseCookieDateRange(request);
     if (cookie.from || cookie.preset) {
-      console.log(`[DateRange] Restored from cookie: from=${cookie.from} to=${cookie.to} preset=${cookie.preset}`);
+      console.log(
+        `[DateRange] Restored from cookie: from=${cookie.from} to=${cookie.to} preset=${cookie.preset}`,
+      );
     }
     fromParam = cookie.from;
     toParam = cookie.to;
@@ -132,59 +142,72 @@ export function parseDateRange(request: Request): DateRange {
     compare = cookie.compare;
   }
 
-  const today = new Date();
-  today.setUTCHours(0, 0, 0, 0);
+  const todayKey = shopLocalToday(tz);
 
-  let fromDate: Date;
-  let toDate: Date;
+  let fromKey: string;
+  let toKey: string;
 
   if (preset) {
-    // Preset always recomputes fresh dates (e.g. "today" must reflect actual today)
-    const range = computePresetRange(preset, today);
-    fromDate = range.from;
-    toDate = range.to;
+    const range = computePresetRange(preset, todayKey, tz);
+    fromKey = range.fromKey;
+    toKey = range.toKey;
   } else if (fromParam && toParam) {
-    fromDate = new Date(fromParam + "T00:00:00Z");
-    toDate = new Date(toParam + "T00:00:00Z");
+    fromKey = fromParam;
+    toKey = toParam;
   } else {
-    // Default: last 30 days ending yesterday
-    const yesterday = new Date(today);
-    yesterday.setUTCDate(today.getUTCDate() - 1);
-    toDate = new Date(yesterday);
-    fromDate = new Date(yesterday);
-    fromDate.setUTCDate(yesterday.getUTCDate() - 29);
+    const yesterdayKey = addDaysKey(tz, todayKey, -1);
+    fromKey = addDaysKey(tz, yesterdayKey, -29);
+    toKey = yesterdayKey;
   }
 
-  fromDate = startOfDay(fromDate);
-  toDate = endOfDay(toDate);
+  const { gte: fromDate, lte: toDate } = shopRangeBounds(tz, fromKey, toKey);
 
   let compareFrom: Date | null = null;
   let compareTo: Date | null = null;
+  let compareFromKey: string | null = null;
+  let compareToKey: string | null = null;
   let compareLabel = "";
 
   if (compare === "previous") {
-    const rangeMs = toDate.getTime() - fromDate.getTime();
-    compareTo = new Date(fromDate.getTime() - 1);
-    compareFrom = new Date(compareTo.getTime() - rangeMs);
-    compareFrom = startOfDay(compareFrom);
-    compareTo = endOfDay(compareTo);
+    // Inclusive span length in shop-local days.
+    const spanDays =
+      Math.round(
+        (Date.UTC(
+          ...(toKey.split("-").map(Number) as [number, number, number]),
+        ) -
+          Date.UTC(
+            ...(fromKey.split("-").map(Number) as [number, number, number]),
+          )) /
+          86400000,
+      ) + 1;
+    compareToKey = addDaysKey(tz, fromKey, -1);
+    compareFromKey = addDaysKey(tz, compareToKey, -(spanDays - 1));
+    const b = shopRangeBounds(tz, compareFromKey, compareToKey);
+    compareFrom = b.gte;
+    compareTo = b.lte;
     compareLabel = "vs previous period";
   } else if (compare === "yoy") {
-    compareFrom = new Date(fromDate);
-    compareFrom.setUTCFullYear(compareFrom.getUTCFullYear() - 1);
-    compareTo = new Date(toDate);
-    compareTo.setUTCFullYear(compareTo.getUTCFullYear() - 1);
-    compareFrom = startOfDay(compareFrom);
-    compareTo = endOfDay(compareTo);
+    const [fy, fm, fd] = fromKey.split("-").map(Number);
+    const [ty, tm, td] = toKey.split("-").map(Number);
+    compareFromKey = `${fy - 1}-${String(fm).padStart(2, "0")}-${String(fd).padStart(2, "0")}`;
+    compareToKey = `${ty - 1}-${String(tm).padStart(2, "0")}-${String(td).padStart(2, "0")}`;
+    const b = shopRangeBounds(tz, compareFromKey, compareToKey);
+    compareFrom = b.gte;
+    compareTo = b.lte;
     compareLabel = "vs same period last year";
   }
 
   return {
     fromDate,
     toDate,
+    fromKey,
+    toKey,
     compareFrom,
     compareTo,
+    compareFromKey,
+    compareToKey,
     hasComparison: compare !== "none",
     compareLabel,
+    timeZone: tz || "UTC",
   };
 }

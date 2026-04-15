@@ -24,6 +24,7 @@
  */
 
 import db from "../db.server.js";
+import { shopLocalDayKey } from "../utils/shopTime.server";
 
 const DAY_MS = 86400000;
 const MONTH_MS = 30 * DAY_MS;
@@ -46,6 +47,9 @@ function r2(v) { return Math.round(v * 100) / 100; }
 export async function rebuildCustomerSegments(shopDomain) {
   const t0 = Date.now();
   console.log(`[customerRollups] rebuilding segments for ${shopDomain}…`);
+
+  const shopRow = await db.shop.findUnique({ where: { shopDomain }, select: { shopifyTimezone: true } });
+  const tz = shopRow?.shopifyTimezone || "UTC";
 
   // ── Single data load ──
   const [orders, attributions, customers] = await Promise.all([
@@ -85,11 +89,11 @@ export async function rebuildCustomerSegments(shopDomain) {
   }
   const metaAttributedOrderIds = new Set([...matchedOrderIds, ...utmConfirmedOrderIds]);
 
-  // Customer first-order-date map
+  // Customer first-order-date map (shop-local YYYY-MM-DD keys)
   const customerFirstOrderMap = new Map();
   for (const c of customers) {
     if (c.firstOrderDate) {
-      customerFirstOrderMap.set(c.shopifyCustomerId, c.firstOrderDate.toISOString().split("T")[0]);
+      customerFirstOrderMap.set(c.shopifyCustomerId, shopLocalDayKey(tz, c.firstOrderDate));
     }
   }
 
@@ -116,7 +120,7 @@ export async function rebuildCustomerSegments(shopDomain) {
     if (!firstDateStr) continue;
     const custOrders = ordersByCustomer.get(custId);
     for (const o of custOrders) {
-      if (o.createdAt.toISOString().split("T")[0] !== firstDateStr) break;
+      if (shopLocalDayKey(tz, o.createdAt) !== firstDateStr) break;
       // Ground truth: Shopify's customerOrderCountAtPurchase tells us if this
       // is genuinely the customer's first-ever order (not just first in our DB)
       const isGenuinelyNew = o.customerOrderCountAtPurchase === 1;
@@ -334,8 +338,8 @@ export async function rebuildCustomerSegments(shopDomain) {
       }
     }
 
-    // Monthly cohort
-    const acqMonth = firstOrder.createdAt.toISOString().slice(0, 7);
+    // Monthly cohort (shop-local)
+    const acqMonth = shopLocalDayKey(tz, firstOrder.createdAt).slice(0, 7);
     const initRow = () => {
       const months = {};
       for (let m = 0; m < MAX_COHORT_MONTHS; m++) {
@@ -626,6 +630,9 @@ export async function rebuildCustomerRollups(shopDomain) {
   const t0 = Date.now();
   console.log(`[customerRollups] rebuilding daily rollups for ${shopDomain}…`);
 
+  const shopRow = await db.shop.findUnique({ where: { shopDomain }, select: { shopifyTimezone: true } });
+  const tz = shopRow?.shopifyTimezone || "UTC";
+
   const [orders, customers] = await Promise.all([
     db.order.findMany({
       where: { shopDomain, isOnlineStore: true },
@@ -668,7 +675,7 @@ export async function rebuildCustomerRollups(shopDomain) {
     if (!custId) continue;
 
     const custSegment = segmentMap.get(custId) || "organic";
-    const dateStr = order.createdAt.toISOString().split("T")[0];
+    const dateStr = shopLocalDayKey(tz, order.createdAt);
     const isFirstPurchase = order.customerOrderCountAtPurchase === 1;
     const revenue = order.frozenTotalPrice || 0;
     const refunded = order.totalRefunded || 0;

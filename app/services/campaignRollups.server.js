@@ -1,4 +1,5 @@
 import db from "../db.server.js";
+import { shopLocalDayKey } from "../utils/shopTime.server";
 
 /**
  * Rebuild DailyAdRollup rows for a shop.
@@ -20,6 +21,9 @@ import db from "../db.server.js";
  */
 export async function rebuildCampaignRollups(shopDomain) {
   const t0 = Date.now();
+
+  const shopRow = await db.shop.findUnique({ where: { shopDomain }, select: { shopifyTimezone: true } });
+  const tz = shopRow?.shopifyTimezone || "UTC";
 
   const [insights, attributions, orders] = await Promise.all([
     db.metaInsight.findMany({
@@ -58,15 +62,18 @@ export async function rebuildCampaignRollups(shopDomain) {
   const orderMap = new Map();
   for (const o of orders) orderMap.set(o.shopifyOrderId, o);
 
-  // bucket key: `${isoDate}|${adId}`
+  // bucket key: `${shopLocalDayKey}|${adId}` — every day bucket is a shop-local
+  // calendar day. The stored .date is UTC-midnight of that calendar day
+  // (canonical handle, matches MetaInsight.date convention).
   const buckets = new Map();
 
-  const getBucket = (date, adId, seed) => {
-    const key = `${date.toISOString().split("T")[0]}|${adId}`;
+  const getBucket = (rawDate, adId, seed) => {
+    const dayKey = shopLocalDayKey(tz, rawDate);
+    const key = `${dayKey}|${adId}`;
     let b = buckets.get(key);
     if (!b) {
       b = {
-        date,
+        date: new Date(`${dayKey}T00:00:00.000Z`),
         adId,
         campaignId: seed?.campaignId || "",
         campaignName: seed?.campaignName || "",

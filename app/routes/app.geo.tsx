@@ -29,9 +29,8 @@ export const loader = async ({ request }) => {
   const currencySymbol = (shop?.shopifyCurrency || "GBP") === "GBP" ? "£"
     : (shop?.shopifyCurrency || "GBP") === "EUR" ? "€" : "$";
 
-  const { fromDate, toDate } = parseDateRange(request);
-  const fromKey = fromDate.toISOString().split("T")[0];
-  const toKey = toDate.toISOString().split("T")[0];
+  const tz = shop?.shopifyTimezone || "UTC";
+  const { fromDate, toDate, fromKey, toKey } = parseDateRange(request, tz);
   const { DEFAULT_TTL } = await import("../services/queryCache.server");
 
   // ── All queries in parallel, with caching ──
@@ -61,13 +60,11 @@ export const loader = async ({ request }) => {
   );
   const allOrders = ordersInRange;
   const orderIdsInRange = new Set(ordersInRange.map(o => o.shopifyOrderId));
-  const fromStr = fromDate.toISOString().split("T")[0];
-  const toStr = toDate.toISOString().split("T")[0];
   const attrsInRange = attributions.filter(a => {
     if (a.confidence > 0) return orderIdsInRange.has(a.shopifyOrderId);
     const match = a.shopifyOrderId.match(/(\d{4}-\d{2}-\d{2})/);
     if (!match) return false;
-    return match[1] >= fromStr && match[1] <= toStr;
+    return match[1] >= fromKey && match[1] <= toKey;
   });
 
   const orderMap: Record<string, any> = {};
@@ -482,8 +479,8 @@ export const loader = async ({ request }) => {
   }
 
   // ── AI Insights cache ──
-  const dateFromStr = fromDate.toISOString().split("T")[0];
-  const dateToStr = toDate.toISOString().split("T")[0];
+  const dateFromStr = fromKey;
+  const dateToStr = toKey;
   const aiCached = await getCachedInsights(shopDomain, "geo", dateFromStr, dateToStr);
   const aiCurrentHash = computeDataHash({ overallRows, shopifyByCountry });
   const aiCachedInsights = aiCached?.insights || null;
@@ -521,11 +518,9 @@ export const action = async ({ request }) => {
 
     (async () => {
       try {
-        const { fromDate, toDate } = parseDateRange(request);
-        const dateFromStr = fromDate.toISOString().split("T")[0];
-        const dateToStr = toDate.toISOString().split("T")[0];
-
         const shop = await db.shop.findUnique({ where: { shopDomain } });
+        const tz = shop?.shopifyTimezone || "UTC";
+        const { fromDate, toDate, fromKey: dateFromStr, toKey: dateToStr } = parseDateRange(request, tz);
         const cs = (shop?.shopifyCurrency || "GBP") === "GBP" ? "£" : (shop?.shopifyCurrency || "GBP") === "EUR" ? "€" : "$";
 
         // Fetch geo data for AI

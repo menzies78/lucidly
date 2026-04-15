@@ -78,7 +78,7 @@ function ChartTooltip({ containerRef, hover, points, prevPoints, showPrev, color
           </div>
         )}
         <div style={{ fontSize: "10px", fontWeight: 400, color: "#aaa" }}>
-          {new Date(p.date + "T00:00:00").toLocaleDateString("en-GB", { day: "numeric", month: "short" })}
+          {new Date(p.date + "T12:00:00").toLocaleDateString("en-GB", { day: "numeric", month: "short" })}
         </div>
       </div>
     </>,

@@ -4,6 +4,7 @@ import { BREAKDOWN_CONFIGS, fetchBreakdown } from "./metaBreakdownSync.server";
 import { getExchangeRate, convertMetaFields } from "./exchangeRate.server";
 import { fetchWithRetry, fetchAllPages as fetchAllPagesShared } from "./metaFetch.server";
 import { invalidateShop } from "./queryCache.server";
+import { shopLocalToday, shopDayBounds } from "../utils/shopTime.server";
 
 const PADDING_MINUTES = 6;
 const REVENUE_TOLERANCE = 0.02;
@@ -562,19 +563,16 @@ async function matchSingleConversion(shopDomain, conv, todayOrders, revenueField
     // Start with any £0 candidates from the online orders
     let zeroCandidates = allCandidates.filter(c => c.total === 0);
 
-    // Also fetch non-online £0 orders for the same day + time window
-    const dayStr = todayOrders.length > 0
-      ? todayOrders[0].createdAt.toISOString().split("T")[0]
-      : new Date().toISOString().split("T")[0];
+    // Also fetch non-online £0 orders for the same day + time window.
+    // Use shop-local day bounds so a 00:20 BST order is not excluded as "yesterday UTC".
+    const shopTzLocal = (await db.shop.findUnique({ where: { shopDomain }, select: { shopifyTimezone: true } }))?.shopifyTimezone || "UTC";
+    const dayBounds = shopDayBounds(shopTzLocal, shopLocalToday(shopTzLocal));
     const nonOnlineZero = await db.order.findMany({
       where: {
         shopDomain,
         isOnlineStore: false,
         frozenTotalPrice: 0,
-        createdAt: {
-          gte: new Date(dayStr + "T00:00:00.000Z"),
-          lt: new Date(dayStr + "T23:59:59.999Z"),
-        },
+        createdAt: { gte: dayBounds.gte, lte: dayBounds.lte },
       },
     });
     for (const order of nonOnlineZero) {
@@ -951,7 +949,8 @@ export async function matchDayDeltas(shopDomain, dayStr) {
  * already-matched conversions to prevent duplicate processing.
  */
 export async function clearTodayForRematch(shopDomain) {
-  const today = new Date().toISOString().split("T")[0];
+  const shopRow = await db.shop.findUnique({ where: { shopDomain }, select: { shopifyTimezone: true } });
+  const today = shopLocalToday(shopRow?.shopifyTimezone || "UTC");
 
   // Find unmatched attributions to determine which snapshots to adjust
   const unmatched = await db.attribution.findMany({
@@ -1009,7 +1008,12 @@ export async function runIncrementalSync(shopDomain) {
   if (!shop.metaAccessToken || !shop.metaAdAccountId) throw new Error("Meta Ads not connected");
 
   const revenueField = shop.revenueDefinition || "total_price";
-  const today = new Date().toISOString().split("T")[0];
+  // "today" is resolved in the shop's Shopify timezone so every downstream
+  // bucket / snapshot / rollup aligns with how the merchant sees their day.
+  // For shops where Meta ad account tz differs from Shopify tz, we still use
+  // the Shopify day — Meta will return that calendar date's data in its own tz,
+  // which is close enough for incremental matching and auto-heals across cycles.
+  const today = shopLocalToday(shop.shopifyTimezone || "UTC");
 
   // Get exchange rate for currency conversion (Meta → Shopify currency)
   const rate = await getExchangeRate(today, shop.metaCurrency, shop.shopifyCurrency);
@@ -1100,13 +1104,15 @@ export async function runIncrementalSync(shopDomain) {
 
   // Only match against web orders. Include last PADDING_MINUTES of yesterday
   // so an order at 23:55 can match a Meta conversion for today's hour 0.
-  const todayStart = new Date(today + "T00:00:00.000Z");
+  // Bounds are computed in shop-local time so "today" means the merchant's day.
+  const shopTodayBounds = shopDayBounds(shop.shopifyTimezone || "UTC", today);
+  const todayStart = shopTodayBounds.gte;
   const paddedTodayStart = new Date(todayStart.getTime() - (PADDING_MINUTES + Math.max(0, metaOffsetMinutes)) * 60 * 1000);
   const todayOrders = await db.order.findMany({
     where: {
       shopDomain,
       isOnlineStore: true,
-      createdAt: { gte: paddedTodayStart, lt: new Date(today + "T23:59:59.999Z") },
+      createdAt: { gte: paddedTodayStart, lte: shopTodayBounds.lte },
     },
     orderBy: { createdAt: "asc" },
   });

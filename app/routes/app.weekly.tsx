@@ -5,33 +5,50 @@ import ReportTabs from "../components/ReportTabs";
 import { authenticate } from "../shopify.server";
 import db from "../db.server";
 import { cached as queryCached } from "../services/queryCache.server";
+import {
+  shopDayBounds,
+  shopLocalDayKey,
+  shopLocalToday,
+  shopLocalWeekMonday,
+} from "../utils/shopTime.server";
 
 const SHORT_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
-function getWeekMonday(dateStr: string | null): Date {
-  const d = dateStr ? new Date(dateStr + "T12:00:00Z") : new Date();
-  const dow = d.getUTCDay();
-  const offset = dow === 0 ? 6 : dow - 1;
-  const monday = new Date(d);
-  monday.setUTCDate(d.getUTCDate() - offset);
-  monday.setUTCHours(0, 0, 0, 0);
-  return monday;
+// Returns the shop-local Monday YYYY-MM-DD key that anchors the week
+// containing `dateStr` (or today if null).
+function getWeekMondayKey(tz: string, dateStr: string | null): string {
+  const anchor = dateStr || shopLocalToday(tz);
+  return shopLocalWeekMonday(tz, anchor);
 }
 
-// Latest fully-completed week: Monday of (this week's Monday - 7 days)
-function getLatestCompleteWeekMonday(): Date {
-  const thisMonday = getWeekMonday(null);
-  const monday = new Date(thisMonday);
-  monday.setUTCDate(thisMonday.getUTCDate() - 7);
-  return monday;
+// Monday key of the latest fully-completed week (this week's Monday minus 7).
+function getLatestCompleteWeekMondayKey(tz: string): string {
+  const thisMonday = getWeekMondayKey(tz, null);
+  const [y, m, d] = thisMonday.split("-").map(Number);
+  const anchor = new Date(Date.UTC(y, m - 1, d, 12, 0, 0, 0));
+  anchor.setUTCDate(anchor.getUTCDate() - 7);
+  return shopLocalDayKey(tz, anchor);
 }
 
-function fmt(d: Date): string {
-  return d.toISOString().split("T")[0];
+function addDaysKey(tz: string, key: string, delta: number): string {
+  const [y, m, d] = key.split("-").map(Number);
+  const anchor = new Date(Date.UTC(y, m - 1, d, 12, 0, 0, 0));
+  anchor.setUTCDate(anchor.getUTCDate() + delta);
+  return shopLocalDayKey(tz, anchor);
 }
 
 function fmtDate(d: Date): string {
   return d.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
+}
+
+// Client-side YYYY-MM-DD formatter. Used for URL week params and <input type="date">;
+// picking a day in browser-local time is fine because the server snaps to the
+// correct shop-local Monday via getWeekMondayKey.
+function fmt(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
 }
 
 function fmtCurrency(val: number, currency: string): string {
@@ -58,24 +75,24 @@ export const loader = async ({ request }) => {
   const url = new URL(request.url);
   const weekParam = url.searchParams.get("week");
 
-  // Weekly Report is NOT affected by the global nav date selector (from/to).
-  // Only its own `week` param is honored; otherwise default to latest complete week.
-  const monday = weekParam
-    ? getWeekMonday(weekParam) // snap any chosen date to its Monday
-    : getLatestCompleteWeekMonday();
-  const sunday = new Date(monday);
-  sunday.setUTCDate(monday.getUTCDate() + 6);
-  sunday.setUTCHours(23, 59, 59, 999);
-
-  // Previous week for WoW
-  const prevMonday = new Date(monday);
-  prevMonday.setUTCDate(monday.getUTCDate() - 7);
-  const prevSunday = new Date(prevMonday);
-  prevSunday.setUTCDate(prevMonday.getUTCDate() + 6);
-  prevSunday.setUTCHours(23, 59, 59, 999);
-
   const shop = await db.shop.findUnique({ where: { shopDomain } });
   const currency = shop?.shopifyCurrency || "GBP";
+  const tz = shop?.shopifyTimezone || "UTC";
+
+  // Weekly Report is NOT affected by the global nav date selector (from/to).
+  // Only its own `week` param is honored; otherwise default to latest complete week.
+  // All week math is in shop-local time.
+  const mondayKey = weekParam
+    ? getWeekMondayKey(tz, weekParam)
+    : getLatestCompleteWeekMondayKey(tz);
+  const sundayKey = addDaysKey(tz, mondayKey, 6);
+  const prevMondayKey = addDaysKey(tz, mondayKey, -7);
+  const prevSundayKey = addDaysKey(tz, mondayKey, -1);
+
+  const monday = shopDayBounds(tz, mondayKey).gte;
+  const sunday = shopDayBounds(tz, sundayKey).lte;
+  const prevMonday = shopDayBounds(tz, prevMondayKey).gte;
+  const prevSunday = shopDayBounds(tz, prevSundayKey).lte;
 
   // ── Stage 1: fetch primary data (date-scoped, parallel) ──
   // Note: customers + metaEntities are loaded in stage 2 so we can scope them
@@ -162,20 +179,16 @@ export const loader = async ({ request }) => {
   const prevAttrMap = new Map<string, typeof prevWeekAttrs[0]>();
   for (const a of prevWeekAttrs) prevAttrMap.set(a.shopifyOrderId, a);
 
-  // Unmatched attributions for current + previous week
-  const mondayStr = fmt(monday);
-  const sundayStr = fmt(sunday);
-  const prevMondayStr = fmt(prevMonday);
-  const prevSundayStr = fmt(prevSunday);
+  // Unmatched attributions for current + previous week (shop-local day keys)
   const unmatchedCurrent = allAttrs.filter(a => {
     if (a.confidence !== 0) return false;
     const m = a.shopifyOrderId.match(/(\d{4}-\d{2}-\d{2})/);
-    return m && m[1] >= mondayStr && m[1] <= sundayStr;
+    return m && m[1] >= mondayKey && m[1] <= sundayKey;
   });
   const unmatchedPrev = allAttrs.filter(a => {
     if (a.confidence !== 0) return false;
     const m = a.shopifyOrderId.match(/(\d{4}-\d{2}-\d{2})/);
-    return m && m[1] >= prevMondayStr && m[1] <= prevSundayStr;
+    return m && m[1] >= prevMondayKey && m[1] <= prevSundayKey;
   });
 
   // ── Helper: classify an order ──
@@ -187,8 +200,8 @@ export const loader = async ({ request }) => {
     if (!customer) return "new";
     const isMetaAcquired = metaAcquiredCustomers.has(custId);
     if (isMetaAcquired) {
-      const custFirstDate = customer.firstOrderDate?.toISOString().split("T")[0] || "";
-      const orderDate = order.createdAt.toISOString().split("T")[0];
+      const custFirstDate = customer.firstOrderDate ? shopLocalDayKey(tz, customer.firstOrderDate) : "";
+      const orderDate = shopLocalDayKey(tz, order.createdAt);
       return custFirstDate === orderDate ? "new" : "repeat";
     }
     return "retargeted";
@@ -206,11 +219,21 @@ export const loader = async ({ request }) => {
   const days: DayBucket[] = Array.from({ length: 7 }, emptyDay);
   const prevDays: DayBucket[] = Array.from({ length: 7 }, emptyDay);
 
-  function toDayIdx(d: Date): number { const dow = d.getUTCDay(); return dow === 0 ? 6 : dow - 1; }
+  // Day index 0..6 for a shop-local day key, relative to an anchor Monday key.
+  function dayIdxFromKey(anchorMondayKey: string, key: string): number {
+    const [ay, am, ad] = anchorMondayKey.split("-").map(Number);
+    const [ky, km, kd] = key.split("-").map(Number);
+    const anchorMs = Date.UTC(ay, am - 1, ad);
+    const keyMs = Date.UTC(ky, km - 1, kd);
+    return Math.round((keyMs - anchorMs) / 86400000);
+  }
+  function toIdxCurrent(d: Date): number { return dayIdxFromKey(mondayKey, shopLocalDayKey(tz, d)); }
+  function toIdxPrev(d: Date): number { return dayIdxFromKey(prevMondayKey, shopLocalDayKey(tz, d)); }
 
-  function processOrders(orderList: typeof orders, aMap: typeof attrMap, dayBuckets: DayBucket[]) {
+  function processOrders(orderList: typeof orders, aMap: typeof attrMap, dayBuckets: DayBucket[], toIdx: (d: Date) => number) {
     for (const order of orderList) {
-      const idx = toDayIdx(new Date(order.createdAt));
+      const idx = toIdx(new Date(order.createdAt));
+      if (idx < 0 || idx > 6) continue;
       const rev = order.frozenTotalPrice || 0;
       dayBuckets[idx].storeRevenue += rev;
 
@@ -228,24 +251,36 @@ export const loader = async ({ request }) => {
     }
   }
 
-  processOrders(orders, attrMap, days);
-  processOrders(prevOrders, prevAttrMap, prevDays);
+  processOrders(orders, attrMap, days, toIdxCurrent);
+  processOrders(prevOrders, prevAttrMap, prevDays, toIdxPrev);
 
-  for (const ins of insights) { days[toDayIdx(new Date(ins.date))].adSpend += ins.spend || 0; }
-  for (const ins of prevInsights) { prevDays[toDayIdx(new Date(ins.date))].adSpend += ins.spend || 0; }
+  // MetaInsight.date is stored as UTC-midnight of a shop-local day. Treat its
+  // day-portion directly as a shop-local key to avoid a round-trip through tz.
+  for (const ins of insights) {
+    const key = ins.date.toISOString().slice(0, 10);
+    const idx = dayIdxFromKey(mondayKey, key);
+    if (idx >= 0 && idx <= 6) days[idx].adSpend += ins.spend || 0;
+  }
+  for (const ins of prevInsights) {
+    const key = ins.date.toISOString().slice(0, 10);
+    const idx = dayIdxFromKey(prevMondayKey, key);
+    if (idx >= 0 && idx <= 6) prevDays[idx].adSpend += ins.spend || 0;
+  }
 
-  // Add unmatched conversions to day buckets
+  // Add unmatched conversions to day buckets (shopifyOrderId embeds shop-local day key)
   for (const a of unmatchedCurrent) {
     const m = a.shopifyOrderId.match(/(\d{4}-\d{2}-\d{2})/);
     if (!m) continue;
-    const idx = toDayIdx(new Date(m[1] + "T12:00:00Z"));
+    const idx = dayIdxFromKey(mondayKey, m[1]);
+    if (idx < 0 || idx > 6) continue;
     days[idx].unmatchedConversions++;
     days[idx].unmatchedRevenue += a.metaConversionValue || 0;
   }
   for (const a of unmatchedPrev) {
     const m = a.shopifyOrderId.match(/(\d{4}-\d{2}-\d{2})/);
     if (!m) continue;
-    const idx = toDayIdx(new Date(m[1] + "T12:00:00Z"));
+    const idx = dayIdxFromKey(prevMondayKey, m[1]);
+    if (idx < 0 || idx > 6) continue;
     prevDays[idx].unmatchedConversions++;
     prevDays[idx].unmatchedRevenue += a.metaConversionValue || 0;
   }
@@ -373,16 +408,12 @@ export const loader = async ({ request }) => {
   }
   newlyLaunchedAds.sort((a, b) => b.spend - a.spend);
 
-  // ── Date labels ──
-  const dateLabels = Array.from({ length: 7 }, (_, i) => {
-    const d = new Date(monday);
-    d.setUTCDate(monday.getUTCDate() + i);
-    return fmt(d);
-  });
+  // ── Date labels (shop-local) ──
+  const dateLabels = Array.from({ length: 7 }, (_, i) => addDaysKey(tz, mondayKey, i));
 
   return json({
-    monday: fmt(monday),
-    sunday: fmt(sunday),
+    monday: mondayKey,
+    sunday: sundayKey,
     days,
     prevDays,
     dateLabels,

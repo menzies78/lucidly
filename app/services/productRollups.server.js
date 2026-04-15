@@ -17,6 +17,7 @@
  */
 
 import db from "../db.server";
+import { shopLocalDayKey } from "../utils/shopTime.server";
 
 // ── Variant stripping (mirror of app.products.tsx) ──
 const COLORS = new Set([
@@ -45,7 +46,7 @@ export function toParentProduct(name) {
  * Build per-order "segment" tag. Mirrors app.products.tsx getOrderTag.
  * Requires: attrByOrderId map, metaAcquiredCustomers set, customer firstOrderDate map.
  */
-function tagOrder(order, attrByOrderId, metaAcquiredCustomers, customerFirstOrderMap) {
+function tagOrder(order, attrByOrderId, metaAcquiredCustomers, customerFirstOrderMap, tz) {
   const attr = attrByOrderId[order.shopifyOrderId];
   const custId = order.shopifyCustomerId;
   const isMetaOrder = !!attr || order.utmConfirmedMeta;
@@ -54,7 +55,7 @@ function tagOrder(order, attrByOrderId, metaAcquiredCustomers, customerFirstOrde
     const isMetaAcquired = metaAcquiredCustomers.has(custId);
     if (isMetaAcquired) {
       const custFirstDate = customerFirstOrderMap[custId];
-      const orderDate = order.createdAt.toISOString().split("T")[0];
+      const orderDate = shopLocalDayKey(tz, order.createdAt);
       return custFirstDate === orderDate ? "metaNew" : "metaRepeat";
     }
     return "metaRetargeted";
@@ -71,6 +72,9 @@ function tagOrder(order, attrByOrderId, metaAcquiredCustomers, customerFirstOrde
 export async function rebuildProductRollups(shopDomain) {
   const t0 = Date.now();
   console.log(`[productRollups] rebuilding for ${shopDomain}…`);
+
+  const shopRow = await db.shop.findUnique({ where: { shopDomain }, select: { shopifyTimezone: true } });
+  const tz = shopRow?.shopifyTimezone || "UTC";
 
   // Pull everything we need
   const [orders, attributions, customers] = await Promise.all([
@@ -100,11 +104,11 @@ export async function rebuildProductRollups(shopDomain) {
   const attrByOrderId = {};
   for (const a of attributions) attrByOrderId[a.shopifyOrderId] = a;
 
-  // Customer first-order-date map
+  // Customer first-order-date map (shop-local)
   const customerFirstOrderMap = {};
   for (const c of customers) {
     if (c.firstOrderDate) {
-      customerFirstOrderMap[c.shopifyCustomerId] = c.firstOrderDate.toISOString().split("T")[0];
+      customerFirstOrderMap[c.shopifyCustomerId] = shopLocalDayKey(tz, c.firstOrderDate);
     }
   }
 
@@ -128,7 +132,7 @@ export async function rebuildProductRollups(shopDomain) {
     const firstDate = customerFirstOrderMap[custId];
     // Find the first order on that date
     const firstOrder = custOrders.find(
-      o => o.createdAt.toISOString().split("T")[0] === firstDate
+      o => shopLocalDayKey(tz, o.createdAt) === firstDate
     );
     if (!firstOrder) continue;
     // Ground truth: only count as "meta-acquired new customer" if Shopify confirms
@@ -166,8 +170,8 @@ export async function rebuildProductRollups(shopDomain) {
     if (rawItems.length === 0) continue;
     const parentItems = rawItems.map(toParentProduct);
     const revenuePerItem = (order.frozenTotalPrice || 0) / rawItems.length;
-    const segment = tagOrder(order, attrByOrderId, metaAcquiredCustomers, customerFirstOrderMap);
-    const dateStr = order.createdAt.toISOString().split("T")[0];
+    const segment = tagOrder(order, attrByOrderId, metaAcquiredCustomers, customerFirstOrderMap, tz);
+    const dateStr = shopLocalDayKey(tz, order.createdAt);
     const isFirstPurchase = order.customerOrderCountAtPurchase === 1;
     const attr = attrByOrderId[order.shopifyOrderId];
     const orderCollections = (order.productCollections || "").split(", ").map(s => s.trim()).filter(Boolean);
@@ -241,7 +245,7 @@ export async function rebuildProductRollups(shopDomain) {
   // metaAcquiredCustomers — all the stuff that doesn't fit a date rollup.
   // Computed once per shop, cached until the next sync.
   const analysisBlob = buildAnalysisBlob({
-    orders, attrByOrderId, metaAcquiredCustomers,
+    orders, attrByOrderId, metaAcquiredCustomers, tz,
   });
 
   await db.shopAnalysisCache.upsert({
@@ -265,7 +269,7 @@ export async function rebuildProductRollups(shopDomain) {
  * Build the analysis blob: journey flows, basket combos, first-purchase
  * lists, add-ons, metaAcquiredCustomers. All-time precomputation.
  */
-function buildAnalysisBlob({ orders, attrByOrderId, metaAcquiredCustomers }) {
+function buildAnalysisBlob({ orders, attrByOrderId, metaAcquiredCustomers, tz }) {
   const metaBaskets = [];
   const nonMetaBaskets = [];
   const metaFirstPurchaseProducts = {};
@@ -285,7 +289,7 @@ function buildAnalysisBlob({ orders, attrByOrderId, metaAcquiredCustomers }) {
     const attr = attrByOrderId[order.shopifyOrderId];
     const isMeta = !!attr || order.utmConfirmedMeta;
     const isFirstPurchase = order.customerOrderCountAtPurchase === 1;
-    const dateStr = order.createdAt.toISOString().split("T")[0];
+    const dateStr = shopLocalDayKey(tz, order.createdAt);
 
     // Daily basket stats (distinct orders, not line items)
     if (!dailyBasketStats[dateStr]) dailyBasketStats[dateStr] = { totalOrders: 0, metaOrders: 0, totalItems: 0, metaItems: 0 };
