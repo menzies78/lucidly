@@ -1088,9 +1088,30 @@ export async function runFillGaps(shopDomain, lookbackDays = 30) {
     ordersByDate.get(dateKey).push(order);
   }
 
-  // Find gap days: days where Meta reports more conversions than we have matched attributions.
-  // A "gap" means Meta says there were conversions we haven't matched to orders yet.
-  // Organic orders with no attribution are normal — not a gap.
+  // Any unmatched placeholder is a per-ad gap waiting to be filled, even if
+  // the day's total matched-order count looks "complete" in aggregate. Fetch
+  // the set of days with placeholders so we don't miss ad-level gaps hidden
+  // behind spurious matches elsewhere on the day.
+  const placeholderDaysRaw = await db.attribution.findMany({
+    where: {
+      shopDomain,
+      confidence: 0,
+      shopifyOrderId: { startsWith: "unmatched_" },
+    },
+    select: { shopifyOrderId: true },
+  });
+  const placeholderDays = new Set();
+  for (const a of placeholderDaysRaw) {
+    const m = a.shopifyOrderId.match(/^unmatched_[^_]+_(\d{4}-\d{2}-\d{2})/);
+    if (m) placeholderDays.add(m[1]);
+  }
+
+  // Find gap days. A day qualifies if:
+  //   (a) Meta reports more conversions than we've matched on that day, OR
+  //   (b) at least one unmatched placeholder exists for an ad on that day.
+  // Placeholder-gated detection catches the case where a spurious match on
+  // some other ad inflates matchedCount above totalConversions and hides the
+  // real per-ad gap.
   const gapDays = [];
   for (const [day, dayInsights] of insightsByDate) {
     const dayOrders = ordersByDate.get(day) || [];
@@ -1100,10 +1121,16 @@ export async function runFillGaps(shopDomain, lookbackDays = 30) {
       return a && a.confidence > 0;
     }).length;
 
-    // Gap = Meta has more conversions than we've matched
-    if (totalConversions > matchedCount) {
+    const hasPlaceholder = placeholderDays.has(day);
+    if (totalConversions > matchedCount || hasPlaceholder) {
       const unattributedOrders = dayOrders.filter(o => !attrByOrderId.has(o.shopifyOrderId));
-      gapDays.push({ day, conversions: totalConversions, matched: matchedCount, unattributed: unattributedOrders.length });
+      gapDays.push({
+        day,
+        conversions: totalConversions,
+        matched: matchedCount,
+        unattributed: unattributedOrders.length,
+        hasPlaceholder,
+      });
     }
   }
 
@@ -1203,14 +1230,33 @@ export async function runFillGaps(shopDomain, lookbackDays = 30) {
         },
       });
 
-      // If all conversions for this ad are already matched, skip
-      if (existingMatchedForAd.length >= ad.totalConversions) {
+      // Count unmatched placeholders for this ad on this day — each one is a
+      // confirmed gap Meta told us about that we haven't paired with an order.
+      const placeholderCount = await db.attribution.count({
+        where: {
+          shopDomain,
+          confidence: 0,
+          shopifyOrderId: { startsWith: unmatchedPrefix },
+        },
+      });
+
+      // Stop only when every Meta conversion for this ad-day is either (a)
+      // paired with a real order or (b) explicitly held open by a placeholder
+      // we *intend* to reclaim here. If placeholders exist we must not skip:
+      // the placeholder is the gap. Previously this short-circuited whenever
+      // existingMatchedForAd.length >= totalConversions, but a spurious match
+      // on some other order could inflate that count and lock the real slot
+      // out of Fill Gaps.
+      if (existingMatchedForAd.length >= ad.totalConversions && placeholderCount === 0) {
         continue;
       }
 
-      // How many NEW matches do we need?
+      // How many NEW matches do we need? Cap by (totalConversions - matched)
+      // but never below the number of placeholders so we always try to clear
+      // them even if the day's arithmetic looks balanced.
       const alreadyMatched = existingMatchedForAd.length;
-      let neededConversions = ad.totalConversions - alreadyMatched;
+      const naiveNeeded = ad.totalConversions - alreadyMatched;
+      let neededConversions = Math.max(placeholderCount, naiveNeeded);
       const metaRevenue = ad.totalConversionValue;
       // Compute remaining revenue as total minus already-matched — NOT a proportional
       // share. Different hour slots can have very different values, so averaging
