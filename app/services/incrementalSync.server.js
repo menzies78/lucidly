@@ -7,6 +7,62 @@ import { invalidateShop } from "./queryCache.server";
 import { shopLocalToday, shopDayBounds } from "../utils/shopTime.server";
 
 const PADDING_MINUTES = 6;
+const ROLLUP_REBUILD_MIN_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24h
+
+// Per-shop timestamp of the last full rollup rebuild, stored on globalThis so
+// the value survives HMR but resets on a fresh process boot (a deploy should
+// legitimately force one rebuild to pick up code/schema changes).
+const lastRollupRebuildAt = /** @type {Map<string, number>} */ (
+  globalThis.__lucidlyLastRollupRebuildAt || (globalThis.__lucidlyLastRollupRebuildAt = new Map())
+);
+
+/**
+ * Rebuild all three rollup tables for a shop, unless the previous rebuild was
+ * less than 24 hours ago AND the caller has no new data to justify another
+ * pass. New-conversion cycles always force a rebuild; idle cycles throttle to
+ * one rebuild per day so the hourly scheduler doesn't saturate SQLite with
+ * 13-minute rebuild storms whose output is identical to what's already there.
+ *
+ * @param {string} shopDomain
+ * @param {{ force: boolean }} opts
+ * @returns {Promise<boolean>} true if a rebuild actually ran
+ */
+async function rebuildAllRollups(shopDomain, { force }) {
+  const last = lastRollupRebuildAt.get(shopDomain) || 0;
+  const ageMs = Date.now() - last;
+  if (!force && last > 0 && ageMs < ROLLUP_REBUILD_MIN_INTERVAL_MS) {
+    const minutes = Math.round(ageMs / 60000);
+    console.log(`[IncrementalSync] Skipping rollup rebuild for ${shopDomain} — last rebuild ${minutes}m ago, no new conversions`);
+    return false;
+  }
+  setProgress(`incrementalSync:${shopDomain}`, { status: "running", message: "Rebuilding product rollups..." });
+  try {
+    const { rebuildProductRollups } = await import("./productRollups.server.js");
+    await rebuildProductRollups(shopDomain);
+  } catch (err) {
+    console.error(`[IncrementalSync] Product rollup rebuild failed (non-fatal): ${err.message}`);
+  }
+  if (global.gc) global.gc();
+  setProgress(`incrementalSync:${shopDomain}`, { status: "running", message: "Rebuilding campaign rollups..." });
+  try {
+    const { rebuildCampaignRollups } = await import("./campaignRollups.server.js");
+    await rebuildCampaignRollups(shopDomain);
+  } catch (err) {
+    console.error(`[IncrementalSync] Campaign rollup rebuild failed (non-fatal): ${err.message}`);
+  }
+  if (global.gc) global.gc();
+  setProgress(`incrementalSync:${shopDomain}`, { status: "running", message: "Rebuilding customer rollups..." });
+  try {
+    const { rebuildCustomerSegments, rebuildCustomerRollups } = await import("./customerRollups.server.js");
+    await rebuildCustomerSegments(shopDomain);
+    await rebuildCustomerRollups(shopDomain);
+  } catch (err) {
+    console.error(`[IncrementalSync] Customer rollup rebuild failed (non-fatal): ${err.message}`);
+  }
+  if (global.gc) global.gc();
+  lastRollupRebuildAt.set(shopDomain, Date.now());
+  return true;
+}
 // Fallback padding — tried only when the 6-minute window returned no
 // Shopify candidates for a conversion. Starting at 6 keeps the candidate
 // set tight for the common case; widening to 10 rescues the occasional
@@ -1094,35 +1150,18 @@ export async function runIncrementalSync(shopDomain) {
     } catch (err) {
       console.error(`[IncrementalSync] Breakdown sync failed (non-fatal): ${err.message}`);
     }
-    // Rebuild rollups even on no-new-conversions path, so schema/code changes
-    // take effect on the next scheduled sync without needing conversions.
-    try {
-      const { rebuildProductRollups } = await import("./productRollups.server.js");
-      await rebuildProductRollups(shopDomain);
-    } catch (err) {
-      console.error(`[IncrementalSync] Product rollup rebuild failed (non-fatal): ${err.message}`);
+    // No new conversions — throttle rollup rebuilds to once per day so the
+    // hourly scheduler doesn't spend ~13 min every cycle rewriting identical
+    // rollup rows. A fresh boot still rebuilds once (lastRollupRebuildAt starts
+    // empty), so deploys continue to pick up code changes promptly.
+    const didRebuild = await rebuildAllRollups(shopDomain, { force: false });
+    if (didRebuild) {
+      invalidateShop(shopDomain);
+      // Re-warm the query cache in background (fire-and-forget)
+      import("./cacheWarmer.server.js").then(({ warmAllShops }) => {
+        warmAllShops().catch(err => console.error("[IncrementalSync] post-sync warm failed:", err.message));
+      }).catch(err => console.error("[IncrementalSync] warmer import failed:", err.message));
     }
-    if (global.gc) global.gc();
-    try {
-      const { rebuildCampaignRollups } = await import("./campaignRollups.server.js");
-      await rebuildCampaignRollups(shopDomain);
-    } catch (err) {
-      console.error(`[IncrementalSync] Campaign rollup rebuild failed (non-fatal): ${err.message}`);
-    }
-    if (global.gc) global.gc();
-    try {
-      const { rebuildCustomerSegments, rebuildCustomerRollups } = await import("./customerRollups.server.js");
-      await rebuildCustomerSegments(shopDomain);
-      await rebuildCustomerRollups(shopDomain);
-    } catch (err) {
-      console.error(`[IncrementalSync] Customer rollup rebuild failed (non-fatal): ${err.message}`);
-    }
-    if (global.gc) global.gc();
-    invalidateShop(shopDomain);
-    // Re-warm the query cache in background (fire-and-forget)
-    import("./cacheWarmer.server.js").then(({ warmAllShops }) => {
-      warmAllShops().catch(err => console.error("[IncrementalSync] post-sync warm failed:", err.message));
-    }).catch(err => console.error("[IncrementalSync] warmer import failed:", err.message));
     completeProgress(`incrementalSync:${shopDomain}`, { newConversions: 0, matched: 0, unmatched: 0, breakdownRows });
     return { newConversions: 0, matched: 0, unmatched: 0, breakdownRows };
   }
@@ -1234,53 +1273,8 @@ export async function runIncrementalSync(shopDomain) {
     console.error(`[IncrementalSync] Demographic enrichment failed (non-fatal): ${err.message}`);
   }
 
-  // Rebuild Products rollup + analysis cache. Best-effort; never fails the sync.
-  setProgress(`incrementalSync:${shopDomain}`, { status: "running", message: "Rebuilding product rollups..." });
-  try {
-    const { rebuildProductRollups } = await import("./productRollups.server.js");
-    await rebuildProductRollups(shopDomain);
-  } catch (err) {
-    console.error(`[IncrementalSync] Product rollup rebuild failed (non-fatal): ${err.message}`);
-  }
-
-  // Force GC between rollup phases (prevents OOM on large shops)
-  if (global.gc) {
-    const before = Math.round(process.memoryUsage().heapUsed / 1024 / 1024);
-    global.gc();
-    const after = Math.round(process.memoryUsage().heapUsed / 1024 / 1024);
-    console.log(`[IncrementalSync] GC after product rollups: ${before}MB → ${after}MB`);
-  }
-
-  setProgress(`incrementalSync:${shopDomain}`, { status: "running", message: "Rebuilding campaign rollups..." });
-  try {
-    const { rebuildCampaignRollups } = await import("./campaignRollups.server.js");
-    await rebuildCampaignRollups(shopDomain);
-  } catch (err) {
-    console.error(`[IncrementalSync] Campaign rollup rebuild failed (non-fatal): ${err.message}`);
-  }
-
-  if (global.gc) {
-    const before = Math.round(process.memoryUsage().heapUsed / 1024 / 1024);
-    global.gc();
-    const after = Math.round(process.memoryUsage().heapUsed / 1024 / 1024);
-    console.log(`[IncrementalSync] GC after campaign rollups: ${before}MB → ${after}MB`);
-  }
-
-  setProgress(`incrementalSync:${shopDomain}`, { status: "running", message: "Rebuilding customer rollups..." });
-  try {
-    const { rebuildCustomerSegments, rebuildCustomerRollups } = await import("./customerRollups.server.js");
-    await rebuildCustomerSegments(shopDomain);
-    await rebuildCustomerRollups(shopDomain);
-  } catch (err) {
-    console.error(`[IncrementalSync] Customer rollup rebuild failed (non-fatal): ${err.message}`);
-  }
-
-  if (global.gc) {
-    const before = Math.round(process.memoryUsage().heapUsed / 1024 / 1024);
-    global.gc();
-    const after = Math.round(process.memoryUsage().heapUsed / 1024 / 1024);
-    console.log(`[IncrementalSync] GC after customer rollups: ${before}MB → ${after}MB`);
-  }
+  // New conversions arrived — rollups may be stale, force a full rebuild.
+  await rebuildAllRollups(shopDomain, { force: true });
 
   invalidateShop(shopDomain);
 
