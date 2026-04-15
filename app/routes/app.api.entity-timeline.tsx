@@ -38,24 +38,31 @@ export const loader = async ({ request }: { request: Request }) => {
 
   // Per-day spend/revenue series for the 90 days before today (drawer is
   // not bound to the page's date range; showing recent history is enough).
+  // We pull from DailyAdRollup so we also get newCustomerOrders and
+  // attributedOrders, which sparkline consumers (Best-to-Worst hover) need
+  // when the merchant sorts by a customer-specific metric.
   const since = new Date(Date.now() - 90 * 86400000);
-  let insightWhere: any = { shopDomain, date: { gte: since } };
-  if (type === "ad") insightWhere.adId = id;
-  else if (type === "adset") insightWhere.adSetId = id;
-  else if (type === "campaign") insightWhere.campaignId = id;
+  let rollupWhere: any = { shopDomain, date: { gte: since } };
+  if (type === "ad") rollupWhere.adId = id;
+  else if (type === "adset") rollupWhere.adSetId = id;
+  else if (type === "campaign") rollupWhere.campaignId = id;
 
-  const insights = await db.metaInsight.findMany({
-    where: insightWhere,
-    select: { date: true, spend: true, conversionValue: true, conversions: true },
+  const rollups = await db.dailyAdRollup.findMany({
+    where: rollupWhere,
+    select: {
+      date: true, spend: true, attributedRevenue: true, unverifiedRevenue: true,
+      attributedOrders: true, newCustomerOrders: true,
+    },
   });
 
-  const byDay = new Map<string, { spend: number; revenue: number; orders: number }>();
-  for (const i of insights) {
-    const key = shopLocalDayKey(tz, i.date);
-    const agg = byDay.get(key) || { spend: 0, revenue: 0, orders: 0 };
-    agg.spend += i.spend || 0;
-    agg.revenue += i.conversionValue || 0;
-    agg.orders += i.conversions || 0;
+  const byDay = new Map<string, { spend: number; revenue: number; orders: number; newCustomerOrders: number }>();
+  for (const r of rollups) {
+    const key = shopLocalDayKey(tz, r.date);
+    const agg = byDay.get(key) || { spend: 0, revenue: 0, orders: 0, newCustomerOrders: 0 };
+    agg.spend += r.spend || 0;
+    agg.revenue += (r.attributedRevenue || 0) + (r.unverifiedRevenue || 0);
+    agg.orders += r.attributedOrders || 0;
+    agg.newCustomerOrders += r.newCustomerOrders || 0;
     byDay.set(key, agg);
   }
   const daily = [...byDay.entries()]

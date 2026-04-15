@@ -1371,12 +1371,44 @@ function SortableHeader({ col, label, width, sortCol, sortDir, onSort }: {
   );
 }
 
-function BestToWorstList({ rows, cs }: { rows: any[]; cs: string }) {
+function BestToWorstList({ rows, cs, entityType, onEntityClick }: {
+  rows: any[]; cs: string;
+  entityType?: "campaign" | "adset" | "ad";
+  onEntityClick?: (id: string, name: string) => void;
+}) {
   const [sortCol, setSortCol] = useState("newCustomerOrders");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
   const toggleSort = (col: string) => {
     if (sortCol === col) setSortDir(d => d === "desc" ? "asc" : "desc");
     else { setSortCol(col); setSortDir(col === "blendedCPA" || col === "newCustomerCPA" ? "asc" : "desc"); }
+  };
+
+  // Hover sparkline state — same lazy-fetch pattern as the Ad Age tile.
+  // Cache is keyed by entity id (refetches if entityType changes via the
+  // SmallToggle since the underlying tile remounts the list).
+  const [hoverId, setHoverId] = useState<string | null>(null);
+  const [hoverAnchor, setHoverAnchor] = useState<{ x: number; y: number } | null>(null);
+  const [seriesCache, setSeriesCache] = useState<Record<string, Array<{ date: string; spend: number; revenue: number; orders: number; newCustomerOrders: number }> | "loading" | "error">>({});
+  const requestSeries = (id: string) => {
+    if (!entityType) return;
+    if (seriesCache[id]) return;
+    setSeriesCache((prev) => ({ ...prev, [id]: "loading" }));
+    fetch(`/app/api/entity-timeline?type=${entityType}&id=${encodeURIComponent(id)}`)
+      .then((r) => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
+      .then((d) => setSeriesCache((prev) => ({ ...prev, [id]: d.daily || [] })))
+      .catch(() => setSeriesCache((prev) => ({ ...prev, [id]: "error" })));
+  };
+  // Map sortCol → daily metric extractor + label + colour.
+  const metricFor = (sortCol: string) => {
+    switch (sortCol) {
+      case "spend":              return { label: "Spend",        get: (d: any) => d.spend, fmt: (v: number) => `${cs}${Math.round(v).toLocaleString()}`, color: "#5C6AC4", lower: false };
+      case "attributedOrders":   return { label: "Orders",       get: (d: any) => d.orders, fmt: (v: number) => Math.round(v).toLocaleString(), color: "#0E7490", lower: false };
+      case "newCustomerOrders":  return { label: "New customers", get: (d: any) => d.newCustomerOrders, fmt: (v: number) => Math.round(v).toLocaleString(), color: "#6366F1", lower: false };
+      case "blendedROAS":        return { label: "ROAS",         get: (d: any) => d.spend > 0 ? d.revenue / d.spend : 0, fmt: (v: number) => `${v.toFixed(2)}x`, color: "#059669", lower: false };
+      case "blendedCPA":         return { label: "CPA",          get: (d: any) => d.orders > 0 ? d.spend / d.orders : 0, fmt: (v: number) => `${cs}${Math.round(v).toLocaleString()}`, color: "#D97706", lower: true };
+      case "newCustomerCPA":     return { label: "New cust CPA", get: (d: any) => d.newCustomerOrders > 0 ? d.spend / d.newCustomerOrders : 0, fmt: (v: number) => `${cs}${Math.round(v).toLocaleString()}`, color: "#B45309", lower: true };
+      default:                   return { label: "Spend", get: (d: any) => d.spend, fmt: (v: number) => `${cs}${Math.round(v).toLocaleString()}`, color: "#5C6AC4", lower: false };
+    }
   };
 
   const sorted = [...rows].sort((a, b) => {
@@ -1420,8 +1452,34 @@ function BestToWorstList({ rows, cs }: { rows: any[]; cs: string }) {
           const barVal = item[sortCol] || 0;
           const barW = barVal > 0 && maxBarVal > 0 ? (barVal / maxBarVal) * 100 : 0;
           const barColor = metricGradientColor(sortCol, barVal, barValues, higherIsBetter);
+          const interactive = !!item.id && !!entityType;
           return (
-            <div key={item.id || i} style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+            <div
+              key={item.id || i}
+              onMouseEnter={(e) => {
+                if (!interactive) return;
+                setHoverId(item.id);
+                const rect = (e.currentTarget as HTMLDivElement).getBoundingClientRect();
+                const POP_W = 240, GAP = 8;
+                const wantRight = rect.right + GAP + POP_W;
+                const x = wantRight <= window.innerWidth
+                  ? rect.right + GAP
+                  : Math.max(GAP, rect.left - GAP - POP_W);
+                setHoverAnchor({ x, y: rect.top + rect.height / 2 });
+                requestSeries(item.id);
+              }}
+              onMouseLeave={() => { setHoverId(null); setHoverAnchor(null); }}
+              onClick={() => interactive && onEntityClick?.(item.id, item.name)}
+              title={interactive ? "Click for full timeline" : undefined}
+              style={{
+                display: "flex", alignItems: "center", gap: "10px",
+                cursor: interactive ? "pointer" : "default",
+                padding: "2px 4px", borderRadius: 4,
+                transition: "background 0.12s ease",
+              }}
+              onMouseOver={(e) => { if (interactive) (e.currentTarget as HTMLDivElement).style.background = "#f1f5f9"; }}
+              onMouseOut={(e) => { (e.currentTarget as HTMLDivElement).style.background = "transparent"; }}
+            >
               <span style={{ fontSize: "12px", color: "#999", width: "22px", textAlign: "right", flexShrink: 0 }}>{i + 1}</span>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "4px" }}>
@@ -1441,6 +1499,70 @@ function BestToWorstList({ rows, cs }: { rows: any[]; cs: string }) {
           );
         })}
       </div>
+      {hoverId && hoverAnchor && (
+        <SortMetricSparklinePopover
+          x={hoverAnchor.x}
+          y={hoverAnchor.y}
+          state={seriesCache[hoverId]}
+          metric={metricFor(sortCol)}
+        />
+      )}
+    </div>
+  );
+}
+
+// Floating popover used by Best-to-Worst hover. Renders a 90-day sparkline
+// of whichever metric the list is sorted by, with avg/last value callouts.
+function SortMetricSparklinePopover({ x, y, state, metric }: {
+  x: number; y: number;
+  state: Array<{ date: string; spend: number; revenue: number; orders: number; newCustomerOrders: number }> | "loading" | "error" | undefined;
+  metric: { label: string; get: (d: any) => number; fmt: (v: number) => string; color: string; lower: boolean };
+}) {
+  const w = 240, h = 80, padX = 6, padY = 8;
+  let body: React.ReactNode;
+  if (!state || state === "loading") {
+    body = <div style={{ fontSize: 11, color: "#9CA3AF", padding: "12px 10px" }}>Loading…</div>;
+  } else if (state === "error") {
+    body = <div style={{ fontSize: 11, color: "#B91C1C", padding: "12px 10px" }}>Couldn't load chart</div>;
+  } else {
+    const series = state.map((d) => metric.get(d) || 0);
+    const positive = series.filter((v) => v > 0);
+    if (positive.length === 0) {
+      body = <div style={{ fontSize: 11, color: "#9CA3AF", padding: "12px 10px" }}>No {metric.label.toLowerCase()} in last 90 days</div>;
+    } else {
+      const max = Math.max(...positive);
+      const stepX = (w - padX * 2) / Math.max(1, series.length - 1);
+      const path = series.map((v, i) => {
+        const px = padX + i * stepX;
+        const py = h - padY - (max > 0 ? (v / max) * (h - padY * 2) : 0);
+        return `${i === 0 ? "M" : "L"}${px},${py}`;
+      }).join(" ");
+      const avg = positive.reduce((s, v) => s + v, 0) / positive.length;
+      const last = series[series.length - 1] || 0;
+      body = (
+        <>
+          <div style={{ fontSize: 10, color: "#9CA3AF", padding: "5px 10px 0", display: "flex", justifyContent: "space-between" }}>
+            <span><strong style={{ color: "#374151" }}>{metric.label}</strong> · {series.length}d</span>
+            <span>avg {metric.fmt(avg)}</span>
+          </div>
+          <svg width={w} height={h} preserveAspectRatio="none" viewBox={`0 0 ${w} ${h}`} style={{ display: "block" }}>
+            <path d={path} stroke={metric.color} strokeWidth="1.5" fill="none" />
+          </svg>
+          <div style={{ fontSize: 10, color: "#6B7280", padding: "0 10px 5px", textAlign: "right" }}>last: {metric.fmt(last)}</div>
+        </>
+      );
+    }
+  }
+  return (
+    <div style={{
+      position: "fixed", left: x, top: y,
+      transform: "translate(0, -50%)",
+      background: "#fff", border: "1px solid #E5E7EB", borderRadius: 8,
+      boxShadow: "0 6px 20px rgba(0,0,0,0.12)",
+      zIndex: 9999, pointerEvents: "none",
+      minWidth: w,
+    }}>
+      {body}
     </div>
   );
 }
@@ -1901,6 +2023,9 @@ function AdAgeTile({ adRows, cs, onAdClick }: { adRows: any[]; cs: string; onAdC
 
   return (
     <BlockStack gap="300">
+      <style>{`
+        .ad-age-row:hover .ad-age-chevron { color: #2563EB; transform: translateX(2px); }
+      `}</style>
       <Text as="h3" variant="headingSm">Ad Age</Text>
       <div style={{
         display: "flex", alignItems: "center", gap: 10,
@@ -1934,11 +2059,20 @@ function AdAgeTile({ adRows, cs, onAdClick }: { adRows: any[]; cs: string; onAdC
             return (
               <div
                 key={adId || idx}
+                className="ad-age-row"
                 onMouseEnter={(e) => {
                   if (!interactive) return;
                   setHoverAdId(adId);
                   const rect = (e.currentTarget as HTMLDivElement).getBoundingClientRect();
-                  setHoverAnchor({ x: rect.right + 8, y: rect.top + rect.height / 2 });
+                  // Viewport-aware: prefer the row's right edge but flip to
+                  // the left if it would overflow. 240px = popover width
+                  // budget incl. padding/shadow.
+                  const POP_W = 240, GAP = 8;
+                  const wantRight = rect.right + GAP + POP_W;
+                  const x = wantRight <= window.innerWidth
+                    ? rect.right + GAP
+                    : Math.max(GAP, rect.left - GAP - POP_W);
+                  setHoverAnchor({ x, y: rect.top + rect.height / 2 });
                   requestSeries(adId);
                 }}
                 onMouseLeave={() => { setHoverAdId(null); setHoverAnchor(null); }}
@@ -1959,23 +2093,31 @@ function AdAgeTile({ adRows, cs, onAdClick }: { adRows: any[]; cs: string; onAdC
                   fontSize: 11, fontWeight: 700, color: colour,
                   minWidth: 44, textAlign: "right", fontVariantNumeric: "tabular-nums",
                 }}>{ageLabel}</div>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: 12, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={r.name}>{r.name}</div>
-                  <div style={{ display: "flex", gap: 12, marginTop: 2, alignItems: "center" }}>
-                    <span style={{ fontSize: 11, color: "#6B7280" }}>Spend: <strong>{cs}{Math.round(r.spend || 0).toLocaleString()}</strong></span>
-                    <span style={{ fontSize: 11, color: "#6B7280" }}>ROAS: <strong>{roas > 0 ? `${roas.toFixed(2)}x` : "0x"}</strong></span>
-                    <span style={{ fontSize: 11, color: "#6B7280" }}>New cust: <strong>{newCust}</strong></span>
-                    {freq > 0 && (
-                      <span style={{
-                        fontSize: 10, fontWeight: 700,
-                        padding: "1px 6px", borderRadius: 8,
-                        background: freqHigh ? "#FEE2E2" : "#E5E7EB",
-                        color: freqHigh ? "#B91C1C" : "#374151",
-                      }} title={freqHigh ? "Average frequency ≥ 3 — fatigue likely" : "Average impressions per unique reach in period"}>
-                        Freq {freq.toFixed(1)}{freqHigh ? "⚠" : ""}
-                      </span>
-                    )}
-                  </div>
+                {/* Title takes whatever room the metrics don't claim */}
+                <div style={{ flex: 1, minWidth: 0, fontSize: 12, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={r.name}>{r.name}</div>
+                {/* All metrics inline-right of the title — no second line. */}
+                <div style={{ display: "flex", gap: 12, alignItems: "center", flexShrink: 0, fontVariantNumeric: "tabular-nums" }}>
+                  <span style={{ fontSize: 11, color: "#6B7280" }}>{cs}{Math.round(r.spend || 0).toLocaleString()}</span>
+                  <span style={{ fontSize: 11, color: roas >= 2 ? "#059669" : roas > 0 ? "#6B7280" : "#9CA3AF", fontWeight: 600 }}>{roas > 0 ? `${roas.toFixed(2)}x` : "0x"}</span>
+                  <span style={{ fontSize: 11, color: "#6B7280" }} title="New customers in period">+{newCust}</span>
+                  {freq > 0 && (
+                    <span style={{
+                      fontSize: 10, fontWeight: 700,
+                      padding: "1px 6px", borderRadius: 8,
+                      background: freqHigh ? "#FEE2E2" : "#E5E7EB",
+                      color: freqHigh ? "#B91C1C" : "#374151",
+                    }} title={freqHigh ? "Average frequency ≥ 3 — fatigue likely" : "Average impressions per unique reach in period"}>
+                      ƒ {freq.toFixed(1)}{freqHigh ? "⚠" : ""}
+                    </span>
+                  )}
+                  {/* Click affordance — chevron, brightens on row hover */}
+                  {interactive && (
+                    <span aria-hidden="true" style={{
+                      fontSize: 14, color: "#94A3B8",
+                      transition: "color 0.12s ease, transform 0.12s ease",
+                      width: 12, textAlign: "center",
+                    }} className="ad-age-chevron">›</span>
+                  )}
                 </div>
               </div>
             );
@@ -2848,7 +2990,7 @@ export default function Campaigns() {
                       <Text as="h3" variant="headingSm">Best to Worst Performing</Text>
                       <SmallToggle options={LEVEL_OPTIONS} selected={rankLevel} onChange={setRankLevel} />
                     </InlineStack>
-                    <BestToWorstList rows={rankRows} cs={cs} />
+                    <BestToWorstList rows={rankRows} cs={cs} entityType={rankLevel as "campaign" | "adset" | "ad"} onEntityClick={(id, name) => setDrawerEntity({ objectType: rankLevel as any, objectId: id, objectName: name })} />
                   </BlockStack>
                 </Card>
               )},

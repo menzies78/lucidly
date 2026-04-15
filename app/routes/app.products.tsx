@@ -152,7 +152,7 @@ export const loader = async ({ request }) => {
   const _t0 = Date.now();
 
   // Cache the per-window rollup queries (date-keyed) and the analysis blob (per-shop)
-  const [currentRollup, prevRollup, analysisCacheRow, unmatchedAgg, imageMap] = await Promise.all([
+  const [currentRollup, prevRollup, analysisCacheRow, unmatchedAgg, imageMap, periodOrders] = await Promise.all([
     queryCached(`${shopDomain}:productRollup:${fromKey}:${toKey}`, DEFAULT_TTL, () =>
       db.dailyProductRollup.findMany({
         where: { shopDomain, date: { gte: fromDate, lte: toDate } },
@@ -174,7 +174,30 @@ export const loader = async ({ request }) => {
       _sum: { metaConversionValue: true },
     }),
     fetchImages(),
+    // Per-period orders, slim — needed to compute date-scoped add-on
+    // appearances (cached blob is all-time and was confusing the user).
+    queryCached(`${shopDomain}:periodOrdersForAddons:${fromKey}:${toKey}`, DEFAULT_TTL, () =>
+      db.order.findMany({
+        where: { shopDomain, isOnlineStore: true, createdAt: { gte: fromDate, lte: toDate } },
+        select: { shopifyOrderId: true, lineItems: true, utmConfirmedMeta: true },
+      }),
+    ),
   ]);
+
+  // Period attribution lookup — used to flag Meta orders for the Meta tab.
+  const periodOrderIds = periodOrders.map((o) => o.shopifyOrderId);
+  const periodMetaAttrs = periodOrderIds.length > 0
+    ? await queryCached(
+        `${shopDomain}:periodAttrsForAddons:${fromKey}:${toKey}`,
+        DEFAULT_TTL,
+        () => db.attribution.findMany({
+          where: { shopDomain, shopifyOrderId: { in: periodOrderIds }, confidence: { gt: 0 } },
+          select: { shopifyOrderId: true },
+        }),
+      )
+    : [];
+  const metaOrderIdSet = new Set(periodMetaAttrs.map((a) => a.shopifyOrderId));
+  for (const o of periodOrders) if (o.utmConfirmedMeta) metaOrderIdSet.add(o.shopifyOrderId);
   console.log(`[products] db ${Date.now() - _t0}ms (rollup=${currentRollup.length}, prevRollup=${prevRollup.length})`);
 
   const shop = shopForTz;
@@ -309,23 +332,42 @@ export const loader = async ({ request }) => {
   // NOTE: these are all-time analyses, not date-scoped. Blob refreshes on each sync.
   const metaCombos = blob.metaCombos || [];
   const nonMetaCombos = blob.nonMetaCombos || [];
-  // Add-on rate = "appears in N% of multi-product baskets". Both numerator
-  // and denominator come from the all-time analysis blob so the values are
-  // self-consistent and capped at 100%. If the blob hasn't been rebuilt
-  // since the denominator was added, render rate as null and the UI shows
-  // an em dash instead of a misleading number.
-  const allBasketTotal = blob.addonAllBaskets || 0;
-  const metaBasketTotal = blob.addonMetaBaskets || 0;
-  const topAddonsAll = (blob.topAddons || []).map((a: any) => ({
-    product: a.product,
-    appearances: a.appearances,
-    addonRate: allBasketTotal > 0 ? Math.round((a.appearances / allBasketTotal) * 100) : null,
-  })).sort((a: any, b: any) => b.appearances - a.appearances).slice(0, 20);
-  const topAddonsMeta = (blob.topAddonsMeta || []).map((a: any) => ({
-    product: a.product,
-    appearances: a.appearances,
-    addonRate: metaBasketTotal > 0 ? Math.round((a.appearances / metaBasketTotal) * 100) : null,
-  })).sort((a: any, b: any) => b.appearances - a.appearances).slice(0, 20);
+  // Date-scoped add-on counts. We rebuild from the period's raw orders
+  // every loader call (cached per fromKey:toKey via queryCached above).
+  // Each order's lineItems is comma-separated; multi-item orders are the
+  // ones that count toward "baskets". A product's appearances = number of
+  // multi-item baskets containing it. Rate = appearances ÷ basket total.
+  const allBaskets: string[][] = [];
+  const metaBaskets: string[][] = [];
+  for (const o of periodOrders) {
+    const items = (o.lineItems || "")
+      .split(", ").map((s) => toParentProduct(s.trim())).filter(Boolean);
+    const unique = [...new Set(items)];
+    if (unique.length < 2) continue; // only multi-product baskets count
+    allBaskets.push(unique);
+    if (metaOrderIdSet.has(o.shopifyOrderId)) metaBaskets.push(unique);
+  }
+  const countAddons = (baskets: string[][]) => {
+    const counts: Record<string, number> = {};
+    for (const basket of baskets) {
+      for (const p of basket) counts[p] = (counts[p] || 0) + 1;
+    }
+    return counts;
+  };
+  const allCounts = countAddons(allBaskets);
+  const metaCounts = countAddons(metaBaskets);
+  const buildAddonList = (counts: Record<string, number>, total: number) =>
+    Object.entries(counts)
+      .filter(([, n]) => n >= 2)
+      .map(([product, appearances]) => ({
+        product,
+        appearances,
+        addonRate: total > 0 ? Math.round((appearances / total) * 100) : null,
+      }))
+      .sort((a, b) => b.appearances - a.appearances)
+      .slice(0, 20);
+  const topAddonsAll = buildAddonList(allCounts, allBaskets.length);
+  const topAddonsMeta = buildAddonList(metaCounts, metaBaskets.length);
   const topAddons = topAddonsAll.slice(0, 20);
 
   const topGateway = blob.metaJourney?.topGateway || [];
@@ -437,12 +479,26 @@ export const loader = async ({ request }) => {
     .filter(r => r.metaFirstPurchaseCount > 0 && r.metaOrders >= 5 && r.product.toLowerCase() !== "gift card")
     .sort((a, b) => b.metaFirstPurchaseCount - a.metaFirstPurchaseCount)[0];
   const topMetaProduct = rows.filter(r => r.metaOrders > 0).sort((a, b) => b.metaRevenue - a.metaRevenue)[0];
-  // Headline tile shows the product that has lost the most cash to refunds —
-  // sorted by total refunded amount, not refund rate. The full-rate ranking
-  // table below uses its own dataset (top20RefundRate*).
-  const highestRefundProduct = rows
-    .filter(r => (r.totalRefunded || 0) > 0)
-    .sort((a, b) => (b.totalRefunded || 0) - (a.totalRefunded || 0))[0];
+  // Headline tile uses the Wilson lower bound on refund rate — the textbook
+  // way to surface "statistically concerning" rates that don't get tricked
+  // by tiny samples (1 of 1 = 100% but meaningless) or dominated by a single
+  // big-ticket refund. Min 5 orders to enter the ranking. The score is the
+  // 95% lower confidence bound on the binomial proportion; whichever product
+  // the matcher is *most confident* has a high refund rate wins.
+  const wilsonLower = (refunds: number, orders: number) => {
+    if (orders <= 0) return 0;
+    const z = 1.96;
+    const p = refunds / orders;
+    const denom = 1 + (z * z) / orders;
+    const centre = p + (z * z) / (2 * orders);
+    const margin = z * Math.sqrt((p * (1 - p) + (z * z) / (4 * orders)) / orders);
+    return (centre - margin) / denom;
+  };
+  const refundCandidates = rows
+    .filter(r => (r.totalOrders || 0) >= 5 && (r.refundedOrders || 0) > 0)
+    .map(r => ({ ...r, wilsonScore: wilsonLower(r.refundedOrders || 0, r.totalOrders || 0) }));
+  const highestRefundProduct = refundCandidates
+    .sort((a, b) => (b.wilsonScore || 0) - (a.wilsonScore || 0))[0];
 
   // Top Meta Product daily chart (Meta orders only)
   const topMetaProductChart = topMetaProduct ? chartDates.map(date => ({
@@ -532,6 +588,7 @@ export const loader = async ({ request }) => {
       refundRate: highestRefundProduct.refundRate,
       refundedOrders: highestRefundProduct.refundedOrders,
       totalOrders: highestRefundProduct.totalOrders,
+      wilsonRate: Math.round((highestRefundProduct.wilsonScore || 0) * 100),
       imageUrl: highestRefundProduct.imageUrl,
     } : null,
     revenueBarData,
@@ -1185,20 +1242,20 @@ export default function Products() {
           { id: "bestGateway", label: "Best Gateway Product", render: () => topGatewayProduct ? (
             <SummaryTile
               label="Best Gateway Product"
-              value={`${topGatewayProduct.metaFirstPurchaseCount} new Meta customers`}
-              subtitle={`${topGatewayProduct.product} · ${topGatewayProduct.metaOrders} Meta orders`}
+              value={topGatewayProduct.product}
+              subtitle={`${topGatewayProduct.metaFirstPurchaseCount} new Meta customers · ${topGatewayProduct.metaOrders} Meta orders`}
               imageUrl={topGatewayProduct.imageUrl}
               tooltip={{ definition: "Product most often bought as a first purchase by Meta-acquired customers", calc: "Ranked by Meta first purchase count (min 5 Meta orders)" }}
             />
           ) : (
             <SummaryTile label="Best Gateway Product" value={"\u2014"} subtitle="Not enough data (5+ Meta orders required)" tooltip={{ definition: "Product most often bought as a first purchase by Meta-acquired customers" }} />
           )},
-          { id: "highestRefund", label: "Highest Refunded Item", render: () => highestRefundProduct && (highestRefundProduct.totalRefunded || 0) > 0 ? (
+          { id: "highestRefund", label: "Highest Refunded Item", render: () => highestRefundProduct && (highestRefundProduct.refundedOrders || 0) > 0 ? (
             <SummaryTile
               label="Highest Refunded Item"
-              value={fmtPrice(highestRefundProduct.totalRefunded)}
-              subtitle={`${highestRefundProduct.product} · ${highestRefundProduct.refundedOrders} of ${highestRefundProduct.totalOrders} orders refunded (${highestRefundProduct.refundRate}%)`}
-              tooltip={{ definition: "Product that has lost the most cash to refunds within the selected date range. All customers, not just Meta", calc: "Sum of refunded amount per product, ranked highest first" }}
+              value={`${highestRefundProduct.refundRate}%`}
+              subtitle={`${highestRefundProduct.product} · ${highestRefundProduct.refundedOrders} of ${highestRefundProduct.totalOrders} refunded · ${fmtPrice(highestRefundProduct.totalRefunded)} lost`}
+              tooltip={{ definition: "Product the matcher is most statistically confident has a high refund rate. Filters out tiny samples (min 5 orders) and one-off cash losses by ranking on the Wilson lower bound of the binomial proportion.", calc: `Wilson 95% lower bound on refunds ÷ orders. This product's true rate is at least ${highestRefundProduct.wilsonRate ?? 0}% with 95% confidence.` }}
               lowerIsBetter
               chartData={highestRefundChart}
               chartKey="refunds"
@@ -1207,7 +1264,7 @@ export default function Products() {
               imageUrl={highestRefundProduct.imageUrl}
             />
           ) : (
-            <SummaryTile label="Highest Refunded Item" value={"\u2014"} subtitle="No refunds in this period" tooltip={{ definition: "Product that has lost the most cash to refunds within the selected date range. All customers, not just Meta" }} />
+            <SummaryTile label="Highest Refunded Item" value={"\u2014"} subtitle="Not enough refund signal yet (5+ orders required)" tooltip={{ definition: "Product the matcher is most statistically confident has a high refund rate. Min 5 orders to enter the ranking." }} />
           )},
           { id: "refundRate", label: "Refund Rate Table", span: 2, render: () => (
             <Card>
