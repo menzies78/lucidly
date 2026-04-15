@@ -4,7 +4,7 @@ import { Page, Text, InlineStack, Button } from "@shopify/polaris";
 import ReportTabs from "../components/ReportTabs";
 import { authenticate } from "../shopify.server";
 import db from "../db.server";
-import { cached as queryCached } from "../services/queryCache.server";
+import { cached as queryCached, DEFAULT_TTL } from "../services/queryCache.server";
 import {
   shopDayBounds,
   shopLocalDayKey,
@@ -94,32 +94,33 @@ export const loader = async ({ request }) => {
   const prevMonday = shopDayBounds(tz, prevMondayKey).gte;
   const prevSunday = shopDayBounds(tz, prevSundayKey).lte;
 
-  // ── Stage 1: fetch primary data (date-scoped, parallel) ──
+  // ── Stage 1: fetch primary data (date-scoped, parallel, cached per week) ──
   // Note: customers + metaEntities are loaded in stage 2 so we can scope them
   // to only the IDs actually referenced. Loading all customers / all ad entities
   // for a large merchant (e.g. Vollebak) blows out memory and OOM-kills the VM.
+  const cacheKey = (suffix: string) => `${shopDomain}:weekly:${mondayKey}:${suffix}`;
   const [orders, prevOrders, insights, prevInsights, breakdowns, allAttrs] = await Promise.all([
-    db.order.findMany({
+    queryCached(cacheKey("orders"), DEFAULT_TTL, () => db.order.findMany({
       where: { shopDomain, createdAt: { gte: monday, lte: sunday } },
       select: { shopifyOrderId: true, shopifyCustomerId: true, frozenTotalPrice: true, createdAt: true, country: true, countryCode: true, lineItems: true, utmConfirmedMeta: true },
-    }),
-    db.order.findMany({
+    })),
+    queryCached(cacheKey("prevOrders"), DEFAULT_TTL, () => db.order.findMany({
       where: { shopDomain, createdAt: { gte: prevMonday, lte: prevSunday } },
       select: { shopifyOrderId: true, shopifyCustomerId: true, frozenTotalPrice: true, createdAt: true, country: true, countryCode: true, lineItems: true, utmConfirmedMeta: true },
-    }),
-    db.metaInsight.findMany({
+    })),
+    queryCached(cacheKey("insights"), DEFAULT_TTL, () => db.metaInsight.findMany({
       where: { shopDomain, date: { gte: monday, lte: sunday } },
       select: { date: true, spend: true, adId: true, adName: true, campaignName: true, adSetName: true },
-    }),
-    db.metaInsight.findMany({
+    })),
+    queryCached(cacheKey("prevInsights"), DEFAULT_TTL, () => db.metaInsight.findMany({
       where: { shopDomain, date: { gte: prevMonday, lte: prevSunday } },
       select: { date: true, spend: true },
-    }),
-    db.metaBreakdown.findMany({
+    })),
+    queryCached(cacheKey("breakdowns"), DEFAULT_TTL, () => db.metaBreakdown.findMany({
       where: { shopDomain, date: { gte: monday, lte: sunday }, breakdownType: "country" },
       select: { breakdownValue: true, spend: true, conversionValue: true, conversions: true },
-    }),
-    db.attribution.findMany({
+    })),
+    queryCached(cacheKey("attrs"), DEFAULT_TTL, () => db.attribution.findMany({
       where: { shopDomain, matchedAt: { gte: prevMonday, lte: sunday } },
       // Only the fields actually used downstream — Attribution has many large columns
       select: {
@@ -131,7 +132,7 @@ export const loader = async ({ request }) => {
         metaCampaignName: true,
         metaAdSetName: true,
       },
-    }),
+    })),
   ]);
 
   // ── Stage 2: scoped lookups (customers + ad entities) ──
