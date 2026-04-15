@@ -1214,6 +1214,10 @@ export async function runFillGaps(shopDomain, lookbackDays = 30) {
       // Actually, we need a smarter check: does an attribution already exist for this ad+day combo?
       // The simplest safe approach: check if an unmatched record exists for this ad+day
       const unmatchedPrefix = `unmatched_${ad.adId}_${day}`;
+      // Canonical id used when this sweep has to create a fresh placeholder
+      // because no per-slot one exists yet. Single row; fine for Fill Gaps
+      // which is working at ad-day granularity.
+      const unmatchedKey = `${unmatchedPrefix}_c1`;
       const hasUnmatchedRecord = await db.attribution.findFirst({
         where: { shopDomain, shopifyOrderId: { startsWith: unmatchedPrefix } },
       });
