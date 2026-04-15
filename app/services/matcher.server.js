@@ -25,6 +25,11 @@ import { setProgress, completeProgress, failProgress } from "./progress.server";
  */
 
 const PADDING_MINUTES = 6;
+// Fallback window — used by runFillGaps to catch orders that fell outside
+// the tight 6-minute window of the primary matcher. Starting tight keeps
+// the candidate set small in the common case; widening to 10 rescues the
+// occasional order where the Meta pixel fired ≥7 minutes after checkout.
+const PADDING_MINUTES_WIDE = 10;
 const REVENUE_TOLERANCE = 0.02;
 const REVENUE_TOLERANCE_MEDIUM = 0.05;
 const PER_AD_BUDGET_MS = 120000;
@@ -53,10 +58,10 @@ function getTimezoneOffsetMinutes(timezone, dateStr) {
 // Backward padding only: Shopify order is placed BEFORE Meta pixel fires.
 // An order a few minutes before the Meta hour can have its conversion logged
 // in that hour. An order after the hour would be in a later hour slot.
-function hourToMinuteRange(hour, metaOffsetMinutes = 0) {
+function hourToMinuteRange(hour, metaOffsetMinutes = 0, paddingMinutes = PADDING_MINUTES) {
   let utcStart = hour * 60 - metaOffsetMinutes;
   let utcEnd = utcStart + 59;
-  utcStart -= PADDING_MINUTES;
+  utcStart -= paddingMinutes;
   if (utcStart < 0) utcStart += 1440;
   if (utcEnd < 0) utcEnd += 1440;
   if (utcStart >= 1440) utcStart -= 1440;
@@ -1038,8 +1043,10 @@ export async function runFillGaps(shopDomain, lookbackDays = 30) {
     orderBy: [{ date: "asc" }, { adId: "asc" }],
   });
 
-  // Load web orders in the lookback window + PADDING_MINUTES before start
-  const paddedLookbackStart = new Date(lookbackStart.getTime() - PADDING_MINUTES * 60 * 1000);
+  // Load web orders in the lookback window + the wide padding before start.
+  // Fill Gaps deliberately uses the 10-minute window — its job is to catch
+  // orders the tight 6-minute primary matcher missed.
+  const paddedLookbackStart = new Date(lookbackStart.getTime() - PADDING_MINUTES_WIDE * 60 * 1000);
   const allOrders = await db.order.findMany({
     where: {
       shopDomain,
@@ -1140,7 +1147,10 @@ export async function runFillGaps(shopDomain, lookbackDays = 30) {
     const prevDay3 = new Date(new Date(day + "T00:00:00Z").getTime() - 86400000)
       .toISOString().split("T")[0];
     const prevDayOrders3 = ordersByDate.get(prevDay3) || [];
-    const paddingCutoff3 = 1440 - PADDING_MINUTES - Math.max(0, metaOffset);
+    // Fill Gaps uses the wider padding so an order placed 7–10 minutes before
+    // the Meta hour (which the tight 6-min primary matcher skipped) becomes
+    // eligible here.
+    const paddingCutoff3 = 1440 - PADDING_MINUTES_WIDE - Math.max(0, metaOffset);
     const prevDayPaddingOrders3 = prevDayOrders3.filter(o => {
       const m = o.createdAt.getUTCHours() * 60 + o.createdAt.getUTCMinutes();
       return m >= paddingCutoff3;
@@ -1156,7 +1166,7 @@ export async function runFillGaps(shopDomain, lookbackDays = 30) {
       };
       existing.totalConversions += ins.conversions;
       existing.totalConversionValue += ins.conversionValue;
-      const { start, end } = hourToMinuteRange(ins.hourSlot, metaOffset);
+      const { start, end } = hourToMinuteRange(ins.hourSlot, metaOffset, PADDING_MINUTES_WIDE);
       existing.slots.push({ hour: ins.hourSlot, cap: ins.conversions, start, end, slotValue: ins.conversionValue });
       adTotals.set(ins.adId, existing);
     }

@@ -7,6 +7,11 @@ import { invalidateShop } from "./queryCache.server";
 import { shopLocalToday, shopDayBounds } from "../utils/shopTime.server";
 
 const PADDING_MINUTES = 6;
+// Fallback padding — tried only when the 6-minute window returned no
+// Shopify candidates for a conversion. Starting at 6 keeps the candidate
+// set tight for the common case; widening to 10 rescues the occasional
+// order where the pixel fired ≥7 minutes after checkout.
+const WIDE_PADDING_MINUTES = 10;
 const REVENUE_TOLERANCE = 0.02;
 
 /**
@@ -43,12 +48,12 @@ function getTimezoneOffsetMinutes(timezone, dateStr) {
  * the Meta hour could have its conversion logged in that hour. But an order
  * placed after the Meta hour would be logged in a later hour.
  */
-function hourToMinuteRange(hour, metaOffsetMinutes = 0) {
+function hourToMinuteRange(hour, metaOffsetMinutes = 0, paddingMinutes = PADDING_MINUTES) {
   // Convert Meta local hour to UTC minutes
   let utcStart = hour * 60 - metaOffsetMinutes;
   let utcEnd = utcStart + 59;
   // Backward padding only — order is placed before Meta logs the conversion
-  utcStart -= PADDING_MINUTES;
+  utcStart -= paddingMinutes;
   // Wrap around midnight
   if (utcStart < 0) utcStart += 1440;
   if (utcEnd < 0) utcEnd += 1440;
@@ -517,41 +522,61 @@ async function recalculateConfidence(shopDomain, matchedOrderIds) {
 }
 
 async function matchSingleConversion(shopDomain, conv, todayOrders, revenueField, metaOffsetMinutes = 0, metaSpendCountries = null, adCountryDeltas = null) {
-  const { start, end } = hourToMinuteRange(conv.hourSlot, metaOffsetMinutes);
   const allAttrs = await db.attribution.findMany({
     where: { shopDomain, confidence: { gt: 0 } },
     select: { shopifyOrderId: true },
   });
   const allMatchedIds = new Set(allAttrs.map(a => a.shopifyOrderId));
 
-  const allCandidates = [];
-  for (const order of todayOrders) {
-    if (allMatchedIds.has(order.shopifyOrderId)) continue;
-    const orderMinute = dateToMinute(order.createdAt);
-    if (minuteInRange(orderMinute, start, end) === false) continue;
-    const orderTotal = revenueField === "subtotal_price" ? order.frozenSubtotalPrice : order.frozenTotalPrice;
-    // Country rank:
-    //   2 = order country appears in this ad's per-cycle country delta (deterministic)
-    //   1 = order country is one this ad had day-level spend in (soft signal) — also when no data
-    //   0 = order country is NOT in the ad's day-level spend set
-    const orderCountry = (order.countryCode || "").toUpperCase();
-    const deltaSet = adCountryDeltas ? adCountryDeltas[conv.adId] : null;
-    let countryRank;
-    if (deltaSet && deltaSet.size > 0 && orderCountry && deltaSet.has(orderCountry)) {
-      countryRank = 2;
-    } else if (!metaSpendCountries || metaSpendCountries.size === 0 || !orderCountry || metaSpendCountries.has(orderCountry)) {
-      countryRank = 1;
-    } else {
-      countryRank = 0;
+  // Build candidates with a given backward-padding window.
+  const buildCandidates = (paddingMinutes) => {
+    const { start, end } = hourToMinuteRange(conv.hourSlot, metaOffsetMinutes, paddingMinutes);
+    const candidates = [];
+    for (const order of todayOrders) {
+      if (allMatchedIds.has(order.shopifyOrderId)) continue;
+      const orderMinute = dateToMinute(order.createdAt);
+      if (minuteInRange(orderMinute, start, end) === false) continue;
+      const orderTotal = revenueField === "subtotal_price" ? order.frozenSubtotalPrice : order.frozenTotalPrice;
+      // Country rank:
+      //   2 = order country appears in this ad's per-cycle country delta (deterministic)
+      //   1 = order country is one this ad had day-level spend in (soft signal) — also when no data
+      //   0 = order country is NOT in the ad's day-level spend set
+      const orderCountry = (order.countryCode || "").toUpperCase();
+      const deltaSet = adCountryDeltas ? adCountryDeltas[conv.adId] : null;
+      let countryRank;
+      if (deltaSet && deltaSet.size > 0 && orderCountry && deltaSet.has(orderCountry)) {
+        countryRank = 2;
+      } else if (!metaSpendCountries || metaSpendCountries.size === 0 || !orderCountry || metaSpendCountries.has(orderCountry)) {
+        countryRank = 1;
+      } else {
+        countryRank = 0;
+      }
+      candidates.push({
+        id: order.id, orderId: order.shopifyOrderId, total: orderTotal,
+        isNew: order.customerOrderCountAtPurchase === 1, time: order.createdAt,
+        customerId: order.shopifyCustomerId, countryRank,
+        // Keep boolean for any legacy consumers
+        countryMatch: countryRank >= 1,
+      });
     }
-    allCandidates.push({
-      id: order.id, orderId: order.shopifyOrderId, total: orderTotal,
-      isNew: order.customerOrderCountAtPurchase === 1, time: order.createdAt,
-      customerId: order.shopifyCustomerId, countryRank,
-      // Keep boolean for any legacy consumers
-      countryMatch: countryRank >= 1,
-    });
+    return candidates;
+  };
+
+  // Try the tight window first. Only widen when there is genuinely nothing
+  // to match, so the common case keeps its small candidate set.
+  let paddingUsed = PADDING_MINUTES;
+  let allCandidates = buildCandidates(PADDING_MINUTES);
+  if (allCandidates.length === 0) {
+    const wide = buildCandidates(WIDE_PADDING_MINUTES);
+    if (wide.length > 0) {
+      paddingUsed = WIDE_PADDING_MINUTES;
+      allCandidates = wide;
+      console.log(`[DeltaMatch] Widened window to ${WIDE_PADDING_MINUTES}min for ad ${conv.adId} hour ${conv.hourSlot}: ${wide.length} candidates`);
+    }
   }
+  // Time window actually used by the candidate set — referenced by the
+  // zero-value £0 non-online fallback path below.
+  const { start, end } = hourToMinuteRange(conv.hourSlot, metaOffsetMinutes, paddingUsed);
 
   if (allCandidates.length === 0) return [];
 
