@@ -45,12 +45,10 @@ const NOISE_PATTERNS: Array<RegExp> = [
 // old/new that itself contains the amount in minor units:
 //   old: { type: "payment_amount", currency: "USD", old_value: 140000, ... }
 //   new: { type: "payment_amount", currency: "USD", new_value: 70000, ... }
-// Dig out the minor-units number and render it as major units with two
-// decimal places. Returns null if we can't find a number.
-function extractBudgetMinorUnits(v: string | null, side: "old" | "new"): number | null {
-  if (v == null || v === "") return null;
-  // Already a bare number
-  if (/^-?\d+(\.\d+)?$/.test(v)) return Number(v);
+// Returns { minorUnits, currency } — currency is the ISO code from Meta.
+function extractBudget(v: string | null, side: "old" | "new"): { minorUnits: number | null; currency: string | null } {
+  if (v == null || v === "") return { minorUnits: null, currency: null };
+  if (/^-?\d+(\.\d+)?$/.test(v)) return { minorUnits: Number(v), currency: null };
   try {
     const parsed = JSON.parse(v);
     if (parsed && typeof parsed === "object") {
@@ -58,17 +56,28 @@ function extractBudgetMinorUnits(v: string | null, side: "old" | "new"): number 
         side === "old"
           ? (parsed.old_value ?? parsed.value ?? parsed.amount)
           : (parsed.new_value ?? parsed.value ?? parsed.amount);
-      if (typeof direct === "number") return direct;
-      if (typeof direct === "string" && /^-?\d+(\.\d+)?$/.test(direct)) return Number(direct);
+      const currency = (typeof parsed.currency === "string" ? parsed.currency : null);
+      let minorUnits: number | null = null;
+      if (typeof direct === "number") minorUnits = direct;
+      else if (typeof direct === "string" && /^-?\d+(\.\d+)?$/.test(direct)) minorUnits = Number(direct);
+      return { minorUnits, currency };
     }
   } catch {}
-  return null;
+  return { minorUnits: null, currency: null };
 }
 
-function formatBudgetMajor(minorUnits: number | null): string {
+const CURRENCY_SYMBOL: Record<string, string> = {
+  GBP: "£", USD: "$", EUR: "€", AUD: "A$", CAD: "C$", JPY: "¥",
+};
+function symbolFor(currency: string | null): string {
+  if (!currency) return "";
+  return CURRENCY_SYMBOL[currency.toUpperCase()] || `${currency} `;
+}
+
+function formatBudgetWithSymbol(minorUnits: number | null, currency: string | null): string {
   if (minorUnits == null) return "—";
-  const display = minorUnits / 100;
-  return display.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const display = Math.round(minorUnits / 100); // whole-currency, no decimals
+  return `${symbolFor(currency)}${display.toLocaleString("en-GB")}`;
 }
 
 // Pull the "New → Old" transition if present in the raw summary or the
@@ -109,6 +118,8 @@ function recategorise(
   if (storedCategory !== "paused" && storedCategory !== "resumed") return storedCategory;
   const t = statusTransition(c);
   const to = (t.to || "").toUpperCase();
+  // Strip ACTIVE first because "INACTIVE" contains the substring ACTIVE.
+  if (to.includes("INACTIVE")) return "paused";
   if (to.includes("ACTIVE")) return "resumed";
   if (to.includes("PAUSED") || to.includes("ARCHIVED") || to.includes("DELETED")) return "paused";
   if (to.includes("PENDING")) return "paused"; // inflight; treat as paused for chart colour
@@ -119,9 +130,12 @@ function renderSummary(c: { category: string; summary: string; oldValue: string 
   let s = c.summary || "";
 
   if (c.category === "budget") {
-    const oldMinor = extractBudgetMinorUnits(c.oldValue, "old");
-    const newMinor = extractBudgetMinorUnits(c.newValue, "new");
-    return `Budget changed: old: ${formatBudgetMajor(oldMinor)} | new: ${formatBudgetMajor(newMinor)}`;
+    const oldB = extractBudget(c.oldValue, "old");
+    const newB = extractBudget(c.newValue, "new");
+    // Prefer the newer side's currency if both are present; budgets don't
+    // typically change currency mid-flight but the new side is "what now".
+    const currency = newB.currency || oldB.currency;
+    return `Budget changed: old ${formatBudgetWithSymbol(oldB.minorUnits, currency)} | new ${formatBudgetWithSymbol(newB.minorUnits, currency)}`;
   }
 
   // Strip "Run status changed: " prefix and render the transition with
@@ -187,8 +201,11 @@ export const loader = async ({ request }: { request: Request }) => {
         c.objectType === "ad" ? "Ad" : "Account",
       objectName: c.objectName || c.objectId,
       objectId: c.objectId,
-      summary: displaySummary,
-      summaryFilterKey,
+      // `summary` carries the *grouped* filter key (e.g. "Budget changed")
+      // because the multi-select dropdown reads row[columnId] directly.
+      // `summaryDisplay` is the human-readable string the cell renders.
+      summary: summaryFilterKey,
+      summaryDisplay: displaySummary,
       isNoise: isNoiseSummary(displaySummary),
       actor: c.actorName || c.actorId || "",
       oldValue: c.oldValue || "",
@@ -267,7 +284,7 @@ export default function ChangeLog() {
   const dayKeyForEvent = (iso: string) => iso.slice(0, 10);
   const annotationChanges = visibleRows.map(r => ({
     id: r.id, eventTimeISO: r.eventTimeISO, category: r.category,
-    objectType: r.objectType, objectName: r.objectName, summary: r.summary,
+    objectType: r.objectType, objectName: r.objectName, summary: r.summaryDisplay,
     rawEventType: r.rawEventType, actor: r.actor,
   }));
   const openDrawerFor = (row: typeof rows[number]) => {
@@ -350,16 +367,11 @@ export default function ChangeLog() {
       },
     },
     {
-      id: "summary",
-      // Accessor returns the grouped filter key so the multi-select
-      // dropdown shows one "Budget changed" entry rather than hundreds of
-      // unique "Budget changed: old:X | new:Y" variants. The cell still
-      // renders the full formatted summary for humans.
-      accessorFn: (row: any) => row.summaryFilterKey,
+      accessorKey: "summary",
       header: "Summary",
       meta: { filterType: "multi-select", description: "Human-readable description of the change. Filter groups volatile summaries (e.g. budget amounts) under a single canonical label." },
       filterFn: "multiSelect" as any,
-      cell: ({ row }) => row.original.summary || "—",
+      cell: ({ row }) => row.original.summaryDisplay || "—",
     },
     {
       accessorKey: "actor",
