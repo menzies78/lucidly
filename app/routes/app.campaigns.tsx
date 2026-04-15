@@ -1849,6 +1849,98 @@ function WastedSpendList({ items, cs }: { items: { name: string; spend: number; 
   );
 }
 
+// Scrollable list of every ad with its age, spend, ROAS, and creative-fatigue
+// flag. Header shows a colour-coded "X days since last new ad launched"
+// callout — green if recent, amber if drifting, red if it's been a while.
+function AdAgeTile({ adRows, cs }: { adRows: any[]; cs: string }) {
+  // Sort by age ascending so newest are easy to scan; we still highlight
+  // ageing creatives via a colour band on each row.
+  const rows = (adRows || []).slice().sort((a, b) => {
+    const ax = a.adAgeDays == null ? Infinity : a.adAgeDays;
+    const bx = b.adAgeDays == null ? Infinity : b.adAgeDays;
+    return ax - bx;
+  });
+
+  // "Days since last new ad" — minimum age across ads that actually have an
+  // age. Active filter doesn't matter here; we want to know creative
+  // freshness regardless of whether the ad is still spending.
+  const dated = rows.filter(r => r.adAgeDays != null);
+  const newestAge = dated.length > 0 ? dated[0].adAgeDays : null;
+
+  // Fatigue counts — quick "how stale is the account" read.
+  const fatigueOver30 = rows.filter(r => (r.adAgeDays ?? 0) >= 30).length;
+  const fatigueOver60 = rows.filter(r => (r.adAgeDays ?? 0) >= 60).length;
+
+  // Colour band thresholds for the per-row marker — kept in sync with the
+  // header callout below.
+  const ageColor = (days: number | null) => {
+    if (days == null) return "#9CA3AF";       // unknown
+    if (days < 7) return "#059669";           // fresh
+    if (days < 21) return "#65A30D";          // healthy
+    if (days < 45) return "#D97706";          // ageing
+    return "#B91C1C";                         // fatigued
+  };
+  const headerColor = newestAge == null ? "#6B7280"
+    : newestAge < 7 ? "#059669"
+    : newestAge < 14 ? "#D97706"
+    : "#B91C1C";
+
+  return (
+    <BlockStack gap="300">
+      <Text as="h3" variant="headingSm">Ad Age</Text>
+      <div style={{
+        display: "flex", alignItems: "center", gap: 10,
+        padding: "8px 12px", borderRadius: 8,
+        background: headerColor + "15", border: `1px solid ${headerColor}40`,
+      }}>
+        <div style={{ fontSize: 22 }}>{newestAge == null ? "·" : newestAge < 7 ? "🆕" : newestAge < 14 ? "⏳" : "⚠️"}</div>
+        <div>
+          <div style={{ fontSize: 13, fontWeight: 700, color: headerColor }}>
+            {newestAge == null ? "No ads with known launch date" : `${newestAge} day${newestAge === 1 ? "" : "s"} since last new ad launched`}
+          </div>
+          <div style={{ fontSize: 11, color: "#6B7280" }}>
+            {fatigueOver30} ad{fatigueOver30 === 1 ? "" : "s"} ≥ 30 days · {fatigueOver60} ≥ 60 days
+          </div>
+        </div>
+      </div>
+      {rows.length === 0 ? (
+        <div style={{ color: "#999", fontSize: 13, padding: "8px 0" }}>No ads in this period.</div>
+      ) : (
+        <div style={{ maxHeight: 240, overflowY: "auto", display: "flex", flexDirection: "column", gap: 4 }}>
+          {rows.map((r, idx) => {
+            const days = r.adAgeDays;
+            const colour = ageColor(days);
+            const ageLabel = days == null ? "—" : days === 0 ? "Today" : `${days}d`;
+            const roas = r.spend > 0 ? ((r.attributedRevenue + (r.unverifiedRevenue || 0)) / r.spend) : 0;
+            const newCust = r.newCustomerOrders || 0;
+            return (
+              <div key={r.id || idx} style={{
+                display: "flex", alignItems: "center", gap: 10,
+                padding: "6px 8px", borderRadius: 6,
+                background: idx % 2 === 0 ? "#fafafa" : "#fff",
+                borderLeft: `3px solid ${colour}`,
+              }}>
+                <div style={{
+                  fontSize: 11, fontWeight: 700, color: colour,
+                  minWidth: 44, textAlign: "right", fontVariantNumeric: "tabular-nums",
+                }}>{ageLabel}</div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 12, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={r.name}>{r.name}</div>
+                  <div style={{ display: "flex", gap: 12, marginTop: 2 }}>
+                    <span style={{ fontSize: 11, color: "#6B7280" }}>Spend: <strong>{cs}{Math.round(r.spend || 0).toLocaleString()}</strong></span>
+                    <span style={{ fontSize: 11, color: "#6B7280" }}>ROAS: <strong>{roas > 0 ? `${roas.toFixed(2)}x` : "0x"}</strong></span>
+                    <span style={{ fontSize: 11, color: "#6B7280" }}>New cust: <strong>{newCust}</strong></span>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </BlockStack>
+  );
+}
+
 
 const TAB_LEVELS = ["campaign", "adset", "ad"];
 const TAB_LABELS = ["Campaigns", "Ad Sets", "Ads"];
@@ -2587,37 +2679,6 @@ export default function Campaigns() {
 
           return (
             <>
-            {changeEvents && changeEvents.length > 0 && (
-              <div style={{ marginBottom: 12 }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
-                  <div style={{ fontSize: 12, fontWeight: 600, color: "#374151" }}>
-                    Activity in period — {changeEvents.length} change{changeEvents.length === 1 ? "" : "s"}
-                  </div>
-                  <label style={{ fontSize: 12, color: "#6b7280", cursor: "pointer" }}>
-                    <input
-                      type="checkbox"
-                      checked={showChanges}
-                      onChange={(e) => setShowChanges(e.target.checked)}
-                      style={{ marginRight: 6, verticalAlign: "middle" }}
-                    />
-                    Show changes
-                  </label>
-                </div>
-                {showChanges && (
-                  <ChangesAnnotationStrip
-                    changes={changeEvents}
-                    fromKey={fromKey}
-                    toKey={toKey}
-                    dayKeyForEvent={dayKeyForEvent}
-                    onEventClick={(ev) => {
-                      if (ev.objectType === "campaign" || ev.objectType === "adset" || ev.objectType === "ad") {
-                        setDrawerEntity({ objectType: ev.objectType, objectId: (changeEvents.find(c => c.id === ev.id) as any)?.objectId || "", objectName: ev.objectName });
-                      }
-                    }}
-                  />
-                )}
-              </div>
-            )}
             <TileGrid pageId="campaigns-v2" columns={4} tiles={[
               { id: "totalSpend", label: "Total Ad Spend", render: () => (
                 <SummaryTile label="Meta Ad Spend" value={fmtPrice(effectiveTotals.spend)}
@@ -2674,7 +2735,7 @@ export default function Campaigns() {
                   chartData={dailyData} prevChartData={prevDailyData} chartKey={(d) => d.newCustomerOrders > 0 ? d.spend / d.newCustomerOrders : 0}
                   chartColor="#B45309" chartFormat={fmtPrice} />
               )},
-              { id: "bestToWorst", label: "Best to Worst Performing", span: 4, render: () => (
+              { id: "bestToWorst", label: "Best to Worst Performing", span: 2, render: () => (
                 <Card>
                   <BlockStack gap="300">
                     <InlineStack align="space-between" blockAlign="center">
@@ -2683,6 +2744,11 @@ export default function Campaigns() {
                     </InlineStack>
                     <BestToWorstList rows={rankRows} cs={cs} />
                   </BlockStack>
+                </Card>
+              )},
+              { id: "adAge", label: "Ad Age", span: 2, render: () => (
+                <Card>
+                  <AdAgeTile adRows={adRows} cs={cs} />
                 </Card>
               )},
               { id: "platformPerf", label: "Platform Performance", span: 2, render: () => (

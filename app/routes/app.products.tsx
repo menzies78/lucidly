@@ -309,16 +309,23 @@ export const loader = async ({ request }) => {
   // NOTE: these are all-time analyses, not date-scoped. Blob refreshes on each sync.
   const metaCombos = blob.metaCombos || [];
   const nonMetaCombos = blob.nonMetaCombos || [];
-  const topAddonsAll = (blob.topAddons || []).map((a: any) => {
-    const pd = productData[a.product];
-    const totalOrders = pd?.totalOrders || 0;
-    return {
-      product: a.product,
-      appearances: a.appearances,
-      addonRate: totalOrders > 0 ? Math.round((a.appearances / totalOrders) * 100) : 0,
-    };
-  }).sort((a: any, b: any) => b.addonRate - a.addonRate).slice(0, 20);
-  const topAddonsMeta = (blob.topAddonsMeta || []).slice(0, 20);
+  // Add-on rate = "appears in N% of multi-product baskets". Both numerator
+  // and denominator come from the all-time analysis blob so the values are
+  // self-consistent and capped at 100%. If the blob hasn't been rebuilt
+  // since the denominator was added, render rate as null and the UI shows
+  // an em dash instead of a misleading number.
+  const allBasketTotal = blob.addonAllBaskets || 0;
+  const metaBasketTotal = blob.addonMetaBaskets || 0;
+  const topAddonsAll = (blob.topAddons || []).map((a: any) => ({
+    product: a.product,
+    appearances: a.appearances,
+    addonRate: allBasketTotal > 0 ? Math.round((a.appearances / allBasketTotal) * 100) : null,
+  })).sort((a: any, b: any) => b.appearances - a.appearances).slice(0, 20);
+  const topAddonsMeta = (blob.topAddonsMeta || []).map((a: any) => ({
+    product: a.product,
+    appearances: a.appearances,
+    addonRate: metaBasketTotal > 0 ? Math.round((a.appearances / metaBasketTotal) * 100) : null,
+  })).sort((a: any, b: any) => b.appearances - a.appearances).slice(0, 20);
   const topAddons = topAddonsAll.slice(0, 20);
 
   const topGateway = blob.metaJourney?.topGateway || [];
@@ -430,7 +437,12 @@ export const loader = async ({ request }) => {
     .filter(r => r.metaFirstPurchaseCount > 0 && r.metaOrders >= 5 && r.product.toLowerCase() !== "gift card")
     .sort((a, b) => b.metaFirstPurchaseCount - a.metaFirstPurchaseCount)[0];
   const topMetaProduct = rows.filter(r => r.metaOrders > 0).sort((a, b) => b.metaRevenue - a.metaRevenue)[0];
-  const highestRefundProduct = rows.filter(r => r.totalOrders >= 3).sort((a, b) => b.refundRate - a.refundRate)[0];
+  // Headline tile shows the product that has lost the most cash to refunds —
+  // sorted by total refunded amount, not refund rate. The full-rate ranking
+  // table below uses its own dataset (top20RefundRate*).
+  const highestRefundProduct = rows
+    .filter(r => (r.totalRefunded || 0) > 0)
+    .sort((a, b) => (b.totalRefunded || 0) - (a.totalRefunded || 0))[0];
 
   // Top Meta Product daily chart (Meta orders only)
   const topMetaProductChart = topMetaProduct ? chartDates.map(date => ({
@@ -515,8 +527,11 @@ export const loader = async ({ request }) => {
       metaOrders: topMetaProduct.metaOrders, imageUrl: topMetaProduct.imageUrl,
     } : null,
     highestRefundProduct: highestRefundProduct ? {
-      product: highestRefundProduct.product, refundRate: highestRefundProduct.refundRate,
-      refundedOrders: highestRefundProduct.refundedOrders, totalOrders: highestRefundProduct.totalOrders,
+      product: highestRefundProduct.product,
+      totalRefunded: highestRefundProduct.totalRefunded,
+      refundRate: highestRefundProduct.refundRate,
+      refundedOrders: highestRefundProduct.refundedOrders,
+      totalOrders: highestRefundProduct.totalOrders,
       imageUrl: highestRefundProduct.imageUrl,
     } : null,
     revenueBarData,
@@ -963,9 +978,41 @@ export default function Products() {
   const [firstPurchaseMode, setFirstPurchaseMode] = useState<"meta" | "other">("meta");
   const [basketMode, setBasketMode] = useState<"meta" | "other">("meta");
   const [refundMode, setRefundMode] = useState<"meta" | "all">("all");
-  const activeFirstPurchases = firstPurchaseMode === "meta" ? metaFirstPurchaseList : nonMetaFirstPurchaseList;
+  const baseFirstPurchases = firstPurchaseMode === "meta" ? metaFirstPurchaseList : nonMetaFirstPurchaseList;
   const activeCombos = basketMode === "meta" ? metaCombos : nonMetaCombos;
-  const activeRefundList = refundMode === "meta" ? top20RefundRateMeta : top20RefundRateAll;
+  const baseRefundList = refundMode === "meta" ? top20RefundRateMeta : top20RefundRateAll;
+
+  type SortDir = "asc" | "desc";
+  const [refundSortKey, setRefundSortKey] = useState<"refundRate" | "refundedOrders" | "totalOrders" | "totalRefunded" | "product">("refundRate");
+  const [refundSortDir, setRefundSortDir] = useState<SortDir>("desc");
+  const [firstSortKey, setFirstSortKey] = useState<"qty" | "revenue" | "product">("qty");
+  const [firstSortDir, setFirstSortDir] = useState<SortDir>("desc");
+  const cycleSort = (
+    key: string,
+    setKey: (k: any) => void,
+    dir: SortDir,
+    setDir: (d: SortDir) => void,
+    currentKey: string,
+  ) => {
+    if (currentKey === key) setDir(dir === "asc" ? "desc" : "asc");
+    else { setKey(key); setDir("desc"); }
+  };
+  const arrow = (active: boolean, dir: SortDir) => active ? (dir === "desc" ? " ▼" : " ▲") : "";
+  const sortedBy = <T,>(arr: T[], key: keyof T | ((r: T) => any), dir: SortDir): T[] => {
+    const get = typeof key === "function" ? key : (r: T) => r[key];
+    return arr.slice().sort((a, b) => {
+      const av = get(a), bv = get(b);
+      if (av == null && bv == null) return 0;
+      if (av == null) return 1;
+      if (bv == null) return -1;
+      if (typeof av === "string" && typeof bv === "string") {
+        return dir === "asc" ? av.localeCompare(bv) : bv.localeCompare(av);
+      }
+      return dir === "asc" ? (av as any) - (bv as any) : (bv as any) - (av as any);
+    });
+  };
+  const activeRefundList = sortedBy(baseRefundList, refundSortKey as any, refundSortDir);
+  const activeFirstPurchases = sortedBy(baseFirstPurchases, firstSortKey as any, firstSortDir);
   const [journeyMode, setJourneyMode] = useState<"all" | "meta">("all");
   const [addonMode, setAddonMode] = useState<"all" | "meta">("all");
   const [addonSort, setAddonSort] = useState<"addonRate" | "appearances">("appearances");
@@ -1146,22 +1193,21 @@ export default function Products() {
           ) : (
             <SummaryTile label="Best Gateway Product" value={"\u2014"} subtitle="Not enough data (5+ Meta orders required)" tooltip={{ definition: "Product most often bought as a first purchase by Meta-acquired customers" }} />
           )},
-          { id: "highestRefund", label: "Highest Refund Rate", render: () => highestRefundProduct && highestRefundProduct.refundRate > 0 ? (
+          { id: "highestRefund", label: "Highest Refunded Item", render: () => highestRefundProduct && (highestRefundProduct.totalRefunded || 0) > 0 ? (
             <SummaryTile
-              label="Highest Refund Rate"
-              value={`${highestRefundProduct.refundRate}%`}
-              subtitle={`${highestRefundProduct.product} · ${highestRefundProduct.refundedOrders} of ${highestRefundProduct.totalOrders} orders refunded`}
-              tooltip={{ definition: "Product with the highest refund rate within the selected date range. All customers, not just Meta", calc: "Refunded orders ÷ total orders × 100 (min 3 orders)" }}
-              currentValue={highestRefundProduct.refundRate} previousValue={prevHighestRefund}
+              label="Highest Refunded Item"
+              value={fmtPrice(highestRefundProduct.totalRefunded)}
+              subtitle={`${highestRefundProduct.product} · ${highestRefundProduct.refundedOrders} of ${highestRefundProduct.totalOrders} orders refunded (${highestRefundProduct.refundRate}%)`}
+              tooltip={{ definition: "Product that has lost the most cash to refunds within the selected date range. All customers, not just Meta", calc: "Sum of refunded amount per product, ranked highest first" }}
               lowerIsBetter
               chartData={highestRefundChart}
-              chartKey="orders"
+              chartKey="refunds"
               chartColor="#dc2626"
-              chartFormat={(v) => `${v} orders`}
+              chartFormat={(v) => `${v} refunds`}
               imageUrl={highestRefundProduct.imageUrl}
             />
           ) : (
-            <SummaryTile label="Highest Refund Rate" value={"\u2014"} subtitle="No refunds in this period" tooltip={{ definition: "Product with the highest refund rate within the selected date range. All customers, not just Meta", calc: "Refunded orders ÷ total orders × 100 (min 3 orders)" }} />
+            <SummaryTile label="Highest Refunded Item" value={"\u2014"} subtitle="No refunds in this period" tooltip={{ definition: "Product that has lost the most cash to refunds within the selected date range. All customers, not just Meta" }} />
           )},
           { id: "refundRate", label: "Refund Rate Table", span: 2, render: () => (
             <Card>
@@ -1186,11 +1232,11 @@ export default function Products() {
                         <tr>
                           <th style={{ width: 24 }}>#</th>
                           <th style={{ width: 36 }}></th>
-                          <th>Product</th>
-                          <th className="num">Rate</th>
-                          <th className="num">Refunds</th>
-                          <th className="num">Orders</th>
-                          <th className="num">Value</th>
+                          <th onClick={() => cycleSort("product", setRefundSortKey, refundSortDir, setRefundSortDir, refundSortKey)} style={{ cursor: "pointer", userSelect: "none" }}>Product{arrow(refundSortKey === "product", refundSortDir)}</th>
+                          <th className="num" onClick={() => cycleSort("refundRate", setRefundSortKey, refundSortDir, setRefundSortDir, refundSortKey)} style={{ cursor: "pointer", userSelect: "none" }}>Rate{arrow(refundSortKey === "refundRate", refundSortDir)}</th>
+                          <th className="num" onClick={() => cycleSort("refundedOrders", setRefundSortKey, refundSortDir, setRefundSortDir, refundSortKey)} style={{ cursor: "pointer", userSelect: "none" }}>Refunds{arrow(refundSortKey === "refundedOrders", refundSortDir)}</th>
+                          <th className="num" onClick={() => cycleSort("totalOrders", setRefundSortKey, refundSortDir, setRefundSortDir, refundSortKey)} style={{ cursor: "pointer", userSelect: "none" }}>Orders{arrow(refundSortKey === "totalOrders", refundSortDir)}</th>
+                          <th className="num" onClick={() => cycleSort("totalRefunded", setRefundSortKey, refundSortDir, setRefundSortDir, refundSortKey)} style={{ cursor: "pointer", userSelect: "none" }}>Value{arrow(refundSortKey === "totalRefunded", refundSortDir)}</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -1232,9 +1278,9 @@ export default function Products() {
                 <div className="product-list-header">
                   <span style={{ width: 28 }}>#</span>
                   <span style={{ width: 36 }}></span>
-                  <span style={{ flex: 1 }}>Product</span>
-                  <span style={{ minWidth: 40, textAlign: "right" }}>Qty</span>
-                  <span style={{ minWidth: 70, textAlign: "right" }}>Revenue</span>
+                  <span style={{ flex: 1, cursor: "pointer", userSelect: "none" }} onClick={() => cycleSort("product", setFirstSortKey, firstSortDir, setFirstSortDir, firstSortKey)}>Product{arrow(firstSortKey === "product", firstSortDir)}</span>
+                  <span style={{ minWidth: 40, textAlign: "right", cursor: "pointer", userSelect: "none" }} onClick={() => cycleSort("qty", setFirstSortKey, firstSortDir, setFirstSortDir, firstSortKey)}>Qty{arrow(firstSortKey === "qty", firstSortDir)}</span>
+                  <span style={{ minWidth: 70, textAlign: "right", cursor: "pointer", userSelect: "none" }} onClick={() => cycleSort("revenue", setFirstSortKey, firstSortDir, setFirstSortDir, firstSortKey)}>Revenue{arrow(firstSortKey === "revenue", firstSortDir)}</span>
                 </div>
                 <div className="scrollable-list" style={{ flex: 1, overflow: "auto" }}>
                   {activeFirstPurchases.map((item, i) => (
@@ -1367,7 +1413,7 @@ export default function Products() {
                               </div>
                             </td>
                             <td className="num">{item.appearances}</td>
-                            <td className="num">{item.addonRate}%</td>
+                            <td className="num">{item.addonRate == null ? "—" : `${item.addonRate}%`}</td>
                           </tr>
                         ))}
                       </tbody>

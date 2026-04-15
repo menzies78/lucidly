@@ -429,6 +429,12 @@ function buildAnalysisBlob({ orders, attrByOrderId, metaAcquiredCustomers, tz })
     nonMetaCombos: buildCombos(nonMetaBaskets),
     topAddons: buildAddons([...metaBaskets, ...nonMetaBaskets]),
     topAddonsMeta: buildAddons(metaBaskets),
+    // Total multi-product baskets — denominators for the add-on share %
+    // shown in the Top Add-ons tile. Without these the loader was dividing
+    // all-time appearances by per-period order counts, producing values
+    // like 5,000% on the UI.
+    addonAllBaskets: metaBaskets.length + nonMetaBaskets.length,
+    addonMetaBaskets: metaBaskets.length,
     metaFirstPurchaseList,
     nonMetaFirstPurchaseList,
     metaJourney: buildJourney(metaAcquiredCustomers),
