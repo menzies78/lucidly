@@ -77,8 +77,11 @@ export const loader = async ({ request }) => {
   const shop = await db.shop.findUnique({ where: { shopDomain } });
   const currency = shop?.shopifyCurrency || "GBP";
 
-  // ── Fetch data for BOTH weeks in parallel ──
-  const [orders, prevOrders, insights, prevInsights, breakdowns, customers, allAttrs, metaEntities] = await Promise.all([
+  // ── Stage 1: fetch primary data (date-scoped, parallel) ──
+  // Note: customers + metaEntities are loaded in stage 2 so we can scope them
+  // to only the IDs actually referenced. Loading all customers / all ad entities
+  // for a large merchant (e.g. Vollebak) blows out memory and OOM-kills the VM.
+  const [orders, prevOrders, insights, prevInsights, breakdowns, allAttrs] = await Promise.all([
     db.order.findMany({
       where: { shopDomain, createdAt: { gte: monday, lte: sunday } },
       select: { shopifyOrderId: true, shopifyCustomerId: true, frozenTotalPrice: true, createdAt: true, country: true, countryCode: true, lineItems: true, utmConfirmedMeta: true },
@@ -99,26 +102,44 @@ export const loader = async ({ request }) => {
       where: { shopDomain, date: { gte: monday, lte: sunday }, breakdownType: "country" },
       select: { breakdownValue: true, spend: true, conversionValue: true, conversions: true },
     }),
-    db.customer.findMany({
-      where: { shopDomain },
-      select: { shopifyCustomerId: true, firstOrderDate: true, metaSegment: true },
-    }),
-    // Date-scope attributions to the current+previous week (was loading ALL attributions)
     db.attribution.findMany({
-      where: {
-        shopDomain,
-        OR: [
-          { matchedAt: { gte: prevMonday, lte: sunday } },
-          { confidence: { gt: 0 }, matchedAt: { gte: prevMonday, lte: sunday } },
-        ],
+      where: { shopDomain, matchedAt: { gte: prevMonday, lte: sunday } },
+      // Only the fields actually used downstream — Attribution has many large columns
+      select: {
+        shopifyOrderId: true,
+        confidence: true,
+        metaConversionValue: true,
+        metaAdId: true,
+        metaAdName: true,
+        metaCampaignName: true,
+        metaAdSetName: true,
       },
     }),
-    db.metaEntity.findMany({
-      where: { shopDomain, entityType: "ad" },
-      select: { entityId: true, createdTime: true },
-    }),
   ]);
-  // allOrderRefs removed (segments pre-computed on Customer model)
+
+  // ── Stage 2: scoped lookups (customers + ad entities) ──
+  // Only load customers actually referenced in this/prev week's orders.
+  const customerIds = new Set<string>();
+  for (const o of orders) if (o.shopifyCustomerId) customerIds.add(o.shopifyCustomerId);
+  for (const o of prevOrders) if (o.shopifyCustomerId) customerIds.add(o.shopifyCustomerId);
+  // Only load ad entities referenced in this week's insights (used for createdTime lookup).
+  const insightAdIds = new Set<string>();
+  for (const ins of insights) if (ins.adId) insightAdIds.add(ins.adId);
+
+  const [customers, metaEntities] = await Promise.all([
+    customerIds.size > 0
+      ? db.customer.findMany({
+          where: { shopDomain, shopifyCustomerId: { in: Array.from(customerIds) } },
+          select: { shopifyCustomerId: true, firstOrderDate: true, metaSegment: true },
+        })
+      : Promise.resolve([] as Array<{ shopifyCustomerId: string; firstOrderDate: Date | null; metaSegment: string | null }>),
+    insightAdIds.size > 0
+      ? db.metaEntity.findMany({
+          where: { shopDomain, entityType: "ad", entityId: { in: Array.from(insightAdIds) } },
+          select: { entityId: true, createdTime: true },
+        })
+      : Promise.resolve([] as Array<{ entityId: string; createdTime: Date | null }>),
+  ]);
 
   // Pre-computed customer segments (from Customer.metaSegment — set at sync time)
   const customerMap = new Map<string, any>();

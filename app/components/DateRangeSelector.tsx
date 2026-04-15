@@ -131,7 +131,7 @@ function formatLabel(from: string, to: string): string {
   return `${fStr} – ${tStr}`;
 }
 
-const HIDDEN_PATHS = ["/app/meta-connect"];
+const HIDDEN_PATHS = ["/app/meta-connect", "/app/weekly"];
 
 export default function DateRangeSelector() {
   const location = useLocation();
