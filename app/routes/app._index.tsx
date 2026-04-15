@@ -316,6 +316,13 @@ export default function Index() {
               setProgressState({ status: "error", error: data.progress.error });
               setTimeout(() => setProgressState(null), 8000);
             }
+          } else {
+            // Server returned no progress — the task either finished (its
+            // "complete" row was cleared) or the process restarted. Either
+            // way, stop polling so the UI doesn't hammer the endpoint forever.
+            stopPolling();
+            setActiveTask(null);
+            setProgressState(null);
           }
         } catch (e) {
           // ignore fetch errors during polling
@@ -353,6 +360,13 @@ export default function Index() {
               setProgressState({ status: "error", error: data.progress.error });
               setTimeout(() => setProgressState(null), 8000);
             }
+          } else {
+            // Server has no record of this task — most likely the process
+            // restarted while we were resuming. Stop polling instead of
+            // hammering the endpoint every 2s forever.
+            stopPolling();
+            setActiveTask(null);
+            setProgressState(null);
           }
         } catch (e) {}
       };
