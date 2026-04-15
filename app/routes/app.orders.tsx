@@ -712,8 +712,8 @@ export default function Orders() {
   ], [cs]);
 
   const defaultVisibleColumns = useMemo(() => [
-    "createdAtISO", "orderNumber", "orderCount", "campaign",
-    "revenue", "netRevenue", "tag", "confidence",
+    "createdAtISO", "orderNumber", "orderCount", "adName",
+    "revenue", "netRevenue", "tag", "confidence", "method",
   ], []);
 
   const columnProfiles = useMemo(() => [
