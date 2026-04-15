@@ -13,14 +13,26 @@ function tzOrUtc(tz: Tz): string {
   return tz && tz.length > 0 ? tz : "UTC";
 }
 
+// Intl.DateTimeFormat construction is ~100x slower than the .format() call
+// itself, so we cache one formatter per timezone. This matters a lot in
+// report loaders that bucket thousands of orders in a tight loop.
+const dayFormatterCache = new Map<string, Intl.DateTimeFormat>();
+const offsetFormatterCache = new Map<string, Intl.DateTimeFormat>();
+const weekdayFormatterCache = new Map<string, Intl.DateTimeFormat>();
+
 // en-CA produces YYYY-MM-DD reliably across runtimes.
 function formatter(tz: string): Intl.DateTimeFormat {
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone: tz,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  });
+  let f = dayFormatterCache.get(tz);
+  if (!f) {
+    f = new Intl.DateTimeFormat("en-CA", {
+      timeZone: tz,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    });
+    dayFormatterCache.set(tz, f);
+  }
+  return f;
 }
 
 // Returns the shop-local day key ("YYYY-MM-DD") for a given UTC instant.
@@ -98,16 +110,20 @@ function zonedLocalToUtc(
 // wall clock to get the real UTC instant. I.e. for Europe/London in BST,
 // this returns +3600000.
 function tzOffsetMs(tz: string, at: Date): number {
-  const dtf = new Intl.DateTimeFormat("en-US", {
-    timeZone: tz,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: false,
-  });
+  let dtf = offsetFormatterCache.get(tz);
+  if (!dtf) {
+    dtf = new Intl.DateTimeFormat("en-US", {
+      timeZone: tz,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false,
+    });
+    offsetFormatterCache.set(tz, dtf);
+  }
   const parts = dtf.formatToParts(at);
   const get = (t: string) => Number(parts.find((p) => p.type === t)?.value);
   let hour = get("hour");
@@ -127,10 +143,12 @@ function tzOffsetMs(tz: string, at: Date): number {
 }
 
 function zonedDayOfWeek(tz: string, at: Date): number {
-  const weekday = new Intl.DateTimeFormat("en-US", {
-    timeZone: tz,
-    weekday: "short",
-  }).format(at);
+  let dtf = weekdayFormatterCache.get(tz);
+  if (!dtf) {
+    dtf = new Intl.DateTimeFormat("en-US", { timeZone: tz, weekday: "short" });
+    weekdayFormatterCache.set(tz, dtf);
+  }
+  const weekday = dtf.format(at);
   const map: Record<string, number> = {
     Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6,
   };
