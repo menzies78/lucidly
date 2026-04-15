@@ -9,6 +9,9 @@ node_modules
 /app/public/build
 /prisma/dev.sqlite
 /prisma/dev.sqlite-journal
+/prisma/dev.sqlite-shm
+/prisma/dev.sqlite-wal
+/prisma/dev.db
 database.sqlite
 
 .env
@@ -23,3 +26,11 @@ pnpm-lock.yaml
 # Ignore shopify files created during app dev
 .shopify/*
 .shopify.lock
+
+# Local-only scratch / dumps / IDE state
+CODEBASE_DUMP*.txt
+world-map-path.txt
+world-map-preview.svg
+.claude/
+.cursor/
+*.tar.gz

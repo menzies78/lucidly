@@ -6,6 +6,9 @@ import {
 } from "@shopify/shopify-app-remix/server";
 import { PrismaSessionStorage } from "@shopify/shopify-app-session-storage-prisma";
 import prisma from "./db.server";
+import { startScheduler } from "./services/scheduler.server";
+
+startScheduler();
 
 const shopify = shopifyApp({
   apiKey: process.env.SHOPIFY_API_KEY,

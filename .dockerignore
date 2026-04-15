@@ -1,3 +1,9 @@
 .cache
 build
 node_modules
+.env
+prisma/dev.sqlite
+prisma/dev.db
+scripts/
+CODEBASE_DUMP*
+world-map-*

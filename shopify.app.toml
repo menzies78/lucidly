@@ -1,38 +1,46 @@
-# This file stores configurations for your Shopify app.
+# Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
 
-scopes = "write_products"
+client_id = "7106aabefbc1d8756341e28b66264f43"
+name = "Lucidly"
+application_url = "https://lucidly.fly.dev"
+embedded = true
+
+[build]
+automatically_update_urls_on_dev = true
 
 [webhooks]
-api_version = "2024-10"
+api_version = "2026-04"
 
-  # Handled by: /app/routes/webhooks.app.uninstalled.tsx
   [[webhooks.subscriptions]]
+  topics = [ "app/uninstalled" ]
   uri = "/webhooks/app/uninstalled"
-  topics = ["app/uninstalled"]
 
-  # Handled by: /app/routes/webhooks.app.scopes_update.tsx
   [[webhooks.subscriptions]]
   topics = [ "app/scopes_update" ]
   uri = "/webhooks/app/scopes_update"
 
-  # Webhooks can have filters
-  # Only receive webhooks for product updates with a product price >= 10.00
-  # See: https://shopify.dev/docs/apps/build/webhooks/customize/filters
-  # [[webhooks.subscriptions]]
-  # topics = ["products/update"]
-  # uri = "/webhooks/products/update"
-  # filter = "variants.price:>=10.00"
+  [[webhooks.subscriptions]]
+  topics = [ "orders/create" ]
+  uri = "/webhooks/orders/create"
 
-  # Mandatory compliance topic for public apps only
-  # See: https://shopify.dev/docs/apps/build/privacy-law-compliance
-  # [[webhooks.subscriptions]]
-  # uri = "/webhooks/customers/data_request"
-  # compliance_topics = ["customers/data_request"]
+  [[webhooks.subscriptions]]
+  topics = [ "orders/updated" ]
+  uri = "/webhooks/orders/updated"
 
-  # [[webhooks.subscriptions]]
-  # uri = "/webhooks/customers/redact"
-  # compliance_topics = ["customers/redact"]
+[access_scopes]
+scopes = "read_orders,read_all_orders,read_customers,read_products"
 
-  # [[webhooks.subscriptions]]
-  # uri = "/webhooks/shop/redact"
-  # compliance_topics = ["shop/redact"]
+[auth]
+redirect_urls = [ "https://lucidly.fly.dev/auth/callback", "https://lucidly.fly.dev/auth/shopify/callback", "https://lucidly.fly.dev/api/auth/callback" ]
+
+[access.customer_data]
+reason = "App provides order attribution and customer lifetime value analytics"
+
+  [[access.customer_data.fields]]
+  data_category = "name"
+
+  [[access.customer_data.fields]]
+  data_category = "email"
+
+  [[access.customer_data.fields]]
+  data_category = "orders"

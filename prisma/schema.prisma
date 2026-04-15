@@ -1,16 +1,10 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
 generator client {
   provider = "prisma-client-js"
 }
 
-// Note that some adapters may set a maximum length for the String type by default, please ensure your strings are long
-// enough when changing adapters.
-// See https://www.prisma.io/docs/orm/reference/prisma-schema-reference#string for more information
 datasource db {
   provider = "sqlite"
-  url      = "file:dev.sqlite"
+  url      = env("DATABASE_URL")
 }
 
 model Session {
@@ -31,4 +25,400 @@ model Session {
   emailVerified       Boolean?  @default(false)
   refreshToken        String?
   refreshTokenExpires DateTime?
+}
+
+model Shop {
+  id                    String   @id @default(uuid())
+  shopDomain            String   @unique
+  installedAt           DateTime @default(now())
+  metaAccessToken       String?
+  metaAdAccountId       String?
+  metaAccountTimezone   String?
+  revenueDefinition     String   @default("total_price")
+  matchingTolerance     Float    @default(0.02)
+  currencyCode          String   @default("GBP")
+  lastOrderSync         DateTime?
+  lastMetaSync          DateTime?
+  shopifyTimezone       String   @default("Europe/London")
+  shopifyCurrency       String   @default("GBP")
+  metaCurrency          String   @default("GBP")
+  metaAttributionWindow String   @default("7d_click_1d_view")
+  utmTemplate           String   @default("")
+  utmLastAudit          DateTime?
+  utmAdsTotal           Int      @default(0)
+  utmAdsWithTags        Int      @default(0)
+  utmAdsMissing         Int      @default(0)
+  utmAdsFixed           Int      @default(0)
+  onboardingCompleted   Boolean  @default(false)
+  webhooksRegisteredAt  DateTime?
+  webhooksFirstFiredAt  DateTime?
+  metaValueCalibratedAt       DateTime?
+  metaValueCalibrationSamples Int       @default(0)
+  metaValueCalibrationResults String    @default("")
+  // Cached product image map (JSON: { productTitle: imageUrl }). Refreshed
+  // every 24h via the Products loader. Avoids 4-5s GraphQL cold-load cost.
+  productImagesJson           String?
+  productImagesUpdatedAt      DateTime?
+}
+
+model Customer {
+  id                  String   @id @default(uuid())
+  shopDomain          String
+  shopifyCustomerId   String
+  emailHash           String?
+  firstOrderDate      DateTime?
+  lastOrderDate       DateTime?
+  secondOrderDate     DateTime?
+  firstOrderValue     Float    @default(0)
+  totalOrders         Int      @default(0)
+  totalSpent          Float    @default(0)
+  totalRefunded       Float    @default(0)
+  metaOrders          Int      @default(0)
+  discountOrdersCount Int      @default(0)
+  topProducts         String?
+  avgConfidence       Int?
+  isNewCustomer       Boolean  @default(true)
+  // Pre-computed segment: "metaNew" | "metaRetargeted" | "organic"
+  metaSegment         String?
+  acquisitionCampaign String?
+  acquisitionAdSet    String?
+  acquisitionAd       String?
+  country             String?
+  city                String?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  @@unique([shopDomain, shopifyCustomerId])
+  @@index([shopDomain])
+  @@index([shopDomain, metaSegment])
+  @@index([emailHash])
+}
+
+model Order {
+  id                           String   @id @default(uuid())
+  shopDomain                   String
+  shopifyOrderId               String
+  shopifyCustomerId            String?
+  orderNumber                  String?
+  createdAt                    DateTime
+  totalPrice                   Float
+  subtotalPrice                Float
+  currency                     String
+  financialStatus              String?
+  channelName                  String?
+  isOnlineStore                Boolean  @default(true)
+  frozenTotalPrice             Float
+  frozenSubtotalPrice          Float
+  attributionLayer             Int?
+  attributionConfidence        Int?
+  metaCampaignId               String?
+  metaCampaignName             String?
+  metaAdSetId                  String?
+  metaAdSetName                String?
+  metaAdId                     String?
+  metaAdName                   String?
+  isNewCustomerOrder           Boolean?
+  pixelJourney                 String?
+  country                      String   @default("")
+  countryCode                  String   @default("")
+  city                         String   @default("")
+  regionCode                   String   @default("")
+  customerFirstName            String   @default("")
+  customerLastInitial          String   @default("")
+  customerOrderCountAtPurchase Int?
+  lineItems                    String   @default("")
+  productSkus                  String   @default("")
+  productCollections           String   @default("")
+  discountCodes                String   @default("")
+  refundStatus                 String   @default("none")
+  totalRefunded                Float    @default(0)
+  refundLineItems              String   @default("")
+  landingSite                  String   @default("")
+  referringSite                String   @default("")
+  utmSource                    String   @default("")
+  utmMedium                    String   @default("")
+  utmCampaign                  String   @default("")
+  utmContent                   String   @default("")
+  utmTerm                      String   @default("")
+  utmId                        String   @default("")
+  utmConfirmedMeta             Boolean  @default(false)
+  metaCustomerTag              String   @default("")
+  importedAt                   DateTime @default(now())
+
+  @@unique([shopDomain, shopifyOrderId])
+  @@index([shopDomain, createdAt])
+  @@index([shopDomain, shopifyCustomerId])
+  @@index([attributionLayer])
+  @@index([utmConfirmedMeta])
+  @@index([shopDomain, isOnlineStore, createdAt])
+}
+
+model MetaInsight {
+  id                  String   @id @default(uuid())
+  shopDomain          String
+  date                DateTime
+  hourSlot            Int
+  campaignId          String
+  campaignName        String?
+  adSetId             String?
+  adSetName           String?
+  adId                String?
+  adName              String?
+  impressions         Int      @default(0)
+  clicks              Int      @default(0)
+  spend               Float    @default(0)
+  conversions         Int      @default(0)
+  conversionValue     Float    @default(0)
+  reach               Int      @default(0)
+  frequency           Float    @default(0)
+  outboundClicks      Int      @default(0)
+  cpc                 Float    @default(0)
+  cpm                 Float    @default(0)
+  linkClicks          Int      @default(0)
+  landingPageViews    Int      @default(0)
+  addToCart           Int      @default(0)
+  initiateCheckout    Int      @default(0)
+  viewContent         Int      @default(0)
+  videoP25            Int      @default(0)
+  videoP50            Int      @default(0)
+  videoP75            Int      @default(0)
+  videoP100           Int      @default(0)
+  importedAt          DateTime @default(now())
+
+  @@unique([shopDomain, date, hourSlot, adId])
+  @@index([shopDomain, date])
+  @@index([shopDomain, adId, date])
+}
+
+model Attribution {
+  id                    String   @id @default(uuid())
+  shopDomain            String
+  shopifyOrderId        String
+  layer                 Int      // 1 = cookie/UTM (100% certain), 2 = statistical matcher
+  confidence            Int      @default(0)  // 0 = unmatched, 1-100 = match confidence %
+  metaCampaignId        String?
+  metaCampaignName      String?
+  metaAdSetId           String?
+  metaAdSetName         String?
+  metaAdId              String?
+  metaAdName            String?
+  isNewCustomer         Boolean?
+  isNewToMeta           Boolean?
+  matchedAt             DateTime @default(now())
+  matchMethod           String?
+  metaConversionValue   Float    @default(0)
+  rivalCount            Int      @default(0)  // number of alternative candidates (for transparency)
+  // Demographic enrichment — assigned from MetaBreakdown after matching
+  metaAge               String?  // e.g. "25-34" — age bracket of the converter
+  metaGender            String?  // "male", "female", "unknown"
+  metaPlatform          String?  // "facebook", "instagram", etc.
+  metaPlacement         String?  // "feed", "story", "reels", etc.
+  demographicExact      Boolean? // true = unambiguous (1 bucket), false = probabilistic
+
+  @@unique([shopDomain, shopifyOrderId])
+  @@index([shopDomain, layer])
+  @@index([shopDomain, metaCampaignId])
+  @@index([shopDomain, confidence])
+}
+
+model MetaBreakdown {
+  id                  String   @id @default(uuid())
+  shopDomain          String
+  date                DateTime
+  campaignId          String
+  campaignName        String?
+  adSetId             String?
+  adSetName           String?
+  adId                String?
+  adName              String?
+  breakdownType       String   // country, publisher_platform, platform_position, age, gender, age_gender
+  breakdownValue      String   // e.g. "US", "facebook", "feed", "25-34", "male", "25-34|male"
+  impressions         Int      @default(0)
+  clicks              Int      @default(0)
+  spend               Float    @default(0)
+  reach               Int      @default(0)
+  conversions         Int      @default(0)
+  conversionValue     Float    @default(0)
+  linkClicks          Int      @default(0)
+  landingPageViews    Int      @default(0)
+  addToCart           Int      @default(0)
+  initiateCheckout    Int      @default(0)
+  viewContent         Int      @default(0)
+  outboundClicks      Int      @default(0)
+  importedAt          DateTime @default(now())
+
+  @@unique([shopDomain, date, adId, breakdownType, breakdownValue])
+  @@index([shopDomain, breakdownType])
+  @@index([shopDomain, date])
+  @@index([shopDomain, breakdownType, date])
+}
+
+model ExchangeRate {
+  id           Int      @id @default(autoincrement())
+  date         DateTime
+  fromCurrency String
+  toCurrency   String
+  rate         Float
+
+  @@unique([date, fromCurrency, toCurrency])
+}
+
+model MetaEntity {
+  id            String    @id @default(uuid())
+  shopDomain    String
+  entityType    String    // campaign, adset, ad
+  entityId      String
+  createdTime   DateTime?
+  fetchedAt     DateTime  @default(now())
+
+  @@unique([shopDomain, entityType, entityId])
+  @@index([shopDomain, entityType])
+}
+
+model MetaSnapshot {
+  id              Int      @id @default(autoincrement())
+  shopDomain      String
+  date            String
+  adId            String
+  hourSlot        Int
+  conversions     Int
+  conversionValue Float
+  snapshotAt      DateTime @default(now())
+
+  @@unique([shopDomain, date, adId, hourSlot])
+  @@index([shopDomain, date])
+}
+
+model MetaCountrySnapshot {
+  id              Int      @id @default(autoincrement())
+  shopDomain      String
+  date            String
+  adId            String
+  country         String
+  conversions     Int
+  conversionValue Float
+  snapshotAt      DateTime @default(now())
+
+  @@unique([shopDomain, date, adId, country])
+  @@index([shopDomain, date])
+}
+
+/// Precomputed daily per-product per-segment rollups.
+/// Built at the end of each incremental sync for the affected dates.
+/// Loaders sum rows for any date range to render the Products page in <100ms.
+model DailyProductRollup {
+  id              Int      @id @default(autoincrement())
+  shopDomain      String
+  date            DateTime
+  product         String
+  segment         String   // metaNew | metaRepeat | metaRetargeted | organic
+  orders          Int      @default(0)
+  items           Int      @default(0)
+  revenue         Float    @default(0)
+  refundedOrders  Int      @default(0)
+  refundedAmount  Float    @default(0)
+  firstPurchases  Int      @default(0)
+  firstPurchaseRevenue Float @default(0)
+  topCampaignJson String   @default("{}")  // {campaignName: count}
+  topAdSetJson    String   @default("{}")  // {adSetName: count}
+  collections     String   @default("")    // comma-separated
+
+  @@unique([shopDomain, date, product, segment])
+  @@index([shopDomain, date])
+}
+
+/// Generic per-shop cache for precomputed analysis blobs that don't
+/// fit a normalized rollup schema (baskets, journey flows, combos,
+/// first-purchase lists, metaAcquiredCustomers). Refreshed on sync.
+model ShopAnalysisCache {
+  id          Int      @id @default(autoincrement())
+  shopDomain  String
+  cacheKey    String   // e.g. "products:analysis:7d", "products:analysis:all"
+  payload     String   // JSON blob
+  computedAt  DateTime @default(now())
+
+  @@unique([shopDomain, cacheKey])
+}
+
+/// Per-day per-ad rollup of Meta insights + joined attribution results.
+/// Collapses 24 hour-slot insight rows into 1 daily row, and pre-joins
+/// matched attribution totals so the Campaigns loader can sum rollup rows
+/// directly instead of re-running aggregation over raw tables each request.
+/// Rebuilt at the end of every incremental sync.
+model DailyAdRollup {
+  id                    Int      @id @default(autoincrement())
+  shopDomain            String
+  date                  DateTime
+  adId                  String
+  campaignId            String
+  campaignName          String
+  adSetId               String
+  adSetName             String
+  adName                String
+  // Meta insight sums
+  spend                 Float    @default(0)
+  impressions           Int      @default(0)
+  clicks                Int      @default(0)
+  reach                 Int      @default(0)
+  frequencySum          Float    @default(0)
+  frequencyCount        Int      @default(0)
+  linkClicks            Int      @default(0)
+  landingPageViews      Int      @default(0)
+  viewContent           Int      @default(0)
+  addToCart             Int      @default(0)
+  initiateCheckout      Int      @default(0)
+  metaConversions       Int      @default(0)
+  metaConversionValue   Float    @default(0)
+  videoP25              Int      @default(0)
+  videoP50              Int      @default(0)
+  videoP75              Int      @default(0)
+  videoP100             Int      @default(0)
+  // Attribution-derived (matched confidence>0, scoped to this ad & date)
+  attributedOrders      Int      @default(0)
+  attributedRevenue     Float    @default(0)
+  newCustomerOrders     Int      @default(0)
+  newCustomerRevenue    Float    @default(0)
+  existingCustomerOrders Int     @default(0)
+  existingCustomerRevenue Float  @default(0)
+  // Unverified (confidence=0 placeholder attributions)
+  unverifiedRevenue     Float    @default(0)
+  utmOnlyOrders         Int      @default(0)
+  utmOnlyRevenue        Float    @default(0)
+
+  @@unique([shopDomain, date, adId])
+  @@index([shopDomain, date])
+}
+
+model AiInsight {
+  id          String   @id @default(uuid())
+  shopDomain  String
+  pageKey     String
+  dateFrom    String
+  dateTo      String
+  dataHash    String
+  insights    String   // JSON: { observations: [...], actions: [...] }
+  generatedAt DateTime @default(now())
+  modelId     String   @default("claude-sonnet-4-20250514")
+  tokenCost   Int      @default(0)
+
+  @@unique([shopDomain, pageKey, dateFrom, dateTo])
+  @@index([shopDomain, pageKey])
+}
+
+model DailyCustomerRollup {
+  id                Int      @id @default(autoincrement())
+  shopDomain        String
+  date              DateTime
+  segment           String   // metaNew | metaRepeat | metaRetargeted | organic
+  newCustomers      Int      @default(0)
+  orders            Int      @default(0)
+  revenue           Float    @default(0)
+  refundedAmount    Float    @default(0)
+  firstOrderRevenue Float    @default(0)
+  repeatCustomers   Int      @default(0)
+  // Spend allocated to this segment (from DailyAdRollup attribution split)
+  metaSpend         Float    @default(0)
+
+  @@unique([shopDomain, date, segment])
+  @@index([shopDomain, date])
 }
