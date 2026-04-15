@@ -60,6 +60,19 @@ async function runHourlyCycle() {
         // 2. Meta incremental sync + matcher
         const result = await runIncrementalSync(shop.shopDomain);
         console.log(`[Scheduler] Incremental sync for ${shop.shopDomain}: ${result.matched} matched, ${result.unmatched} unmatched, ${result.breakdownRows} breakdowns`);
+
+        // 3. Meta change log delta (last ~36h) — small, quick, lets the
+        // Changes page + campaign chart annotations stay current between
+        // daily refreshes. Non-fatal on failure.
+        try {
+          const { syncMetaChanges } = await import("./metaChangeSync.server.js");
+          const changeResult = await syncMetaChanges(shop.shopDomain);
+          if (changeResult.added || changeResult.updated) {
+            console.log(`[Scheduler] Change log delta for ${shop.shopDomain}: ${changeResult.added} new, ${changeResult.updated} updated (fetched ${changeResult.fetched})`);
+          }
+        } catch (err) {
+          console.error(`[Scheduler] Change log delta failed for ${shop.shopDomain}:`, err.message);
+        }
       } catch (err) {
         console.error(`[Scheduler] Incremental sync failed for ${shop.shopDomain}:`, err.message);
       }
@@ -116,6 +129,25 @@ async function runDailyCycle() {
           console.log(`[Scheduler] Entity sync for ${shop.shopDomain}: ${entityResult.campaigns}c/${entityResult.adsets}as/${entityResult.ads}a`);
         } catch (err) {
           console.error(`[Scheduler] Entity sync failed for ${shop.shopDomain}:`, err.message);
+        }
+
+        // Refresh entity lifecycle (current status + scheduled start/end
+        // from Graph, effective start/end from delivery) and top up any
+        // change-log gaps from the last 7 days.
+        try {
+          const { refreshEntityLifecycle, recomputeEntityDeliveryWindows } = await import("./metaEntityLifecycle.server.js");
+          const lifecycle = await refreshEntityLifecycle(shop.shopDomain);
+          const windows = await recomputeEntityDeliveryWindows(shop.shopDomain);
+          console.log(`[Scheduler] Entity lifecycle for ${shop.shopDomain}: ${lifecycle.updated} refreshed, delivery windows c=${windows.campaign} as=${windows.adset} a=${windows.ad}`);
+        } catch (err) {
+          console.error(`[Scheduler] Entity lifecycle failed for ${shop.shopDomain}:`, err.message);
+        }
+        try {
+          const { syncMetaChanges } = await import("./metaChangeSync.server.js");
+          const changeResult = await syncMetaChanges(shop.shopDomain, { backfillDays: 7 });
+          console.log(`[Scheduler] Change log 7d reconcile for ${shop.shopDomain}: ${changeResult.added} new, ${changeResult.updated} updated`);
+        } catch (err) {
+          console.error(`[Scheduler] Change log reconcile failed for ${shop.shopDomain}:`, err.message);
         }
 
         // Link UTM data to Meta campaigns for any newly imported orders

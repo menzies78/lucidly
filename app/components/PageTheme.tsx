@@ -25,6 +25,7 @@ export const PAGE_TABS = [
   { label: "Weekly Report",  path: "/app/weekly",     accent: "#D97706", accentLight: "#FFFBEB", accentDark: "#B45309" },
   { label: "Order Explorer", path: "/app/orders",     accent: "#6366F1", accentLight: "#EEF2FF", accentDark: "#4F46E5" },
   { label: "UTM Manager",    path: "/app/utm",        accent: "#9333EA", accentLight: "#FAF5FF", accentDark: "#7E22CE" },
+  { label: "Change Log",     path: "/app/changes",    accent: "#334155", accentLight: "#F1F5F9", accentDark: "#1E293B" },
 ] as const;
 
 export function getThemeForPath(pathname: string): PageTheme {

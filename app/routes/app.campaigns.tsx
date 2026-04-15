@@ -11,6 +11,8 @@ import TileGrid from "../components/TileGrid";
 import type { TileDef } from "../components/TileGrid";
 import AiInsightsPanel from "../components/AiInsightsPanel";
 import SummaryTile from "../components/SummaryTile";
+import ChangesAnnotationStrip from "../components/ChangesAnnotationStrip";
+import EntityTimelineDrawer, { type EntityRef } from "../components/EntityTimelineDrawer";
 import { useState, useMemo, useCallback, useRef, useEffect } from "react";
 import { type ColumnDef } from "@tanstack/react-table";
 import { authenticate } from "../shopify.server";
@@ -1017,6 +1019,38 @@ export const loader = async ({ request }) => {
   const aiGeneratedAt = cached?.generatedAt?.toISOString() || null;
   const aiIsStale = cached ? cached.dataHash !== currentHash : false;
 
+  // Meta change log events in the period — cheap query (tight index), cached
+  // by date range. Rendered above the tile grid as a per-day activity strip
+  // and surfaced per-entity via the timeline drawer.
+  const metaChanges = await queryCached(
+    `${shopDomain}:metaChanges:${fromKey}:${toKey}`,
+    DEFAULT_TTL,
+    () => db.metaChange.findMany({
+      where: { shopDomain, eventTime: { gte: fromDate, lte: toDate } },
+      orderBy: { eventTime: "asc" },
+      select: {
+        id: true, eventTime: true, category: true, rawEventType: true,
+        objectType: true, objectId: true, objectName: true,
+        actorName: true, actorId: true, summary: true,
+      },
+    }),
+  );
+  const changeEventsForStrip = metaChanges.map((c) => ({
+    id: c.id,
+    eventTimeISO: c.eventTime.toISOString(),
+    category: c.category,
+    objectType: c.objectType,
+    objectName: c.objectName || "",
+    summary: c.summary,
+    rawEventType: c.rawEventType,
+    actor: c.actorName || c.actorId || "",
+  }));
+  // Per-entity change counts keyed by objectId — used for Campaigns table badges.
+  const changeCountsByObjectId: Record<string, number> = {};
+  for (const c of metaChanges) {
+    changeCountsByObjectId[c.objectId] = (changeCountsByObjectId[c.objectId] || 0) + 1;
+  }
+
   console.log(`[campaigns] total ${Date.now() - _t0}ms`);
 
   return json({
@@ -1028,6 +1062,10 @@ export const loader = async ({ request }) => {
     platformPerf, placementPerf,
     aiCachedInsights, aiGeneratedAt, aiIsStale,
     uniqueNewMetaCustomers, prevUniqueNewMetaCustomers, totalNewCustomersInPeriod,
+    shopDomain,
+    fromKey, toKey,
+    changeEvents: changeEventsForStrip,
+    changeCountsByObjectId,
   });
 };
 
@@ -1826,9 +1864,26 @@ export default function Campaigns() {
     platformPerf, placementPerf,
     aiCachedInsights, aiGeneratedAt, aiIsStale,
     uniqueNewMetaCustomers, prevUniqueNewMetaCustomers, totalNewCustomersInPeriod,
+    shopDomain, fromKey, toKey,
+    changeEvents, changeCountsByObjectId,
   } = useLoaderData();
   const cs = currencySymbol || "£";
   const [searchParams, setSearchParams] = useSearchParams();
+
+  // Change log integration — strip above the tiles + drawer triggered from
+  // entity names in the Campaigns table.
+  const [drawerEntity, setDrawerEntity] = useState<EntityRef | null>(null);
+  const [showChanges, setShowChanges] = useState(() => {
+    if (typeof window === "undefined") return true;
+    const v = window.localStorage.getItem("lucidly.campaigns.showChanges");
+    return v === null ? true : v === "1";
+  });
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem("lucidly.campaigns.showChanges", showChanges ? "1" : "0");
+    }
+  }, [showChanges]);
+  const dayKeyForEvent = (iso: string) => iso.slice(0, 10);
 
   // Measure sticky tabs header height
   const perfTabsRef = useRef<HTMLDivElement>(null);
@@ -2153,32 +2208,63 @@ export default function Campaigns() {
           }
           const name = getValue();
           const canDrill = level === "campaign" || level === "adset";
+          const entityId = original.id;
+          const changeCount = (changeCountsByObjectId && changeCountsByObjectId[entityId]) || 0;
+          const activityBadge = changeCount > 0 ? (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                setDrawerEntity({
+                  objectType: level as "campaign" | "adset" | "ad",
+                  objectId: entityId,
+                  objectName: name,
+                });
+              }}
+              title={`${changeCount} change${changeCount === 1 ? "" : "s"} in period — click for full timeline`}
+              style={{
+                marginLeft: 6, padding: "1px 6px",
+                fontSize: 10, fontWeight: 600, lineHeight: "14px",
+                background: "#EEF2FF", color: "#4338CA",
+                border: "1px solid #C7D2FE", borderRadius: 10,
+                cursor: "pointer", verticalAlign: "middle",
+                whiteSpace: "nowrap",
+              }}
+            >🔔 {changeCount}</button>
+          ) : null;
           if (canDrill && !showBreakdown) {
             return (
-              <button
-                onClick={() => handleDrillDown(row.original)}
-                style={{
-                  background: "none",
-                  border: "none",
-                  color: "#2c6ecb",
-                  cursor: "pointer",
-                  padding: 0,
-                  textDecoration: "underline",
-                  fontSize: "inherit",
-                  textAlign: "left",
-                  maxWidth: "250px",
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                  whiteSpace: "nowrap",
-                  display: "block",
-                }}
-                title={name}
-              >
-                {name}
-              </button>
+              <span style={{ display: "inline-flex", alignItems: "center", maxWidth: "260px" }}>
+                <button
+                  onClick={() => handleDrillDown(row.original)}
+                  style={{
+                    background: "none",
+                    border: "none",
+                    color: "#2c6ecb",
+                    cursor: "pointer",
+                    padding: 0,
+                    textDecoration: "underline",
+                    fontSize: "inherit",
+                    textAlign: "left",
+                    maxWidth: "250px",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                    display: "block",
+                  }}
+                  title={name}
+                >
+                  {name}
+                </button>
+                {activityBadge}
+              </span>
             );
           }
-          return <span style={{ fontWeight: 600 }}>{name}</span>;
+          return (
+            <span style={{ display: "inline-flex", alignItems: "center" }}>
+              <span style={{ fontWeight: 600 }}>{name}</span>
+              {activityBadge}
+            </span>
+          );
         },
       },
     ];
@@ -2285,7 +2371,7 @@ export default function Campaigns() {
       num("ltvAcquiredCustomers", "LTV Customers", (v) => v > 0 ? v.toLocaleString() : "—", { desc: "Number of unique customers acquired via this ad that we have lifetime value data for" }),
     );
     return cols;
-  }, [cs, showBreakdown, breakdown, level, nameHeader, currentSelectedIds, filteredRows, toggleSelectAll, toggleSelect, handleDrillDown]);
+  }, [cs, showBreakdown, breakdown, level, nameHeader, currentSelectedIds, filteredRows, toggleSelectAll, toggleSelect, handleDrillDown, changeCountsByObjectId]);
 
   // Default view = Overview profile
   const defaultVisibleColumns = useMemo(() => {
@@ -2500,6 +2586,38 @@ export default function Campaigns() {
           const prevBlendedROAS = prevT.spend > 0 ? prevAdRev / prevT.spend : 0;
 
           return (
+            <>
+            {changeEvents && changeEvents.length > 0 && (
+              <div style={{ marginBottom: 12 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: "#374151" }}>
+                    Activity in period — {changeEvents.length} change{changeEvents.length === 1 ? "" : "s"}
+                  </div>
+                  <label style={{ fontSize: 12, color: "#6b7280", cursor: "pointer" }}>
+                    <input
+                      type="checkbox"
+                      checked={showChanges}
+                      onChange={(e) => setShowChanges(e.target.checked)}
+                      style={{ marginRight: 6, verticalAlign: "middle" }}
+                    />
+                    Show changes
+                  </label>
+                </div>
+                {showChanges && (
+                  <ChangesAnnotationStrip
+                    changes={changeEvents}
+                    fromKey={fromKey}
+                    toKey={toKey}
+                    dayKeyForEvent={dayKeyForEvent}
+                    onEventClick={(ev) => {
+                      if (ev.objectType === "campaign" || ev.objectType === "adset" || ev.objectType === "ad") {
+                        setDrawerEntity({ objectType: ev.objectType, objectId: (changeEvents.find(c => c.id === ev.id) as any)?.objectId || "", objectName: ev.objectName });
+                      }
+                    }}
+                  />
+                )}
+              </div>
+            )}
             <TileGrid pageId="campaigns-v2" columns={4} tiles={[
               { id: "totalSpend", label: "Total Ad Spend", render: () => (
                 <SummaryTile label="Meta Ad Spend" value={fmtPrice(effectiveTotals.spend)}
@@ -2598,6 +2716,7 @@ export default function Campaigns() {
                 </Card>
               )},
             ] as TileDef[]} />
+            </>
           );
         })()}
 
@@ -2703,6 +2822,12 @@ export default function Campaigns() {
         )}
       </BlockStack>
       </ReportTabs>
+      <EntityTimelineDrawer
+        shopDomain={shopDomain}
+        open={!!drawerEntity}
+        entity={drawerEntity}
+        onClose={() => setDrawerEntity(null)}
+      />
     </Page>
   );
 }

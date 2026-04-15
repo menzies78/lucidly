@@ -264,15 +264,52 @@ model ExchangeRate {
 }
 
 model MetaEntity {
-  id            String    @id @default(uuid())
-  shopDomain    String
-  entityType    String    // campaign, adset, ad
-  entityId      String
-  createdTime   DateTime?
-  fetchedAt     DateTime  @default(now())
+  id               String    @id @default(uuid())
+  shopDomain       String
+  entityType       String    // campaign, adset, ad
+  entityId         String
+  entityName       String?
+  createdTime      DateTime?
+  // Declared lifecycle from Meta (scheduled + status).
+  scheduledStartAt DateTime?
+  scheduledEndAt   DateTime?
+  currentStatus    String?   // ACTIVE | PAUSED | ARCHIVED | DELETED | SCHEDULED
+  lastStatusAt     DateTime?
+  // Actual delivery lifecycle derived from MetaInsight (spend > 0 OR impressions > 0).
+  effectiveStartAt DateTime?
+  effectiveEndAt   DateTime?
+  fetchedAt        DateTime  @default(now())
 
   @@unique([shopDomain, entityType, entityId])
   @@index([shopDomain, entityType])
+}
+
+// Meta ad-account activity log — one row per change event fetched from
+// /act_{id}/activities. Each event is classified into a stable category
+// (see app/services/metaChangeClassifier.server.js) while rawEventType
+// preserves Meta's original value for debugging / power-user queries.
+model MetaChange {
+  id            String   @id @default(cuid())
+  shopDomain    String
+  eventTime     DateTime
+  category      String   // launched | killed | paused | resumed | budget | creative | targeting | optimisation | schedule | other
+  rawEventType  String
+  objectType    String   // campaign | adset | ad | account
+  objectId      String
+  objectName    String
+  actorId       String?
+  actorName     String?
+  oldValue      String?
+  newValue      String?
+  summary       String
+  rawPayload    String
+
+  createdAt     DateTime @default(now())
+
+  @@unique([shopDomain, eventTime, rawEventType, objectId])
+  @@index([shopDomain, eventTime])
+  @@index([shopDomain, objectId, eventTime])
+  @@index([shopDomain, category, eventTime])
 }
 
 model MetaSnapshot {
