@@ -1,5 +1,6 @@
 import db from "../db.server";
 import { setProgress, completeProgress, failProgress } from "./progress.server";
+import { shopLocalDayKey } from "../utils/shopTime.server";
 
 /**
  * Lucidly Attribution Matcher
@@ -1080,10 +1081,17 @@ export async function runFillGaps(shopDomain, lookbackDays = 30) {
     insightsByDate.get(dateKey).push(ins);
   }
 
-  // Group orders by date
+  // Group orders by shop-local day so Fill Gaps aligns with how MetaInsight
+  // buckets data (ad-account-local day stored as UTC-midnight of that date).
+  // Without this, an order placed 00:20 BST — which Meta logs under Apr 15
+  // but which sits in the Apr 14 UTC range — gets mis-attributed to the
+  // previous UTC day and its value pollutes the wrong day's remaining-revenue
+  // math. Shop tz is used as a proxy for Meta tz; they're the same for
+  // Vollebak (both Europe/London).
+  const tz = shop.metaAccountTimezone || shop.shopifyTimezone || "UTC";
   const ordersByDate = new Map();
   for (const order of allOrders) {
-    const dateKey = order.createdAt.toISOString().split("T")[0];
+    const dateKey = shopLocalDayKey(tz, order.createdAt);
     if (!ordersByDate.has(dateKey)) ordersByDate.set(dateKey, []);
     ordersByDate.get(dateKey).push(order);
   }
