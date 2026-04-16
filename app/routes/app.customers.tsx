@@ -1031,7 +1031,10 @@ function WeeklyCohortRevenue({ weekly, cs }: { weekly: { all: WeeklyCohortPoint[
                     </div>
                   );
                 })}
-                {/* Repeat-% overlay line, absolutely positioned across the bar area */}
+                {/* Repeat-% line: SVG polyline stretched to fill. Dots are
+                    rendered as HTML siblings below so (a) they stay round
+                    regardless of bar width and (b) each is individually
+                    hoverable without getting eaten by the <svg>. */}
                 <svg
                   width="100%" height={PLOT_H}
                   preserveAspectRatio="none"
@@ -1041,7 +1044,8 @@ function WeeklyCohortRevenue({ weekly, cs }: { weekly: { all: WeeklyCohortPoint[
                   <polyline
                     fill="none"
                     stroke={lineColor}
-                    strokeWidth={1.5}
+                    strokeOpacity={0.55}
+                    strokeWidth={1.25}
                     vectorEffect="non-scaling-stroke"
                     points={windowed.map((p, i) => {
                       const total = (p.firstRev || 0) + (p.repeatRev || 0);
@@ -1049,14 +1053,38 @@ function WeeklyCohortRevenue({ weekly, cs }: { weekly: { all: WeeklyCohortPoint[
                       return `${i},${100 - pct}`;
                     }).join(" ")}
                   />
+                </svg>
+                {/* Round, individually-hoverable dots */}
+                <div style={{ position: "absolute", inset: 0, pointerEvents: "none" }}>
                   {windowed.map((p, i) => {
                     const total = (p.firstRev || 0) + (p.repeatRev || 0);
                     const pct = total > 0 ? (p.repeatRev / total) * 100 : 0;
-                    return <circle key={p.weekStart}
-                      cx={i} cy={100 - pct} r={0.6}
-                      fill={lineColor} vectorEffect="non-scaling-stroke" />;
+                    const xPct = windowed.length > 1 ? (i / (windowed.length - 1)) * 100 : 50;
+                    const topPx = (1 - pct / 100) * PLOT_H;
+                    const isHover = hoverIdx === i;
+                    return (
+                      <div
+                        key={p.weekStart}
+                        onMouseEnter={() => setHoverIdx(i)}
+                        onMouseLeave={() => setHoverIdx(null)}
+                        style={{
+                          position: "absolute",
+                          left: `calc(${xPct}% - ${isHover ? 4 : 3}px)`,
+                          top: topPx - (isHover ? 4 : 3),
+                          width: isHover ? 8 : 6,
+                          height: isHover ? 8 : 6,
+                          borderRadius: "50%",
+                          background: lineColor,
+                          opacity: isHover ? 1 : 0.75,
+                          boxShadow: isHover ? `0 0 0 2px ${lineColor}33` : "none",
+                          pointerEvents: "auto",
+                          cursor: "default",
+                          transition: "width 0.1s, height 0.1s, opacity 0.1s",
+                        }}
+                      />
+                    );
                   })}
-                </svg>
+                </div>
               </div>
               {/* X-axis labels (first / middle / last) */}
               <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: "#9CA3AF", paddingTop: 6 }}>
