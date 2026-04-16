@@ -433,18 +433,25 @@ export const loader = async ({ request }) => {
   }
 
   // Weekly cohort revenue — one bucket per ISO week the customer was
-  // acquired (keyed on the Monday). Bottom of each bar = sum of first-order
-  // revenue, top = revenue from all subsequent orders (total spent − first
-  // order value), floored at zero to avoid negatives when refunds wipe
-  // out a repeat sum. Used by the Revenue-by-Weekly-Cohort tile.
-  const weeklyCohortMap = new Map<string, { weekStart: string; firstRev: number; repeatRev: number; customers: number; firstCount: number }>();
+  // acquired (keyed on the Monday), separately for all customers and for
+  // Meta-acquired customers only. Bottom of each bar = sum of first-order
+  // revenue, top = revenue from all subsequent orders (totalSpent − first
+  // order value), floored at zero so refunds can't push the repeat stack
+  // below zero.
   const mondayKey = (d: Date): string => {
-    // ISO week Monday: subtract (day-1) days where Sunday counts as 7.
     const x = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
     const day = x.getUTCDay();
     const monOffset = day === 0 ? 6 : day - 1;
     x.setUTCDate(x.getUTCDate() - monOffset);
     return `${x.getUTCFullYear()}-${String(x.getUTCMonth() + 1).padStart(2, "0")}-${String(x.getUTCDate()).padStart(2, "0")}`;
+  };
+  type CohortBucket = { weekStart: string; firstRev: number; repeatRev: number; customers: number };
+  const allMap = new Map<string, CohortBucket>();
+  const metaMap = new Map<string, CohortBucket>();
+  const ensure = (m: Map<string, CohortBucket>, week: string): CohortBucket => {
+    let b = m.get(week);
+    if (!b) { b = { weekStart: week, firstRev: 0, repeatRev: 0, customers: 0 }; m.set(week, b); }
+    return b;
   };
   for (const c of customers) {
     if (!c.firstOrderDate) continue;
@@ -452,24 +459,23 @@ export const loader = async ({ request }) => {
     const totalSpent = Math.max(0, c.totalSpent || 0);
     const repeatRev = Math.max(0, totalSpent - firstRev);
     const week = mondayKey(c.firstOrderDate);
-    let bucket = weeklyCohortMap.get(week);
-    if (!bucket) {
-      bucket = { weekStart: week, firstRev: 0, repeatRev: 0, customers: 0, firstCount: 0 };
-      weeklyCohortMap.set(week, bucket);
+    const all = ensure(allMap, week);
+    all.firstRev += firstRev; all.repeatRev += repeatRev; all.customers += 1;
+    if (c.metaSegment === "metaNew") {
+      const m = ensure(metaMap, week);
+      m.firstRev += firstRev; m.repeatRev += repeatRev; m.customers += 1;
     }
-    bucket.firstRev += firstRev;
-    bucket.repeatRev += repeatRev;
-    bucket.customers += 1;
-    if (firstRev > 0) bucket.firstCount += 1;
   }
-  const weeklyCohortSeries = [...weeklyCohortMap.values()]
-    .sort((a, b) => a.weekStart.localeCompare(b.weekStart))
-    .map((w) => ({
-      weekStart: w.weekStart,
-      firstRev: Math.round(w.firstRev * 100) / 100,
-      repeatRev: Math.round(w.repeatRev * 100) / 100,
-      customers: w.customers,
-    }));
+  const toSeries = (m: Map<string, CohortBucket>) =>
+    [...m.values()]
+      .sort((a, b) => a.weekStart.localeCompare(b.weekStart))
+      .map((w) => ({
+        weekStart: w.weekStart,
+        firstRev: Math.round(w.firstRev * 100) / 100,
+        repeatRev: Math.round(w.repeatRev * 100) / 100,
+        customers: w.customers,
+      }));
+  const weeklyCohortSeries = { all: toSeries(allMap), meta: toSeries(metaMap) };
 
   // Journey from cache blob
   const journeyMeta = journeyBlob?.meta || {};
@@ -889,12 +895,14 @@ interface WeeklyCohortPoint {
   customers: number;
 }
 
-function WeeklyCohortRevenue({ weekly, cs }: { weekly: WeeklyCohortPoint[]; cs: string }) {
+function WeeklyCohortRevenue({ weekly, cs }: { weekly: { all: WeeklyCohortPoint[]; meta: WeeklyCohortPoint[] }; cs: string }) {
   const [scope, setScope] = useState<"365" | "all">("365");
+  const [segment, setSegment] = useState<"meta" | "all">("meta");
   const [hoverIdx, setHoverIdx] = useState<number | null>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
 
-  const sorted = useMemo(() => (weekly || []).slice().sort((a, b) => a.weekStart.localeCompare(b.weekStart)), [weekly]);
+  const series = segment === "meta" ? (weekly?.meta || []) : (weekly?.all || []);
+  const sorted = useMemo(() => series.slice().sort((a, b) => a.weekStart.localeCompare(b.weekStart)), [series]);
   const windowed = useMemo(() => {
     if (scope === "all" || sorted.length === 0) return sorted;
     // 365 days back from the latest cohort in the dataset — 52-ish weeks.
@@ -925,15 +933,23 @@ function WeeklyCohortRevenue({ weekly, cs }: { weekly: WeeklyCohortPoint[]; cs: 
 
   return (
     <BlockStack gap="300">
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
         <Text as="h2" variant="headingMd">Revenue by Weekly Cohort</Text>
-        <div className="toggle-group">
-          <button className={`toggle-btn ${scope === "365" ? "active" : ""}`} onClick={() => setScope("365")}>Previous 365 days</button>
-          <button className={`toggle-btn ${scope === "all" ? "active" : ""}`} onClick={() => setScope("all")}>All time</button>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <div className="toggle-group">
+            <button className={`toggle-btn ${segment === "meta" ? "active" : ""}`} onClick={() => setSegment("meta")}>Meta Customers</button>
+            <button className={`toggle-btn ${segment === "all" ? "active" : ""}`} onClick={() => setSegment("all")}>All Customers</button>
+          </div>
+          <div className="toggle-group">
+            <button className={`toggle-btn ${scope === "365" ? "active" : ""}`} onClick={() => setScope("365")}>Previous 365 days</button>
+            <button className={`toggle-btn ${scope === "all" ? "active" : ""}`} onClick={() => setScope("all")}>All time</button>
+          </div>
         </div>
       </div>
       <Text as="p" variant="bodySm" tone="subdued">
-        First-order revenue at the base, repeat-order revenue stacked on top. Each bar is customers acquired in one week.
+        {segment === "meta"
+          ? "Meta-acquired customers grouped by the week of their first order. Base = first-order revenue; top = repeat orders those same customers have placed since."
+          : "All new customers grouped by the week of their first order. Base = first-order revenue; top = repeat orders those same customers have placed since."}
       </Text>
       {windowed.length === 0 ? (
         <div style={{ padding: 20, textAlign: "center", color: "#9CA3AF", fontSize: 13 }}>No cohort data in this window.</div>
