@@ -977,10 +977,17 @@ function WeeklyCohortRevenue({ weekly, cs }: { weekly: { all: WeeklyCohortPoint[
       </Text>
       {windowed.length === 0 ? (
         <div style={{ padding: 20, textAlign: "center", color: "#9CA3AF", fontSize: 13 }}>No cohort data in this window.</div>
-      ) : (
-        <div ref={wrapRef} style={{ position: "relative" }}>
-          {/* Y-axis reference ticks (top / mid / bottom) */}
+      ) : (() => {
+        // Overlay a repeat-% line on a second Y-axis (0–100% right-side).
+        // Repeat % = repeatRev / (firstRev + repeatRev). It tells the
+        // merchant how much of that week's cohort revenue is coming from
+        // customers who came back — the real LTV signal.
+        const PLOT_H = 200;
+        const lineColor = "#F59E0B"; // amber — contrasts indigo bars
+        return (
+          <div ref={wrapRef} style={{ position: "relative" }}>
           <div style={{ display: "flex", gap: 8 }}>
+            {/* Left Y-axis: £ revenue */}
             <div style={{ width: 44, flexShrink: 0, display: "flex", flexDirection: "column", justifyContent: "space-between", fontSize: 10, color: "#9CA3AF", paddingTop: 2, paddingBottom: 18 }}>
               <span>{fmtMoney(maxVal)}</span>
               <span>{fmtMoney(maxVal / 2)}</span>
@@ -990,15 +997,15 @@ function WeeklyCohortRevenue({ weekly, cs }: { weekly: { all: WeeklyCohortPoint[
               {/* Gridlines */}
               {[0, 0.5, 1].map((f) => (
                 <div key={f} style={{
-                  position: "absolute", left: 0, right: 0, top: `${(1 - f) * 100}%`,
+                  position: "absolute", left: 0, right: 0, top: `${(1 - f) * 100 * (PLOT_H / 220)}%`,
                   borderTop: "1px dashed #F3F4F6",
                 }} />
               ))}
               {/* Bars */}
-              <div style={{ display: "flex", alignItems: "flex-end", gap: 2, height: 200, paddingTop: 0 }}>
+              <div style={{ display: "flex", alignItems: "flex-end", gap: 2, height: PLOT_H, paddingTop: 0, position: "relative" }}>
                 {windowed.map((p, i) => {
                   const total = (p.firstRev || 0) + (p.repeatRev || 0);
-                  const totalH = maxVal > 0 ? (total / maxVal) * 200 : 0;
+                  const totalH = maxVal > 0 ? (total / maxVal) * PLOT_H : 0;
                   const firstH = total > 0 ? (p.firstRev / total) * totalH : 0;
                   const repeatH = Math.max(0, totalH - firstH);
                   const isHover = hoverIdx === i;
@@ -1011,7 +1018,6 @@ function WeeklyCohortRevenue({ weekly, cs }: { weekly: { all: WeeklyCohortPoint[
                         flex: 1, minWidth: 3, display: "flex", flexDirection: "column", justifyContent: "flex-end",
                         cursor: "default", position: "relative",
                       }}
-                      title={`${fmtWeek(p.weekStart)}\nFirst-order revenue: ${fmtMoney(p.firstRev)}\nRepeat revenue: ${fmtMoney(p.repeatRev)}\n${p.customers} customer${p.customers === 1 ? "" : "s"}`}
                     >
                       <div style={{
                         height: repeatH, background: isHover ? "#6366F1" : "#818CF8",
@@ -1025,6 +1031,32 @@ function WeeklyCohortRevenue({ weekly, cs }: { weekly: { all: WeeklyCohortPoint[
                     </div>
                   );
                 })}
+                {/* Repeat-% overlay line, absolutely positioned across the bar area */}
+                <svg
+                  width="100%" height={PLOT_H}
+                  preserveAspectRatio="none"
+                  style={{ position: "absolute", inset: 0, pointerEvents: "none" }}
+                  viewBox={`0 0 ${Math.max(1, windowed.length - 1)} 100`}
+                >
+                  <polyline
+                    fill="none"
+                    stroke={lineColor}
+                    strokeWidth={1.5}
+                    vectorEffect="non-scaling-stroke"
+                    points={windowed.map((p, i) => {
+                      const total = (p.firstRev || 0) + (p.repeatRev || 0);
+                      const pct = total > 0 ? (p.repeatRev / total) * 100 : 0;
+                      return `${i},${100 - pct}`;
+                    }).join(" ")}
+                  />
+                  {windowed.map((p, i) => {
+                    const total = (p.firstRev || 0) + (p.repeatRev || 0);
+                    const pct = total > 0 ? (p.repeatRev / total) * 100 : 0;
+                    return <circle key={p.weekStart}
+                      cx={i} cy={100 - pct} r={0.6}
+                      fill={lineColor} vectorEffect="non-scaling-stroke" />;
+                  })}
+                </svg>
               </div>
               {/* X-axis labels (first / middle / last) */}
               <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: "#9CA3AF", paddingTop: 6 }}>
@@ -1032,6 +1064,12 @@ function WeeklyCohortRevenue({ weekly, cs }: { weekly: { all: WeeklyCohortPoint[
                 {windowed.length > 2 && <span>{fmtWeek(windowed[Math.floor(windowed.length / 2)].weekStart)}</span>}
                 <span>{fmtWeek(windowed[windowed.length - 1].weekStart)}</span>
               </div>
+            </div>
+            {/* Right Y-axis: repeat % */}
+            <div style={{ width: 36, flexShrink: 0, display: "flex", flexDirection: "column", justifyContent: "space-between", fontSize: 10, color: lineColor, fontWeight: 600, paddingTop: 2, paddingBottom: 18, textAlign: "right" }}>
+              <span>100%</span>
+              <span>50%</span>
+              <span>0%</span>
             </div>
           </div>
 
@@ -1060,6 +1098,16 @@ function WeeklyCohortRevenue({ weekly, cs }: { weekly: { all: WeeklyCohortPoint[
                 <span style={{ opacity: 0.8 }}>Customers</span>
                 <strong>{windowed[hoverIdx].customers.toLocaleString()}</strong>
               </div>
+              {(() => {
+                const total = windowed[hoverIdx].firstRev + windowed[hoverIdx].repeatRev;
+                const pct = total > 0 ? Math.round((windowed[hoverIdx].repeatRev / total) * 100) : 0;
+                return (
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: 12, color: lineColor }}>
+                    <span style={{ opacity: 0.9 }}>Repeat share</span>
+                    <strong>{pct}%</strong>
+                  </div>
+                );
+              })()}
             </div>
           )}
 
@@ -1071,9 +1119,13 @@ function WeeklyCohortRevenue({ weekly, cs }: { weekly: { all: WeeklyCohortPoint[
             <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
               <span style={{ width: 10, height: 10, background: "#818CF8", borderRadius: 2 }} /> Repeat revenue
             </span>
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+              <span style={{ width: 14, height: 2, background: lineColor }} /> Repeat %
+            </span>
           </div>
         </div>
-      )}
+        );
+      })()}
     </BlockStack>
   );
 }
