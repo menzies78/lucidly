@@ -676,6 +676,10 @@ async function matchSingleConversion(shopDomain, conv, todayOrders, revenueField
       let rivalCount = 0;
       for (const cand of zeroCandidates) {
         if (pickedIds.has(cand.id)) continue;
+        // Country disqualification: if the pick matches Meta's reported
+        // country (rank > 0) and the candidate doesn't, the candidate
+        // isn't a viable substitute.
+        if ((pick.countryRank || 0) > 0 && (cand.countryRank || 0) < (pick.countryRank || 0)) continue;
         rivalCount++;
       }
       return {
@@ -711,7 +715,12 @@ async function matchSingleConversion(shopDomain, conv, todayOrders, revenueField
       }
     }
     if (!best) return [];
-    // Rivals: other viable candidates within RIVAL_VALUE_TOLERANCE of the pick's value
+    // Rivals: other viable candidates within RIVAL_VALUE_TOLERANCE of the
+    // pick's value AND at least as country-compatible as the pick. Meta's
+    // per-cycle country breakdown already tells us which country this
+    // conversion came from; a candidate from a different country isn't a
+    // realistic substitute even if the order total happens to match.
+    const pickRank = best.countryRank || 0;
     let rivalCount = 0;
     for (const cand of allCandidates) {
       if (cand.id === best.id) continue;
@@ -719,6 +728,7 @@ async function matchSingleConversion(shopDomain, conv, todayOrders, revenueField
         const vd = Math.abs(cand.total - best.total) / best.total;
         if (vd > RIVAL_VALUE_TOLERANCE) continue;
       }
+      if (pickRank > 0 && (cand.countryRank || 0) < pickRank) continue;
       rivalCount++;
     }
     return [{
@@ -782,6 +792,7 @@ async function matchSingleConversion(shopDomain, conv, todayOrders, revenueField
   // Calculate rival-based confidence for each pick
   const pickedIds = new Set(matched.map(p => p.id));
   return matched.map(pick => {
+    const pickRank = pick.countryRank || 0;
     let rivalCount = 0;
     for (const cand of allCandidates) {
       if (pickedIds.has(cand.id)) continue;
@@ -789,6 +800,8 @@ async function matchSingleConversion(shopDomain, conv, todayOrders, revenueField
         const valueDiff = Math.abs(cand.total - pick.total) / pick.total;
         if (valueDiff > RIVAL_VALUE_TOLERANCE) continue;
       }
+      // Country disqualification — see R=1 comment above.
+      if (pickRank > 0 && (cand.countryRank || 0) < pickRank) continue;
       rivalCount++;
     }
     return {

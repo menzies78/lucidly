@@ -83,7 +83,14 @@ function dateToMinute(date) {
 /**
  * Calculate confidence % for a matched order based on rival count.
  * Rivals = unpicked candidates that could substitute for this pick
- * (same time slot compatibility + value within ±2%).
+ * (same time slot + value within ±2% + at least as country-compatible).
+ *
+ * Country disqualification: when the pick matches Meta's day-level
+ * country spend (pick.countryMatch === true) and a candidate doesn't,
+ * that candidate isn't a realistic substitute even if the order total
+ * coincides. Without this, two near-identical-value orders from
+ * different countries always shared confidence, even when Meta's
+ * own breakdown clearly pointed at one of them.
  */
 function calculateConfidence(pick, allCandidates, allPicks) {
   const pickedIds = new Set(allPicks.map(p => p.id));
@@ -99,6 +106,8 @@ function calculateConfidence(pick, allCandidates, allPicks) {
     // Time slot compatibility — could this candidate go in the same slot?
     const hasCompatibleSlot = candidate.slots.some(s => s === pick.slot);
     if (!hasCompatibleSlot) continue;
+    // Country disqualification
+    if (pick.countryMatch && !candidate.countryMatch) continue;
     rivalCount++;
   }
 
@@ -529,6 +538,8 @@ export async function runAttribution(shopDomain) {
             let rivalCount = 0;
             for (const cand of zeroCandidates) {
               if (pickedIds.has(cand.id)) continue;
+              // Same country-disqualification rule as calculateConfidence above.
+              if (pick.countryMatch && !cand.countryMatch) continue;
               rivalCount++;
             }
             const confidence = Math.max(1, Math.round(100 / (1 + rivalCount)));
@@ -890,6 +901,8 @@ export async function runDateRangeRematch(shopDomain, fromDate, toDate) {
             let rivalCount = 0;
             for (const cand of zeroCandidates) {
               if (pickedIds.has(cand.id)) continue;
+              // Same country-disqualification rule as calculateConfidence above.
+              if (pick.countryMatch && !cand.countryMatch) continue;
               rivalCount++;
             }
             const confidence = Math.max(1, Math.round(100 / (1 + rivalCount)));
@@ -1403,6 +1416,8 @@ export async function runFillGaps(shopDomain, lookbackDays = 30) {
             let rivalCount = 0;
             for (const cand of zeroCandidates) {
               if (pickedIds.has(cand.id)) continue;
+              // Same country-disqualification rule as calculateConfidence above.
+              if (pick.countryMatch && !cand.countryMatch) continue;
               rivalCount++;
             }
             const confidence = Math.max(1, Math.round(100 / (1 + rivalCount)));
