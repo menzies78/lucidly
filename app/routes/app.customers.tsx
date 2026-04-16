@@ -434,10 +434,20 @@ export const loader = async ({ request }) => {
 
   // Weekly cohort revenue — one bucket per ISO week the customer was
   // acquired (keyed on the Monday), separately for all customers and for
-  // Meta-acquired customers only. Bottom of each bar = sum of first-order
-  // revenue, top = revenue from all subsequent orders (totalSpent − first
-  // order value), floored at zero so refunds can't push the repeat stack
-  // below zero.
+  // Meta-acquired customers only. Bottom of each bar = first-order revenue,
+  // top = repeat revenue from the same customers (totalSpent − first-order
+  // value), floored at zero so refunds can't push the stack below zero.
+  //
+  // CRITICAL: Customer.firstOrderDate is "earliest order we've imported",
+  // not "true first-ever purchase". Without filtering, a customer with 128
+  // lifetime orders whose earliest-imported order happens to sit in, say,
+  // Feb 2026 would be counted as a Feb-2026 acquisition and their
+  // totalSpent from years of shopping would pollute the repeat stack. We
+  // lean on Shopify's own customerOrderCountAtPurchase = 1 (set on the
+  // order row at sync time) as ground truth for "genuinely new" —
+  // metaSegment "metaNew" already bakes this in for the Meta lane; for the
+  // All-customers lane we pull a set of genuinely-new customer IDs from
+  // the Order table.
   const mondayKey = (d: Date): string => {
     const x = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
     const day = x.getUTCDay();
@@ -445,6 +455,16 @@ export const loader = async ({ request }) => {
     x.setUTCDate(x.getUTCDate() - monOffset);
     return `${x.getUTCFullYear()}-${String(x.getUTCMonth() + 1).padStart(2, "0")}-${String(x.getUTCDate()).padStart(2, "0")}`;
   };
+  const genuinelyNewRows = await queryCached(
+    `${shopDomain}:genuinelyNewCustomerIds`, DEFAULT_TTL,
+    () => db.order.findMany({
+      where: { shopDomain, customerOrderCountAtPurchase: 1, isOnlineStore: true },
+      select: { shopifyCustomerId: true },
+    }),
+  );
+  const genuinelyNewIds = new Set<string>();
+  for (const r of genuinelyNewRows) if (r.shopifyCustomerId) genuinelyNewIds.add(r.shopifyCustomerId);
+
   type CohortBucket = { weekStart: string; firstRev: number; repeatRev: number; customers: number };
   const allMap = new Map<string, CohortBucket>();
   const metaMap = new Map<string, CohortBucket>();
@@ -455,6 +475,10 @@ export const loader = async ({ request }) => {
   };
   for (const c of customers) {
     if (!c.firstOrderDate) continue;
+    // Filter out customers whose earliest imported order wasn't their true
+    // first-ever purchase — their totalSpent reflects years of prior
+    // shopping and would hugely inflate the repeat stack.
+    if (!c.shopifyCustomerId || !genuinelyNewIds.has(c.shopifyCustomerId)) continue;
     const firstRev = Math.max(0, c.firstOrderValue || 0);
     const totalSpent = Math.max(0, c.totalSpent || 0);
     const repeatRev = Math.max(0, totalSpent - firstRev);
