@@ -1243,6 +1243,7 @@ export default function Products() {
             <SummaryTile
               label="Best Gateway Product"
               value={topGatewayProduct.product}
+              valueVariant="headingMd"
               subtitle={`${topGatewayProduct.metaFirstPurchaseCount} new Meta customers · ${topGatewayProduct.metaOrders} Meta orders`}
               imageUrl={topGatewayProduct.imageUrl}
               tooltip={{ definition: "Product most often bought as a first purchase by Meta-acquired customers", calc: "Ranked by Meta first purchase count (min 5 Meta orders)" }}

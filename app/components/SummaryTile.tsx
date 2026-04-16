@@ -17,6 +17,9 @@ export interface SummaryTileProps {
   chartColor?: string;
   chartFormat?: (v: number) => string;
   imageUrl?: string;
+  // Optional override for tiles whose "value" is a long product name
+  // that would overflow the default 2xl heading (e.g. Best Gateway Product).
+  valueVariant?: "headingXl" | "headingLg" | "headingMd" | "heading2xl";
 }
 
 function ProductThumb({ url, size = 44 }: { url: string; size?: number }) {
@@ -101,6 +104,7 @@ function DeltaBadge({ currentValue, previousValue, lowerIsBetter, onHoverChange 
 export default function SummaryTile({
   label, value, subtitle, tooltip, previousValue, currentValue, lowerIsBetter,
   chartData, prevChartData, chartKey, chartColor, chartFormat, imageUrl,
+  valueVariant = "heading2xl",
 }: SummaryTileProps) {
   const [showTip, setShowTip] = useState(false);
   const [showPrevOverlay, setShowPrevOverlay] = useState(false);
@@ -108,7 +112,7 @@ export default function SummaryTile({
 
   return (
     <Card>
-      <div style={{ minHeight: 150, display: "flex", flexDirection: "column" }}>
+      <div style={{ minHeight: 220, height: "100%", display: "flex", flexDirection: "column" }}>
         {/* Header: label + delta badge */}
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6, marginBottom: 4 }}>
           <div
@@ -148,7 +152,7 @@ export default function SummaryTile({
         {/* Value + optional product image */}
         <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 2 }}>
           {imageUrl && <ProductThumb url={imageUrl} />}
-          <Text as="p" variant="heading2xl">{value}</Text>
+          <Text as="p" variant={valueVariant}>{value}</Text>
         </div>
 
         {/* Subtitle */}

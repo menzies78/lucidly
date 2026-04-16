@@ -1,7 +1,7 @@
 import { json } from "@remix-run/node";
 import { useLoaderData, useSearchParams, useSubmit, useActionData, useRevalidator } from "@remix-run/react";
 import { Page, Card, BlockStack, Text, Select } from "@shopify/polaris";
-import { useState, useMemo } from "react";
+import { useState, useMemo, useRef } from "react";
 import ReportTabs from "../components/ReportTabs";
 // import InteractiveTable from "../components/InteractiveTable"; // table removed
 import TileGrid from "../components/TileGrid";
@@ -432,6 +432,45 @@ export const loader = async ({ request }) => {
     }
   }
 
+  // Weekly cohort revenue — one bucket per ISO week the customer was
+  // acquired (keyed on the Monday). Bottom of each bar = sum of first-order
+  // revenue, top = revenue from all subsequent orders (total spent − first
+  // order value), floored at zero to avoid negatives when refunds wipe
+  // out a repeat sum. Used by the Revenue-by-Weekly-Cohort tile.
+  const weeklyCohortMap = new Map<string, { weekStart: string; firstRev: number; repeatRev: number; customers: number; firstCount: number }>();
+  const mondayKey = (d: Date): string => {
+    // ISO week Monday: subtract (day-1) days where Sunday counts as 7.
+    const x = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+    const day = x.getUTCDay();
+    const monOffset = day === 0 ? 6 : day - 1;
+    x.setUTCDate(x.getUTCDate() - monOffset);
+    return `${x.getUTCFullYear()}-${String(x.getUTCMonth() + 1).padStart(2, "0")}-${String(x.getUTCDate()).padStart(2, "0")}`;
+  };
+  for (const c of customers) {
+    if (!c.firstOrderDate) continue;
+    const firstRev = Math.max(0, c.firstOrderValue || 0);
+    const totalSpent = Math.max(0, c.totalSpent || 0);
+    const repeatRev = Math.max(0, totalSpent - firstRev);
+    const week = mondayKey(c.firstOrderDate);
+    let bucket = weeklyCohortMap.get(week);
+    if (!bucket) {
+      bucket = { weekStart: week, firstRev: 0, repeatRev: 0, customers: 0, firstCount: 0 };
+      weeklyCohortMap.set(week, bucket);
+    }
+    bucket.firstRev += firstRev;
+    bucket.repeatRev += repeatRev;
+    bucket.customers += 1;
+    if (firstRev > 0) bucket.firstCount += 1;
+  }
+  const weeklyCohortSeries = [...weeklyCohortMap.values()]
+    .sort((a, b) => a.weekStart.localeCompare(b.weekStart))
+    .map((w) => ({
+      weekStart: w.weekStart,
+      firstRev: Math.round(w.firstRev * 100) / 100,
+      repeatRev: Math.round(w.repeatRev * 100) / 100,
+      customers: w.customers,
+    }));
+
   // Journey from cache blob
   const journeyMeta = journeyBlob?.meta || {};
   const journeyAll = journeyBlob?.all || {};
@@ -546,6 +585,7 @@ export const loader = async ({ request }) => {
     metaAvgAov, totalMetaSpend,
     unmatchedConversions, unmatchedRevenue,
     ltvBenchmark, ltvTile, ltvRecent, ltvMonthly,
+    weeklyCohortSeries,
   });
 };
 
@@ -837,6 +877,168 @@ function JourneyFlow({ firstAOV, gapDays, secondAOV, thirdAOV, gap2to3Days, cust
 
 
 // ═══════════════════════════════════════════════════════════════
+// Revenue by Weekly Cohort — stacked bars, first-order revenue at the
+// bottom and repeat-order revenue stacked on top. Hover shows both
+// actual figures; toggle selects the last 52 weeks or the whole history.
+// ═══════════════════════════════════════════════════════════════
+
+interface WeeklyCohortPoint {
+  weekStart: string;
+  firstRev: number;
+  repeatRev: number;
+  customers: number;
+}
+
+function WeeklyCohortRevenue({ weekly, cs }: { weekly: WeeklyCohortPoint[]; cs: string }) {
+  const [scope, setScope] = useState<"365" | "all">("365");
+  const [hoverIdx, setHoverIdx] = useState<number | null>(null);
+  const wrapRef = useRef<HTMLDivElement>(null);
+
+  const sorted = useMemo(() => (weekly || []).slice().sort((a, b) => a.weekStart.localeCompare(b.weekStart)), [weekly]);
+  const windowed = useMemo(() => {
+    if (scope === "all" || sorted.length === 0) return sorted;
+    // 365 days back from the latest cohort in the dataset — 52-ish weeks.
+    const lastKey = sorted[sorted.length - 1].weekStart;
+    const [y, m, d] = lastKey.split("-").map(Number);
+    const cutoff = new Date(Date.UTC(y, m - 1, d - 365));
+    return sorted.filter((w) => {
+      const [wy, wm, wd] = w.weekStart.split("-").map(Number);
+      return new Date(Date.UTC(wy, wm - 1, wd)) >= cutoff;
+    });
+  }, [sorted, scope]);
+
+  const maxVal = useMemo(() => {
+    let m = 0;
+    for (const p of windowed) m = Math.max(m, (p.firstRev || 0) + (p.repeatRev || 0));
+    return m || 1;
+  }, [windowed]);
+
+  const fmtMoney = (v: number) => {
+    if (v >= 1000000) return `${cs}${(v / 1000000).toFixed(2)}M`;
+    if (v >= 1000) return `${cs}${(v / 1000).toFixed(v >= 10000 ? 0 : 1)}k`;
+    return `${cs}${Math.round(v).toLocaleString()}`;
+  };
+  const fmtWeek = (key: string) => {
+    const [y, m, d] = key.split("-").map(Number);
+    return new Date(Date.UTC(y, m - 1, d)).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "2-digit" });
+  };
+
+  return (
+    <BlockStack gap="300">
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <Text as="h2" variant="headingMd">Revenue by Weekly Cohort</Text>
+        <div className="toggle-group">
+          <button className={`toggle-btn ${scope === "365" ? "active" : ""}`} onClick={() => setScope("365")}>Previous 365 days</button>
+          <button className={`toggle-btn ${scope === "all" ? "active" : ""}`} onClick={() => setScope("all")}>All time</button>
+        </div>
+      </div>
+      <Text as="p" variant="bodySm" tone="subdued">
+        First-order revenue at the base, repeat-order revenue stacked on top. Each bar is customers acquired in one week.
+      </Text>
+      {windowed.length === 0 ? (
+        <div style={{ padding: 20, textAlign: "center", color: "#9CA3AF", fontSize: 13 }}>No cohort data in this window.</div>
+      ) : (
+        <div ref={wrapRef} style={{ position: "relative" }}>
+          {/* Y-axis reference ticks (top / mid / bottom) */}
+          <div style={{ display: "flex", gap: 8 }}>
+            <div style={{ width: 44, flexShrink: 0, display: "flex", flexDirection: "column", justifyContent: "space-between", fontSize: 10, color: "#9CA3AF", paddingTop: 2, paddingBottom: 18 }}>
+              <span>{fmtMoney(maxVal)}</span>
+              <span>{fmtMoney(maxVal / 2)}</span>
+              <span>{cs}0</span>
+            </div>
+            <div style={{ flex: 1, position: "relative", height: 220 }}>
+              {/* Gridlines */}
+              {[0, 0.5, 1].map((f) => (
+                <div key={f} style={{
+                  position: "absolute", left: 0, right: 0, top: `${(1 - f) * 100}%`,
+                  borderTop: "1px dashed #F3F4F6",
+                }} />
+              ))}
+              {/* Bars */}
+              <div style={{ display: "flex", alignItems: "flex-end", gap: 2, height: 200, paddingTop: 0 }}>
+                {windowed.map((p, i) => {
+                  const total = (p.firstRev || 0) + (p.repeatRev || 0);
+                  const totalH = maxVal > 0 ? (total / maxVal) * 200 : 0;
+                  const firstH = total > 0 ? (p.firstRev / total) * totalH : 0;
+                  const repeatH = Math.max(0, totalH - firstH);
+                  const isHover = hoverIdx === i;
+                  return (
+                    <div
+                      key={p.weekStart}
+                      onMouseEnter={() => setHoverIdx(i)}
+                      onMouseLeave={() => setHoverIdx(null)}
+                      style={{
+                        flex: 1, minWidth: 3, display: "flex", flexDirection: "column", justifyContent: "flex-end",
+                        cursor: "default", position: "relative",
+                      }}
+                      title={`${fmtWeek(p.weekStart)}\nFirst-order revenue: ${fmtMoney(p.firstRev)}\nRepeat revenue: ${fmtMoney(p.repeatRev)}\n${p.customers} customer${p.customers === 1 ? "" : "s"}`}
+                    >
+                      <div style={{
+                        height: repeatH, background: isHover ? "#6366F1" : "#818CF8",
+                        borderTopLeftRadius: 2, borderTopRightRadius: 2,
+                        transition: "background 0.15s",
+                      }} />
+                      <div style={{
+                        height: firstH, background: isHover ? "#4338CA" : "#4F46E5",
+                        transition: "background 0.15s",
+                      }} />
+                    </div>
+                  );
+                })}
+              </div>
+              {/* X-axis labels (first / middle / last) */}
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: "#9CA3AF", paddingTop: 6 }}>
+                <span>{fmtWeek(windowed[0].weekStart)}</span>
+                {windowed.length > 2 && <span>{fmtWeek(windowed[Math.floor(windowed.length / 2)].weekStart)}</span>}
+                <span>{fmtWeek(windowed[windowed.length - 1].weekStart)}</span>
+              </div>
+            </div>
+          </div>
+
+          {/* Hover popover */}
+          {hoverIdx != null && windowed[hoverIdx] && (
+            <div style={{
+              position: "absolute", top: 6, right: 6,
+              background: "#111827", color: "#fff", borderRadius: 6,
+              padding: "8px 12px", fontSize: 12, minWidth: 180,
+              boxShadow: "0 6px 18px rgba(0,0,0,0.18)", pointerEvents: "none",
+            }}>
+              <div style={{ fontWeight: 700, marginBottom: 4 }}>Week of {fmtWeek(windowed[hoverIdx].weekStart)}</div>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
+                <span style={{ opacity: 0.8 }}>First order</span>
+                <strong>{fmtMoney(windowed[hoverIdx].firstRev)}</strong>
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
+                <span style={{ opacity: 0.8 }}>Repeat orders</span>
+                <strong>{fmtMoney(windowed[hoverIdx].repeatRev)}</strong>
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 12, borderTop: "1px solid #374151", marginTop: 4, paddingTop: 4 }}>
+                <span style={{ opacity: 0.8 }}>Total</span>
+                <strong>{fmtMoney(windowed[hoverIdx].firstRev + windowed[hoverIdx].repeatRev)}</strong>
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
+                <span style={{ opacity: 0.8 }}>Customers</span>
+                <strong>{windowed[hoverIdx].customers.toLocaleString()}</strong>
+              </div>
+            </div>
+          )}
+
+          {/* Legend */}
+          <div style={{ display: "flex", justifyContent: "center", gap: 16, marginTop: 10, fontSize: 11, color: "#6B7280" }}>
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+              <span style={{ width: 10, height: 10, background: "#4F46E5", borderRadius: 2 }} /> First order
+            </span>
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+              <span style={{ width: 10, height: 10, background: "#818CF8", borderRadius: 2 }} /> Repeat revenue
+            </span>
+          </div>
+        </div>
+      )}
+    </BlockStack>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
 // STYLES
 // ═══════════════════════════════════════════════════════════════
 
@@ -899,6 +1101,7 @@ export default function Customers() {
     metaAvgAov, totalMetaSpend,
     unmatchedConversions, unmatchedRevenue,
     ltvBenchmark, ltvTile, ltvRecent, ltvMonthly,
+    weeklyCohortSeries,
     prevMetaCount, prevMetaAvgFirstOrder, prevAovCpaRatio, prevNewCustomerCPA,
     prevMetaRepeatRate, prevMetaRevenue,
     prevMedianTimeTo2nd,
@@ -1258,7 +1461,7 @@ export default function Customers() {
               chartData={dailyData} prevChartData={prevDailyData} chartKey={(d) => d.newMetaCustomers > 0 && d.spend > 0 ? d.spend / d.newMetaCustomers : 0}
               chartColor="#DC2626" chartFormat={fmtPrice} />
           )},
-          { id: "customerJourney", label: "Customer Journey", span: 4, render: () => (
+          { id: "customerJourney", label: "Customer Journey", span: 2, render: () => (
           <Card>
             <BlockStack gap="300">
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
@@ -1287,6 +1490,11 @@ export default function Customers() {
               />
             </BlockStack>
           </Card>
+          )},
+          { id: "weeklyCohortRevenue", label: "Revenue by Weekly Cohort", span: 2, render: () => (
+            <Card>
+              <WeeklyCohortRevenue weekly={weeklyCohortSeries} cs={cs} />
+            </Card>
           )},
           { id: "ltvOverview", label: "Meta Customer Lifetime Value", span: 4, render: () => (
           <Card>
