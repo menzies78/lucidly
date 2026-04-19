@@ -166,6 +166,9 @@ export async function rebuildProductRollups(shopDomain) {
   }
 
   for (const order of orders) {
+    // Skip £0 orders (staff / replacement / warranty) from product metrics
+    // so they don't inflate order counts and drag down per-product AOV.
+    if ((order.frozenTotalPrice || 0) === 0) continue;
     const rawItems = (order.lineItems || "").split(", ").map(s => s.trim()).filter(Boolean);
     if (rawItems.length === 0) continue;
     const parentItems = rawItems.map(toParentProduct);

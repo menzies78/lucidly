@@ -199,8 +199,9 @@ export const loader = async ({ request }) => {
   for (const attr of matchedAttrs) {
     const order = orderMap[attr.shopifyOrderId];
     if (!order) continue;
-    const cc = order.countryCode || "XX";
     const rev = order.frozenTotalPrice || 0;
+    if (rev === 0) continue; // Skip £0 orders from geo metrics
+    const cc = order.countryCode || "XX";
     const custId = order.shopifyCustomerId || null;
 
     if (!overallByCountry[cc]) overallByCountry[cc] = makeAgg(cc);
@@ -259,8 +260,9 @@ export const loader = async ({ request }) => {
   for (const order of ordersInRange) {
     if (!order.utmConfirmedMeta) continue;
     if (matchedOrderIdSet.has(order.shopifyOrderId)) continue;
-    const cc = order.countryCode || "XX";
     const rev = order.frozenTotalPrice || 0;
+    if (rev === 0) continue; // Same £0 exclusion as matched orders
+    const cc = order.countryCode || "XX";
     const custId = order.shopifyCustomerId || null;
 
     if (!overallByCountry[cc]) overallByCountry[cc] = makeAgg(cc);

@@ -135,8 +135,11 @@ export async function rebuildCampaignRollups(shopDomain) {
     if (a.confidence > 0) {
       const order = orderMap.get(a.shopifyOrderId);
       if (!order) continue;
-      const b = getBucket(order.createdAt, a.metaAdId, null);
       const rev = order.frozenTotalPrice || 0;
+      // Skip £0 orders (staff / replacement / warranty) from attributed
+      // metrics so they don't inflate order counts and drag down AOV/CPA.
+      if (rev === 0) continue;
+      const b = getBucket(order.createdAt, a.metaAdId, null);
       b.attributedOrders += 1;
       b.attributedRevenue += rev;
       // Use Shopify ground truth for new customer check, not the attribution flag
@@ -168,6 +171,8 @@ export async function rebuildCampaignRollups(shopDomain) {
     if (!order.utmConfirmedMeta) continue;
     if (matchedOrderIds.has(order.shopifyOrderId)) continue;
     if (!order.metaAdId) continue;
+    const rev = order.frozenTotalPrice || 0;
+    if (rev === 0) continue; // Same £0 exclusion as matched attributions above.
     const b = getBucket(order.createdAt, order.metaAdId, {
       campaignId: order.metaCampaignId,
       campaignName: order.metaCampaignName,
@@ -175,7 +180,6 @@ export async function rebuildCampaignRollups(shopDomain) {
       adSetName: order.metaAdSetName,
       adName: order.metaAdName,
     });
-    const rev = order.frozenTotalPrice || 0;
     b.attributedOrders += 1;
     b.attributedRevenue += rev;
     b.utmOnlyOrders += 1;

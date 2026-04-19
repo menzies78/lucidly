@@ -673,6 +673,9 @@ export async function rebuildCustomerRollups(shopDomain) {
   for (const order of orders) {
     const custId = order.shopifyCustomerId;
     if (!custId) continue;
+    // Skip £0 orders (staff / replacement / warranty) from customer
+    // rollup metrics so they don't inflate order counts or depress AOV.
+    if ((order.frozenTotalPrice || 0) === 0) continue;
 
     const custSegment = segmentMap.get(custId) || "organic";
     const dateStr = shopLocalDayKey(tz, order.createdAt);
