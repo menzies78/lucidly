@@ -214,8 +214,10 @@ export const loader = async ({ request }) => {
     newOrders: number; newRevenue: number; repeatOrders: number; repeatRevenue: number;
     retargetedOrders: number; retargetedRevenue: number;
     unmatchedConversions: number; unmatchedRevenue: number;
+    // Meta-acquired customers returning organically (no ad attribution on this order)
+    metaOrganicReturnOrders: number; metaOrganicReturnRevenue: number;
   };
-  const emptyDay = (): DayBucket => ({ storeRevenue: 0, adSpend: 0, adOrders: 0, adRevenue: 0, newOrders: 0, newRevenue: 0, repeatOrders: 0, repeatRevenue: 0, retargetedOrders: 0, retargetedRevenue: 0, unmatchedConversions: 0, unmatchedRevenue: 0 });
+  const emptyDay = (): DayBucket => ({ storeRevenue: 0, adSpend: 0, adOrders: 0, adRevenue: 0, newOrders: 0, newRevenue: 0, repeatOrders: 0, repeatRevenue: 0, retargetedOrders: 0, retargetedRevenue: 0, unmatchedConversions: 0, unmatchedRevenue: 0, metaOrganicReturnOrders: 0, metaOrganicReturnRevenue: 0 });
 
   const days: DayBucket[] = Array.from({ length: 7 }, emptyDay);
   const prevDays: DayBucket[] = Array.from({ length: 7 }, emptyDay);
@@ -248,6 +250,24 @@ export const loader = async ({ request }) => {
         if (cls === "new") { dayBuckets[idx].newOrders++; dayBuckets[idx].newRevenue += rev; }
         else if (cls === "repeat") { dayBuckets[idx].repeatOrders++; dayBuckets[idx].repeatRevenue += rev; }
         else if (cls === "retargeted") { dayBuckets[idx].retargetedOrders++; dayBuckets[idx].retargetedRevenue += rev; }
+      } else {
+        // No ad attribution on this specific order. Check if the customer
+        // was originally acquired via Meta — if so, this is an organic
+        // return visit. Captures the LTV of Meta acquisition beyond the
+        // initial ad-driven purchase.
+        if (rev === 0) continue;
+        const custId = order.shopifyCustomerId;
+        if (custId && metaAcquiredCustomers.has(custId)) {
+          // Make sure this isn't their first order (which would mean the
+          // first-order attribution was missed, not an organic return).
+          const customer = customerMap.get(custId);
+          const custFirstDate = customer?.firstOrderDate ? shopLocalDayKey(tz, customer.firstOrderDate) : "";
+          const orderDate = shopLocalDayKey(tz, order.createdAt);
+          if (custFirstDate !== orderDate) {
+            dayBuckets[idx].metaOrganicReturnOrders++;
+            dayBuckets[idx].metaOrganicReturnRevenue += rev;
+          }
+        }
       }
     }
   }
@@ -434,6 +454,7 @@ interface DayData {
   newOrders: number; newRevenue: number; repeatOrders: number; repeatRevenue: number;
   retargetedOrders: number; retargetedRevenue: number;
   unmatchedConversions: number; unmatchedRevenue: number;
+  metaOrganicReturnOrders: number; metaOrganicReturnRevenue: number;
 }
 interface GeoRow { country: string; orders: number; revenue: number }
 interface ProductRow { product: string; orders: number; revenue: number }
@@ -441,7 +462,7 @@ interface CountrySpendRow { country: string; spend: number; revenue: number }
 interface AdPerf { adName: string; campaignName: string; adSetName: string; orders: number; revenue: number; spend: number }
 
 function sumDays(days: DayData[]): DayData {
-  const t: DayData = { storeRevenue: 0, adSpend: 0, adOrders: 0, adRevenue: 0, newOrders: 0, newRevenue: 0, repeatOrders: 0, repeatRevenue: 0, retargetedOrders: 0, retargetedRevenue: 0, unmatchedConversions: 0, unmatchedRevenue: 0 };
+  const t: DayData = { storeRevenue: 0, adSpend: 0, adOrders: 0, adRevenue: 0, newOrders: 0, newRevenue: 0, repeatOrders: 0, repeatRevenue: 0, retargetedOrders: 0, retargetedRevenue: 0, unmatchedConversions: 0, unmatchedRevenue: 0, metaOrganicReturnOrders: 0, metaOrganicReturnRevenue: 0 };
   for (const d of days) { for (const k of Object.keys(t) as (keyof DayData)[]) t[k] += d[k]; }
   return t;
 }
@@ -524,6 +545,24 @@ function DayTile({ title, subtitle, data, prevData, currency, highlight }: {
       <MetricRow label="Revenue" value={fmtCurrency(data.newRevenue, currency)} muted={data.newOrders === 0} current={data.newRevenue} prev={showCompare ? prevData.newRevenue : undefined} />
       <MetricRow label="AOV" value={data.newOrders > 0 ? fmtCurrency(newAov, currency) : "—"} muted={data.newOrders === 0} current={newAov} prev={prevNewAov} />
       <MetricRow label="ROAS" value={data.adSpend > 0 && data.newOrders > 0 ? fmtRoas(newRoas) : "—"} muted={data.newOrders === 0} current={newRoas} prev={prevNewRoas} />
+
+      <div style={{ height: "8px" }} />
+      <div style={{ fontSize: "11px", fontWeight: 600, color: "#0891B2", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "4px" }}>Repeat Meta Customers (Organic Return)</div>
+      {(() => {
+        const mOrd = data.metaOrganicReturnOrders;
+        const mRev = data.metaOrganicReturnRevenue;
+        const mAov = mOrd > 0 ? mRev / mOrd : 0;
+        const prevMOrd = prevData.metaOrganicReturnOrders;
+        const prevMRev = prevData.metaOrganicReturnRevenue;
+        const prevMAov = showCompare && prevMOrd > 0 ? prevMRev / prevMOrd : undefined;
+        return (
+          <>
+            <MetricRow label="Orders" value={String(mOrd)} muted={mOrd === 0} current={mOrd} prev={showCompare ? prevMOrd : undefined} />
+            <MetricRow label="Revenue" value={fmtCurrency(mRev, currency)} muted={mOrd === 0} current={mRev} prev={showCompare ? prevMRev : undefined} />
+            <MetricRow label="AOV" value={mOrd > 0 ? fmtCurrency(mAov, currency) : "—"} muted={mOrd === 0} current={mAov} prev={prevMAov} />
+          </>
+        );
+      })()}
     </div>
   );
 }
