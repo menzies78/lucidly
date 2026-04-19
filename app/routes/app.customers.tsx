@@ -386,10 +386,47 @@ export const loader = async ({ request }) => {
     .sort((a, b) => b.conversions - a.conversions);
   const totalDemoConversions = ageBreakdown.reduce((s, a) => s + a.conversions, 0);
 
-  // newAgeBreakdown / newGenderBreakdown — empty for now (would need attribution demographics)
-  const newAgeBreakdown: any[] = [];
-  const newGenderBreakdown: any[] = [];
-  const newDemoConversions = 0;
+  // New-Meta demographics — pulled from Attribution rows (which carry
+  // per-order metaAge/metaGender from the breakdown enrichment step),
+  // filtered to isNewCustomer=true within the date range. More precise
+  // than Meta's aggregate breakdown because it's per-matched-order.
+  const newMetaAttrsWithDemo = await queryCached(
+    `${shopDomain}:newMetaDemoAttrs:${dateFromStr}:${dateToStr}`,
+    DEFAULT_TTL,
+    () => db.attribution.findMany({
+      where: {
+        shopDomain,
+        confidence: { gt: 0 },
+        isNewCustomer: true,
+        metaAge: { not: null },
+        matchedAt: { gte: fromDate, lte: toDate },
+      },
+      select: { metaAge: true, metaGender: true, metaConversionValue: true },
+    }),
+  );
+  const newAgeAgg: Record<string, { conversions: number; value: number; spend: number; impressions: number }> = {};
+  const newGenderAgg: Record<string, { conversions: number; value: number; spend: number; impressions: number }> = {};
+  for (const a of newMetaAttrsWithDemo) {
+    if (a.metaAge) {
+      if (!newAgeAgg[a.metaAge]) newAgeAgg[a.metaAge] = { conversions: 0, value: 0, spend: 0, impressions: 0 };
+      newAgeAgg[a.metaAge].conversions++;
+      newAgeAgg[a.metaAge].value += a.metaConversionValue || 0;
+    }
+    if (a.metaGender) {
+      if (!newGenderAgg[a.metaGender]) newGenderAgg[a.metaGender] = { conversions: 0, value: 0, spend: 0, impressions: 0 };
+      newGenderAgg[a.metaGender].conversions++;
+      newGenderAgg[a.metaGender].value += a.metaConversionValue || 0;
+    }
+  }
+  const newAgeBreakdown = Object.entries(newAgeAgg).map(([breakdownValue, s]) => ({
+    breakdownValue,
+    _sum: { conversions: s.conversions, conversionValue: s.value, spend: s.spend, impressions: s.impressions },
+  }));
+  const newGenderBreakdown = Object.entries(newGenderAgg).map(([breakdownValue, s]) => ({
+    breakdownValue,
+    _sum: { conversions: s.conversions, conversionValue: s.value, spend: s.spend, impressions: s.impressions },
+  }));
+  const newDemoConversions = newMetaAttrsWithDemo.length;
   const newDemoExactCount = 0;
 
   // Geography from cache blob — normalize to component-expected shape
