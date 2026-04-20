@@ -199,8 +199,10 @@ export const loader = async ({ request }) => {
   for (const attr of matchedAttrs) {
     const order = orderMap[attr.shopifyOrderId];
     if (!order) continue;
-    const rev = order.frozenTotalPrice || 0;
-    if (rev === 0) continue; // Skip £0 orders from geo metrics
+    const gross = order.frozenTotalPrice || 0;
+    if (gross === 0) continue; // Skip £0 orders from geo metrics
+    // Net of refunds for revenue aggregates; clamp for over-refund edge.
+    const rev = Math.max(0, gross - (order.totalRefunded || 0));
     const cc = order.countryCode || "XX";
     const custId = order.shopifyCustomerId || null;
 
@@ -260,8 +262,10 @@ export const loader = async ({ request }) => {
   for (const order of ordersInRange) {
     if (!order.utmConfirmedMeta) continue;
     if (matchedOrderIdSet.has(order.shopifyOrderId)) continue;
-    const rev = order.frozenTotalPrice || 0;
-    if (rev === 0) continue; // Same £0 exclusion as matched orders
+    const gross = order.frozenTotalPrice || 0;
+    if (gross === 0) continue; // Same £0 exclusion as matched orders
+    // Net of refunds for revenue aggregates; clamp for over-refund edge.
+    const rev = Math.max(0, gross - (order.totalRefunded || 0));
     const cc = order.countryCode || "XX";
     const custId = order.shopifyCustomerId || null;
 

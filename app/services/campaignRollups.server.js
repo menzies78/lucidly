@@ -51,6 +51,7 @@ export async function rebuildCampaignRollups(shopDomain) {
       where: { shopDomain },
       select: {
         shopifyOrderId: true, createdAt: true, frozenTotalPrice: true,
+        totalRefunded: true,
         utmConfirmedMeta: true, isNewCustomerOrder: true, customerOrderCountAtPurchase: true,
         metaAdId: true, metaAdName: true,
         metaAdSetId: true, metaAdSetName: true,
@@ -135,10 +136,13 @@ export async function rebuildCampaignRollups(shopDomain) {
     if (a.confidence > 0) {
       const order = orderMap.get(a.shopifyOrderId);
       if (!order) continue;
-      const rev = order.frozenTotalPrice || 0;
+      const gross = order.frozenTotalPrice || 0;
       // Skip £0 orders (staff / replacement / warranty) from attributed
       // metrics so they don't inflate order counts and drag down AOV/CPA.
-      if (rev === 0) continue;
+      if (gross === 0) continue;
+      // Revenue is net of refunds. Clamp at 0 to defend against
+      // over-refunded rows (rare; would otherwise go negative).
+      const rev = Math.max(0, gross - (order.totalRefunded || 0));
       const b = getBucket(order.createdAt, a.metaAdId, null);
       b.attributedOrders += 1;
       b.attributedRevenue += rev;
@@ -171,8 +175,10 @@ export async function rebuildCampaignRollups(shopDomain) {
     if (!order.utmConfirmedMeta) continue;
     if (matchedOrderIds.has(order.shopifyOrderId)) continue;
     if (!order.metaAdId) continue;
-    const rev = order.frozenTotalPrice || 0;
-    if (rev === 0) continue; // Same £0 exclusion as matched attributions above.
+    const gross = order.frozenTotalPrice || 0;
+    if (gross === 0) continue; // Same £0 exclusion as matched attributions above.
+    // Revenue net of refunds; clamp for over-refunded edge case.
+    const rev = Math.max(0, gross - (order.totalRefunded || 0));
     const b = getBucket(order.createdAt, order.metaAdId, {
       campaignId: order.metaCampaignId,
       campaignName: order.metaCampaignName,
