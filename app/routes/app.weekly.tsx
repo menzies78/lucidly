@@ -442,7 +442,21 @@ export const loader = async ({ request }) => {
     if (e.createdTime) entityCreatedMap.set(e.entityId, new Date(e.createdTime));
   }
   const newlyLaunchedAds: { adName: string; adId: string; orders: number; revenue: number; spend: number }[] = [];
-  const allAdsThisWeek = { ...adsNew, ...adsExisting };
+  // Merge adsNew + adsExisting by summing orders/revenue. An ad can appear in
+  // both buckets (drove both new and repeat customers); object-spread would
+  // clobber one side. Spend is identical in both (both pull from adSpendMap).
+  const allAdsThisWeek: Record<string, AdPerf> = {};
+  for (const [adId, perf] of Object.entries(adsNew)) {
+    allAdsThisWeek[adId] = { ...perf };
+  }
+  for (const [adId, perf] of Object.entries(adsExisting)) {
+    if (allAdsThisWeek[adId]) {
+      allAdsThisWeek[adId].orders += perf.orders;
+      allAdsThisWeek[adId].revenue += perf.revenue;
+    } else {
+      allAdsThisWeek[adId] = { ...perf };
+    }
+  }
   for (const [adId, perf] of Object.entries(allAdsThisWeek)) {
     const created = entityCreatedMap.get(adId);
     if (created && created >= monday && created <= sunday) {
