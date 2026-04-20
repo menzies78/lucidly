@@ -48,7 +48,7 @@ export async function rebuildCampaignRollups(shopDomain) {
       },
     }),
     db.order.findMany({
-      where: { shopDomain },
+      where: { shopDomain, isOnlineStore: true },
       select: {
         shopifyOrderId: true, createdAt: true, frozenTotalPrice: true,
         totalRefunded: true,

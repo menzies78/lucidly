@@ -87,7 +87,7 @@ export async function linkUtmToCampaigns(shopDomain) {
   console.log(`[UTMLinkage] Built lookup maps: ${Object.keys(ads.byId).length} ads, ${Object.keys(adHierarchy).length} hierarchies`);
 
   const orders = await db.order.findMany({
-    where: { shopDomain, utmConfirmedMeta: true },
+    where: { shopDomain, utmConfirmedMeta: true, isOnlineStore: true },
     select: {
       id: true, utmCampaign: true, utmContent: true, utmTerm: true,
       utmId: true,
