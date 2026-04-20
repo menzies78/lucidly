@@ -104,6 +104,7 @@ export const loader = async ({ request }) => {
     ageRaw, genderRaw,
     blobs,
     aiCached,
+    unmatchedAttrs,
   ] = await Promise.all([
     time("customers", queryCached(`${shopDomain}:customersAll`, DEFAULT_TTL, loadAllCustomers)),
     time("dailyRollups", db.dailyCustomerRollup.findMany({
@@ -149,6 +150,14 @@ export const loader = async ({ request }) => {
     )),
     time("blobs", queryCached(`${shopDomain}:customersBlobs`, DEFAULT_TTL, loadAnalysisBlobs)),
     time("aiCache", getCachedInsights(shopDomain, "customers", dateFromStr, dateToStr)),
+    // Unmatched attribution rows (confidence=0) — Meta conversions the matcher
+    // couldn't tie to a Shopify order. shopifyOrderId is a synthetic key of the
+    // form `unmatched_<adId>_<YYYY-MM-DD>...`, so the date extracts by regex.
+    // Pulled for the union of current + previous ranges; bucketed per-day below.
+    time("unmatchedAttrs", db.attribution.findMany({
+      where: { shopDomain, confidence: 0, shopifyOrderId: { startsWith: "unmatched_" } },
+      select: { shopifyOrderId: true, metaConversionValue: true },
+    })),
   ]);
   console.log(`[customers] db ${Date.now() - _qStart}ms (customers=${customers.length}, dailyRollups=${dailyRollups.length})`);
 
@@ -249,6 +258,28 @@ export const loader = async ({ request }) => {
     dailySpendMap[d] = (dailySpendMap[d] || 0) + (i._sum?.spend || 0);
   }
 
+  // Bucket unmatched attributions (Meta conversions with no matched Shopify
+  // order) into the current + previous ranges by shop-local day key extracted
+  // from shopifyOrderId. Same approach as the Weekly Report so the two pages
+  // agree on the unmatched number.
+  const unmatchedByDay: Record<string, { count: number; revenue: number }> = {};
+  const prevUnmatchedByDay: Record<string, { count: number; revenue: number }> = {};
+  for (const a of unmatchedAttrs) {
+    const m = a.shopifyOrderId.match(/(\d{4}-\d{2}-\d{2})/);
+    if (!m) continue;
+    const key = m[1];
+    const rev = a.metaConversionValue || 0;
+    if (key >= fromKey && key <= toKey) {
+      if (!unmatchedByDay[key]) unmatchedByDay[key] = { count: 0, revenue: 0 };
+      unmatchedByDay[key].count++;
+      unmatchedByDay[key].revenue += rev;
+    } else if (key >= prevFromKey && key <= prevToKey) {
+      if (!prevUnmatchedByDay[key]) prevUnmatchedByDay[key] = { count: 0, revenue: 0 };
+      prevUnmatchedByDay[key].count++;
+      prevUnmatchedByDay[key].revenue += rev;
+    }
+  }
+
   // Build dailyData chart from rollups
   const dailyMap: Record<string, any> = {};
   {
@@ -280,6 +311,13 @@ export const loader = async ({ request }) => {
   }
   for (const [d, spend] of Object.entries(dailySpendMap)) {
     if (dailyMap[d]) dailyMap[d].spend += spend;
+  }
+  // Fold unmatched Meta conversions into the per-day totals so the chart hover
+  // and "Total Meta Customers" tile agree (tile = Σ matched + Σ unmatched).
+  for (const [d, v] of Object.entries(unmatchedByDay)) {
+    if (!dailyMap[d]) continue;
+    dailyMap[d].metaCustomers += v.count;
+    dailyMap[d].metaRevenue += v.revenue;
   }
   const dailyData = Object.values(dailyMap).sort((a: any, b: any) => a.date.localeCompare(b.date));
 
@@ -315,6 +353,11 @@ export const loader = async ({ request }) => {
   for (const i of prevInsights as any[]) {
     const d = shopLocalDayKey(tz, i.date);
     if (prevDailyMap[d]) prevDailyMap[d].spend += (i._sum?.spend || 0);
+  }
+  for (const [d, v] of Object.entries(prevUnmatchedByDay)) {
+    if (!prevDailyMap[d]) continue;
+    prevDailyMap[d].metaCustomers += v.count;
+    prevDailyMap[d].metaRevenue += v.revenue;
   }
   const prevDailyData = Object.values(prevDailyMap).sort((a: any, b: any) => a.date.localeCompare(b.date));
 
@@ -581,9 +624,19 @@ export const loader = async ({ request }) => {
   const reorderWithin90 = 0;
   const prevMedianTimeTo2nd = null;
 
-  // Unmatched conversions count from MetaInsight (no attribution table read)
-  const unmatchedConversions = Math.max(0, totalMetaConversions - metaCount);
-  const unmatchedRevenue = Math.max(0, totalMetaConversionValue - metaRevenue);
+  // Unmatched conversions — count actual Attribution rows with confidence=0
+  // whose synthetic shopifyOrderId date falls in the range. This matches the
+  // Weekly Report's approach exactly, so the two pages always agree.
+  // (Previously computed as `max(0, totalMetaConversions - metaCount)`, which
+  // subtracted new-customer count from total Meta-reported conversions — two
+  // different populations — and inflated whenever Meta reported more total
+  // conversions than we matched to NEW customers, regardless of why.)
+  let unmatchedConversions = 0;
+  let unmatchedRevenue = 0;
+  for (const v of Object.values(unmatchedByDay)) {
+    unmatchedConversions += v.count;
+    unmatchedRevenue += v.revenue;
+  }
 
   // AI cache
   const aiCurrentHash = computeDataHash({
