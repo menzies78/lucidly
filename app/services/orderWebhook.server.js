@@ -191,7 +191,11 @@ export async function processOrderWebhook(shopDomain, payload, isCreate) {
       // fields overwrite whenever this payload gave us anything — which
       // includes the Elevar-only path where landing_site is empty.
       ...(landingSite ? { landingSite, referringSite } : {}),
-      ...((elevar.hasElevar || landingSite) ? { ...utmParams, utmConfirmedMeta } : {}),
+      // Only touch UTM fields when this payload actually carries UTM data
+      // (Elevar blob present, OR parseUtms found a source). Without this guard
+      // a bare landing_site with no utm_ params would clobber utmConfirmedMeta
+      // to false while leaving utmSource from a prior sync intact.
+      ...((elevar.hasElevar || utmParams.utmSource) ? { ...utmParams, utmConfirmedMeta } : {}),
     },
   });
 

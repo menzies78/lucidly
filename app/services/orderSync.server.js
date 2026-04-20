@@ -397,9 +397,14 @@ export async function syncOrders(admin, shopDomain) {
           customerFirstName, customerLastInitial, customerOrderCountAtPurchase,
           lineItems: lineItemTitles, productSkus, productCollections,
           discountCodes, refundStatus, totalRefunded, refundLineItems,
-          landingSite, referringSite,
-          utmSource, utmMedium, utmCampaign, utmContent, utmTerm, utmId, utmConfirmedMeta,
-          fbclid, metaAdIdFromUtm,
+          // Only overwrite landing/UTM fields when the current GraphQL response
+          // actually carries them. An empty journey + no Elevar blob would
+          // otherwise wipe UTM data captured by a prior sync (and clobber
+          // utmConfirmedMeta to false).
+          ...(landingSite ? { landingSite, referringSite } : {}),
+          ...(utmSource
+            ? { utmSource, utmMedium, utmCampaign, utmContent, utmTerm, utmId, utmConfirmedMeta, fbclid, metaAdIdFromUtm }
+            : {}),
         },
       });
       totalImported++;
