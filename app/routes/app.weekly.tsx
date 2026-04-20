@@ -533,21 +533,21 @@ function DayTile({ title, subtitle, data, prevData, currency, highlight }: {
       <MetricRow label="Ad Spend" value={fmtCurrency(data.adSpend, currency)} current={data.adSpend} prev={showCompare ? prevData.adSpend : undefined} />
 
       <div style={{ height: "8px" }} />
-      <div style={{ fontSize: "11px", fontWeight: 600, color: "#e67e22", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "4px" }}>All Customers</div>
+      <div style={{ fontSize: "11px", fontWeight: 600, color: "#e67e22", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "4px" }}>All Meta Customers</div>
       <MetricRow label="Orders" value={String(data.adOrders + data.unmatchedConversions)} current={data.adOrders + data.unmatchedConversions} prev={showCompare ? prevData.adOrders + prevData.unmatchedConversions : undefined} />
       <MetricRow label="Revenue" value={fmtCurrency(blendedRevenue, currency)} current={blendedRevenue} prev={showCompare ? prevData.adRevenue + prevData.unmatchedRevenue : undefined} />
       <MetricRow label="AOV" value={(data.adOrders + data.unmatchedConversions) > 0 ? fmtCurrency(blendedRevenue / (data.adOrders + data.unmatchedConversions), currency) : "—"} current={(data.adOrders + data.unmatchedConversions) > 0 ? blendedRevenue / (data.adOrders + data.unmatchedConversions) : 0} prev={prevAov} />
       <MetricRow label="ROAS" value={data.adSpend > 0 ? fmtRoas(blendedRoas) : "—"} current={blendedRoas} prev={prevBlendedRoas} />
 
       <div style={{ height: "8px" }} />
-      <div style={{ fontSize: "11px", fontWeight: 600, color: "#7c3aed", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "4px" }}>New Customers</div>
+      <div style={{ fontSize: "11px", fontWeight: 600, color: "#7c3aed", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "4px" }}>New Meta Customers</div>
       <MetricRow label="Orders" value={String(data.newOrders)} muted={data.newOrders === 0} current={data.newOrders} prev={showCompare ? prevData.newOrders : undefined} />
       <MetricRow label="Revenue" value={fmtCurrency(data.newRevenue, currency)} muted={data.newOrders === 0} current={data.newRevenue} prev={showCompare ? prevData.newRevenue : undefined} />
       <MetricRow label="AOV" value={data.newOrders > 0 ? fmtCurrency(newAov, currency) : "—"} muted={data.newOrders === 0} current={newAov} prev={prevNewAov} />
       <MetricRow label="ROAS" value={data.adSpend > 0 && data.newOrders > 0 ? fmtRoas(newRoas) : "—"} muted={data.newOrders === 0} current={newRoas} prev={prevNewRoas} />
 
       <div style={{ height: "8px" }} />
-      <div style={{ fontSize: "11px", fontWeight: 600, color: "#0891B2", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "4px" }}>Repeat Meta Customers (Organic Return)</div>
+      <div style={{ fontSize: "11px", fontWeight: 600, color: "#0891B2", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "4px" }}>Repeat Meta (Organic Return)</div>
       {(() => {
         const mOrd = data.metaOrganicReturnOrders;
         const mRev = data.metaOrganicReturnRevenue;
@@ -858,11 +858,11 @@ export default function WeeklyReport() {
         {/* ── PAGE 2 starts here when printing ── */}
         <div className="print-page-break" />
 
-        {/* ── Row 1: New Customers by Geo + Ad Spend vs Revenue by Country ── */}
+        {/* ── Row 1: New Meta Customers by Geo + Ad Spend vs Revenue by Country ── */}
         <div style={{ display: "flex", gap: "12px", marginBottom: "12px", alignItems: "stretch" }}>
           <div style={{ flex: 1, display: "flex" }}>
             <div style={{ flex: 1 }}>
-              <SectionTile title="New Customers by Geo" titleColor="#7c3aed">
+              <SectionTile title="New Meta Customers by Geo" titleColor="#7c3aed">
                 {geoNew.length === 0 ? (
                   <div style={{ fontSize: "12px", color: "#8c9196", fontStyle: "italic" }}>No new customer orders this week</div>
                 ) : (() => {
@@ -938,7 +938,7 @@ export default function WeeklyReport() {
           <div style={{ flex: 1, display: "flex" }}>
             <div style={{ flex: 1 }}>
               <SectionTile title="Top Performing Ads">
-                <AdSection title="New Customers" ads={topAdsNew} currency={currency} color="#7c3aed" />
+                <AdSection title="New Meta Customers" ads={topAdsNew} currency={currency} color="#7c3aed" />
                 <AdSection title="Existing Customers" ads={topAdsExisting} currency={currency} color="#e67e22" />
               </SectionTile>
             </div>
