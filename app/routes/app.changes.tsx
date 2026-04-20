@@ -238,6 +238,7 @@ export const loader = async ({ request }: { request: Request }) => {
       total: signalRows.length,
       launched: byCategory.launched || 0,
       killed: (byCategory.killed || 0) + (byCategory.paused || 0),
+      resumed: byCategory.resumed || 0,
       budget: byCategory.budget || 0,
       creative: byCategory.creative || 0,
       daysWithActivity: daysWithActivity.size,
@@ -510,6 +511,7 @@ export default function ChangeLog() {
             <SummaryTile label="Changes in period" value={String(summary.total)} />
             <SummaryTile label="Launches" value={String(summary.launched)} />
             <SummaryTile label="Paused / killed" value={String(summary.killed)} />
+            <SummaryTile label="Resumed" value={String(summary.resumed)} />
             <SummaryTile label="Budget changes" value={String(summary.budget)} />
             <SummaryTile label="Creative swaps" value={String(summary.creative)} />
             <SummaryTile label="Days with activity" value={String(summary.daysWithActivity)} />
