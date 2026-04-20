@@ -632,17 +632,23 @@ export const action = async ({ request }) => {
         const attrMap = {};
         for (const a of attributions) attrMap[a.shopifyOrderId] = a;
 
-        // Build product data
+        // Build product data. `order.lineItems` is stored as a comma-separated
+        // list of titles (see orderWebhook.server.js), NOT JSON. Revenue is
+        // split equally across items since per-item price isn't persisted —
+        // this matches what productRollups.server.js does and is imperfect
+        // but non-zero. Net of refunds.
         const productAgg = {};
         for (const o of orders) {
-          let items = [];
-          try { items = JSON.parse(o.lineItems || "[]"); } catch {}
+          const gross = o.frozenTotalPrice || 0;
+          if (gross === 0) continue;
+          const titles = (o.lineItems || "").split(", ").map(s => s.trim()).filter(Boolean);
+          if (titles.length === 0) continue;
+          const net = gross - (o.totalRefunded || 0);
+          const rev = net / titles.length;
           const attr = attrMap[o.shopifyOrderId];
-          for (const item of items) {
-            const title = item.title || item.name || "Unknown";
+          for (const title of titles) {
             if (!productAgg[title]) productAgg[title] = { title, totalOrders: 0, metaOrders: 0, organicOrders: 0, totalRevenue: 0, metaRevenue: 0, organicRevenue: 0, metaNewOrders: 0, metaRepeatOrders: 0, firstPurchaseCount: 0, metaFirstPurchaseCount: 0 };
             const p = productAgg[title];
-            const rev = (item.price || 0) * (item.quantity || 1);
             p.totalOrders++;
             p.totalRevenue += rev;
             if (attr) {
