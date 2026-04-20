@@ -70,7 +70,7 @@ export const loader = async ({ request }) => {
       });
     })(),
     db.order.findMany({
-      where: { shopDomain, utmConfirmedMeta: true, createdAt: dateFilter },
+      where: { shopDomain, utmConfirmedMeta: true, isOnlineStore: true, createdAt: dateFilter },
       select: { shopifyOrderId: true, frozenTotalPrice: true, totalRefunded: true },
     }),
   ]);
@@ -105,7 +105,7 @@ export const loader = async ({ request }) => {
   const matchedOrderIds = matched.map(a => a.shopifyOrderId);
   const matchedOrders = matchedOrderIds.length > 0
     ? await db.order.findMany({
-        where: { shopDomain, shopifyOrderId: { in: matchedOrderIds } },
+        where: { shopDomain, isOnlineStore: true, shopifyOrderId: { in: matchedOrderIds } },
         select: { frozenTotalPrice: true, totalRefunded: true },
       })
     : [];

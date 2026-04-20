@@ -424,7 +424,7 @@ export const loader = async ({ request }) => {
     )),
     time("windowOrders", queryCached(`${shopDomain}:campWindowOrders:${windowStartKey}:${windowEndKey}`, DEFAULT_TTL, () =>
       db.order.findMany({
-        where: { shopDomain, createdAt: { gte: windowStart, lte: windowEnd } },
+        where: { shopDomain, isOnlineStore: true, createdAt: { gte: windowStart, lte: windowEnd } },
         select: orderSelect,
       }),
     )),

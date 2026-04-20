@@ -101,11 +101,11 @@ export const loader = async ({ request }) => {
   const cacheKey = (suffix: string) => `${shopDomain}:weekly:${mondayKey}:${suffix}`;
   const [orders, prevOrders, insights, prevInsights, breakdowns, allAttrs] = await Promise.all([
     queryCached(cacheKey("orders"), DEFAULT_TTL, () => db.order.findMany({
-      where: { shopDomain, createdAt: { gte: monday, lte: sunday } },
+      where: { shopDomain, isOnlineStore: true, createdAt: { gte: monday, lte: sunday } },
       select: { shopifyOrderId: true, shopifyCustomerId: true, frozenTotalPrice: true, createdAt: true, country: true, countryCode: true, lineItems: true, utmConfirmedMeta: true, metaAdId: true, metaAdName: true, metaCampaignName: true, metaAdSetName: true },
     })),
     queryCached(cacheKey("prevOrders"), DEFAULT_TTL, () => db.order.findMany({
-      where: { shopDomain, createdAt: { gte: prevMonday, lte: prevSunday } },
+      where: { shopDomain, isOnlineStore: true, createdAt: { gte: prevMonday, lte: prevSunday } },
       select: { shopifyOrderId: true, shopifyCustomerId: true, frozenTotalPrice: true, createdAt: true, country: true, countryCode: true, lineItems: true, utmConfirmedMeta: true, metaAdId: true, metaAdName: true, metaCampaignName: true, metaAdSetName: true },
     })),
     queryCached(cacheKey("insights"), DEFAULT_TTL, () => db.metaInsight.findMany({
