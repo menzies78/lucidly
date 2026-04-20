@@ -142,6 +142,13 @@ model Order {
   utmTerm                      String   @default("")
   utmId                        String   @default("")
   utmConfirmedMeta             Boolean  @default(false)
+  // Elevar / Web Pixel extras — populated from order note_attributes when present.
+  // fbclid: Meta's click identifier (useful for future CAPI / identity work).
+  // metaAdIdFromUtm: Elevar puts the Meta ad id in utm_term — storing it
+  // separately lets the matcher do a direct ad-id lookup for Layer-1 matches
+  // without overloading utm_term. Hidden by default in UI.
+  fbclid                       String   @default("")
+  metaAdIdFromUtm              String   @default("")
   metaCustomerTag              String   @default("")
   importedAt                   DateTime @default(now())
 

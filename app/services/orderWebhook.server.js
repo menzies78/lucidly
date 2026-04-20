@@ -1,6 +1,7 @@
 import db from "../db.server";
 import crypto from "crypto";
 import { isPaidMetaUtm } from "../utils/utmClassification.js";
+import { parseElevarVisitorInfo } from "../utils/parseElevarVisitorInfo.js";
 
 /**
  * Processes a single Shopify order from a webhook payload (REST format).
@@ -90,10 +91,27 @@ export async function processOrderWebhook(shopDomain, payload, isCreate) {
   const productSkus = [...new Set((payload.line_items || []).map(li => li.sku).filter(Boolean))].join(", ");
   // Collections not available in webhook payload — populated by full sync
 
-  // Landing page & UTMs
+  // Landing page & UTMs.
+  // Prefer Elevar's captured values (order.note_attributes._elevar_visitor_info)
+  // over Shopify's landing_site parse — Elevar's first-party cookie survives
+  // consent banners that block Shopify's own session tracking, so it's the more
+  // reliable source when both are present. Fall back to landing_site for shops
+  // without Elevar installed.
   const landingSite = payload.landing_site || "";
   const referringSite = payload.referring_site || "";
-  const utmParams = parseUtms(landingSite);
+  const elevar = parseElevarVisitorInfo(payload.note_attributes);
+  const utmParams = elevar.hasElevar
+    ? {
+        utmSource:       elevar.utmSource,
+        utmMedium:       elevar.utmMedium,
+        utmCampaign:     elevar.utmCampaign,
+        utmContent:      elevar.utmContent,
+        utmTerm:         elevar.utmTerm,
+        utmId:           elevar.utmId,
+        fbclid:          elevar.fbclid,
+        metaAdIdFromUtm: elevar.metaAdIdFromUtm,
+      }
+    : { ...parseUtms(landingSite), fbclid: "", metaAdIdFromUtm: "" };
 
   // UTM classification — is this a paid Meta ad click?
   const utmConfirmedMeta = isPaidMetaUtm(utmParams.utmSource, utmParams.utmMedium);
@@ -168,8 +186,12 @@ export async function processOrderWebhook(shopDomain, payload, isCreate) {
       ...(country ? { country, countryCode, city, regionCode } : {}),
       customerFirstName: finalFirstName, customerLastInitial: finalLastInitial,
       lineItems, productSkus,
-      // Only set landing/UTM data if not already populated (preserve original from create)
-      ...(landingSite ? { landingSite, referringSite, ...utmParams, utmConfirmedMeta } : {}),
+      // Landing/UTM data: landingSite only overwrites when the update payload
+      // actually carries one (avoids wiping a good value from create). UTM
+      // fields overwrite whenever this payload gave us anything — which
+      // includes the Elevar-only path where landing_site is empty.
+      ...(landingSite ? { landingSite, referringSite } : {}),
+      ...((elevar.hasElevar || landingSite) ? { ...utmParams, utmConfirmedMeta } : {}),
     },
   });
 

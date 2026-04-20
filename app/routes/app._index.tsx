@@ -109,7 +109,7 @@ export const loader = async ({ request }) => {
         select: { frozenTotalPrice: true, totalRefunded: true },
       })
     : [];
-  const netMetaRevenue = matchedOrders.reduce((s, o) =>
+  const matchedMetaRevenue = matchedOrders.reduce((s, o) =>
     s + (o.frozenTotalPrice || 0) - (o.totalRefunded || 0), 0);
 
   // UTM-only Meta orders: utmConfirmedMeta=true but not matched by Layer 2
@@ -119,6 +119,12 @@ export const loader = async ({ request }) => {
   const utmOnlyRevenue = utmOnlyNotMatched.reduce((s, o) =>
     s + (o.frozenTotalPrice || 0) - (o.totalRefunded || 0), 0);
   const utmAndLucidlyCount = utmOnlyOrders.length - utmOnlyCount;
+
+  // Combined Net Meta Revenue = matched attribution + UTM-only orders.
+  // Both represent Meta-attributed revenue; UTM-only lacks Layer 2 ad-level
+  // granularity but is still Meta traffic per the UTM / Elevar signal.
+  // Matches the treatment used across Campaigns, Customers, Products, Weekly.
+  const netMetaRevenue = matchedMetaRevenue + utmOnlyRevenue;
   const currencySymbol = (shop?.shopifyCurrency || "GBP") === "GBP" ? "£"
     : (shop?.shopifyCurrency || "GBP") === "EUR" ? "€" : "$";
 

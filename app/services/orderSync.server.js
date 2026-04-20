@@ -2,6 +2,7 @@ import db from "../db.server";
 import crypto from "crypto";
 import { setProgress, completeProgress, failProgress } from "./progress.server";
 import { isPaidMetaUtm } from "../utils/utmClassification.js";
+import { parseElevarVisitorInfo } from "../utils/parseElevarVisitorInfo.js";
 import { withRetry } from "./retry.server.js";
 
 // Wraps admin.graphql with retry on transient errors.
@@ -251,6 +252,10 @@ export async function syncOrders(admin, shopDomain) {
                   }
                 }
               }
+              customAttributes {
+                key
+                value
+              }
               customer {
                 id
                 email
@@ -303,11 +308,11 @@ export async function syncOrders(admin, shopDomain) {
       const journey = order.customerJourneySummary?.firstVisit;
       const landingSite = journey?.landingPage || "";
       const referringSite = journey?.referrerUrl || "";
-      const utmSource = journey?.utmParameters?.source || "";
-      const utmMedium = journey?.utmParameters?.medium || "";
-      const utmCampaign = journey?.utmParameters?.campaign || "";
-      const utmContent = journey?.utmParameters?.content || "";
-      const utmTerm = journey?.utmParameters?.term || "";
+      let utmSource = journey?.utmParameters?.source || "";
+      let utmMedium = journey?.utmParameters?.medium || "";
+      let utmCampaign = journey?.utmParameters?.campaign || "";
+      let utmContent = journey?.utmParameters?.content || "";
+      let utmTerm = journey?.utmParameters?.term || "";
       // utm_id is a custom param not in Shopify's utmParameters — extract from landing page URL
       let utmId = "";
       if (landingSite && landingSite.includes("utm_id=")) {
@@ -316,6 +321,21 @@ export async function syncOrders(admin, shopDomain) {
           utmId = url.searchParams.get("utm_id") || "";
         } catch {}
       }
+
+      // Prefer Elevar's captured values (from order.customAttributes) over
+      // Shopify's native journey data — Elevar's first-party cookie survives
+      // consent banners that suppress Shopify's _shopify_y session cookie.
+      const elevar = parseElevarVisitorInfo(order.customAttributes);
+      if (elevar.hasElevar) {
+        utmSource   = elevar.utmSource;
+        utmMedium   = elevar.utmMedium;
+        utmCampaign = elevar.utmCampaign;
+        utmContent  = elevar.utmContent;
+        utmTerm     = elevar.utmTerm;
+        utmId       = elevar.utmId || utmId;
+      }
+      const fbclid = elevar.fbclid;
+      const metaAdIdFromUtm = elevar.metaAdIdFromUtm;
 
       // UTM classification — is this a paid Meta ad click?
       const utmConfirmedMeta = isPaidMetaUtm(utmSource, utmMedium);
@@ -365,6 +385,7 @@ export async function syncOrders(admin, shopDomain) {
           discountCodes, refundStatus, totalRefunded, refundLineItems,
           landingSite, referringSite,
           utmSource, utmMedium, utmCampaign, utmContent, utmTerm, utmId, utmConfirmedMeta,
+          fbclid, metaAdIdFromUtm,
         },
         update: {
           orderNumber: order.name,
@@ -378,6 +399,7 @@ export async function syncOrders(admin, shopDomain) {
           discountCodes, refundStatus, totalRefunded, refundLineItems,
           landingSite, referringSite,
           utmSource, utmMedium, utmCampaign, utmContent, utmTerm, utmId, utmConfirmedMeta,
+          fbclid, metaAdIdFromUtm,
         },
       });
       totalImported++;
