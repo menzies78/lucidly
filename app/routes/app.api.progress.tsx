@@ -1,6 +1,6 @@
 import { json } from "@remix-run/node";
 import { authenticate } from "../shopify.server";
-import { getProgress, clearProgress } from "../services/progress.server";
+import { getProgress } from "../services/progress.server";
 
 export const loader = async ({ request }) => {
   const { session } = await authenticate.admin(request);
@@ -13,10 +13,8 @@ export const loader = async ({ request }) => {
   const fullKey = `${taskId}:${shopDomain}`;
   const progress = getProgress(fullKey);
 
-  // Clear terminal states after they've been read by the frontend
-  if (progress?.status === "complete" || progress?.status === "error") {
-    clearProgress(fullKey);
-  }
-
+  // Do NOT clear terminal state here — React StrictMode, re-renders, and
+  // network jitter cause the same terminal state to be polled more than once.
+  // progress.server.js TTL-sweeps terminal entries after 5 minutes.
   return json({ progress });
 };
