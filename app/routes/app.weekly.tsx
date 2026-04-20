@@ -102,11 +102,11 @@ export const loader = async ({ request }) => {
   const [orders, prevOrders, insights, prevInsights, breakdowns, allAttrs] = await Promise.all([
     queryCached(cacheKey("orders"), DEFAULT_TTL, () => db.order.findMany({
       where: { shopDomain, createdAt: { gte: monday, lte: sunday } },
-      select: { shopifyOrderId: true, shopifyCustomerId: true, frozenTotalPrice: true, createdAt: true, country: true, countryCode: true, lineItems: true, utmConfirmedMeta: true },
+      select: { shopifyOrderId: true, shopifyCustomerId: true, frozenTotalPrice: true, createdAt: true, country: true, countryCode: true, lineItems: true, utmConfirmedMeta: true, metaAdId: true, metaAdName: true, metaCampaignName: true, metaAdSetName: true },
     })),
     queryCached(cacheKey("prevOrders"), DEFAULT_TTL, () => db.order.findMany({
       where: { shopDomain, createdAt: { gte: prevMonday, lte: prevSunday } },
-      select: { shopifyOrderId: true, shopifyCustomerId: true, frozenTotalPrice: true, createdAt: true, country: true, countryCode: true, lineItems: true, utmConfirmedMeta: true },
+      select: { shopifyOrderId: true, shopifyCustomerId: true, frozenTotalPrice: true, createdAt: true, country: true, countryCode: true, lineItems: true, utmConfirmedMeta: true, metaAdId: true, metaAdName: true, metaCampaignName: true, metaAdSetName: true },
     })),
     queryCached(cacheKey("insights"), DEFAULT_TTL, () => db.metaInsight.findMany({
       where: { shopDomain, date: { gte: monday, lte: sunday } },
@@ -166,6 +166,21 @@ export const loader = async ({ request }) => {
   const metaAcquiredCustomers = new Set<string>();
   for (const c of customers) {
     if (c.metaSegment === "metaNew") metaAcquiredCustomers.add(c.shopifyCustomerId);
+  }
+  // Also mark customers whose first order was UTM-confirmed Meta but who
+  // don't have a Layer-2 attribution (and thus weren't tagged metaNew by
+  // the segment builder). Without this, UTM-only first purchases get
+  // classified as "retargeted" instead of "new".
+  for (const o of [...orders, ...prevOrders]) {
+    if (!o.utmConfirmedMeta || !o.shopifyCustomerId) continue;
+    if (metaAcquiredCustomers.has(o.shopifyCustomerId)) continue;
+    const customer = customerMap.get(o.shopifyCustomerId);
+    if (!customer) continue;
+    const custFirstDate = customer.firstOrderDate ? shopLocalDayKey(tz, customer.firstOrderDate) : "";
+    const orderDate = shopLocalDayKey(tz, o.createdAt);
+    if (custFirstDate === orderDate) {
+      metaAcquiredCustomers.add(o.shopifyCustomerId);
+    }
   }
 
   // Build attribution lookup for current week orders
@@ -240,26 +255,32 @@ export const loader = async ({ request }) => {
       const rev = order.frozenTotalPrice || 0;
       dayBuckets[idx].storeRevenue += rev;
 
+      // Determine Meta attribution status: Layer-2 match takes priority,
+      // then UTM-confirmed (utmConfirmedMeta=true with no Layer-2 match).
+      // Both count as confirmed Meta revenue — UTM proves the ad click
+      // even when Meta's pixel doesn't register a conversion.
       const attr = aMap.get(order.shopifyOrderId);
-      if (attr) {
-        // Exclude £0 orders (staff orders etc) from ad metrics
-        if (rev === 0) continue;
+      const isMetaOrder = !!attr || order.utmConfirmedMeta;
+
+      if (isMetaOrder) {
+        if (rev === 0) continue; // Exclude £0 orders from ad metrics
         dayBuckets[idx].adOrders++;
         dayBuckets[idx].adRevenue += rev;
-        const cls = classifyOrder(order, attr);
+        // Pass a truthy pseudo-attr for UTM-only so classifyOrder doesn't
+        // short-circuit to "organic". The classification logic only uses
+        // the customer's metaAcquiredCustomers membership + date check.
+        const cls = classifyOrder(order, attr || { isNewCustomer: null });
         if (cls === "new") { dayBuckets[idx].newOrders++; dayBuckets[idx].newRevenue += rev; }
         else if (cls === "repeat") { dayBuckets[idx].repeatOrders++; dayBuckets[idx].repeatRevenue += rev; }
         else if (cls === "retargeted") { dayBuckets[idx].retargetedOrders++; dayBuckets[idx].retargetedRevenue += rev; }
       } else {
-        // No ad attribution on this specific order. Check if the customer
+        // No ad attribution AND no UTM confirmation. Check if the customer
         // was originally acquired via Meta — if so, this is an organic
         // return visit. Captures the LTV of Meta acquisition beyond the
         // initial ad-driven purchase.
         if (rev === 0) continue;
         const custId = order.shopifyCustomerId;
         if (custId && metaAcquiredCustomers.has(custId)) {
-          // Make sure this isn't their first order (which would mean the
-          // first-order attribution was missed, not an organic return).
           const customer = customerMap.get(custId);
           const custFirstDate = customer?.firstOrderDate ? shopLocalDayKey(tz, customer.firstOrderDate) : "";
           const orderDate = shopLocalDayKey(tz, order.createdAt);
@@ -307,13 +328,16 @@ export const loader = async ({ request }) => {
   }
 
   // ── Helper: build geo/product aggregates for a set of orders ──
+  // Includes both Layer-2 attributed AND UTM-only orders — UTM proves
+  // the ad click even when Meta's pixel doesn't register a conversion.
   const buildGeo = (ords: any[], aMap: Map<string, any>) => {
     const agg: Record<string, { orders: number; revenue: number }> = {};
     for (const order of ords) {
-      if ((order.frozenTotalPrice || 0) === 0) continue; // Exclude £0
+      if ((order.frozenTotalPrice || 0) === 0) continue;
       const attr = aMap.get(order.shopifyOrderId);
-      if (!attr) continue;
-      if (classifyOrder(order, attr) !== "new") continue;
+      const isMetaOrder = !!attr || order.utmConfirmedMeta;
+      if (!isMetaOrder) continue;
+      if (classifyOrder(order, attr || { isNewCustomer: null }) !== "new") continue;
       const country = order.country || "Unknown";
       if (!agg[country]) agg[country] = { orders: 0, revenue: 0 };
       agg[country].orders++;
@@ -324,10 +348,11 @@ export const loader = async ({ request }) => {
   const buildProducts = (ords: any[], aMap: Map<string, any>) => {
     const agg: Record<string, { orders: number; revenue: number }> = {};
     for (const order of ords) {
-      if ((order.frozenTotalPrice || 0) === 0) continue; // Exclude £0
+      if ((order.frozenTotalPrice || 0) === 0) continue;
       const attr = aMap.get(order.shopifyOrderId);
-      if (!attr) continue;
-      if (classifyOrder(order, attr) !== "new") continue;
+      const isMetaOrder = !!attr || order.utmConfirmedMeta;
+      if (!isMetaOrder) continue;
+      if (classifyOrder(order, attr || { isNewCustomer: null }) !== "new") continue;
       const items = (order.lineItems || "").split(", ").map((s: string) => s.trim()).filter(Boolean);
       if (items.length === 0) items.push("Unknown");
       const revShare = (order.frozenTotalPrice || 0) / items.length;
@@ -387,12 +412,17 @@ export const loader = async ({ request }) => {
 
   for (const order of orders) {
     const attr = attrMap.get(order.shopifyOrderId);
-    if (!attr || !attr.metaAdId) continue;
+    // Include UTM-only orders: UTM proves the ad click, order is real Meta revenue.
+    const adId = attr?.metaAdId || (order.utmConfirmedMeta ? order.metaAdId : null);
+    if (!adId) continue;
     const rev = order.frozenTotalPrice || 0;
     if (rev === 0) continue; // Exclude £0 orders from ad performance
-    const cls = classifyOrder(order, attr);
-    const adId = attr.metaAdId;
-    const meta = adMetaMap[adId] || { adName: attr.metaAdName || adId, campaignName: attr.metaCampaignName || "", adSetName: attr.metaAdSetName || "" };
+    const cls = classifyOrder(order, attr || { isNewCustomer: null });
+    const meta = adMetaMap[adId] || {
+      adName: attr?.metaAdName || order.metaAdName || adId,
+      campaignName: attr?.metaCampaignName || order.metaCampaignName || "",
+      adSetName: attr?.metaAdSetName || order.metaAdSetName || "",
+    };
 
     let bucket: Record<string, AdPerf>;
     if (cls === "new") bucket = adsNew;
