@@ -480,7 +480,11 @@ export const loader = async ({ request }) => {
   });
 
   // Total store revenue in reporting period (all orders, not just Meta-attributed)
-  const totalStoreRevenue = ordersInRange.reduce((sum, o) => sum + (o.frozenTotalPrice || 0), 0);
+  // Net of refunds so it's comparable to attributed revenue on the same page.
+  const totalStoreRevenue = ordersInRange.reduce(
+    (sum, o) => sum + Math.max(0, (o.frozenTotalPrice || 0) - (o.totalRefunded || 0)),
+    0,
+  );
 
   // Build entity created_time map from pre-fetched metaEntities
   const entityCreatedMap = {};
@@ -559,7 +563,6 @@ export const loader = async ({ request }) => {
   const prevTo = _prevToRP;
 
   // prevInsights: only used for daily chart (spend/impressions per day). groupBy = days-in-window rows.
-  // compInsightsResult: kept for future use but returned as null (was unused in loader output).
   const prevInsights = await queryCached(
     `${shopDomain}:campPrevDailyChart:${prevFromKey}:${prevToKey}`,
     DEFAULT_TTL,
@@ -569,21 +572,12 @@ export const loader = async ({ request }) => {
       _sum: { spend: true, impressions: true },
     }),
   );
-  const compInsightsResult = null;
 
-  // Comparison period
+  // Comparison period. compareAgg is already fetched at the top of the loader
+  // when hasComparison is true — use it directly rather than re-deriving.
   let compareTotals = null;
-  if (hasComparison && compareFrom && compareTo && compInsightsResult) {
-    const compInsights = compInsightsResult;
-    const compOrdersInRange = allOrders.filter(o => o.createdAt >= compareFrom && o.createdAt <= compareTo);
-    const compOrderIds = new Set(compOrdersInRange.map(o => o.shopifyOrderId));
-    const compAttrs = attributions.filter(a => {
-      if (a.confidence > 0) return compOrderIds.has(a.shopifyOrderId);
-      const match = a.shopifyOrderId.match(/(\d{4}-\d{2}-\d{2})/);
-      if (!match) return false;
-      return !!(compareFromKey && compareToKey && match[1] >= compareFromKey && match[1] <= compareToKey);
-    });
-    const compAggregated = compareAgg?.campaign || {};
+  if (hasComparison && compareFrom && compareTo && compareAgg) {
+    const compAggregated = compareAgg.campaign || {};
     const compRows = computeRows(compAggregated);
     compareTotals = computeClientTotalsServer(compRows);
   }
@@ -1174,9 +1168,13 @@ export const action = async ({ request }) => {
         }
         const dailyData = Object.values(dailyMap).sort((a, b) => a.date.localeCompare(b.date));
 
-        // Total store revenue
+        // Total store revenue — net of refunds so it's comparable to
+        // attributed revenue on the same page.
         const ordersInRange = orders.filter(o => o.createdAt >= fromDate && o.createdAt <= toDate);
-        const totalStoreRevenue = ordersInRange.reduce((sum, o) => sum + (o.frozenTotalPrice || 0), 0);
+        const totalStoreRevenue = ordersInRange.reduce(
+          (sum, o) => sum + Math.max(0, (o.frozenTotalPrice || 0) - (o.totalRefunded || 0)),
+          0,
+        );
 
         const pageData = {
           campaignRows,
