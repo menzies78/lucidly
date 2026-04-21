@@ -77,7 +77,7 @@ export async function rebuildProductRollups(shopDomain) {
   const tz = shopRow?.shopifyTimezone || "UTC";
 
   // Pull everything we need
-  const [orders, attributions, customers] = await Promise.all([
+  const [orders, attributions, customers, lineItemRowsRaw] = await Promise.all([
     db.order.findMany({
       where: { shopDomain, isOnlineStore: true },
       orderBy: { createdAt: "asc" },
@@ -98,7 +98,24 @@ export async function rebuildProductRollups(shopDomain) {
       where: { shopDomain },
       select: { shopifyCustomerId: true, firstOrderDate: true },
     }),
+    // Structured per-line revenue rows. Populated by orderSync / orderWebhook.
+    // Orders without rows (pre-migration, or still mid-backfill) fall back to
+    // even-split revenue below so the rollup never goes dark during rollout.
+    db.orderLineItem.findMany({
+      where: { shopDomain },
+      select: {
+        shopifyOrderId: true, title: true, quantity: true,
+        totalPrice: true, refundedAmount: true,
+      },
+    }),
   ]);
+
+  // Group line-item rows by order. Each order has 0..N rows; an empty array
+  // means "no structured data — use the legacy even-split path".
+  const lineItemsByOrder = {};
+  for (const r of lineItemRowsRaw) {
+    (lineItemsByOrder[r.shopifyOrderId] ||= []).push(r);
+  }
 
   // Index attributions by order id
   const attrByOrderId = {};
@@ -169,47 +186,98 @@ export async function rebuildProductRollups(shopDomain) {
     // Skip £0 orders (staff / replacement / warranty) from product metrics
     // so they don't inflate order counts and drag down per-product AOV.
     if ((order.frozenTotalPrice || 0) === 0) continue;
-    const rawItems = (order.lineItems || "").split(", ").map(s => s.trim()).filter(Boolean);
-    if (rawItems.length === 0) continue;
-    const parentItems = rawItems.map(toParentProduct);
-    const revenuePerItem = (order.frozenTotalPrice || 0) / rawItems.length;
+
     const segment = tagOrder(order, attrByOrderId, metaAcquiredCustomers, customerFirstOrderMap, tz);
     const dateStr = shopLocalDayKey(tz, order.createdAt);
     const isFirstPurchase = order.customerOrderCountAtPurchase === 1;
     const attr = attrByOrderId[order.shopifyOrderId];
     const orderCollections = (order.productCollections || "").split(", ").map(s => s.trim()).filter(Boolean);
 
-    // Per-product refund map
-    const refundMap = {};
-    if (order.refundLineItems) {
-      try {
-        const parsed = JSON.parse(order.refundLineItems);
-        for (const rli of parsed) {
-          const pt = toParentProduct(rli.title);
-          if (!refundMap[pt]) refundMap[pt] = { refundedAmount: 0, originalPrice: 0 };
-          refundMap[pt].refundedAmount += rli.refundedAmount;
-          refundMap[pt].originalPrice += rli.originalPrice;
+    // Build the list of (parentProduct, revenue, refundedAmount, qty) tuples
+    // for this order. Prefer the structured OrderLineItem rows (real per-line
+    // revenue). Fall back to even-split across the comma-separated titles for
+    // orders that predate the OrderLineItem backfill.
+    const structuredRows = lineItemsByOrder[order.shopifyOrderId];
+    let perProduct;
+    if (structuredRows && structuredRows.length > 0) {
+      // Structured path: sum per parent-product across the row list so a
+      // product that appears on multiple lines (e.g. different variants)
+      // collapses into a single bucket entry for the rollup. Quantity counts
+      // the distinct line-item rows that mention the parent product — this
+      // matches the legacy semantics where `b.items` was the line count,
+      // not the qty sold, so repeat-product tiles stay comparable.
+      const byParent = {};
+      for (const r of structuredRows) {
+        const parent = toParentProduct(r.title);
+        if (!parent) continue;
+        if (!byParent[parent]) {
+          byParent[parent] = { revenue: 0, refundedAmount: 0, lines: 0 };
         }
-      } catch {}
+        byParent[parent].revenue += r.totalPrice || 0;
+        byParent[parent].refundedAmount += r.refundedAmount || 0;
+        byParent[parent].lines += 1;
+      }
+      perProduct = Object.entries(byParent).map(([parent, v]) => ({
+        parent,
+        revenue: v.revenue,
+        refundedAmount: v.refundedAmount,
+        lines: v.lines,
+      }));
+      if (perProduct.length === 0) continue;
+    } else {
+      // Legacy even-split fallback — kept so the rollup keeps working on
+      // orders that haven't been re-synced into the new table yet.
+      const rawItems = (order.lineItems || "").split(", ").map(s => s.trim()).filter(Boolean);
+      if (rawItems.length === 0) continue;
+      const parentItems = rawItems.map(toParentProduct);
+      const revenuePerItem = (order.frozenTotalPrice || 0) / rawItems.length;
+      // Per-product refund map from the legacy JSON blob.
+      const refundMap = {};
+      if (order.refundLineItems) {
+        try {
+          const parsed = JSON.parse(order.refundLineItems);
+          for (const rli of parsed) {
+            const pt = toParentProduct(rli.title);
+            if (!refundMap[pt]) refundMap[pt] = { refundedAmount: 0, originalPrice: 0 };
+            refundMap[pt].refundedAmount += rli.refundedAmount;
+            refundMap[pt].originalPrice += rli.originalPrice;
+          }
+        } catch {}
+      }
+      perProduct = parentItems.map(parent => {
+        const refund = refundMap[parent];
+        const isFullRefund = refund ? refund.refundedAmount >= refund.originalPrice * 0.50 : false;
+        return {
+          parent,
+          revenue: revenuePerItem,
+          // In the legacy path `refundedAmount` was only counted when a full
+          // (>=50%) refund was detected. Preserve that behaviour so numbers
+          // on unbackfilled orders don't shift underneath the rollup.
+          refundedAmount: isFullRefund ? refund.refundedAmount : 0,
+          lines: 1,
+          isFullRefund,
+        };
+      });
     }
 
-    for (const parentName of parentItems) {
-      const b = ensure(dateStr, parentName, segment);
+    for (const p of perProduct) {
+      const b = ensure(dateStr, p.parent, segment);
       b.orders++;
-      b.items++;
-      b.revenue += revenuePerItem;
+      b.items += p.lines;
+      b.revenue += p.revenue;
       if (isFirstPurchase) {
         b.firstPurchases++;
-        b.firstPurchaseRevenue += revenuePerItem;
+        b.firstPurchaseRevenue += p.revenue;
       }
       for (const col of orderCollections) b.collections.add(col);
       if (attr?.metaCampaignName) b.campaigns[attr.metaCampaignName] = (b.campaigns[attr.metaCampaignName] || 0) + 1;
       if (attr?.metaAdSetName) b.adSets[attr.metaAdSetName] = (b.adSets[attr.metaAdSetName] || 0) + 1;
-      const refund = refundMap[parentName];
-      const isFullRefund = refund ? refund.refundedAmount >= refund.originalPrice * 0.50 : false;
-      if (isFullRefund) {
-        b.refundedOrders++;
-        b.refundedAmount += refund.refundedAmount;
+      // Structured path: any refundedAmount counts (fractional refunds too).
+      // Legacy path: only tagged when isFullRefund. Matches the existing
+      // >=50% threshold for the refundedOrders count.
+      if (p.refundedAmount > 0) {
+        if (p.isFullRefund === undefined || p.isFullRefund) b.refundedOrders++;
+        b.refundedAmount += p.refundedAmount;
       }
     }
   }
@@ -248,7 +316,7 @@ export async function rebuildProductRollups(shopDomain) {
   // metaAcquiredCustomers — all the stuff that doesn't fit a date rollup.
   // Computed once per shop, cached until the next sync.
   const analysisBlob = buildAnalysisBlob({
-    orders, attrByOrderId, metaAcquiredCustomers, tz,
+    orders, attrByOrderId, metaAcquiredCustomers, tz, lineItemsByOrder,
   });
 
   await db.shopAnalysisCache.upsert({
@@ -272,7 +340,7 @@ export async function rebuildProductRollups(shopDomain) {
  * Build the analysis blob: journey flows, basket combos, first-purchase
  * lists, add-ons, metaAcquiredCustomers. All-time precomputation.
  */
-function buildAnalysisBlob({ orders, attrByOrderId, metaAcquiredCustomers, tz }) {
+function buildAnalysisBlob({ orders, attrByOrderId, metaAcquiredCustomers, tz, lineItemsByOrder = {} }) {
   const metaBaskets = [];
   const nonMetaBaskets = [];
   const metaFirstPurchaseProducts = {};
@@ -284,11 +352,34 @@ function buildAnalysisBlob({ orders, attrByOrderId, metaAcquiredCustomers, tz })
   const dailyRefundByProduct = {}; // date → product → { total, refunded }
 
   for (const order of orders) {
-    const rawItems = (order.lineItems || "").split(", ").map(s => s.trim()).filter(Boolean);
-    if (rawItems.length === 0) continue;
-    const parentItems = rawItems.map(toParentProduct);
+    // Build parent-item list + per-parent revenue. Prefer the structured
+    // OrderLineItem rows (real discounted-unit-price × qty per line); fall
+    // back to the legacy even-split over the comma-separated titles for
+    // orders that predate the line-item backfill.
+    const structuredRows = lineItemsByOrder[order.shopifyOrderId];
+    let parentItems; // array of parent names (may contain duplicates — basket semantics)
+    let revenueByParent; // parent → allocated revenue for first-purchase totals
+    if (structuredRows && structuredRows.length > 0) {
+      parentItems = [];
+      revenueByParent = {};
+      for (const r of structuredRows) {
+        const parent = toParentProduct(r.title);
+        if (!parent) continue;
+        parentItems.push(parent);
+        revenueByParent[parent] = (revenueByParent[parent] || 0) + (r.totalPrice || 0);
+      }
+      if (parentItems.length === 0) continue;
+    } else {
+      const rawItems = (order.lineItems || "").split(", ").map(s => s.trim()).filter(Boolean);
+      if (rawItems.length === 0) continue;
+      parentItems = rawItems.map(toParentProduct);
+      const revenuePerItem = (order.frozenTotalPrice || 0) / rawItems.length;
+      revenueByParent = null; // signal legacy path below
+      // legacy revenue allocation handled inline in firstPurchase loop
+      // to preserve prior semantics (per-appearance share, not per-parent sum).
+      parentItems.__legacyPerItem = revenuePerItem;
+    }
     const uniqueParents = [...new Set(parentItems)];
-    const revenuePerItem = (order.frozenTotalPrice || 0) / rawItems.length;
     const attr = attrByOrderId[order.shopifyOrderId];
     const isMeta = !!attr || order.utmConfirmedMeta;
     const isFirstPurchase = order.customerOrderCountAtPurchase === 1;
@@ -330,11 +421,28 @@ function buildAnalysisBlob({ orders, attrByOrderId, metaAcquiredCustomers, tz })
     }
 
     if (isFirstPurchase) {
-      for (const p of parentItems) {
-        const target = isMeta ? metaFirstPurchaseProducts : nonMetaFirstPurchaseProducts;
-        if (!target[p]) target[p] = { qty: 0, revenue: 0 };
-        target[p].qty++;
-        target[p].revenue += revenuePerItem;
+      const target = isMeta ? metaFirstPurchaseProducts : nonMetaFirstPurchaseProducts;
+      if (revenueByParent) {
+        // Structured path: count one qty per appearance (basket semantics),
+        // but revenue is added once per unique parent to avoid double-counting
+        // the summed line revenue when the same parent appears on multiple
+        // variant lines.
+        const seen = new Set();
+        for (const p of parentItems) {
+          if (!target[p]) target[p] = { qty: 0, revenue: 0 };
+          target[p].qty++;
+          if (!seen.has(p)) {
+            target[p].revenue += revenueByParent[p] || 0;
+            seen.add(p);
+          }
+        }
+      } else {
+        const revenuePerItem = parentItems.__legacyPerItem || 0;
+        for (const p of parentItems) {
+          if (!target[p]) target[p] = { qty: 0, revenue: 0 };
+          target[p].qty++;
+          target[p].revenue += revenuePerItem;
+        }
       }
     }
 

@@ -37,6 +37,62 @@ function hashEmail(email) {
   return crypto.createHash("sha256").update(email.toLowerCase().trim()).digest("hex");
 }
 
+// Build structured OrderLineItem rows from a REST webhook payload.
+// Mirrors `buildLineItemRowsFromGraphQL` in orderSync.server.js — see that
+// helper's header for the precision / refund-matching contract.
+function buildLineItemRowsFromWebhook(shopDomain, shopifyOrderId, lineItems, refunds) {
+  const refundByTitle = {};
+  for (const refund of (refunds || [])) {
+    for (const rli of (refund.refund_line_items || [])) {
+      const li = rli.line_item || {};
+      const title = li.title || "Unknown";
+      const qty = rli.quantity || 0;
+      const amount = parseFloat(rli.subtotal || "0");
+      if (!refundByTitle[title]) refundByTitle[title] = { quantity: 0, amount: 0 };
+      refundByTitle[title].quantity += qty;
+      refundByTitle[title].amount += amount;
+    }
+  }
+  const remainingRefund = Object.fromEntries(
+    Object.entries(refundByTitle).map(([k, v]) => [k, { quantity: v.quantity, amount: v.amount }]),
+  );
+  const rows = [];
+  for (const li of (lineItems || [])) {
+    const title = li.title || "";
+    const quantity = li.quantity || 1;
+    const unitPriceBeforeDiscount = parseFloat(li.price || "0");
+    const totalDiscount = parseFloat(li.total_discount || "0");
+    // Discounted unit price: subtract allocated line-level discount. `price`
+    // is per-unit and `total_discount` is line-total, so divide before subtract.
+    const unitPrice = Math.max(0, unitPriceBeforeDiscount - (quantity > 0 ? totalDiscount / quantity : 0));
+    const totalPrice = unitPrice * quantity;
+    const refund = remainingRefund[title];
+    let refundedQuantity = 0;
+    let refundedAmount = 0;
+    if (refund) {
+      refundedQuantity = Math.min(refund.quantity, quantity);
+      const share = refund.quantity > 0 ? refundedQuantity / refund.quantity : 0;
+      refundedAmount = refund.amount * share;
+      refund.quantity -= refundedQuantity;
+      refund.amount -= refundedAmount;
+    }
+    rows.push({
+      shopDomain,
+      shopifyOrderId,
+      shopifyLineItemId: li.id ? String(li.id) : null,
+      title,
+      sku: li.sku || "",
+      quantity,
+      unitPrice,
+      totalPrice,
+      totalDiscount,
+      refundedQuantity,
+      refundedAmount,
+    });
+  }
+  return rows;
+}
+
 function buildRefundLineItemsFromWebhook(refunds) {
   const byTitle = {};
   for (const refund of (refunds || [])) {
@@ -198,6 +254,17 @@ export async function processOrderWebhook(shopDomain, payload, isCreate) {
       ...((elevar.hasElevar || utmParams.utmSource) ? { ...utmParams, utmConfirmedMeta } : {}),
     },
   });
+
+  // Replace OrderLineItem rows. Same strategy as orderSync — delete + create
+  // rather than diff, because Shopify can reassign line-item IDs after order
+  // edits and we always have the authoritative list in the payload.
+  const lineItemRows = buildLineItemRowsFromWebhook(
+    shopDomain, shopifyOrderId, payload.line_items, payload.refunds,
+  );
+  await db.orderLineItem.deleteMany({ where: { shopDomain, shopifyOrderId } });
+  if (lineItemRows.length > 0) {
+    await db.orderLineItem.createMany({ data: lineItemRows });
+  }
 
   // Upsert customer
   if (customerId) {

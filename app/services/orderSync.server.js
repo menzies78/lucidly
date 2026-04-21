@@ -40,6 +40,71 @@ function extractSkus(lineItems) {
   return [...new Set(skus)].join(", ");
 }
 
+// Build per-row OrderLineItem records from a GraphQL order. Revenue precision:
+// `unitPrice` is the post-discount unit price, `totalPrice = unitPrice * qty`.
+// Refund amounts / quantities are matched against the per-title refund payload
+// we already parse for `Order.refundLineItems`. Title matching is imperfect
+// when one product appears on multiple lines of the same order — that's an
+// accepted precision loss, same as today's per-product refund attribution.
+function buildLineItemRowsFromGraphQL(shopDomain, shopifyOrderId, orderLineItems, refunds) {
+  // Accumulate refund totals per title, across all refunds on the order.
+  const refundByTitle = {};
+  for (const refund of (refunds || [])) {
+    for (const edge of (refund.refundLineItems?.edges || [])) {
+      const node = edge.node;
+      const title = node.lineItem?.title || "Unknown";
+      const qty = node.quantity || 0;
+      const amount = parseFloat(node.subtotalSet?.shopMoney?.amount || "0");
+      if (!refundByTitle[title]) refundByTitle[title] = { quantity: 0, amount: 0 };
+      refundByTitle[title].quantity += qty;
+      refundByTitle[title].amount += amount;
+    }
+  }
+  // Titles consumed so a second line-item with the same title gets whatever
+  // refund slack remains (rare; good enough given the imperfect title match).
+  const remainingRefund = Object.fromEntries(
+    Object.entries(refundByTitle).map(([k, v]) => [k, { quantity: v.quantity, amount: v.amount }]),
+  );
+  const rows = [];
+  for (const edge of (orderLineItems?.edges || [])) {
+    const node = edge.node;
+    const title = node.title || "";
+    const quantity = node.quantity || 1;
+    const unitPrice = parseFloat(node.discountedUnitPriceSet?.shopMoney?.amount || "0");
+    const originalUnit = parseFloat(node.originalUnitPriceSet?.shopMoney?.amount || "0");
+    const totalPrice = unitPrice * quantity;
+    const totalDiscount = Math.max(0, (originalUnit - unitPrice) * quantity);
+    const shopifyLineItemId = node.id ? node.id.replace("gid://shopify/LineItem/", "") : null;
+    const refund = remainingRefund[title];
+    let refundedQuantity = 0;
+    let refundedAmount = 0;
+    if (refund) {
+      refundedQuantity = Math.min(refund.quantity, quantity);
+      // Allocate refund amount proportional to the share of refunded quantity
+      // against the remaining refund quantity, so two lines with the same
+      // title don't double-claim the same £.
+      const share = refund.quantity > 0 ? refundedQuantity / refund.quantity : 0;
+      refundedAmount = refund.amount * share;
+      refund.quantity -= refundedQuantity;
+      refund.amount -= refundedAmount;
+    }
+    rows.push({
+      shopDomain,
+      shopifyOrderId,
+      shopifyLineItemId,
+      title,
+      sku: node.sku || "",
+      quantity,
+      unitPrice,
+      totalPrice,
+      totalDiscount,
+      refundedQuantity,
+      refundedAmount,
+    });
+  }
+  return rows;
+}
+
 function buildRefundLineItems(refunds) {
   const byTitle = {};
   for (const refund of (refunds || [])) {
@@ -223,12 +288,15 @@ export async function syncOrders(admin, shopDomain) {
               }
               billingAddress { country countryCode city provinceCode }
               shippingAddress { country countryCode city provinceCode }
-              lineItems(first: 20) {
+              lineItems(first: 50) {
                 edges {
                   node {
+                    id
                     title
                     quantity
                     sku
+                    originalUnitPriceSet { shopMoney { amount } }
+                    discountedUnitPriceSet { shopMoney { amount } }
                     product {
                       collections(first: 5) {
                         edges { node { title } }
@@ -407,6 +475,17 @@ export async function syncOrders(admin, shopDomain) {
             : {}),
         },
       });
+
+      // Replace OrderLineItem rows for this order. delete+createMany is simpler
+      // and safer than trying to diff when Shopify sometimes reassigns line
+      // item IDs after edits/refunds.
+      const lineItemRows = buildLineItemRowsFromGraphQL(
+        shopDomain, shopifyOrderId, order.lineItems, order.refunds,
+      );
+      await db.orderLineItem.deleteMany({ where: { shopDomain, shopifyOrderId } });
+      if (lineItemRows.length > 0) {
+        await db.orderLineItem.createMany({ data: lineItemRows });
+      }
       totalImported++;
       if (totalImported % 50 === 0) {
         setProgress(`syncOrders:${shopDomain}`, {

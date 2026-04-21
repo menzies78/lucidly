@@ -152,12 +152,49 @@ model Order {
   metaCustomerTag              String   @default("")
   importedAt                   DateTime @default(now())
 
+  lineItemRows                 OrderLineItem[]
+
   @@unique([shopDomain, shopifyOrderId])
   @@index([shopDomain, createdAt])
   @@index([shopDomain, shopifyCustomerId])
   @@index([attributionLayer])
   @@index([utmConfirmedMeta])
   @@index([shopDomain, isOnlineStore, createdAt])
+}
+
+// Structured line-item rows. Replaces the even-split revenue logic that used
+// to divide `Order.frozenTotalPrice` by the count of titles in the comma-
+// separated `Order.lineItems` string — an approach that misattributed revenue
+// whenever an order mixed products at different price points.
+//
+// `unitPrice` is the discounted unit price (after any line-level discount).
+// `totalPrice` is `unitPrice * quantity` (i.e. the net revenue this line item
+// contributed to the order — excludes shipping / tax which are order-level).
+// Sum of `totalPrice` across an order's line items ≈ `frozenSubtotalPrice`.
+//
+// `refundedQuantity` / `refundedAmount` are populated from the same per-title
+// refund payload we already parse into `Order.refundLineItems` JSON. Title
+// matching is imperfect when the same product appears on multiple lines of
+// the same order; good enough for per-product revenue attribution.
+model OrderLineItem {
+  id                String   @id @default(uuid())
+  shopDomain        String
+  shopifyOrderId    String
+  shopifyLineItemId String?
+  title             String   @default("")
+  sku               String   @default("")
+  quantity          Int      @default(1)
+  unitPrice         Float    @default(0)
+  totalPrice        Float    @default(0)
+  totalDiscount     Float    @default(0)
+  refundedQuantity  Int      @default(0)
+  refundedAmount    Float    @default(0)
+
+  order             Order    @relation(fields: [shopDomain, shopifyOrderId], references: [shopDomain, shopifyOrderId], onDelete: Cascade)
+
+  @@index([shopDomain, shopifyOrderId])
+  @@index([shopDomain, title])
+  @@index([shopDomain, sku])
 }
 
 model MetaInsight {
