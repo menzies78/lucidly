@@ -40,18 +40,29 @@ const MAX_CANDIDATES = 300;
 const MAX_CANDIDATES_FAST = 900;
 const RIVAL_VALUE_TOLERANCE = 0.02; // ±2% value = interchangeable
 
+function sampleOffsetAtUtcHour(timezone, dateStr, utcHour) {
+  const iso = `${dateStr}T${String(utcHour).padStart(2, "0")}:00:00Z`;
+  const dt = new Date(iso);
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: timezone,
+    hour: "numeric", minute: "numeric", hour12: false,
+    year: "numeric", month: "numeric", day: "numeric",
+  }).formatToParts(dt);
+  const hour = parseInt(parts.find(p => p.type === "hour")?.value || String(utcHour), 10);
+  const minute = parseInt(parts.find(p => p.type === "minute")?.value || "0", 10);
+  return (hour * 60 + minute) - (utcHour * 60);
+}
+
 function getTimezoneOffsetMinutes(timezone, dateStr) {
   if (!timezone) return 0;
   try {
-    const dt = new Date(`${dateStr}T12:00:00Z`);
-    const parts = new Intl.DateTimeFormat("en-US", {
-      timeZone: timezone,
-      hour: "numeric", minute: "numeric", hour12: false,
-      year: "numeric", month: "numeric", day: "numeric",
-    }).formatToParts(dt);
-    const hour = parseInt(parts.find(p => p.type === "hour")?.value || "12", 10);
-    const minute = parseInt(parts.find(p => p.type === "minute")?.value || "0", 10);
-    return (hour * 60 + minute) - (12 * 60);
+    // Sample at both 00:00 and 23:00 UTC to cover DST-transition days.
+    // On non-transition days both samples agree; on fall-back / spring-forward
+    // days we take the max so orders in the 1-hour ambiguous window bucket
+    // to the post-transition Meta day. Zero behavior change on normal days.
+    const a = sampleOffsetAtUtcHour(timezone, dateStr, 0);
+    const b = sampleOffsetAtUtcHour(timezone, dateStr, 23);
+    return Math.max(a, b);
   } catch {
     return 0;
   }

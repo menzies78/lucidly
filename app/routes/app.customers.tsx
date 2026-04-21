@@ -264,6 +264,14 @@ export const loader = async ({ request }) => {
   // agree on the unmatched number.
   const unmatchedByDay: Record<string, { count: number; revenue: number }> = {};
   const prevUnmatchedByDay: Record<string, { count: number; revenue: number }> = {};
+  // Value>0 counters power the Total Meta Orders tile — £0 unmatched
+  // conversions (typically customer-service/replacement) should not count
+  // as a Meta order. prev* variants power the tile's delta badge + the
+  // Meta Order Revenue tile's previousValue (was buggy previously).
+  let unmatchedConversionsWithValue = 0;
+  let prevUnmatchedConversions = 0;
+  let prevUnmatchedRevenue = 0;
+  let prevUnmatchedConversionsWithValue = 0;
   for (const a of unmatchedAttrs) {
     const m = a.shopifyOrderId.match(/(\d{4}-\d{2}-\d{2})/);
     if (!m) continue;
@@ -273,10 +281,14 @@ export const loader = async ({ request }) => {
       if (!unmatchedByDay[key]) unmatchedByDay[key] = { count: 0, revenue: 0 };
       unmatchedByDay[key].count++;
       unmatchedByDay[key].revenue += rev;
+      if (rev > 0) unmatchedConversionsWithValue++;
     } else if (key >= prevFromKey && key <= prevToKey) {
       if (!prevUnmatchedByDay[key]) prevUnmatchedByDay[key] = { count: 0, revenue: 0 };
       prevUnmatchedByDay[key].count++;
       prevUnmatchedByDay[key].revenue += rev;
+      prevUnmatchedConversions++;
+      prevUnmatchedRevenue += rev;
+      if (rev > 0) prevUnmatchedConversionsWithValue++;
     }
   }
 
@@ -406,9 +418,17 @@ export const loader = async ({ request }) => {
   const prevMetaNewCustomersInRange = prv.metaNew.newCustomers;
   const prevMetaNewRevenueInRange = r2(prv.metaNew.revenue);
   const prevMetaRepeatCustomersInRange = prv.metaRepeat.repeatCustomers;
+  const prevMetaRepeatRevenueInRange = r2(prv.metaRepeat.revenue);
   const prevMetaRetargetedCustomersInRange = prv.metaRetargeted.newCustomers + prv.metaRetargeted.repeatCustomers;
+  const prevMetaRetargetedRevenueInRange = r2(prv.metaRetargeted.revenue);
   const prevTotalCustomersInRange = prevMetaNewCustomersInRange + prevMetaRepeatCustomersInRange + prevMetaRetargetedCustomersInRange + prv.organic.newCustomers + prv.organic.repeatCustomers;
   const prevTotalRevenueInRange = prevMetaRevenue + prv.organic.revenue;
+  // Order-count aggregates for Total Meta Orders tile.
+  // Segment .orders already excludes £0 orders (rollup writer, commit a02b4f8).
+  const totalOrdersInRange = cur.metaNew.orders + cur.metaRepeat.orders + cur.metaRetargeted.orders + cur.organic.orders;
+  const prevMatchedMetaOrdersInRange = prv.metaNew.orders + prv.metaRepeat.orders + prv.metaRetargeted.orders;
+  const prevTotalOrdersInRange = prevMatchedMetaOrdersInRange + prv.organic.orders;
+  const matchedMetaOrdersInRange = cur.metaNew.orders + cur.metaRepeat.orders + cur.metaRetargeted.orders;
 
   // Demographics
   const AGE_ORDER = ["13-17", "18-24", "25-34", "35-44", "45-54", "55-64", "65+"];
@@ -665,8 +685,11 @@ export const loader = async ({ request }) => {
     prevMedianTimeTo2nd,
     totalCustomersInRange,
     prevMetaNewCustomersInRange, prevMetaRepeatCustomersInRange, prevMetaRetargetedCustomersInRange,
-    prevMetaNewRevenueInRange, prevTotalCustomersInRange,
+    prevMetaNewRevenueInRange, prevMetaRepeatRevenueInRange, prevMetaRetargetedRevenueInRange,
+    prevTotalCustomersInRange,
     totalRevenueInRange, prevTotalRevenueInRange,
+    matchedMetaOrdersInRange, totalOrdersInRange, prevMatchedMetaOrdersInRange, prevTotalOrdersInRange,
+    unmatchedConversionsWithValue, prevUnmatchedConversions, prevUnmatchedRevenue, prevUnmatchedConversionsWithValue,
     ageBreakdown, genderBreakdown, newAgeBreakdown, newGenderBreakdown,
     newDemoConversions, newDemoExactCount, topCountries, topCities,
     allMetaTopCountries, allMetaTopCities, metaNewTopCountries, metaNewTopCities,
@@ -1317,8 +1340,11 @@ export default function Customers() {
     prevMedianTimeTo2nd,
     totalCustomersInRange,
     prevMetaNewCustomersInRange, prevMetaRepeatCustomersInRange, prevMetaRetargetedCustomersInRange,
-    prevMetaNewRevenueInRange, prevTotalCustomersInRange,
+    prevMetaNewRevenueInRange, prevMetaRepeatRevenueInRange, prevMetaRetargetedRevenueInRange,
+    prevTotalCustomersInRange,
     totalRevenueInRange, prevTotalRevenueInRange,
+    matchedMetaOrdersInRange, totalOrdersInRange, prevMatchedMetaOrdersInRange, prevTotalOrdersInRange,
+    unmatchedConversionsWithValue, prevUnmatchedConversions, prevUnmatchedRevenue, prevUnmatchedConversionsWithValue,
   } = data;
   const cs = currencySymbol || "£";
   const { aiCachedInsights, aiGeneratedAt, aiIsStale } = data;
@@ -1585,48 +1611,55 @@ export default function Customers() {
 
         {/* ═══ ALL TILES (drag/drop, show/hide) ═══ */}
         <TileGrid pageId="customers-v8" columns={4} tiles={[
-          { id: "totalMetaCustomers", label: "Total Meta Customers", render: () => {
-            const matchedMeta = metaNewCustomersInRange + metaRepeatCustomersInRange + metaRetargetedCustomersInRange;
-            const totalMeta = matchedMeta + unmatchedConversions;
-            const prevTotalMeta = prevMetaNewCustomersInRange + prevMetaRepeatCustomersInRange + prevMetaRetargetedCustomersInRange;
-            const pct = totalCustomersInRange > 0 ? Math.round((matchedMeta / totalCustomersInRange) * 100) : 0;
+          { id: "totalMetaCustomers", label: "Total Meta Orders", render: () => {
+            // Total Meta Orders = matched Shopify orders attributed to Meta
+            // (rollup .orders already excludes £0) + unmatched Meta conversions
+            // that had a non-zero value (£0 unmatched are typically replacement
+            // / customer-service events, not real sales).
+            const totalMetaOrders = matchedMetaOrdersInRange + unmatchedConversionsWithValue;
+            const prevTotalMetaOrders = prevMatchedMetaOrdersInRange + prevUnmatchedConversionsWithValue;
+            const pct = totalOrdersInRange > 0 ? Math.round((totalMetaOrders / totalOrdersInRange) * 100) : 0;
             return (
-              <SummaryTile label="Total Meta Customers" value={totalMeta.toLocaleString()}
-                tooltip={{ definition: "All Meta-attributed customers in the selected period: matched customers (new + repeat + retargeted) plus unmatched Meta conversions" }}
-                subtitle={unmatchedConversions > 0 ? `${matchedMeta.toLocaleString()} matched + ${unmatchedConversions} unmatched · ${pct}% of total customers` : `${pct}% of total customers (${totalCustomersInRange.toLocaleString()})`}
-                currentValue={totalMeta} previousValue={prevTotalMeta}
+              <SummaryTile label="Total Meta Orders" value={totalMetaOrders.toLocaleString()}
+                tooltip={{ definition: "Meta-attributed orders with a non-zero value in the selected period: matched Shopify orders plus unmatched Meta conversions" }}
+                subtitle={`${pct}% of total website orders (${totalOrdersInRange.toLocaleString()})`}
+                currentValue={totalMetaOrders} previousValue={prevTotalMetaOrders}
                 chartData={dailyData} prevChartData={prevDailyData} chartKey="metaCustomers" chartColor="#7C3AED" chartFormat={fmtCount} />
             );
           }},
-          { id: "totalMetaRevenue", label: "Meta Customer Revenue", render: () => {
+          { id: "totalMetaRevenue", label: "Meta Order Revenue", render: () => {
             const matchedRevenue = metaNewRevenueInRange + metaRepeatRevenueInRange + metaRetargetedRevenueInRange;
             const totalMetaRevenue = matchedRevenue + unmatchedRevenue;
-            const prevMetaRevenueInRange = prevMetaNewRevenueInRange;
-            const metaRevInRangePct = totalRevenueInRange > 0 ? Math.round((matchedRevenue / totalRevenueInRange) * 100) : 0;
+            // Fix for the +206.8% delta bug: previousValue previously used
+            // prevMetaNewRevenueInRange (new-customer only) but currentValue
+            // sums all segments + unmatched, so deltas were inflated ~3x.
+            const prevTotalMetaRevenue = prevMetaNewRevenueInRange + prevMetaRepeatRevenueInRange + prevMetaRetargetedRevenueInRange + prevUnmatchedRevenue;
+            const pct = totalRevenueInRange > 0 ? Math.round((totalMetaRevenue / totalRevenueInRange) * 100) : 0;
             return (
-              <SummaryTile label="Meta Customer Revenue"
-                tooltip={{ definition: "Revenue from all Meta customers (matched orders) plus unmatched Meta-reported conversion values" }}
+              <SummaryTile label="Meta Order Revenue"
+                tooltip={{ definition: "Revenue from Meta-attributed orders: Shopify net revenue for matched orders plus Meta-reported conversion values for unmatched" }}
                 value={fmtPrice(totalMetaRevenue)}
-                subtitle={unmatchedRevenue > 0 ? `${fmtPrice(matchedRevenue)} matched + ${fmtPrice(unmatchedRevenue)} unmatched · ${metaRevInRangePct}% of all revenue` : `${metaRevInRangePct}% of all revenue (${fmtPrice(totalRevenueInRange)})`}
-                currentValue={totalMetaRevenue} previousValue={prevMetaRevenueInRange}
+                subtitle={`${pct}% of all store revenue (${fmtPrice(totalRevenueInRange)})`}
+                currentValue={totalMetaRevenue} previousValue={prevTotalMetaRevenue}
                 chartData={dailyData} prevChartData={prevDailyData} chartKey="metaRevenue" chartColor="#5C6AC4" chartFormat={fmtPrice} />
             );
           }},
           { id: "newMetaCustomers", label: "New Meta Customers", render: () => (
             <SummaryTile label="New Meta Customers" value={metaCount.toLocaleString()}
               tooltip={{ definition: "Customers whose first-ever order was attributed to a Meta ad within the selected date range" }}
-              subtitle={`${metaCount + organicCount > 0 ? Math.round((metaCount / (metaCount + organicCount)) * 100) : 0}% of all new customers (${(metaCount + organicCount).toLocaleString()})`}
+              subtitle={`${metaCount + organicCount > 0 ? Math.round((metaCount / (metaCount + organicCount)) * 100) : 0}% of all new customers in period`}
               currentValue={metaCount} previousValue={prevMetaCount}
               chartData={dailyData} prevChartData={prevDailyData} chartKey="newMetaCustomers" chartColor="#2E7D32" chartFormat={fmtCount} />
           )},
           { id: "newMetaRevenue", label: "New Meta Customer Revenue", render: () => {
-            const metaRevenueInRange = metaNewRevenueInRange + metaRepeatRevenueInRange + metaRetargetedRevenueInRange;
-            const newRevPct = metaRevenueInRange > 0 ? Math.round((metaNewRevenueInRange / metaRevenueInRange) * 100) : 0;
+            const matchedRevenue = metaNewRevenueInRange + metaRepeatRevenueInRange + metaRetargetedRevenueInRange;
+            const totalMetaRevenue = matchedRevenue + unmatchedRevenue;
+            const newRevPct = totalMetaRevenue > 0 ? Math.round((metaNewRevenueInRange / totalMetaRevenue) * 100) : 0;
             return (
               <SummaryTile label="New Meta Customer Revenue"
                 tooltip={{ definition: "Net revenue from first orders placed by newly acquired Meta customers in the selected period" }}
                 value={fmtPrice(metaNewRevenueInRange)}
-                subtitle={`${newRevPct}% of Meta customer revenue (${fmtPrice(metaRevenueInRange)})`}
+                subtitle={`${newRevPct}% of all Meta revenue (${fmtPrice(totalMetaRevenue)})`}
                 currentValue={metaNewRevenueInRange} previousValue={prevMetaNewRevenueInRange}
                 chartData={dailyData} prevChartData={prevDailyData} chartKey="newMetaRevenue" chartColor="#D4760A" chartFormat={fmtPrice} />
             );
@@ -1635,7 +1668,7 @@ export default function Customers() {
             <SummaryTile label="New Meta Customer AOV"
               tooltip={{ definition: "Average first order value for customers acquired through Meta ads within the selected date range" }}
               value={metaAvgFirstOrder > 0 ? fmtPrice(metaAvgFirstOrder) : "\u2014"}
-              subtitle={`vs ${fmtPrice(allAvgAov)} all customers`}
+              subtitle={`vs ${fmtPrice(allAvgAov)} all website customers`}
               currentValue={metaAvgFirstOrder} previousValue={prevMetaAvgFirstOrder}
               chartData={dailyData} prevChartData={prevDailyData} chartKey={(d) => d.newMetaCustomers > 0 ? d.newMetaRevenue / d.newMetaCustomers : 0}
               chartColor="#2E7D32" chartFormat={fmtPrice} />
@@ -1656,7 +1689,7 @@ export default function Customers() {
           { id: "repeatCustomers", label: "Meta Repeat Customers", render: () => (
             <SummaryTile label="Meta Repeat Customers" value={metaRepeatTotal.toLocaleString()}
               tooltip={{ definition: "Meta-acquired customers who placed a repeat order (any channel) in this period. A repeat order is any order after their first-ever purchase." }}
-              subtitle={`${metaRepeatRate}% repeat rate`}
+              subtitle={`${totalCustomersInRange > 0 ? Math.round((metaRepeatTotal / totalCustomersInRange) * 100) : 0}% of total website customers`}
               currentValue={metaRepeatTotal} previousValue={prevMetaRepeatTotal}
               chartData={dailyData} prevChartData={prevDailyData} chartKey="metaRepeatCustomers"
               chartColor="#0891B2" chartFormat={fmtCount} />

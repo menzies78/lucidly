@@ -1159,7 +1159,11 @@ export const action = async ({ request }) => {
             ctr: c.impressions > 0 ? r2((c.clicks / c.impressions) * 100) : 0,
           }));
 
-        // Daily data for trend
+        // Daily data for trend.
+        // MetaInsight.date is stored as UTC-midnight of a shop-local day
+        // (see metaSync.server.js). Taking the day-portion directly yields
+        // the correct shop-local key and avoids a wrong tz round-trip for
+        // shops at negative UTC offsets (LA etc).
         const dailyMap = {};
         for (const ins of insights) {
           const d = typeof ins.date === "string" ? ins.date.slice(0, 10) : ins.date.toISOString().slice(0, 10);
