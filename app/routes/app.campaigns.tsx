@@ -19,6 +19,7 @@ import { authenticate } from "../shopify.server";
 import db from "../db.server";
 import { parseDateRange } from "../utils/dateRange.server";
 import { shopLocalDayKey, shopRangeBounds } from "../utils/shopTime.server";
+import { currencySymbolFromCode } from "../utils/currency";
 import { getCachedInsights, computeDataHash, generateInsights } from "../services/aiAnalysis.server";
 import { setProgress, failProgress, completeProgress } from "../services/progress.server";
 import { cached as queryCached, DEFAULT_TTL } from "../services/queryCache.server";
@@ -467,8 +468,7 @@ export const loader = async ({ request }) => {
   const compareAgg = compareAggRaw;
   console.log(`[campaigns] db ${Date.now() - _t0}ms (orders=${allOrders.length}, insights=${insights.length}, adLevel=${Object.keys(currentAgg.ad).length})`);
 
-  const currencySymbol = (shop?.shopifyCurrency || "GBP") === "GBP" ? "£"
-    : (shop?.shopifyCurrency || "GBP") === "EUR" ? "€" : "$";
+  const currencySymbol = currencySymbolFromCode(shop?.shopifyCurrency);
 
   const ordersInRange = allOrders.filter(o => o.createdAt >= fromDate && o.createdAt <= toDate);
   const orderIdsInRange = new Set(ordersInRange.map(o => o.shopifyOrderId));
@@ -1084,8 +1084,7 @@ export const action = async ({ request }) => {
         const shop = await db.shop.findUnique({ where: { shopDomain } });
         const tz = shop?.shopifyTimezone || "UTC";
         const { fromDate, toDate, fromKey: dateFromStr, toKey: dateToStr } = parseDateRange(request, tz);
-        const cs = (shop?.shopifyCurrency || "GBP") === "GBP" ? "£"
-          : (shop?.shopifyCurrency || "GBP") === "EUR" ? "€" : "$";
+        const cs = currencySymbolFromCode(shop?.shopifyCurrency);
 
         const reportingPeriodDays = Math.max(1, Math.ceil((toDate.getTime() - fromDate.getTime()) / 86400000));
 
@@ -2209,7 +2208,7 @@ export default function Campaigns() {
     shopDomain, fromKey, toKey,
     changeEvents, changeCountsByObjectId,
   } = useLoaderData();
-  const cs = currencySymbol || "£";
+  const cs = currencySymbol || currencySymbolFromCode(null);
   const [searchParams, setSearchParams] = useSearchParams();
 
   // Change log integration — strip above the tiles + drawer triggered from

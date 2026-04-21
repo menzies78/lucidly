@@ -11,6 +11,7 @@ import db from "../db.server";
 import { cached as queryCached, DEFAULT_TTL } from "../services/queryCache.server";
 import { parseDateRange } from "../utils/dateRange.server";
 import { shopLocalDayKey, shopRangeBounds } from "../utils/shopTime.server";
+import { currencySymbolFromCode } from "../utils/currency";
 import { getCachedInsights, computeDataHash, generateInsights } from "../services/aiAnalysis.server";
 import { setProgress, failProgress, completeProgress } from "../services/progress.server";
 import AiInsightsPanel from "../components/AiInsightsPanel";
@@ -162,7 +163,7 @@ export const loader = async ({ request }) => {
   console.log(`[customers] db ${Date.now() - _qStart}ms (customers=${customers.length}, dailyRollups=${dailyRollups.length})`);
 
   const shop = shopForTz;
-  const currencySymbol = shop?.shopifyCurrency === "USD" ? "$" : shop?.shopifyCurrency === "EUR" ? "€" : "£";
+  const currencySymbol = currencySymbolFromCode(shop?.shopifyCurrency);
 
   const ltvBlob = blobs.ltv;
   const journeyBlob = blobs.journey;
@@ -756,7 +757,7 @@ export const action = async ({ request }) => {
         const shop = await db.shop.findUnique({ where: { shopDomain } });
         const tz = shop?.shopifyTimezone || "UTC";
         const { fromDate, toDate, fromKey: dateFromStr, toKey: dateToStr } = parseDateRange(request, tz);
-        const cs = (shop?.shopifyCurrency || "GBP") === "GBP" ? "£" : (shop?.shopifyCurrency || "GBP") === "EUR" ? "€" : "$";
+        const cs = currencySymbolFromCode(shop?.shopifyCurrency);
 
         const orders = await db.order.findMany({ where: { shopDomain, isOnlineStore: true } });
         const attributions = await db.attribution.findMany({ where: { shopDomain, confidence: { gt: 0 } } });
@@ -1346,7 +1347,7 @@ export default function Customers() {
     matchedMetaOrdersInRange, totalOrdersInRange, prevMatchedMetaOrdersInRange, prevTotalOrdersInRange,
     unmatchedConversionsWithValue, prevUnmatchedConversions, prevUnmatchedRevenue, prevUnmatchedConversionsWithValue,
   } = data;
-  const cs = currencySymbol || "£";
+  const cs = currencySymbol || currencySymbolFromCode(null);
   const { aiCachedInsights, aiGeneratedAt, aiIsStale } = data;
   const [searchParams, setSearchParams] = useSearchParams();
   const [acqMode, setAcqMode] = useState<"orders" | "revenue">("orders");
@@ -1639,7 +1640,7 @@ export default function Customers() {
               <SummaryTile label="Meta Order Revenue"
                 tooltip={{ definition: "Revenue from Meta-attributed orders: Shopify net revenue for matched orders plus Meta-reported conversion values for unmatched" }}
                 value={fmtPrice(totalMetaRevenue)}
-                subtitle={`${pct}% of all store revenue (${fmtPrice(totalRevenueInRange)})`}
+                subtitle={`${pct}% of all website revenue (${fmtPrice(totalRevenueInRange)})`}
                 currentValue={totalMetaRevenue} previousValue={prevTotalMetaRevenue}
                 chartData={dailyData} prevChartData={prevDailyData} chartKey="metaRevenue" chartColor="#5C6AC4" chartFormat={fmtPrice} />
             );

@@ -10,6 +10,7 @@ import { authenticate } from "../shopify.server";
 import db from "../db.server";
 import { parseDateRange } from "../utils/dateRange.server";
 import { shopLocalDayKey } from "../utils/shopTime.server";
+import { currencySymbolFromCode } from "../utils/currency";
 import { cached as queryCached } from "../services/queryCache.server";
 
 export const loader = async ({ request }) => {
@@ -358,8 +359,7 @@ export const loader = async ({ request }) => {
   }
   const dailyData = Object.values(dailyMap).sort((a, b) => a.date.localeCompare(b.date));
 
-  const currencySymbol = (shop?.shopifyCurrency || "GBP") === "GBP" ? "£"
-    : (shop?.shopifyCurrency || "GBP") === "EUR" ? "€" : "$";
+  const currencySymbol = currencySymbolFromCode(shop?.shopifyCurrency);
 
   // Attribution source counts
   const srcUtmAndLucidly = rows.filter(r => r.attributionSource === "UTM & Lucidly").length;
@@ -566,7 +566,7 @@ export default function Orders() {
     totalOrders, totalRevenue, metaAttributed, matchRate, aov, onlineOrders, onlineRevenue, metaRevenue,
     dailyData, currencySymbol,
   } = useLoaderData();
-  const cs = currencySymbol || "£";
+  const cs = currencySymbol || currencySymbolFromCode(null);
   const [searchParams] = useSearchParams();
   const submit = useSubmit();
 

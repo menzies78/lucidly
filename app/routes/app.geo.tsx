@@ -11,6 +11,7 @@ import { useState, useMemo, useCallback, useRef, useEffect } from "react";
 import { authenticate } from "../shopify.server";
 import db from "../db.server";
 import { parseDateRange } from "../utils/dateRange.server";
+import { currencySymbolFromCode } from "../utils/currency";
 import { cached as queryCached } from "../services/queryCache.server";
 import createGlobe from "cobe";
 import { getCachedInsights, computeDataHash, generateInsights } from "../services/aiAnalysis.server";
@@ -26,8 +27,7 @@ export const loader = async ({ request }) => {
   const shopDomain = session.shop;
 
   const shop = await db.shop.findUnique({ where: { shopDomain } });
-  const currencySymbol = (shop?.shopifyCurrency || "GBP") === "GBP" ? "£"
-    : (shop?.shopifyCurrency || "GBP") === "EUR" ? "€" : "$";
+  const currencySymbol = currencySymbolFromCode(shop?.shopifyCurrency);
 
   const tz = shop?.shopifyTimezone || "UTC";
   const { fromDate, toDate, fromKey, toKey } = parseDateRange(request, tz);
@@ -527,7 +527,7 @@ export const action = async ({ request }) => {
         const shop = await db.shop.findUnique({ where: { shopDomain } });
         const tz = shop?.shopifyTimezone || "UTC";
         const { fromDate, toDate, fromKey: dateFromStr, toKey: dateToStr } = parseDateRange(request, tz);
-        const cs = (shop?.shopifyCurrency || "GBP") === "GBP" ? "£" : (shop?.shopifyCurrency || "GBP") === "EUR" ? "€" : "$";
+        const cs = currencySymbolFromCode(shop?.shopifyCurrency);
 
         // Fetch geo data for AI
         const breakdownData = await db.metaBreakdown.findMany({

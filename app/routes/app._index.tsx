@@ -11,6 +11,7 @@ import { runAttribution, runDateRangeRematch, runFillGaps } from "../services/ma
 import { runIncrementalSync, clearTodayForRematch } from "../services/incrementalSync.server";
 import { setProgress, failProgress, getProgress, completeProgress } from "../services/progress.server";
 import { parseDateRange } from "../utils/dateRange.server";
+import { currencySymbolFromCode } from "../utils/currency";
 import { cached as queryCached } from "../services/queryCache.server";
 
 export const loader = async ({ request }) => {
@@ -125,8 +126,7 @@ export const loader = async ({ request }) => {
   // granularity but is still Meta traffic per the UTM / Elevar signal.
   // Matches the treatment used across Campaigns, Customers, Products, Weekly.
   const netMetaRevenue = matchedMetaRevenue + utmOnlyRevenue;
-  const currencySymbol = (shop?.shopifyCurrency || "GBP") === "GBP" ? "£"
-    : (shop?.shopifyCurrency || "GBP") === "EUR" ? "€" : "$";
+  const currencySymbol = currencySymbolFromCode(shop?.shopifyCurrency);
 
   const isNewInstall = !shop?.lastOrderSync && orderCount === 0;
 

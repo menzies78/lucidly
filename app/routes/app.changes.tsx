@@ -13,6 +13,7 @@ import { authenticate } from "../shopify.server";
 import db from "../db.server";
 import { parseDateRange } from "../utils/dateRange.server";
 import { shopLocalDayKey } from "../utils/shopTime.server";
+import { currencySymbolFromCode } from "../utils/currency";
 import { setProgress, failProgress, completeProgress } from "../services/progress.server";
 
 const CATEGORY_META: Record<string, { label: string; icon: string; color: string }> = {
@@ -66,12 +67,9 @@ function extractBudget(v: string | null, side: "old" | "new"): { minorUnits: num
   return { minorUnits: null, currency: null };
 }
 
-const CURRENCY_SYMBOL: Record<string, string> = {
-  GBP: "£", USD: "$", EUR: "€", AUD: "A$", CAD: "C$", JPY: "¥",
-};
 function symbolFor(currency: string | null): string {
   if (!currency) return "";
-  return CURRENCY_SYMBOL[currency.toUpperCase()] || `${currency} `;
+  return currencySymbolFromCode(currency);
 }
 
 function formatBudgetWithSymbol(minorUnits: number | null, currency: string | null): string {

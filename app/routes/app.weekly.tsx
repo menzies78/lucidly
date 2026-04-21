@@ -4,6 +4,7 @@ import { Page, Text, InlineStack, Button } from "@shopify/polaris";
 import ReportTabs from "../components/ReportTabs";
 import { authenticate } from "../shopify.server";
 import db from "../db.server";
+import { currencySymbolFromCode } from "../utils/currency";
 import { cached as queryCached, DEFAULT_TTL } from "../services/queryCache.server";
 import {
   shopDayBounds,
@@ -52,7 +53,7 @@ function fmt(d: Date): string {
 }
 
 function fmtCurrency(val: number, currency: string): string {
-  const symbol = currency === "GBP" ? "£" : currency === "USD" ? "$" : "€";
+  const symbol = currencySymbolFromCode(currency);
   if (val === 0) return `${symbol}0`;
   return `${symbol}${Math.round(val).toLocaleString("en-GB")}`;
 }
@@ -677,7 +678,7 @@ function AdSection({ title, ads, currency, color }: { title: string; ads: AdPerf
 type NewAd = { adName: string; adId: string; orders: number; revenue: number; spend: number };
 function generateSummary(totals: DayData, prevTotals: DayData, currency: string, geoNew: GeoRow[], topAdsNew: AdPerf[], topAdsExisting: AdPerf[], newlyLaunchedAds: NewAd[]): string[] {
   const points: string[] = [];
-  const sym = currency === "GBP" ? "£" : currency === "USD" ? "$" : "€";
+  const sym = currencySymbolFromCode(currency);
   const f = (v: number) => `${sym}${Math.round(v).toLocaleString("en-GB")}`;
 
   // Revenue WoW
