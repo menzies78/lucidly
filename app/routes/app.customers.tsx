@@ -416,9 +416,7 @@ export const loader = async ({ request }) => {
   const metaRetargetedOrdersInRange = cur.metaRetargeted.orders;
   const metaRetargetedRevenueInRange = r2(cur.metaRetargeted.revenue);
   const metaRetargetedCustomersInRange = cur.metaRetargeted.newCustomers + cur.metaRetargeted.repeatCustomers;
-  const organicCustomersInRange = cur.organic.newCustomers + cur.organic.repeatCustomers;
-  const organicRevenueInRange = r2(cur.organic.revenue);
-  const totalCustomersInRange = metaNewCustomersInRange + metaRepeatCustomersInRange + metaRetargetedCustomersInRange + organicCustomersInRange;
+  const totalCustomersInRange = metaNewCustomersInRange + metaRepeatCustomersInRange + metaRetargetedCustomersInRange + cur.organic.newCustomers + cur.organic.repeatCustomers;
   const totalRevenueInRange = metaRevenue + organicRevenue;
   const prevMetaNewCustomersInRange = prv.metaNew.newCustomers;
   const prevMetaNewRevenueInRange = r2(prv.metaNew.revenue);
@@ -930,7 +928,6 @@ export const loader = async ({ request }) => {
     metaNewOrdersInRange, metaNewRevenueInRange, metaNewCustomersInRange,
     metaRepeatOrdersInRange, metaRepeatRevenueInRange, metaRepeatCustomersInRange,
     metaRetargetedOrdersInRange, metaRetargetedRevenueInRange, metaRetargetedCustomersInRange,
-    organicCustomersInRange, organicRevenueInRange,
     metaNewCount: ltvMetaNewCount, mnAvgLtv, mnAvgOrders, mnRepeatRate, mnAvgAov,
     mnCPA, mnLtvCac, mnPaybackOrders, mnMedianTimeTo2nd, mnReorderWithin90,
     allCount, allAvgLtv, allAvgOrders, allRepeatRate, allAvgAov,
@@ -1571,7 +1568,6 @@ export default function Customers() {
     metaNewOrdersInRange, metaNewRevenueInRange, metaNewCustomersInRange,
     metaRepeatOrdersInRange, metaRepeatRevenueInRange, metaRepeatCustomersInRange,
     metaRetargetedOrdersInRange, metaRetargetedRevenueInRange, metaRetargetedCustomersInRange,
-    organicCustomersInRange, organicRevenueInRange,
     metaNewCount, mnAvgLtv, mnAvgOrders, mnRepeatRate, mnAvgAov,
     mnCPA, mnLtvCac, mnPaybackOrders, mnMedianTimeTo2nd, mnReorderWithin90,
     allCount, allAvgLtv, allAvgOrders, allRepeatRate, allAvgAov,
@@ -1633,16 +1629,14 @@ export default function Customers() {
         { label: "Meta New", value: metaNewCustomersInRange, color: "#7C3AED" },
         { label: "Meta Repeat", value: metaRepeatCustomersInRange, color: "#0891B2" },
         { label: "Meta Retargeted", value: metaRetargetedCustomersInRange, color: "#B45309" },
-        { label: "Organic", value: organicCustomersInRange, color: "#6B7280" },
       ];
     }
     return [
       { label: "Meta New", value: Math.round(metaNewRevenueInRange), color: "#7C3AED" },
       { label: "Meta Repeat", value: Math.round(metaRepeatRevenueInRange), color: "#0891B2" },
       { label: "Meta Retargeted", value: Math.round(metaRetargetedRevenueInRange), color: "#B45309" },
-      { label: "Organic", value: Math.round(organicRevenueInRange), color: "#6B7280" },
     ];
-  }, [acqMode, metaNewCustomersInRange, metaRepeatCustomersInRange, metaRetargetedCustomersInRange, organicCustomersInRange, metaNewRevenueInRange, metaRepeatRevenueInRange, metaRetargetedRevenueInRange, organicRevenueInRange]);
+  }, [acqMode, metaNewCustomersInRange, metaRepeatCustomersInRange, metaRetargetedCustomersInRange, metaNewRevenueInRange, metaRepeatRevenueInRange, metaRetargetedRevenueInRange]);
 
   const acqTotal = acqSegments.reduce((s, seg) => s + seg.value, 0);
 
@@ -2095,7 +2089,6 @@ export default function Customers() {
                     { label: "Meta New", desc: "First-ever order, acquired by Meta", count: metaNewCustomersInRange, value: acqMode === "customers" ? metaNewCustomersInRange : metaNewRevenueInRange, color: "#7C3AED" },
                     { label: "Meta Repeat", desc: "Returning Meta-acquired customer", count: metaRepeatCustomersInRange, value: acqMode === "customers" ? metaRepeatCustomersInRange : metaRepeatRevenueInRange, color: "#0891B2" },
                     { label: "Meta Retargeted", desc: "Existing customer converted by Meta", count: metaRetargetedCustomersInRange, value: acqMode === "customers" ? metaRetargetedCustomersInRange : metaRetargetedRevenueInRange, color: "#B45309" },
-                    { label: "Organic", desc: "No Meta attribution — direct / organic", count: organicCustomersInRange, value: acqMode === "customers" ? organicCustomersInRange : organicRevenueInRange, color: "#6B7280" },
                   ].map(seg => {
                     const isEmpty = seg.value === 0;
                     return (
@@ -2116,20 +2109,16 @@ export default function Customers() {
                   })}
                 </div>
               </div>
-              {acqMode === "customers" && totalMetaConversions > 0 && (() => {
-                const metaMatched = metaNewCustomersInRange + metaRepeatCustomersInRange + metaRetargetedCustomersInRange;
-                if (metaMatched === totalMetaConversions) return null;
-                return (
-                  <Text as="p" variant="bodySm" tone="subdued">
-                    Meta reported {totalMetaConversions} conversion{totalMetaConversions !== 1 ? "s" : ""} in this period.
-                    {metaMatched > totalMetaConversions
-                      ? ` We matched ${metaMatched} — the extra ${metaMatched - totalMetaConversions} came from UTM tracking (orders Meta didn't log as conversions).`
-                      : ` We matched ${metaMatched} — the ${totalMetaConversions - metaMatched} unmatched exist because order values change after purchase (refunds, edits).`
-                    }
-                    {" "}Customer Demographics uses Meta's data directly, so may show a different total.
-                  </Text>
-                );
-              })()}
+              {acqMode === "customers" && totalMetaConversions > 0 && totalMetaConversions !== acqTotal && (
+                <Text as="p" variant="bodySm" tone="subdued">
+                  Meta reported {totalMetaConversions} conversion{totalMetaConversions !== 1 ? "s" : ""} in this period.
+                  {acqTotal > totalMetaConversions
+                    ? ` We matched ${acqTotal} — the extra ${acqTotal - totalMetaConversions} came from UTM tracking (orders Meta didn't log as conversions).`
+                    : ` We matched ${acqTotal} — the ${totalMetaConversions - acqTotal} unmatched exist because order values change after purchase (refunds, edits).`
+                  }
+                  {" "}Customer Demographics uses Meta's data directly, so may show a different total.
+                </Text>
+              )}
             </BlockStack>
           </Card>
           )},
