@@ -502,57 +502,6 @@ export const loader = async ({ request }) => {
   const newDemoConversions = newMetaAttrsWithDemo.length;
   const newDemoExactCount = 0;
 
-  // Date-scoped new-Meta geography for the page summary. The geoBlob in
-  // ShopAnalysisCache is all-time cumulative, which makes the summary %
-  // share overshoot 100% on short ranges. We also can't filter Attribution
-  // by matchedAt — that field tracks when the matcher ran, so after a full
-  // re-match every row lands in the last few days and 7-day queries return
-  // the entire history. Pivot on Order.createdAt (the real order date) and
-  // join back to Attribution to verify the new-Meta classification.
-  const newMetaGeoInRange = await queryCached(
-    `${shopDomain}:newMetaGeoInRange:${dateFromStr}:${dateToStr}`,
-    DEFAULT_TTL,
-    async (): Promise<{ countries: { label: string; revenue: number }[]; cities: { label: string; revenue: number }[]; total: number }> => {
-      const orders = await db.order.findMany({
-        where: {
-          shopDomain,
-          isOnlineStore: true,
-          createdAt: { gte: fromDate, lte: toDate },
-        },
-        select: { shopifyOrderId: true, country: true, city: true, frozenTotalPrice: true, totalRefunded: true },
-      });
-      if (orders.length === 0) return { countries: [], cities: [], total: 0 };
-      const orderIds = orders.map(o => o.shopifyOrderId);
-      const attrs = await db.attribution.findMany({
-        where: {
-          shopDomain,
-          shopifyOrderId: { in: orderIds },
-          confidence: { gt: 0 },
-          isNewCustomer: true,
-        },
-        select: { shopifyOrderId: true },
-      });
-      const newMetaIds = new Set(attrs.map(a => a.shopifyOrderId));
-      const countryMap: Record<string, number> = {};
-      const cityMap: Record<string, number> = {};
-      let total = 0;
-      for (const o of orders) {
-        if (!newMetaIds.has(o.shopifyOrderId)) continue;
-        const net = Math.max(0, (o.frozenTotalPrice || 0) - (o.totalRefunded || 0));
-        total += net;
-        if (o.country) countryMap[o.country] = (countryMap[o.country] || 0) + net;
-        if (o.city) cityMap[o.city] = (cityMap[o.city] || 0) + net;
-      }
-      const countries = Object.entries(countryMap)
-        .map(([label, revenue]) => ({ label, revenue }))
-        .sort((a, b) => b.revenue - a.revenue);
-      const cities = Object.entries(cityMap)
-        .map(([label, revenue]) => ({ label, revenue }))
-        .sort((a, b) => b.revenue - a.revenue);
-      return { countries, cities, total };
-    },
-  );
-
   // Geography from cache blob — normalize to component-expected shape
   const normalizeGeo = (arr: any[]) => (arr || []).map((item: any) => ({
     label: item.label || item.name || "",
@@ -790,7 +739,6 @@ export const loader = async ({ request }) => {
     unmatchedConversions, unmatchedRevenue,
     ltvBenchmark, ltvTile, ltvRecent, ltvMonthly,
     weeklyCohortSeries,
-    newMetaGeoInRange,
   });
 };
 
@@ -1420,7 +1368,6 @@ export default function Customers() {
     unmatchedConversions, unmatchedRevenue,
     ltvBenchmark, ltvTile, ltvRecent, ltvMonthly,
     weeklyCohortSeries,
-    newMetaGeoInRange,
     prevMetaCount, prevMetaAvgFirstOrder, prevAovCpaRatio, prevNewCustomerCPA,
     prevMetaRepeatRate, prevMetaRevenue,
     prevMedianTimeTo2nd,
@@ -1727,13 +1674,14 @@ export default function Customers() {
       });
     }
 
-    // 2) Top country + top city, each with % share of new-Meta revenue in range
-    const geo = newMetaGeoInRange || { countries: [], cities: [], total: 0 };
-    const topCountry = (geo.countries || [])[0];
-    const topCity = (geo.cities || [])[0];
-    const geoDenom = geo.total || 0;
-    const countryPct = topCountry && geoDenom > 0 ? Math.round((topCountry.revenue / geoDenom) * 100) : null;
-    const cityPct = topCity && geoDenom > 0 ? Math.round((topCity.revenue / geoDenom) * 100) : null;
+    // 2) Top country + top city — identical data source and denominator
+    // as the Customer Geography tile below (metaNewTopCountries/Cities +
+    // metaNewGeoCount from geoBlob, customer-count based, all-time).
+    const topCountry = (metaNewTopCountries || [])[0];
+    const topCity = (metaNewTopCities || [])[0];
+    const geoDenom = metaNewGeoCount || 0;
+    const countryPct = topCountry && geoDenom > 0 ? Math.round((topCountry.customers / geoDenom) * 100) : null;
+    const cityPct = topCity && geoDenom > 0 ? Math.round((topCity.customers / geoDenom) * 100) : null;
 
     if (topCountry || topCity) {
       const parts: React.ReactNode[] = [];
@@ -1741,7 +1689,7 @@ export default function Customers() {
         parts.push(
           <span key="country">
             Top country <strong>{topCountry.label}</strong>
-            {countryPct != null ? ` (${countryPct}% of new-customer revenue)` : ""}
+            {countryPct != null ? ` (${countryPct}% of new Meta customers)` : ""}
           </span>,
         );
       }
@@ -1749,7 +1697,7 @@ export default function Customers() {
         parts.push(
           <span key="city">
             Top city <strong>{topCity.label}</strong>
-            {cityPct != null ? ` (${cityPct}% of new-customer revenue)` : ""}
+            {cityPct != null ? ` (${cityPct}% of new Meta customers)` : ""}
           </span>,
         );
       }
@@ -1866,7 +1814,8 @@ export default function Customers() {
 
     return out;
   }, [
-    newAgeBreakdown, newGenderBreakdown, newMetaGeoInRange,
+    newAgeBreakdown, newGenderBreakdown,
+    metaNewTopCountries, metaNewTopCities, metaNewGeoCount,
     metaCount, prevMetaCount, newCustomerCPA, prevNewCustomerCPA,
     paybackOrders, aovCpaRatio,
     metaRepeatRate, organicRepeatRate,
