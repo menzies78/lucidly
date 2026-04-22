@@ -1369,7 +1369,7 @@ export async function runFillGaps(shopDomain, lookbackDays = 30) {
         });
       }
 
-      console.log(`[FillGaps] ${day} ad ${ad.adName}: ${dayOrders.length} dayOrders, ${candidates.length} candidates, need ${neededConversions}, remainingRev=£${Math.round(remainingRevenue * 100) / 100} (total=£${Math.round(metaRevenue * 100) / 100}, matched=£${Math.round(matchedRevenue * 100) / 100}), tol=${tolerance}`);
+      console.log(`[FillGaps] ${day} ad ${ad.adName}: ${dayOrders.length} dayOrders, ${candidates.length} candidates, need ${neededConversions}, remainingRev=£${Math.round(remainingRevenue * 100) / 100} (total=£${Math.round(metaRevenue * 100) / 100}, filledSlots=${slots.length - slotCaps.filter(c => c > 0).length}/${slots.length}), tol=${tolerance}`);
       if (candidates.length > 0) {
         console.log(`[FillGaps]   top candidates: ${candidates.slice(0, 3).map(c => `${c.orderId}=£${c.total} min=${dateToMinute(c.time)} utm=${c.utmMatch || false}`).join(', ')}`);
       }
