@@ -64,11 +64,19 @@ async function buildLookupMaps(shopDomain) {
 
 /**
  * Resolve a UTM value to an ad ID.
+ *
+ * A numeric-looking utmId is only trusted when it actually exists in the
+ * shop's ad catalog. Otherwise we fall through to the ad-name lookup —
+ * which is crucial when the landing URL carries a truncated or malformed
+ * utm_id (we've seen Meta ad links render `utm_id=1202422` in place of
+ * the full 13-digit ID, and the garbage would otherwise get saved as
+ * metaAdId and break every downstream Meta lookup for the order).
+ *
  * @returns {string|null} adId
  */
 function resolveAdId(utmValue, adsLookup) {
   if (!utmValue) return null;
-  if (isNumericId(utmValue)) return utmValue;
+  if (isNumericId(utmValue) && adsLookup.byId[utmValue]) return utmValue;
   return adsLookup.byName[utmValue] || null;
 }
 
@@ -100,16 +108,24 @@ export async function linkUtmToCampaigns(shopDomain) {
   let linked = 0, alreadyLinked = 0, noMatch = 0;
 
   for (const order of orders) {
-    // Skip if matcher already populated full campaign data
-    if (order.metaCampaignId && order.metaAdId) {
+    // An existing metaAdId that doesn't resolve to a known ad hierarchy is
+    // stale or garbage (e.g. a truncated utm_id saved by an earlier bug).
+    // Treat it as missing so the resolution below gets another shot via
+    // utm_content, and overwrite the bad value on update.
+    const existingAdIdIsStale = !!order.metaAdId && !adHierarchy[order.metaAdId];
+
+    // Skip if matcher already populated full campaign data (and the adId
+    // actually resolves to a known ad — otherwise we need to re-resolve).
+    if (order.metaCampaignId && order.metaAdId && !existingAdIdIsStale) {
       alreadyLinked++;
       continue;
     }
 
-    // Resolve ad ID from utm_id (preferred), utm_content (ad name), or existing metaAdId
+    // Resolve ad ID from utm_id (preferred), utm_content (ad name), or
+    // existing metaAdId — but only trust the existing ID when it resolves.
     const adId = resolveAdId(order.utmId, ads)
       || resolveAdId(order.utmContent, ads)
-      || order.metaAdId
+      || (existingAdIdIsStale ? null : order.metaAdId)
       || null;
 
     if (!adId) {
@@ -122,7 +138,7 @@ export async function linkUtmToCampaigns(shopDomain) {
     if (!hierarchy) {
       // Ad ID found but no insight data — set what we can
       const updateData = {};
-      if (!order.metaAdId) updateData.metaAdId = adId;
+      if (existingAdIdIsStale || !order.metaAdId) updateData.metaAdId = adId;
       if (!order.metaAdName && ads.byId[adId]) updateData.metaAdName = ads.byId[adId];
       if (Object.keys(updateData).length > 0) {
         await db.order.update({ where: { id: order.id }, data: updateData });
@@ -133,14 +149,17 @@ export async function linkUtmToCampaigns(shopDomain) {
       continue;
     }
 
-    // Set all fields from the current hierarchy
+    // Set all fields from the current hierarchy. Treat a stale adId the
+    // same as a missing one so every mirror field gets rewritten from the
+    // freshly-resolved hierarchy.
+    const missing = existingAdIdIsStale;
     const updateData = {};
-    if (!order.metaAdId) updateData.metaAdId = adId;
-    if (!order.metaAdName) updateData.metaAdName = hierarchy.adName || ads.byId[adId] || adId;
-    if (!order.metaCampaignId && hierarchy.campaignId) updateData.metaCampaignId = hierarchy.campaignId;
-    if (!order.metaCampaignName && hierarchy.campaignName) updateData.metaCampaignName = hierarchy.campaignName;
-    if (!order.metaAdSetId && hierarchy.adSetId) updateData.metaAdSetId = hierarchy.adSetId;
-    if (!order.metaAdSetName && hierarchy.adSetName) updateData.metaAdSetName = hierarchy.adSetName;
+    if (missing || !order.metaAdId) updateData.metaAdId = adId;
+    if (missing || !order.metaAdName) updateData.metaAdName = hierarchy.adName || ads.byId[adId] || adId;
+    if ((missing || !order.metaCampaignId) && hierarchy.campaignId) updateData.metaCampaignId = hierarchy.campaignId;
+    if ((missing || !order.metaCampaignName) && hierarchy.campaignName) updateData.metaCampaignName = hierarchy.campaignName;
+    if ((missing || !order.metaAdSetId) && hierarchy.adSetId) updateData.metaAdSetId = hierarchy.adSetId;
+    if ((missing || !order.metaAdSetName) && hierarchy.adSetName) updateData.metaAdSetName = hierarchy.adSetName;
 
     // Also FIX stale names from previous linkage runs
     if (order.metaCampaignName && hierarchy.campaignName && order.metaCampaignName !== hierarchy.campaignName) {
