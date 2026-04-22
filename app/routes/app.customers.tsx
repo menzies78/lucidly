@@ -718,6 +718,86 @@ export const loader = async ({ request }) => {
     },
   );
 
+  // Date-scoped Customer Breakdown — replicates Order Explorer's exact
+  // tagging so the donut matches the "All Meta" filter. Key differences
+  // vs the DailyCustomerRollup-based counts above:
+  //   • Includes POS orders (rollup is online-store only).
+  //   • Includes £0 orders (rollup skips them).
+  //   • Includes UTM-only (utmConfirmedMeta) orders not statistically matched.
+  //   • Tags per-order using Order Explorer's 2a/2b-ii/2c logic, then
+  //     counts distinct customers + sums net revenue per bucket.
+  const donutBreakdown = await queryCached(
+    `${shopDomain}:customerDonutBreakdown:${dateFromStr}:${dateToStr}`,
+    DEFAULT_TTL,
+    async () => {
+      const empty = { metaNew: { customers: 0, revenue: 0 }, metaRepeat: { customers: 0, revenue: 0 }, metaRetargeted: { customers: 0, revenue: 0 } };
+      const orders = await db.order.findMany({
+        where: { shopDomain, createdAt: { gte: fromDate, lte: toDate } },
+        select: {
+          shopifyOrderId: true, shopifyCustomerId: true,
+          frozenTotalPrice: true, totalRefunded: true,
+          customerOrderCountAtPurchase: true,
+          utmConfirmedMeta: true,
+        },
+      });
+      if (orders.length === 0) return empty;
+
+      const orderIds = orders.map(o => o.shopifyOrderId);
+      const attrs = await db.attribution.findMany({
+        where: { shopDomain, shopifyOrderId: { in: orderIds }, confidence: { gt: 0 } },
+        select: { shopifyOrderId: true },
+      });
+      const matchedOrderIds = new Set(attrs.map(a => a.shopifyOrderId));
+
+      const custIds = Array.from(new Set(orders.map(o => o.shopifyCustomerId).filter(Boolean) as string[]));
+      const custs = custIds.length > 0
+        ? await db.customer.findMany({
+            where: { shopDomain, shopifyCustomerId: { in: custIds } },
+            select: { shopifyCustomerId: true, metaSegment: true },
+          })
+        : [];
+      const segmentByCust = new Map(custs.map(c => [c.shopifyCustomerId, c.metaSegment || "organic"]));
+
+      const newCusts = new Set<string>();
+      const repeatCusts = new Set<string>();
+      const retargetedCusts = new Set<string>();
+      let newRev = 0, repeatRev = 0, retargetedRev = 0;
+
+      for (const o of orders) {
+        const custId = o.shopifyCustomerId;
+        if (!custId) continue;
+        const segment = segmentByCust.get(custId) || "organic";
+        const isMatched = matchedOrderIds.has(o.shopifyOrderId);
+        const isUtm = !!o.utmConfirmedMeta;
+        const isFirst = o.customerOrderCountAtPurchase === 1;
+        const net = Math.max(0, (o.frozenTotalPrice || 0) - (o.totalRefunded || 0));
+
+        let tag: "metaNew" | "metaRepeat" | "metaRetargeted" | null = null;
+        if (isMatched || isUtm) {
+          // 2a / 2b-ii: order itself is Meta-attributed
+          if (segment === "metaNew") {
+            tag = isFirst ? "metaNew" : "metaRepeat";
+          } else {
+            tag = "metaRetargeted";
+          }
+        } else if (segment === "metaNew" && !isFirst) {
+          // 2c: Meta-acquired customer returning via non-Meta channel
+          tag = "metaRepeat";
+        }
+
+        if (tag === "metaNew") { newCusts.add(custId); newRev += net; }
+        else if (tag === "metaRepeat") { repeatCusts.add(custId); repeatRev += net; }
+        else if (tag === "metaRetargeted") { retargetedCusts.add(custId); retargetedRev += net; }
+      }
+
+      return {
+        metaNew: { customers: newCusts.size, revenue: r2(newRev) },
+        metaRepeat: { customers: repeatCusts.size, revenue: r2(repeatRev) },
+        metaRetargeted: { customers: retargetedCusts.size, revenue: r2(retargetedRev) },
+      };
+    },
+  );
+
   // Single/Repeat splits — derive from customers
   let metaNewSingleCount = 0, metaNewSingleOrders = 0, metaNewSingleRevenue = 0;
   let metaNewRepeatCount2 = 0, metaNewRepeatOrders = 0, metaNewRepeatRevenue = 0;
@@ -928,6 +1008,12 @@ export const loader = async ({ request }) => {
     metaNewOrdersInRange, metaNewRevenueInRange, metaNewCustomersInRange,
     metaRepeatOrdersInRange, metaRepeatRevenueInRange, metaRepeatCustomersInRange,
     metaRetargetedOrdersInRange, metaRetargetedRevenueInRange, metaRetargetedCustomersInRange,
+    donutMetaNewCustomers: donutBreakdown.metaNew.customers,
+    donutMetaNewRevenue: donutBreakdown.metaNew.revenue,
+    donutMetaRepeatCustomers: donutBreakdown.metaRepeat.customers,
+    donutMetaRepeatRevenue: donutBreakdown.metaRepeat.revenue,
+    donutMetaRetargetedCustomers: donutBreakdown.metaRetargeted.customers,
+    donutMetaRetargetedRevenue: donutBreakdown.metaRetargeted.revenue,
     metaNewCount: ltvMetaNewCount, mnAvgLtv, mnAvgOrders, mnRepeatRate, mnAvgAov,
     mnCPA, mnLtvCac, mnPaybackOrders, mnMedianTimeTo2nd, mnReorderWithin90,
     allCount, allAvgLtv, allAvgOrders, allRepeatRate, allAvgAov,
@@ -1568,6 +1654,9 @@ export default function Customers() {
     metaNewOrdersInRange, metaNewRevenueInRange, metaNewCustomersInRange,
     metaRepeatOrdersInRange, metaRepeatRevenueInRange, metaRepeatCustomersInRange,
     metaRetargetedOrdersInRange, metaRetargetedRevenueInRange, metaRetargetedCustomersInRange,
+    donutMetaNewCustomers, donutMetaNewRevenue,
+    donutMetaRepeatCustomers, donutMetaRepeatRevenue,
+    donutMetaRetargetedCustomers, donutMetaRetargetedRevenue,
     metaNewCount, mnAvgLtv, mnAvgOrders, mnRepeatRate, mnAvgAov,
     mnCPA, mnLtvCac, mnPaybackOrders, mnMedianTimeTo2nd, mnReorderWithin90,
     allCount, allAvgLtv, allAvgOrders, allRepeatRate, allAvgAov,
@@ -1626,17 +1715,17 @@ export default function Customers() {
   const acqSegments = useMemo(() => {
     if (acqMode === "customers") {
       return [
-        { label: "Meta New", value: metaNewCustomersInRange, color: "#7C3AED" },
-        { label: "Meta Repeat", value: metaRepeatCustomersInRange, color: "#0891B2" },
-        { label: "Meta Retargeted", value: metaRetargetedCustomersInRange, color: "#B45309" },
+        { label: "Meta New", value: donutMetaNewCustomers, color: "#7C3AED" },
+        { label: "Meta Repeat", value: donutMetaRepeatCustomers, color: "#0891B2" },
+        { label: "Meta Retargeted", value: donutMetaRetargetedCustomers, color: "#B45309" },
       ];
     }
     return [
-      { label: "Meta New", value: Math.round(metaNewRevenueInRange), color: "#7C3AED" },
-      { label: "Meta Repeat", value: Math.round(metaRepeatRevenueInRange), color: "#0891B2" },
-      { label: "Meta Retargeted", value: Math.round(metaRetargetedRevenueInRange), color: "#B45309" },
+      { label: "Meta New", value: Math.round(donutMetaNewRevenue), color: "#7C3AED" },
+      { label: "Meta Repeat", value: Math.round(donutMetaRepeatRevenue), color: "#0891B2" },
+      { label: "Meta Retargeted", value: Math.round(donutMetaRetargetedRevenue), color: "#B45309" },
     ];
-  }, [acqMode, metaNewCustomersInRange, metaRepeatCustomersInRange, metaRetargetedCustomersInRange, metaNewRevenueInRange, metaRepeatRevenueInRange, metaRetargetedRevenueInRange]);
+  }, [acqMode, donutMetaNewCustomers, donutMetaRepeatCustomers, donutMetaRetargetedCustomers, donutMetaNewRevenue, donutMetaRepeatRevenue, donutMetaRetargetedRevenue]);
 
   const acqTotal = acqSegments.reduce((s, seg) => s + seg.value, 0);
 
@@ -2086,9 +2175,9 @@ export default function Customers() {
                 />
                 <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
                   {[
-                    { label: "Meta New", desc: "First-ever order, acquired by Meta", count: metaNewCustomersInRange, value: acqMode === "customers" ? metaNewCustomersInRange : metaNewRevenueInRange, color: "#7C3AED" },
-                    { label: "Meta Repeat", desc: "Returning Meta-acquired customer", count: metaRepeatCustomersInRange, value: acqMode === "customers" ? metaRepeatCustomersInRange : metaRepeatRevenueInRange, color: "#0891B2" },
-                    { label: "Meta Retargeted", desc: "Existing customer converted by Meta", count: metaRetargetedCustomersInRange, value: acqMode === "customers" ? metaRetargetedCustomersInRange : metaRetargetedRevenueInRange, color: "#B45309" },
+                    { label: "Meta New", desc: "First-ever order, acquired by Meta", count: donutMetaNewCustomers, value: acqMode === "customers" ? donutMetaNewCustomers : donutMetaNewRevenue, color: "#7C3AED" },
+                    { label: "Meta Repeat", desc: "Returning Meta-acquired customer (via ad or other channel)", count: donutMetaRepeatCustomers, value: acqMode === "customers" ? donutMetaRepeatCustomers : donutMetaRepeatRevenue, color: "#0891B2" },
+                    { label: "Meta Retargeted", desc: "Existing customer converted by Meta", count: donutMetaRetargetedCustomers, value: acqMode === "customers" ? donutMetaRetargetedCustomers : donutMetaRetargetedRevenue, color: "#B45309" },
                   ].map(seg => {
                     const isEmpty = seg.value === 0;
                     return (
