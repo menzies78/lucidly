@@ -1271,19 +1271,24 @@ export async function runFillGaps(shopDomain, lookbackDays = 30) {
           shopifyOrderId: { in: [...dayOrderIds] },
         },
       });
-      // Prev-day padding pulls orders from Apr-19 shop-local into Apr-20's
-      // dayOrderIds so we can catch Meta reporting lag into the next day's
-      // hour-0 slot. But an already-matched attribution on a padding order
-      // whose createdAt falls in *no* slot for this ad-day belongs to a
-      // different day's conversions entirely — counting it here would
-      // wrongly satisfy the quota and short-circuit Fill Gaps. Filter those
-      // out before the quota check.
+      // Prev-day padding pulls orders from the prior shop-local day into
+      // this day's dayOrderIds so we can catch Meta reporting lag into the
+      // next day's hour-0 slot. But padding also picks up orders from the
+      // *start* of the prev shop-local day (Apr-19 00:00 BST = Apr-18 23:00
+      // UTC) purely because their UTC-minute-of-day is late — even though
+      // they're 24h before this Meta-day's boundary. An attribution on such
+      // an order belongs to a different day's conversions and would wrongly
+      // satisfy the quota here. Filter by ABSOLUTE time: the order must sit
+      // inside [dayStart - padding, dayEnd] in Meta-tz-converted UTC.
       const dayOrderByIdLookup = new Map(dayOrders.map(o => [o.shopifyOrderId, o]));
+      const dayStartUtcMs = new Date(day + "T00:00:00Z").getTime() - metaOffset * 60 * 1000;
+      const dayEndUtcMs = dayStartUtcMs + 24 * 60 * 60 * 1000;
+      const paddingMs = PADDING_MINUTES_WIDE * 60 * 1000;
       const existingMatchedForAd = existingMatchedForAdRaw.filter(a => {
         const order = dayOrderByIdLookup.get(a.shopifyOrderId);
         if (!order) return false;
-        const minute = dateToMinute(order.createdAt);
-        return ad.slots.some(s => minuteInRange(minute, s.start, s.end));
+        const t = order.createdAt.getTime();
+        return t >= dayStartUtcMs - paddingMs && t < dayEndUtcMs;
       });
 
       // Count unmatched placeholders for this ad on this day — each one is a
