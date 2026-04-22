@@ -16,7 +16,7 @@ import { getCachedInsights, computeDataHash, generateInsights } from "../service
 import { setProgress, failProgress, completeProgress } from "../services/progress.server";
 import AiInsightsPanel from "../components/AiInsightsPanel";
 import PageSummary from "../components/PageSummary";
-import type { SummaryBullet } from "../components/PageSummary";
+import type { SummaryBullet, SummaryTone } from "../components/PageSummary";
 import SummaryTile from "../components/SummaryTile";
 import type { ColumnDef } from "@tanstack/react-table";
 
@@ -502,6 +502,49 @@ export const loader = async ({ request }) => {
   const newDemoConversions = newMetaAttrsWithDemo.length;
   const newDemoExactCount = 0;
 
+  // Date-scoped new-Meta geography for the page summary. The geoBlob in
+  // ShopAnalysisCache is all-time cumulative, which causes the summary %
+  // share to overshoot 100% whenever the selected range is short (e.g.
+  // "last 7 days"). For the summary bullet we want country/city revenue
+  // *within the current range* only.
+  const newMetaGeoInRange = await queryCached(
+    `${shopDomain}:newMetaGeoInRange:${dateFromStr}:${dateToStr}`,
+    DEFAULT_TTL,
+    async (): Promise<{ countries: { label: string; revenue: number }[]; cities: { label: string; revenue: number }[]; total: number }> => {
+      const attrs = await db.attribution.findMany({
+        where: {
+          shopDomain,
+          confidence: { gt: 0 },
+          isNewCustomer: true,
+          matchedAt: { gte: fromDate, lte: toDate },
+        },
+        select: { shopifyOrderId: true },
+      });
+      if (attrs.length === 0) return { countries: [], cities: [], total: 0 };
+      const ids = attrs.map(a => a.shopifyOrderId);
+      const orders = await db.order.findMany({
+        where: { shopDomain, shopifyOrderId: { in: ids }, isOnlineStore: true },
+        select: { country: true, city: true, frozenTotalPrice: true, totalRefunded: true },
+      });
+      const countryMap: Record<string, number> = {};
+      const cityMap: Record<string, number> = {};
+      let total = 0;
+      for (const o of orders) {
+        const net = Math.max(0, (o.frozenTotalPrice || 0) - (o.totalRefunded || 0));
+        total += net;
+        if (o.country) countryMap[o.country] = (countryMap[o.country] || 0) + net;
+        if (o.city) cityMap[o.city] = (cityMap[o.city] || 0) + net;
+      }
+      const countries = Object.entries(countryMap)
+        .map(([label, revenue]) => ({ label, revenue }))
+        .sort((a, b) => b.revenue - a.revenue);
+      const cities = Object.entries(cityMap)
+        .map(([label, revenue]) => ({ label, revenue }))
+        .sort((a, b) => b.revenue - a.revenue);
+      return { countries, cities, total };
+    },
+  );
+
   // Geography from cache blob — normalize to component-expected shape
   const normalizeGeo = (arr: any[]) => (arr || []).map((item: any) => ({
     label: item.label || item.name || "",
@@ -739,6 +782,7 @@ export const loader = async ({ request }) => {
     unmatchedConversions, unmatchedRevenue,
     ltvBenchmark, ltvTile, ltvRecent, ltvMonthly,
     weeklyCohortSeries,
+    newMetaGeoInRange,
   });
 };
 
@@ -1368,6 +1412,7 @@ export default function Customers() {
     unmatchedConversions, unmatchedRevenue,
     ltvBenchmark, ltvTile, ltvRecent, ltvMonthly,
     weeklyCohortSeries,
+    newMetaGeoInRange,
     prevMetaCount, prevMetaAvgFirstOrder, prevAovCpaRatio, prevNewCustomerCPA,
     prevMetaRepeatRate, prevMetaRevenue,
     prevMedianTimeTo2nd,
@@ -1629,11 +1674,16 @@ export default function Customers() {
     };
   }, [filteredRows, cs]);
 
-  // ── Page summary bullets (new-customer demographics & geography) ──
+  // ── Page summary bullets ──
+  // Seven at-a-glance lines, tied to the currently selected date range.
+  // Computed from the same pre-aggregated loader data the tiles below use —
+  // no AI, no caching, no round-trips. Order is deliberate: who they are,
+  // where they are, how many + how efficient, do they pay back, do they
+  // come back, are they worth it, are we measuring honestly.
   const summaryBullets: SummaryBullet[] = useMemo(() => {
     const out: SummaryBullet[] = [];
 
-    // Line 1: avg age (midpoint-weighted) + gender split, new Meta only
+    // 1) Avg age (midpoint-weighted) + gender split, new Meta only
     const AGE_MIDPOINT: Record<string, number> = {
       "13-17": 15, "18-24": 21, "25-34": 29.5, "35-44": 39.5,
       "45-54": 49.5, "55-64": 59.5, "65+": 70,
@@ -1662,12 +1712,13 @@ export default function Customers() {
       });
     }
 
-    // Line 2: top country + top city, each with % share of new-Meta revenue
-    const topCountry = (metaNewTopCountries || [])[0];
-    const topCity = (metaNewTopCities || [])[0];
-    const denom = metaNewRevenueInRange || 0;
-    const countryPct = topCountry && denom > 0 ? Math.round((topCountry.revenue / denom) * 100) : null;
-    const cityPct = topCity && denom > 0 ? Math.round((topCity.revenue / denom) * 100) : null;
+    // 2) Top country + top city, each with % share of new-Meta revenue in range
+    const geo = newMetaGeoInRange || { countries: [], cities: [], total: 0 };
+    const topCountry = (geo.countries || [])[0];
+    const topCity = (geo.cities || [])[0];
+    const geoDenom = geo.total || 0;
+    const countryPct = topCountry && geoDenom > 0 ? Math.round((topCountry.revenue / geoDenom) * 100) : null;
+    const cityPct = topCity && geoDenom > 0 ? Math.round((topCity.revenue / geoDenom) * 100) : null;
 
     if (topCountry || topCity) {
       const parts: React.ReactNode[] = [];
@@ -1702,8 +1753,112 @@ export default function Customers() {
       });
     }
 
+    // 3) Acquisition: count + WoW change + CAC direction
+    if (metaCount > 0 || prevMetaCount > 0) {
+      const countDelta = prevMetaCount > 0
+        ? Math.round(((metaCount - prevMetaCount) / prevMetaCount) * 100)
+        : null;
+      const cpaDelta = prevNewCustomerCPA > 0 && newCustomerCPA > 0
+        ? Math.round(((newCustomerCPA - prevNewCustomerCPA) / prevNewCustomerCPA) * 100)
+        : null;
+      const cpaImproved = cpaDelta != null && cpaDelta < 0;
+      const cpaWorsened = cpaDelta != null && cpaDelta > 0;
+      const countStr = countDelta != null
+        ? `${countDelta > 0 ? "+" : ""}${countDelta}% vs previous period`
+        : "first period with data";
+      const cpaStr = newCustomerCPA > 0
+        ? ` at ${cs}${newCustomerCPA.toLocaleString()} CAC${cpaDelta != null ? ` (${cpaDelta > 0 ? "+" : ""}${cpaDelta}%)` : ""}`
+        : "";
+      const tone: SummaryTone = cpaImproved && (countDelta ?? 0) >= 0 ? "positive"
+        : cpaWorsened && (countDelta ?? 0) <= 0 ? "negative"
+        : "neutral";
+      out.push({
+        tone,
+        text: <><strong>Acquired {metaCount.toLocaleString()} new Meta customer{metaCount === 1 ? "" : "s"}</strong> — {countStr}{cpaStr}.</>,
+      });
+    }
+
+    // 4) Payback: first-order AOV vs CAC
+    if (newCustomerCPA > 0 && paybackOrders > 0) {
+      // paybackOrders = CPA / avgFirstOrderValue (how many orders to recover CAC)
+      let tone: SummaryTone = "neutral";
+      let msg: React.ReactNode;
+      if (paybackOrders <= 1) {
+        tone = "positive";
+        msg = <>First order covers CAC ({(aovCpaRatio || 0).toFixed(2)}× AOV:CAC ratio).</>;
+      } else if (paybackOrders <= 2) {
+        tone = "neutral";
+        msg = <>Pays back in ~{paybackOrders.toFixed(1)} orders (AOV:CAC {(aovCpaRatio || 0).toFixed(2)}×).</>;
+      } else {
+        tone = "warning";
+        msg = <>Pays back in ~{paybackOrders.toFixed(1)} orders — CAC is outpacing first-order AOV.</>;
+      }
+      out.push({ tone, text: <><strong>Payback:</strong> {msg}</> });
+    }
+
+    // 5) Repeat rate: Meta vs Organic
+    if (metaRepeatRate > 0 || organicRepeatRate > 0) {
+      const gap = metaRepeatRate - organicRepeatRate;
+      let tone: SummaryTone = "neutral";
+      let tail: React.ReactNode;
+      if (gap >= 2) { tone = "positive"; tail = <> — beating organic by {gap} pts.</>; }
+      else if (gap <= -5) { tone = "warning"; tail = <> — lagging organic by {Math.abs(gap)} pts.</>; }
+      else { tail = <> — roughly in line with organic ({organicRepeatRate}%).</>; }
+      out.push({
+        tone,
+        text: <><strong>Repeat rate:</strong> {metaRepeatRate}% of Meta new customers come back{tail}</>,
+      });
+    }
+
+    // 6) LTV:CAC at the longest mature benchmark window
+    {
+      const windows = (ltvBenchmark?.meta?.windows || []) as any[];
+      const hero = windows.length > 0 ? windows[windows.length - 1] : null;
+      const heroLtv = hero?.avgLtv || 0;
+      const heroWindow = hero?.window || 0;
+      const ratio = newCustomerCPA > 0 && heroLtv > 0
+        ? Math.round((heroLtv / newCustomerCPA) * 100) / 100
+        : 0;
+      if (ratio > 0) {
+        const label = heroWindow >= 365 ? `${Math.round(heroWindow / 365)}yr` : `${heroWindow}d`;
+        let tone: SummaryTone = "neutral";
+        let tail: React.ReactNode = "";
+        if (ratio >= 3) { tone = "positive"; tail = " — healthy."; }
+        else if (ratio < 2) { tone = "warning"; tail = " — below 2× threshold."; }
+        out.push({
+          tone,
+          text: <><strong>LTV:CAC {ratio.toFixed(2)}×</strong> at {label} ({cs}{Math.round(heroLtv).toLocaleString()} LTV vs {cs}{newCustomerCPA.toLocaleString()} CAC){tail}</>,
+        });
+      }
+    }
+
+    // 7) Attribution health — surface only if unmatched share is material
+    {
+      const matched = matchedMetaOrdersInRange || 0;
+      const unmatched = unmatchedConversionsWithValue || 0;
+      const totalMeta = matched + unmatched;
+      if (totalMeta > 0 && unmatched > 0) {
+        const pct = Math.round((unmatched / totalMeta) * 100);
+        if (pct >= 5) {
+          const tone: SummaryTone = pct >= 20 ? "warning" : "neutral";
+          out.push({
+            tone,
+            text: <><strong>Attribution:</strong> {pct}% of Meta conversions ({unmatched.toLocaleString()}) couldn&apos;t be matched to a Shopify order — likely edited orders or refunds after purchase.</>,
+          });
+        }
+      }
+    }
+
     return out;
-  }, [newAgeBreakdown, newGenderBreakdown, metaNewTopCountries, metaNewTopCities, metaNewRevenueInRange]);
+  }, [
+    newAgeBreakdown, newGenderBreakdown, newMetaGeoInRange,
+    metaCount, prevMetaCount, newCustomerCPA, prevNewCustomerCPA,
+    paybackOrders, aovCpaRatio,
+    metaRepeatRate, organicRepeatRate,
+    ltvBenchmark,
+    matchedMetaOrdersInRange, unmatchedConversionsWithValue,
+    cs,
+  ]);
 
   return (
     <Page title="Customer Intelligence" fullWidth>
