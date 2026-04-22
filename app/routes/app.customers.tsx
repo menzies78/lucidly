@@ -948,19 +948,30 @@ function DonutChart({ segments, size = 180, thickness = 28, centerLabel, centerV
     return { ...seg, dashLength, gap, offset, fraction, index: i };
   });
 
+  // Pad the SVG so the hover-expanded stroke (thickness + 6) isn't cropped
+  // by the viewBox. The outer box grows by `pad` on every side; the wrapper
+  // div keeps its nominal `size` so layout (and the centred label overlay)
+  // stay put, and we offset the SVG with negative top/left to re-centre it.
+  const pad = 8;
+  const svgSize = size + pad * 2;
   return (
     <div style={{ position: "relative", width: size, height: size }}>
-      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
+      <svg
+        width={svgSize}
+        height={svgSize}
+        viewBox={`0 0 ${svgSize} ${svgSize}`}
+        style={{ position: "absolute", top: -pad, left: -pad, overflow: "visible" }}
+      >
         {arcs.map((arc) => (
           <circle
             key={arc.label}
-            cx={center} cy={center} r={radius}
+            cx={center + pad} cy={center + pad} r={radius}
             fill="none"
             stroke={arc.color}
             strokeWidth={hovered === arc.index ? thickness + 6 : thickness}
             strokeDasharray={`${arc.dashLength} ${arc.gap}`}
             strokeDashoffset={arc.offset}
-            transform={`rotate(-90 ${center} ${center})`}
+            transform={`rotate(-90 ${center + pad} ${center + pad})`}
             style={{ transition: "stroke-width 0.2s", cursor: "pointer", opacity: hovered !== null && hovered !== arc.index ? 0.5 : 1 }}
             onMouseEnter={() => setHovered(arc.index)}
             onMouseLeave={() => setHovered(null)}
@@ -1472,10 +1483,10 @@ export default function Customers() {
   const cs = currencySymbol || currencySymbolFromCode(null);
   const { aiCachedInsights, aiGeneratedAt, aiIsStale } = data;
   const [searchParams, setSearchParams] = useSearchParams();
-  const [acqMode, setAcqMode] = useState<"orders" | "revenue">("orders");
-  const [demoScope, setDemoScope] = useState<"new" | "allMeta">("allMeta");
+  const [acqMode, setAcqMode] = useState<"customers" | "revenue">("customers");
+  const [demoScope, setDemoScope] = useState<"new" | "allMeta">("new");
   const [demoMetric, setDemoMetric] = useState<"cpa" | "roas" | "aov">("cpa");
-  const [geoScope, setGeoScope] = useState<"new" | "allMeta" | "all">("allMeta");
+  const [geoScope, setGeoScope] = useState<"new" | "allMeta" | "all">("new");
   const [geoMetric, setGeoMetric] = useState<"rev" | "cpa" | "roas" | "aov">("rev");
   const [journeyScope, setJourneyScope] = useState<"meta" | "all">("meta");
   const [ltvTab, setLtvTab] = useState<"meta" | "all">("meta");
@@ -1503,13 +1514,14 @@ export default function Customers() {
     { label: "Organic", value: "Organic" },
   ];
 
-  // Customer breakdown donut — per-order tags matching Order Explorer
+  // Customer breakdown donut — segments sized by unique customers (default)
+  // or net revenue. Matches what's rendered in the legend to the right.
   const acqSegments = useMemo(() => {
-    if (acqMode === "orders") {
+    if (acqMode === "customers") {
       return [
-        { label: "Meta New", value: metaNewOrdersInRange, color: "#7C3AED" },
-        { label: "Meta Repeat", value: metaRepeatOrdersInRange, color: "#0891B2" },
-        { label: "Meta Retargeted", value: metaRetargetedOrdersInRange, color: "#B45309" },
+        { label: "Meta New", value: metaNewCustomersInRange, color: "#7C3AED" },
+        { label: "Meta Repeat", value: metaRepeatCustomersInRange, color: "#0891B2" },
+        { label: "Meta Retargeted", value: metaRetargetedCustomersInRange, color: "#B45309" },
       ];
     }
     return [
@@ -1517,7 +1529,7 @@ export default function Customers() {
       { label: "Meta Repeat", value: Math.round(metaRepeatRevenueInRange), color: "#0891B2" },
       { label: "Meta Retargeted", value: Math.round(metaRetargetedRevenueInRange), color: "#B45309" },
     ];
-  }, [acqMode, metaNewOrdersInRange, metaRepeatOrdersInRange, metaRetargetedOrdersInRange, metaNewRevenueInRange, metaRepeatRevenueInRange, metaRetargetedRevenueInRange]);
+  }, [acqMode, metaNewCustomersInRange, metaRepeatCustomersInRange, metaRetargetedCustomersInRange, metaNewRevenueInRange, metaRepeatRevenueInRange, metaRetargetedRevenueInRange]);
 
   const acqTotal = acqSegments.reduce((s, seg) => s + seg.value, 0);
 
@@ -1952,7 +1964,7 @@ export default function Customers() {
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                 <Text as="h2" variant="headingMd">Customer Breakdown</Text>
                 <div className="toggle-group">
-                  <button className={`toggle-btn ${acqMode === "orders" ? "active" : ""}`} onClick={() => setAcqMode("orders")}>Orders</button>
+                  <button className={`toggle-btn ${acqMode === "customers" ? "active" : ""}`} onClick={() => setAcqMode("customers")}>Customers</button>
                   <button className={`toggle-btn ${acqMode === "revenue" ? "active" : ""}`} onClick={() => setAcqMode("revenue")}>Revenue</button>
                 </div>
               </div>
@@ -1960,16 +1972,16 @@ export default function Customers() {
               <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: "32px", padding: "8px 0" }}>
                 <DonutChart
                   segments={acqSegments}
-                  centerValue={acqMode === "orders" ? acqTotal.toLocaleString() : `${cs}${Math.round(acqTotal).toLocaleString()}`}
-                  centerLabel={acqMode === "orders" ? "Orders" : "Revenue"}
+                  centerValue={acqMode === "customers" ? acqTotal.toLocaleString() : `${cs}${Math.round(acqTotal).toLocaleString()}`}
+                  centerLabel={acqMode === "customers" ? "Customers" : "Revenue"}
                   size={170}
                   thickness={26}
                 />
                 <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
                   {[
-                    { label: "Meta New", desc: "First-ever order, acquired by Meta", count: metaNewCustomersInRange, value: acqMode === "orders" ? metaNewOrdersInRange : metaNewRevenueInRange, color: "#7C3AED" },
-                    { label: "Meta Repeat", desc: "Returning Meta-acquired customer", count: metaRepeatCustomersInRange, value: acqMode === "orders" ? metaRepeatOrdersInRange : metaRepeatRevenueInRange, color: "#0891B2" },
-                    { label: "Meta Retargeted", desc: "Existing customer converted by Meta", count: metaRetargetedCustomersInRange, value: acqMode === "orders" ? metaRetargetedOrdersInRange : metaRetargetedRevenueInRange, color: "#B45309" },
+                    { label: "Meta New", desc: "First-ever order, acquired by Meta", count: metaNewCustomersInRange, value: acqMode === "customers" ? metaNewCustomersInRange : metaNewRevenueInRange, color: "#7C3AED" },
+                    { label: "Meta Repeat", desc: "Returning Meta-acquired customer", count: metaRepeatCustomersInRange, value: acqMode === "customers" ? metaRepeatCustomersInRange : metaRepeatRevenueInRange, color: "#0891B2" },
+                    { label: "Meta Retargeted", desc: "Existing customer converted by Meta", count: metaRetargetedCustomersInRange, value: acqMode === "customers" ? metaRetargetedCustomersInRange : metaRetargetedRevenueInRange, color: "#B45309" },
                   ].map(seg => {
                     const isEmpty = seg.value === 0;
                     return (
@@ -1977,8 +1989,9 @@ export default function Customers() {
                         <div style={{ width: "12px", height: "12px", borderRadius: "3px", background: isEmpty ? "#D1D5DB" : seg.color, flexShrink: 0 }} />
                         <div>
                           <div style={{ fontSize: "13px", fontWeight: 600, color: isEmpty ? "#9CA3AF" : "#1F2937" }}>
-                            {acqMode === "orders" ? `${seg.value.toLocaleString()} order${seg.value !== 1 ? "s" : ""}` : `${cs}${Math.round(seg.value).toLocaleString()}`}
-                            <span style={{ fontWeight: 400, color: isEmpty ? "#D1D5DB" : "#6B7280" }}> — {seg.count} customer{seg.count !== 1 ? "s" : ""}</span>
+                            {acqMode === "customers"
+                              ? `${seg.count.toLocaleString()} customer${seg.count !== 1 ? "s" : ""}`
+                              : `${cs}${Math.round(seg.value).toLocaleString()}`}
                           </div>
                           <div style={{ fontSize: "11px", color: isEmpty ? "#D1D5DB" : "#9CA3AF" }}>
                             {seg.label}: {seg.desc}
@@ -1989,7 +2002,7 @@ export default function Customers() {
                   })}
                 </div>
               </div>
-              {acqMode === "orders" && totalMetaConversions > 0 && totalMetaConversions !== acqTotal && (
+              {acqMode === "customers" && totalMetaConversions > 0 && totalMetaConversions !== acqTotal && (
                 <Text as="p" variant="bodySm" tone="subdued">
                   Meta reported {totalMetaConversions} conversion{totalMetaConversions !== 1 ? "s" : ""} in this period.
                   {acqTotal > totalMetaConversions
@@ -2194,11 +2207,11 @@ export default function Customers() {
             </BlockStack>
           </Card>
           )},
-          { id: "customerJourney", label: "Customer Journey", span: 2, render: () => (
+          { id: "customerJourney", label: "New Customer Journey", span: 2, render: () => (
           <Card>
             <BlockStack gap="300">
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <Text as="h2" variant="headingMd">Customer Journey</Text>
+                <Text as="h2" variant="headingMd">New Customer Journey</Text>
                 <div className="toggle-group">
                   <button className={`toggle-btn ${journeyScope === "meta" ? "active" : ""}`} onClick={() => setJourneyScope("meta")}>Meta Customers</button>
                   <button className={`toggle-btn ${journeyScope === "all" ? "active" : ""}`} onClick={() => setJourneyScope("all")}>All Customers</button>

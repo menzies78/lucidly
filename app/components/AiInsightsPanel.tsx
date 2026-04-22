@@ -306,7 +306,7 @@ export default function AiInsightsPanel({
   };
 
   return (
-    <>
+    <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
       <Card>
         <BlockStack gap="300">
           {/* Header */}
@@ -512,6 +512,6 @@ export default function AiInsightsPanel({
           )}
         </BlockStack>
       </Card>
-    </>
+    </div>
   );
 }
