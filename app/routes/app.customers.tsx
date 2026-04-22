@@ -484,19 +484,31 @@ export const loader = async ({ request }) => {
       newGenderAgg[a.metaGender].value += a.metaConversionValue || 0;
     }
   }
+  // Approximate new-customer spend per age/gender via the all-Meta aggregate
+  // breakdown's average CPA × new conversions. We don't have per-attribution
+  // spend (spend lives on MetaBreakdown, not Attribution), so this is the
+  // best signal available until spend is plumbed through the matcher.
   const newAgeBreakdown = AGE_ORDER
     .map(age => {
       const s = newAgeAgg[age];
-      return { label: age, conversions: s?.conversions || 0, spend: s?.spend || 0, revenue: s?.value || 0 };
+      const conversions = s?.conversions || 0;
+      const allMetaAge = ageBreakdown.find(a => a.label === age);
+      const avgCpa = allMetaAge && allMetaAge.conversions > 0 ? allMetaAge.spend / allMetaAge.conversions : 0;
+      return { label: age, conversions, spend: avgCpa * conversions, revenue: s?.value || 0 };
     })
     .filter(a => a.conversions > 0);
   const newGenderBreakdown = Object.entries(newGenderAgg)
-    .map(([raw, s]) => ({
-      label: raw === "male" ? "Male" : raw === "female" ? "Female" : "Unknown",
-      conversions: s.conversions,
-      spend: s.spend,
-      revenue: s.value,
-    }))
+    .map(([raw, s]) => {
+      const label = raw === "male" ? "Male" : raw === "female" ? "Female" : "Unknown";
+      const allMetaG = genderBreakdown.find(g => g.label === label);
+      const avgCpa = allMetaG && allMetaG.conversions > 0 ? allMetaG.spend / allMetaG.conversions : 0;
+      return {
+        label,
+        conversions: s.conversions,
+        spend: avgCpa * s.conversions,
+        revenue: s.value,
+      };
+    })
     .filter(g => g.conversions > 0)
     .sort((a, b) => b.conversions - a.conversions);
   const newDemoConversions = newMetaAttrsWithDemo.length;
@@ -1122,29 +1134,41 @@ export const action = async ({ request }) => {
 // ═══════════════════════════════════════════════════════════════
 
 // ── Donut Chart ──
-function DonutChart({ segments, size = 180, thickness = 28, centerLabel, centerValue }: {
+// `pathLength="1"` makes each arc render in 0–1 space rather than
+// `fraction * circumference`, eliminating the floating-point rounding that
+// previously caused adjacent segments to overlap by a fraction of a pixel.
+// `hovered` / `onHoverChange` allow the parent to link legend-row hover to
+// segment hover bidirectionally; if omitted, the component falls back to
+// internal hover state so drop-in callers still work.
+function DonutChart({ segments, size = 180, thickness = 28, centerLabel, centerValue, hovered: hoveredProp, onHoverChange, formatValue }: {
   segments: { label: string; value: number; color: string }[];
   size?: number;
   thickness?: number;
   centerLabel?: string;
   centerValue?: string;
+  hovered?: number | null;
+  onHoverChange?: (i: number | null) => void;
+  formatValue?: (v: number) => string;
 }) {
-  const [hovered, setHovered] = useState<number | null>(null);
+  const [internalHovered, setInternalHovered] = useState<number | null>(null);
+  const hovered = hoveredProp !== undefined ? hoveredProp : internalHovered;
+  const setHovered = (i: number | null) => {
+    if (onHoverChange) onHoverChange(i);
+    else setInternalHovered(i);
+  };
+  const fmt = formatValue || ((v: number) => v.toLocaleString());
   const total = segments.reduce((s, seg) => s + seg.value, 0);
   if (total === 0) return <div style={{ width: size, height: size, display: "flex", alignItems: "center", justifyContent: "center", color: "#9CA3AF" }}>No data</div>;
 
   const radius = (size - thickness) / 2;
-  const circumference = 2 * Math.PI * radius;
   const center = size / 2;
 
-  let cumulativeOffset = 0;
+  let cumulativeFraction = 0;
   const arcs = segments.filter(s => s.value > 0).map((seg, i) => {
     const fraction = seg.value / total;
-    const dashLength = fraction * circumference;
-    const gap = circumference - dashLength;
-    const offset = -cumulativeOffset;
-    cumulativeOffset += dashLength;
-    return { ...seg, dashLength, gap, offset, fraction, index: i };
+    const offset = -cumulativeFraction;
+    cumulativeFraction += fraction;
+    return { ...seg, offset, fraction, index: i };
   });
 
   // Pad the SVG so the hover-expanded stroke (thickness + 6) isn't cropped
@@ -1168,7 +1192,8 @@ function DonutChart({ segments, size = 180, thickness = 28, centerLabel, centerV
             fill="none"
             stroke={arc.color}
             strokeWidth={hovered === arc.index ? thickness + 6 : thickness}
-            strokeDasharray={`${arc.dashLength} ${arc.gap}`}
+            pathLength={1}
+            strokeDasharray={`${arc.fraction} ${1 - arc.fraction}`}
             strokeDashoffset={arc.offset}
             transform={`rotate(-90 ${center + pad} ${center + pad})`}
             style={{ transition: "stroke-width 0.2s", cursor: "pointer", opacity: hovered !== null && hovered !== arc.index ? 0.5 : 1 }}
@@ -1184,7 +1209,7 @@ function DonutChart({ segments, size = 180, thickness = 28, centerLabel, centerV
       }}>
         {hovered !== null && arcs[hovered] ? (
           <>
-            <div style={{ fontSize: "22px", fontWeight: 800, color: arcs[hovered].color }}>{arcs[hovered].value.toLocaleString()}</div>
+            <div style={{ fontSize: "22px", fontWeight: 800, color: arcs[hovered].color }}>{fmt(arcs[hovered].value)}</div>
             <div style={{ fontSize: "11px", color: "#6B7280", fontWeight: 500 }}>{arcs[hovered].label}</div>
             <div style={{ fontSize: "11px", color: "#9CA3AF" }}>{Math.round(arcs[hovered].fraction * 100)}%</div>
           </>
@@ -1200,19 +1225,33 @@ function DonutChart({ segments, size = 180, thickness = 28, centerLabel, centerV
 }
 
 // ── Horizontal Bar Chart ──
-function HBarChart({ items, colorFn, formatValue, maxItems = 6, total }: {
+// `maxVisible` caps how many rows show without scroll; remainder is
+// scroll-revealed inside a fixed-height container. `maxItems` still caps
+// the underlying dataset. `sharedMax` lets callers align two charts to
+// the same x-axis scale (top-countries vs top-cities).
+function HBarChart({ items, colorFn, formatValue, maxItems = 6, total, maxVisible, sharedMax }: {
   items: { label: string; value: number; subValue?: string }[];
   colorFn: (i: number) => string;
   formatValue: (v: number) => string;
   maxItems?: number;
   total?: number;
+  maxVisible?: number;
+  sharedMax?: number;
 }) {
   const visible = items.slice(0, maxItems);
-  const maxVal = Math.max(...visible.map(i => i.value), 1);
+  const maxVal = sharedMax ?? Math.max(...visible.map(i => i.value), 1);
   const sumTotal = total ?? visible.reduce((s, i) => s + i.value, 0);
+  const cap = maxVisible ?? maxItems;
+  const rowHeight = 22;
+  const rowGap = 6;
+  const needsScroll = visible.length > cap;
+  const scrollHeight = cap * rowHeight + (cap - 1) * rowGap;
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: "6px", width: "100%" }}>
+    <div style={{
+      display: "flex", flexDirection: "column", gap: `${rowGap}px`, width: "100%",
+      ...(needsScroll ? { maxHeight: `${scrollHeight}px`, overflowY: "auto", paddingRight: "4px" } : {}),
+    }}>
       {visible.map((item, i) => {
         const pct = sumTotal > 0 ? Math.round((item.value / sumTotal) * 100) : 0;
         return (
@@ -1220,7 +1259,7 @@ function HBarChart({ items, colorFn, formatValue, maxItems = 6, total }: {
           <div style={{ width: "70px", fontSize: "12px", color: "#4B5563", fontWeight: 500, textAlign: "right", flexShrink: 0 }}>
             {item.label}
           </div>
-          <div style={{ flex: 1, height: "22px", background: "#F3F4F6", borderRadius: "4px", overflow: "hidden", position: "relative" }}>
+          <div style={{ flex: 1, height: `${rowHeight}px`, background: "#F3F4F6", borderRadius: "4px", overflow: "hidden", position: "relative" }}>
             <div style={{
               height: "100%", width: `${Math.max((item.value / maxVal) * 100, 2)}%`,
               background: colorFn(i), borderRadius: "4px",
@@ -1228,11 +1267,13 @@ function HBarChart({ items, colorFn, formatValue, maxItems = 6, total }: {
             }} />
             <div style={{
               position: "absolute", right: "6px", top: "50%", transform: "translateY(-50%)",
-              fontSize: "11px", color: "#1F2937", display: "flex", gap: "8px", alignItems: "baseline",
+              fontSize: "11px", color: "#1F2937", display: "grid",
+              gridTemplateColumns: "56px 36px 68px", alignItems: "baseline",
+              gap: "6px", textAlign: "right",
             }}>
               <span style={{ fontWeight: 700 }}>{formatValue(item.value)}</span>
               <span style={{ fontWeight: 400 }}>{pct}%</span>
-              {item.subValue && <span style={{ fontWeight: 400 }}>{item.subValue}</span>}
+              <span style={{ fontWeight: 400 }}>{item.subValue || ""}</span>
             </div>
           </div>
         </div>
@@ -1681,6 +1722,7 @@ export default function Customers() {
   const { aiCachedInsights, aiGeneratedAt, aiIsStale } = data;
   const [searchParams, setSearchParams] = useSearchParams();
   const [acqMode, setAcqMode] = useState<"customers" | "revenue">("customers");
+  const [donutHover, setDonutHover] = useState<number | null>(null);
   const [demoScope, setDemoScope] = useState<"new" | "allMeta">("new");
   const [demoMetric, setDemoMetric] = useState<"cpa" | "roas" | "aov">("cpa");
   const [geoScope, setGeoScope] = useState<"new" | "allMeta" | "all">("new");
@@ -2156,8 +2198,13 @@ export default function Customers() {
           { id: "customerBreakdown", label: "Customer Breakdown", span: 2, render: () => (
           <Card>
             <BlockStack gap="300">
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <Text as="h2" variant="headingMd">Customer Breakdown</Text>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                <div style={{ flex: 1, textAlign: "center" }}>
+                  <Text as="h2" variant="headingMd">Customer Breakdown</Text>
+                  <Text as="p" variant="bodySm" tone="subdued">
+                    New, repeat, and retargeted Meta customers for the selected period
+                  </Text>
+                </div>
                 <div className="toggle-group">
                   <button className={`toggle-btn ${acqMode === "customers" ? "active" : ""}`} onClick={() => setAcqMode("customers")}>Customers</button>
                   <button className={`toggle-btn ${acqMode === "revenue" ? "active" : ""}`} onClick={() => setAcqMode("revenue")}>Revenue</button>
@@ -2171,25 +2218,42 @@ export default function Customers() {
                   centerLabel={acqMode === "customers" ? "Customers" : "Revenue"}
                   size={170}
                   thickness={26}
+                  hovered={donutHover}
+                  onHoverChange={setDonutHover}
+                  formatValue={acqMode === "revenue" ? (v) => `${cs}${Math.round(v).toLocaleString()}` : undefined}
                 />
                 <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
                   {[
                     { label: "Meta New", desc: "First-ever order, acquired by Meta", count: donutMetaNewCustomers, value: acqMode === "customers" ? donutMetaNewCustomers : donutMetaNewRevenue, color: "#7C3AED" },
                     { label: "Meta Repeat", desc: "Returning Meta-acquired customer (via ad or other channel)", count: donutMetaRepeatCustomers, value: acqMode === "customers" ? donutMetaRepeatCustomers : donutMetaRepeatRevenue, color: "#0891B2" },
                     { label: "Meta Retargeted", desc: "Existing customer converted by Meta", count: donutMetaRetargetedCustomers, value: acqMode === "customers" ? donutMetaRetargetedCustomers : donutMetaRetargetedRevenue, color: "#B45309" },
-                  ].map(seg => {
+                  ].map((seg, i) => {
                     const isEmpty = seg.value === 0;
+                    const isHovered = donutHover === i;
                     return (
-                      <div key={seg.label} style={{ display: "flex", alignItems: "center", gap: "10px", opacity: isEmpty ? 0.45 : 1 }}>
+                      <div
+                        key={seg.label}
+                        onMouseEnter={() => !isEmpty && setDonutHover(i)}
+                        onMouseLeave={() => setDonutHover(null)}
+                        style={{
+                          display: "flex", alignItems: "center", gap: "10px",
+                          opacity: isEmpty ? 0.45 : (donutHover !== null && !isHovered ? 0.55 : 1),
+                          padding: "4px 6px", borderRadius: "4px",
+                          background: isHovered ? "#F3F4F6" : "transparent",
+                          cursor: isEmpty ? "default" : "pointer",
+                          transition: "background 0.15s, opacity 0.15s",
+                        }}
+                      >
                         <div style={{ width: "12px", height: "12px", borderRadius: "3px", background: isEmpty ? "#D1D5DB" : seg.color, flexShrink: 0 }} />
                         <div>
-                          <div style={{ fontSize: "13px", fontWeight: 600, color: isEmpty ? "#9CA3AF" : "#1F2937" }}>
+                          <div style={{ fontSize: "13px", color: isEmpty ? "#9CA3AF" : "#1F2937" }}>
+                            <strong>{seg.label}:</strong>{" "}
                             {acqMode === "customers"
                               ? `${seg.count.toLocaleString()} customer${seg.count !== 1 ? "s" : ""}`
                               : `${cs}${Math.round(seg.value).toLocaleString()}`}
                           </div>
                           <div style={{ fontSize: "11px", color: isEmpty ? "#D1D5DB" : "#9CA3AF" }}>
-                            {seg.label}: {seg.desc}
+                            {seg.desc}
                           </div>
                         </div>
                       </div>
@@ -2197,37 +2261,26 @@ export default function Customers() {
                   })}
                 </div>
               </div>
-              {acqMode === "customers" && totalMetaConversions > 0 && totalMetaConversions !== acqTotal && (
-                <Text as="p" variant="bodySm" tone="subdued">
-                  Meta reported {totalMetaConversions} conversion{totalMetaConversions !== 1 ? "s" : ""} in this period.
-                  {acqTotal > totalMetaConversions
-                    ? ` We matched ${acqTotal} — the extra ${acqTotal - totalMetaConversions} came from UTM tracking (orders Meta didn't log as conversions).`
-                    : ` We matched ${acqTotal} — the ${totalMetaConversions - acqTotal} unmatched exist because order values change after purchase (refunds, edits).`
-                  }
-                  {" "}Customer Demographics uses Meta's data directly, so may show a different total.
-                </Text>
-              )}
             </BlockStack>
           </Card>
           )},
           { id: "demographics", label: "Customer Demographics", span: 2, render: () => (
           <Card>
             <BlockStack gap="400">
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <div style={{ display: "flex", alignItems: "baseline", gap: "10px" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                <div style={{ flex: 1, textAlign: "center" }}>
                   <Text as="h2" variant="headingMd">Customer Demographics</Text>
-                  <span style={{ fontSize: "13px", fontWeight: 700, color: "#7C3AED" }}>{activeDemoConversions} conversions</span>
+                  <Text as="p" variant="bodySm" tone="subdued">
+                    {demoScope === "new"
+                      ? "All New customer Meta-reported conversions by age & gender"
+                      : "All Meta-reported conversions by age & gender"}
+                  </Text>
                 </div>
                 <div className="toggle-group">
                   <button className={`toggle-btn ${demoScope === "new" ? "active" : ""}`} onClick={() => setDemoScope("new")}>New Meta</button>
                   <button className={`toggle-btn ${demoScope === "allMeta" ? "active" : ""}`} onClick={() => setDemoScope("allMeta")}>All Meta</button>
                 </div>
               </div>
-              <Text as="p" variant="bodySm" tone="subdued">
-                {demoScope === "new"
-                  ? `Matched new customer orders with enriched demographics${newDemoExactCount > 0 ? ` (${newDemoExactCount} exact, ${newDemoConversions - newDemoExactCount} probabilistic)` : ""}`
-                  : "All Meta-reported conversions by age & gender"}
-              </Text>
               <div className="demo-grid">
                 {/* Age distribution */}
                 <div>
@@ -2236,6 +2289,12 @@ export default function Customers() {
                   </div>
                   {activeAgeBreakdown.length > 0 ? (
                     <>
+                      <MetricSelector
+                        options={[{ value: "cpa", label: "CPA" }, { value: "roas", label: "ROAS" }, { value: "aov", label: "AOV" }]}
+                        active={demoMetric}
+                        onChange={setDemoMetric}
+                      />
+                      <div style={{ height: "8px" }} />
                       <HBarChart
                         items={activeAgeBreakdown.map((a: any) => ({
                           label: a.label,
@@ -2244,11 +2303,7 @@ export default function Customers() {
                         }))}
                         colorFn={(i) => ageColors[i % ageColors.length]}
                         formatValue={(v) => v.toLocaleString()}
-                      />
-                      <MetricSelector
-                        options={[{ value: "cpa", label: "CPA" }, { value: "roas", label: "ROAS" }, { value: "aov", label: "AOV" }]}
-                        active={demoMetric}
-                        onChange={setDemoMetric}
+                        maxItems={10}
                       />
                     </>
                   ) : (
@@ -2323,15 +2378,27 @@ export default function Customers() {
             </BlockStack>
           </Card>
           )},
-          { id: "geography", label: "Customer Geography", span: 2, render: () => (
+          { id: "geography", label: "Customer Geography", span: 2, render: () => {
+            // Shared x-axis scale so country bars and city bars are directly
+            // comparable, and so the two charts' bar widths line up visually.
+            const sharedGeoMax = Math.max(
+              ...activeGeoCountries.slice(0, 10).map((c: any) => c.customers),
+              ...activeGeoCities.slice(0, 10).map((c: any) => c.customers),
+              1,
+            );
+            return (
           <Card>
             <BlockStack gap="400">
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <div style={{ display: "flex", alignItems: "baseline", gap: "10px" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                <div style={{ flex: 1, textAlign: "center" }}>
                   <Text as="h2" variant="headingMd">Customer Geography</Text>
-                  <span style={{ fontSize: "13px", fontWeight: 700, color: "#10B981" }}>
-                    {activeGeoTotal} customers
-                  </span>
+                  <Text as="p" variant="bodySm" tone="subdued">
+                    {geoScope === "new"
+                      ? "Billing address of new customers acquired via Meta ads"
+                      : geoScope === "allMeta"
+                        ? "Billing address of all Meta-attributed customers (new + retargeted)"
+                        : "Billing address of all new customers acquired in this period"}
+                  </Text>
                 </div>
                 <div className="toggle-group">
                   <button className={`toggle-btn ${geoScope === "new" ? "active" : ""}`} onClick={() => setGeoScope("new")}>New Meta</button>
@@ -2339,13 +2406,15 @@ export default function Customers() {
                   <button className={`toggle-btn ${geoScope === "all" ? "active" : ""}`} onClick={() => { setGeoScope("all"); if (geoMetric === "cpa" || geoMetric === "roas") setGeoMetric("rev"); }}>All Customers</button>
                 </div>
               </div>
-              <Text as="p" variant="bodySm" tone="subdued">
-                {geoScope === "new"
-                  ? "Billing address of new customers acquired via Meta ads"
-                  : geoScope === "allMeta"
-                    ? "Billing address of all Meta-attributed customers (new + retargeted)"
-                    : "Billing address of all new customers acquired in this period"}
-              </Text>
+              <MetricSelector
+                options={[
+                  { value: "rev", label: "Revenue" },
+                  { value: "aov", label: "AOV" },
+                  ...(geoIsMeta ? [{ value: "cpa", label: "CPA" }, { value: "roas", label: "ROAS" }] : []),
+                ]}
+                active={geoMetric}
+                onChange={setGeoMetric}
+              />
               <div className="demo-grid">
                 {/* Countries */}
                 <div>
@@ -2353,26 +2422,18 @@ export default function Customers() {
                     Top Countries
                   </div>
                   {activeGeoCountries.length > 0 ? (
-                    <>
-                      <HBarChart
-                        items={activeGeoCountries.map((c: any) => ({
-                          label: c.label, value: c.customers,
-                          subValue: geoSubValue(c),
-                        }))}
-                        total={activeGeoTotal}
-                        colorFn={(i) => ["#10B981", "#34D399", "#6EE7B7", "#A7F3D0", "#D1FAE5", "#ECFDF5"][i] || "#D1FAE5"}
-                        formatValue={(v) => v.toLocaleString()}
-                      />
-                      <MetricSelector
-                        options={[
-                          { value: "rev", label: "Revenue" },
-                          { value: "aov", label: "AOV" },
-                          ...(geoIsMeta ? [{ value: "cpa", label: "CPA" }, { value: "roas", label: "ROAS" }] : []),
-                        ]}
-                        active={geoMetric}
-                        onChange={setGeoMetric}
-                      />
-                    </>
+                    <HBarChart
+                      items={activeGeoCountries.map((c: any) => ({
+                        label: c.label, value: c.customers,
+                        subValue: geoSubValue(c),
+                      }))}
+                      total={activeGeoTotal}
+                      sharedMax={sharedGeoMax}
+                      maxItems={10}
+                      maxVisible={6}
+                      colorFn={(i) => ["#10B981", "#34D399", "#6EE7B7", "#A7F3D0", "#D1FAE5", "#ECFDF5", "#10B981", "#34D399", "#6EE7B7", "#A7F3D0"][i] || "#D1FAE5"}
+                      formatValue={(v) => v.toLocaleString()}
+                    />
                   ) : (
                     <div style={{ color: "#9CA3AF", fontSize: "13px", padding: "12px 0" }}>No country data</div>
                   )}
@@ -2391,7 +2452,10 @@ export default function Customers() {
                         subValue: geoMetric === "aov" && c.orders > 0 ? `${cs}${Math.round(c.revenue / c.orders)} AOV` : `${cs}${Math.round(c.revenue / 1000)}k`,
                       }))}
                       total={activeGeoTotal}
-                      colorFn={(i) => ["#0EA5E9", "#38BDF8", "#7DD3FC", "#BAE6FD", "#E0F2FE", "#F0F9FF"][i] || "#BAE6FD"}
+                      sharedMax={sharedGeoMax}
+                      maxItems={10}
+                      maxVisible={6}
+                      colorFn={(i) => ["#0EA5E9", "#38BDF8", "#7DD3FC", "#BAE6FD", "#E0F2FE", "#F0F9FF", "#0EA5E9", "#38BDF8", "#7DD3FC", "#BAE6FD"][i] || "#BAE6FD"}
                       formatValue={(v) => v.toLocaleString()}
                     />
                   ) : (
@@ -2401,7 +2465,8 @@ export default function Customers() {
               </div>
             </BlockStack>
           </Card>
-          )},
+            );
+          }},
           { id: "customerJourney", label: "New Customer Journey", span: 2, render: () => (
           <Card>
             <BlockStack gap="300">

@@ -405,39 +405,44 @@ export default function Index() {
               <Text as="h2" variant="headingMd">Shopify</Text>
               <Banner tone="success">
                 <p>Connected — {orderCount.toLocaleString()} orders</p>
-                <p style={{ marginTop: 4, fontSize: 12 }}>
-                  Webhooks:{" "}
-                  {webhooksFirstFiredAt ? (
-                    <strong style={{ color: "#0a7d3f" }}>active</strong>
-                  ) : webhooksRegisteredAt ? (
-                    <strong style={{ color: "#8a6116" }}>pending (awaiting first order)</strong>
-                  ) : (
-                    <strong style={{ color: "#8a1f1f" }}>not registered</strong>
-                  )}
-                </p>
-                <p style={{ marginTop: 4, fontSize: 12 }}>
-                  Pixel:{" "}
-                  {pixelCalibration?.results?.winner ? (
-                    <>
-                      <strong style={{ color: "#0a7d3f" }}>calibrated</strong>
-                      {" — reports "}<strong>{pixelCalibration.results.winner}</strong>
-                      {" (±"}{(pixelCalibration.results.winnerDeviation * 100).toFixed(2)}{"%, "}
-                      {pixelCalibration.results.sampleSize} samples, {pixelCalibration.results.quality})
-                    </>
-                  ) : pixelCalibration?.calibratedAt ? (
-                    <strong style={{ color: "#8a6116" }}>insufficient data ({pixelCalibration.samples} pairs)</strong>
-                  ) : (
-                    <strong style={{ color: "#8a6116" }}>not yet calibrated</strong>
-                  )}
-                </p>
               </Banner>
+              {webhooksFirstFiredAt ? (
+                <Banner tone="success"><p>Webhooks — active</p></Banner>
+              ) : webhooksRegisteredAt ? (
+                <Banner tone="warning"><p>Webhooks — pending (awaiting first order)</p></Banner>
+              ) : (
+                <Banner tone="critical"><p>Webhooks — not registered</p></Banner>
+              )}
+              {pixelCalibration?.results?.winner ? (
+                <Banner tone="success">
+                  <p>
+                    Pixel — calibrated, reports <strong>{pixelCalibration.results.winner}</strong>
+                    {" (±"}{(pixelCalibration.results.winnerDeviation * 100).toFixed(2)}{"%, "}
+                    {pixelCalibration.results.sampleSize} samples, {pixelCalibration.results.quality})
+                  </p>
+                </Banner>
+              ) : pixelCalibration?.calibratedAt ? (
+                <Banner tone="warning"><p>Pixel — insufficient data ({pixelCalibration.samples} pairs)</p></Banner>
+              ) : (
+                <Banner tone="warning"><p>Pixel — not yet calibrated</p></Banner>
+              )}
             </BlockStack></Card>
           </Layout.Section>
           <Layout.Section variant="oneHalf">
             <Card><BlockStack gap="200">
               <Text as="h2" variant="headingMd">Meta Ads</Text>
               {metaConnected ? (
-                <Banner tone="success"><p>Connected: {metaAdAccountId}</p></Banner>
+                <>
+                  <Banner tone="success"><p>Connected — {metaAdAccountId}</p></Banner>
+                  <Banner tone="success">
+                    <p>
+                      Last sync — {lastMetaSync ? new Date(lastMetaSync).toLocaleString() : "never"}
+                    </p>
+                  </Banner>
+                  <Banner tone="success">
+                    <p>Attribution — {attribution.total.toLocaleString()} matches ({attribution.avgConfidence}% avg confidence)</p>
+                  </Banner>
+                </>
               ) : (
                 <Banner tone="warning"><p>Not connected</p></Banner>
               )}
@@ -449,7 +454,7 @@ export default function Index() {
         {!onboardingCompleted && (
           <Card>
             <BlockStack gap="300">
-              <Text as="h2" variant="headingMd">Setup Steps</Text>
+              <Text as="h2" variant="headingMd">Getting Started</Text>
               <InlineStack gap="400" wrap>
                 <BlockStack gap="100">
                   <Button variant={orderCount === 0 ? "primary" : undefined} onClick={() => startTask("syncOrders")} disabled={isRunning} loading={activeTask === "syncOrders"}>
@@ -528,118 +533,6 @@ export default function Index() {
               )}
               {progress?.status === "error" && (
                 <Banner tone="critical"><p>Task failed: {progress.error}</p></Banner>
-              )}
-            </BlockStack>
-          </Card>
-        )}
-
-        <Layout>
-          <Layout.Section variant="oneThird">
-            <Card><BlockStack gap="200">
-              <Text as="h2" variant="headingMd">Orders</Text>
-              <Text as="p" variant="heading2xl">{orderCount}</Text>
-            </BlockStack></Card>
-          </Layout.Section>
-          <Layout.Section variant="oneThird">
-            <Card><BlockStack gap="200">
-              <Text as="h2" variant="headingMd">Customers</Text>
-              <Text as="p" variant="heading2xl">{customerCount}</Text>
-            </BlockStack></Card>
-          </Layout.Section>
-          <Layout.Section variant="oneThird">
-            <Card><BlockStack gap="200">
-              <Text as="h2" variant="headingMd">New vs Existing</Text>
-              <Text as="p" variant="heading2xl">{newCustomerOrders} / {existingCustomerOrders}</Text>
-              <Text as="p" variant="bodySm" tone="subdued">new / existing orders</Text>
-            </BlockStack></Card>
-          </Layout.Section>
-        </Layout>
-
-        {metaConnected && (
-          <Layout>
-            <Layout.Section variant="oneThird">
-              <Card><BlockStack gap="200">
-                <Text as="h2" variant="headingMd">Total Meta Spend</Text>
-                <Text as="p" variant="heading2xl">{currencySymbol}{totalSpend.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</Text>
-              </BlockStack></Card>
-            </Layout.Section>
-            <Layout.Section variant="oneThird">
-              <Card><BlockStack gap="200">
-                <Text as="h2" variant="headingMd">Net Revenue</Text>
-                <Text as="p" variant="heading2xl">{currencySymbol}{netRevenue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</Text>
-                <Text as="p" variant="bodySm" tone="subdued">100% of total</Text>
-              </BlockStack></Card>
-            </Layout.Section>
-            <Layout.Section variant="oneThird">
-              <Card><BlockStack gap="200">
-                <Text as="h2" variant="headingMd">Meta Revenue</Text>
-                <Text as="p" variant="heading2xl">{currencySymbol}{(netMetaRevenue + attribution.unmatchedRevenue).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</Text>
-                <Text as="p" variant="bodySm" tone="subdued">
-                  {attribution.unmatchedRevenue > 0
-                    ? `${currencySymbol}${netMetaRevenue.toLocaleString(undefined, { maximumFractionDigits: 0 })} matched + ${currencySymbol}${attribution.unmatchedRevenue.toLocaleString(undefined, { maximumFractionDigits: 0 })} unmatched`
-                    : netRevenue > 0 ? `${Math.round((netMetaRevenue / netRevenue) * 100)}% of total` : "—"}
-                </Text>
-              </BlockStack></Card>
-            </Layout.Section>
-          </Layout>
-        )}
-
-        {attribution.total > 0 && (
-          <Card>
-            <BlockStack gap="300">
-              <Text as="h2" variant="headingMd">Attribution Results</Text>
-              <Layout>
-                <Layout.Section variant="oneThird">
-                  <BlockStack gap="100">
-                    <Text as="p" variant="headingSm">Match Rate</Text>
-                    <Text as="p" variant="heading2xl">{matchedPct}%</Text>
-                    <ProgressBar progress={matchedPct} tone="success" />
-                  </BlockStack>
-                </Layout.Section>
-                <Layout.Section variant="oneThird">
-                  <BlockStack gap="100">
-                    <Text as="p" variant="headingSm">Avg Confidence</Text>
-                    <Text as="p" variant="heading2xl">{attribution.avgConfidence}%</Text>
-                    <Text as="p" variant="bodySm" tone="subdued">{attribution.matched} matched</Text>
-                  </BlockStack>
-                </Layout.Section>
-                <Layout.Section variant="oneThird">
-                  <BlockStack gap="100">
-                    <Text as="p" variant="headingSm">Unmatched</Text>
-                    <Text as="p" variant="heading2xl">{attribution.unmatched}</Text>
-                    {attribution.unmatchedRevenue > 0 && (
-                      <Text as="p" variant="bodySm" tone="subdued">{currencySymbol}{attribution.unmatchedRevenue.toLocaleString(undefined, { maximumFractionDigits: 0 })} unverified revenue</Text>
-                    )}
-                  </BlockStack>
-                </Layout.Section>
-              </Layout>
-              {(utmOnlyCount > 0 || utmAndLucidlyCount > 0) && (
-                <BlockStack gap="200">
-                  <Text as="h3" variant="headingSm">Attribution Sources</Text>
-                  <Layout>
-                    <Layout.Section variant="oneThird">
-                      <BlockStack gap="100">
-                        <Text as="p" variant="bodySm" fontWeight="semibold">UTM & Lucidly</Text>
-                        <Text as="p" variant="headingLg">{utmAndLucidlyCount}</Text>
-                        <Text as="p" variant="bodySm" tone="subdued">Both agree</Text>
-                      </BlockStack>
-                    </Layout.Section>
-                    <Layout.Section variant="oneThird">
-                      <BlockStack gap="100">
-                        <Text as="p" variant="bodySm" fontWeight="semibold">UTM Only</Text>
-                        <Text as="p" variant="headingLg">{utmOnlyCount}</Text>
-                        <Text as="p" variant="bodySm" tone="subdued">{currencySymbol}{utmOnlyRevenue.toLocaleString(undefined, { maximumFractionDigits: 0 })} revenue</Text>
-                      </BlockStack>
-                    </Layout.Section>
-                    <Layout.Section variant="oneThird">
-                      <BlockStack gap="100">
-                        <Text as="p" variant="bodySm" fontWeight="semibold">Lucidly Only</Text>
-                        <Text as="p" variant="headingLg">{attribution.matched - utmAndLucidlyCount}</Text>
-                        <Text as="p" variant="bodySm" tone="subdued">Statistical match</Text>
-                      </BlockStack>
-                    </Layout.Section>
-                  </Layout>
-                </BlockStack>
               )}
             </BlockStack>
           </Card>

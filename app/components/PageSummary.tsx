@@ -39,7 +39,9 @@ export default function PageSummary({ title = "Summary", bullets, columns = 1 }:
   return (
     <Card>
       <BlockStack gap="300">
-        <Text as="h2" variant="headingMd">{title}</Text>
+        <div style={{ textAlign: "center" }}>
+          <Text as="h2" variant="headingMd">{title}</Text>
+        </div>
         {bullets.length === 0 ? (
           <Text as="p" tone="subdued" variant="bodySm">No data for this period.</Text>
         ) : (
