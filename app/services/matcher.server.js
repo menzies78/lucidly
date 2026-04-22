@@ -1239,6 +1239,7 @@ export async function runFillGaps(shopDomain, lookbackDays = 30) {
       .sort((a, b) => a.totalConversions - b.totalConversions);
 
     for (const ad of sortedAds) {
+      console.log(`[FillGaps]   enter ad loop: ${day} ${ad.adName} adId=${ad.adId} totalConv=${ad.totalConversions} slots=${ad.slots.length}`);
       // Skip ads that already have attributions for this day
       const existingAdAttr = await db.attribution.findFirst({
         where: { shopDomain, metaAdId: ad.adId, confidence: { gt: 0 } },
@@ -1289,6 +1290,7 @@ export async function runFillGaps(shopDomain, lookbackDays = 30) {
       // on some other order could inflate that count and lock the real slot
       // out of Fill Gaps.
       if (existingMatchedForAd.length >= ad.totalConversions && placeholderCount === 0) {
+        console.log(`[FillGaps]   skip ${ad.adName}: matched=${existingMatchedForAd.length} >= total=${ad.totalConversions}, no placeholders`);
         continue;
       }
 
@@ -1300,7 +1302,10 @@ export async function runFillGaps(shopDomain, lookbackDays = 30) {
       let neededConversions = Math.max(placeholderCount, naiveNeeded);
       const metaRevenue = ad.totalConversionValue;
 
-      if (neededConversions <= 0) continue;
+      if (neededConversions <= 0) {
+        console.log(`[FillGaps]   skip ${ad.adName}: neededConversions=${neededConversions} (pre-slot)`);
+        continue;
+      }
 
       const slots = ad.slots.sort((a, b) => a.hour - b.hour);
       const slotCaps = slots.map(s => Math.max(0, s.cap));
@@ -1512,12 +1517,14 @@ export async function runFillGaps(shopDomain, lookbackDays = 30) {
 
       const totalCap = slotCaps.reduce((s, c) => s + c, 0);
       const R = Math.min(neededConversions, candidates.length, totalCap);
+      console.log(`[FillGaps]   solver: ${ad.adName} R=${R} totalCap=${totalCap} candidates=${candidates.length} target=£${remainingRevenue} slotCaps=[${slotCaps.join(",")}]`);
 
       const exhaustivePool = candidates.sort((a, b) => b.total - a.total).slice(0, MAX_CANDIDATES);
       const deadline = Date.now() + PER_AD_BUDGET_MS;
 
       let result = chooseRSlotsFlexible(exhaustivePool, R, slotCaps, remainingRevenue, tolerance, deadline);
       let picks = result.picks;
+      console.log(`[FillGaps]   chooseRSlotsFlexible picks=${picks.length} timedOut=${result.timedOut}`);
 
       if (!picks.length && R > 0 && Date.now() < deadline) {
         result = chooseRItemsIgnoreCaps(exhaustivePool, R, remainingRevenue, tolerance, deadline);
