@@ -1,7 +1,7 @@
 import { json } from "@remix-run/node";
 import { useLoaderData, useSearchParams, useSubmit, useActionData, useRevalidator } from "@remix-run/react";
 import { Page, Card, BlockStack, Text, Select } from "@shopify/polaris";
-import { useState, useMemo, useRef } from "react";
+import React, { useState, useMemo, useRef } from "react";
 import ReportTabs from "../components/ReportTabs";
 // import InteractiveTable from "../components/InteractiveTable"; // table removed
 import TileGrid from "../components/TileGrid";
@@ -15,6 +15,8 @@ import { currencySymbolFromCode } from "../utils/currency";
 import { getCachedInsights, computeDataHash, generateInsights } from "../services/aiAnalysis.server";
 import { setProgress, failProgress, completeProgress } from "../services/progress.server";
 import AiInsightsPanel from "../components/AiInsightsPanel";
+import PageSummary from "../components/PageSummary";
+import type { SummaryBullet } from "../components/PageSummary";
 import SummaryTile from "../components/SummaryTile";
 import type { ColumnDef } from "@tanstack/react-table";
 
@@ -482,14 +484,21 @@ export const loader = async ({ request }) => {
       newGenderAgg[a.metaGender].value += a.metaConversionValue || 0;
     }
   }
-  const newAgeBreakdown = Object.entries(newAgeAgg).map(([breakdownValue, s]) => ({
-    breakdownValue,
-    _sum: { conversions: s.conversions, conversionValue: s.value, spend: s.spend, impressions: s.impressions },
-  }));
-  const newGenderBreakdown = Object.entries(newGenderAgg).map(([breakdownValue, s]) => ({
-    breakdownValue,
-    _sum: { conversions: s.conversions, conversionValue: s.value, spend: s.spend, impressions: s.impressions },
-  }));
+  const newAgeBreakdown = AGE_ORDER
+    .map(age => {
+      const s = newAgeAgg[age];
+      return { label: age, conversions: s?.conversions || 0, spend: s?.spend || 0, revenue: s?.value || 0 };
+    })
+    .filter(a => a.conversions > 0);
+  const newGenderBreakdown = Object.entries(newGenderAgg)
+    .map(([raw, s]) => ({
+      label: raw === "male" ? "Male" : raw === "female" ? "Female" : "Unknown",
+      conversions: s.conversions,
+      spend: s.spend,
+      revenue: s.value,
+    }))
+    .filter(g => g.conversions > 0)
+    .sort((a, b) => b.conversions - a.conversions);
   const newDemoConversions = newMetaAttrsWithDemo.length;
   const newDemoExactCount = 0;
 
@@ -1295,6 +1304,29 @@ const layoutStyles = `
 .metric-link { font-size: 11px; font-weight: 500; color: #9CA3AF; cursor: pointer; border: none; background: none; padding: 0 0 3px 0; border-bottom: 2px solid transparent; transition: all 0.15s; letter-spacing: 0.3px; text-transform: uppercase; }
 .metric-link:hover { color: #6B7280; }
 .metric-link.active { color: #7C3AED; border-bottom-color: #7C3AED; font-weight: 700; }
+
+/* Top-of-page 50/50 row: Summary (left) + AI Insights (right) */
+.summary-ai-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: stretch; }
+.summary-ai-row > * { min-width: 0; }
+@media (max-width: 1100px) { .summary-ai-row { grid-template-columns: 1fr; } }
+
+/* Force paired tiles in the same row to render at the same height */
+[data-tile-id="customerBreakdown"],
+[data-tile-id="demographics"],
+[data-tile-id="geography"],
+[data-tile-id="customerJourney"] {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+[data-tile-id="customerBreakdown"] > :last-child,
+[data-tile-id="demographics"] > :last-child,
+[data-tile-id="geography"] > :last-child,
+[data-tile-id="customerJourney"] > :last-child {
+  flex: 1 1 auto;
+  height: 100%;
+  box-sizing: border-box;
+}
 `;
 
 // ═══════════════════════════════════════════════════════════════
@@ -1597,21 +1629,383 @@ export default function Customers() {
     };
   }, [filteredRows, cs]);
 
+  // ── Page summary bullets (new-customer demographics & geography) ──
+  const summaryBullets: SummaryBullet[] = useMemo(() => {
+    const out: SummaryBullet[] = [];
+
+    // Line 1: avg age (midpoint-weighted) + gender split, new Meta only
+    const AGE_MIDPOINT: Record<string, number> = {
+      "13-17": 15, "18-24": 21, "25-34": 29.5, "35-44": 39.5,
+      "45-54": 49.5, "55-64": 59.5, "65+": 70,
+    };
+    const ageConvTotal = (newAgeBreakdown || []).reduce((s: number, a: any) => s + (a.conversions || 0), 0);
+    const ageWeighted = (newAgeBreakdown || []).reduce(
+      (s: number, a: any) => s + (AGE_MIDPOINT[a.label] || 0) * (a.conversions || 0), 0,
+    );
+    const avgAge = ageConvTotal > 0 ? Math.round(ageWeighted / ageConvTotal) : null;
+
+    const genderTot = (newGenderBreakdown || []).reduce((s: number, g: any) => s + (g.conversions || 0), 0);
+    const female = (newGenderBreakdown || []).find((g: any) => g.label === "Female");
+    const male = (newGenderBreakdown || []).find((g: any) => g.label === "Male");
+    const femalePct = genderTot > 0 && female ? Math.round((female.conversions / genderTot) * 100) : null;
+    const malePct = genderTot > 0 && male ? Math.round((male.conversions / genderTot) * 100) : null;
+
+    if (avgAge != null || femalePct != null || malePct != null) {
+      const parts: string[] = [];
+      if (avgAge != null) parts.push(`Avg age ${avgAge}`);
+      if (femalePct != null && malePct != null) parts.push(`${femalePct}% female / ${malePct}% male`);
+      else if (femalePct != null) parts.push(`${femalePct}% female`);
+      else if (malePct != null) parts.push(`${malePct}% male`);
+      out.push({
+        tone: "neutral",
+        text: <><strong>New Meta customers:</strong> {parts.join(" · ")}</>,
+      });
+    }
+
+    // Line 2: top country + top city, each with % share of new-Meta revenue
+    const topCountry = (metaNewTopCountries || [])[0];
+    const topCity = (metaNewTopCities || [])[0];
+    const denom = metaNewRevenueInRange || 0;
+    const countryPct = topCountry && denom > 0 ? Math.round((topCountry.revenue / denom) * 100) : null;
+    const cityPct = topCity && denom > 0 ? Math.round((topCity.revenue / denom) * 100) : null;
+
+    if (topCountry || topCity) {
+      const parts: React.ReactNode[] = [];
+      if (topCountry) {
+        parts.push(
+          <span key="country">
+            Top country <strong>{topCountry.label}</strong>
+            {countryPct != null ? ` (${countryPct}% of new-customer revenue)` : ""}
+          </span>,
+        );
+      }
+      if (topCity) {
+        parts.push(
+          <span key="city">
+            Top city <strong>{topCity.label}</strong>
+            {cityPct != null ? ` (${cityPct}% of new-customer revenue)` : ""}
+          </span>,
+        );
+      }
+      out.push({
+        tone: "neutral",
+        text: (
+          <>
+            {parts.map((p, i) => (
+              <React.Fragment key={i}>
+                {i > 0 ? " · " : null}
+                {p}
+              </React.Fragment>
+            ))}
+          </>
+        ),
+      });
+    }
+
+    return out;
+  }, [newAgeBreakdown, newGenderBreakdown, metaNewTopCountries, metaNewTopCities, metaNewRevenueInRange]);
+
   return (
     <Page title="Customer Intelligence" fullWidth>
       <style dangerouslySetInnerHTML={{ __html: layoutStyles }} />
       <ReportTabs>
       <BlockStack gap="500">
-        <AiInsightsPanel
-          pageKey="customers"
-          cachedInsights={aiCachedInsights}
-          generatedAt={aiGeneratedAt}
-          isStale={aiIsStale}
-          currencySymbol={cs}
-        />
+        <div className="summary-ai-row">
+          <PageSummary bullets={summaryBullets} />
+          <AiInsightsPanel
+            pageKey="customers"
+            cachedInsights={aiCachedInsights}
+            generatedAt={aiGeneratedAt}
+            isStale={aiIsStale}
+            currencySymbol={cs}
+          />
+        </div>
 
         {/* ═══ ALL TILES (drag/drop, show/hide) ═══ */}
         <TileGrid pageId="customers-v8" columns={4} tiles={[
+          { id: "customerBreakdown", label: "Customer Breakdown", span: 2, render: () => (
+          <Card>
+            <BlockStack gap="300">
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <Text as="h2" variant="headingMd">Customer Breakdown</Text>
+                <div className="toggle-group">
+                  <button className={`toggle-btn ${acqMode === "orders" ? "active" : ""}`} onClick={() => setAcqMode("orders")}>Orders</button>
+                  <button className={`toggle-btn ${acqMode === "revenue" ? "active" : ""}`} onClick={() => setAcqMode("revenue")}>Revenue</button>
+                </div>
+              </div>
+
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: "32px", padding: "8px 0" }}>
+                <DonutChart
+                  segments={acqSegments}
+                  centerValue={acqMode === "orders" ? acqTotal.toLocaleString() : `${cs}${Math.round(acqTotal).toLocaleString()}`}
+                  centerLabel={acqMode === "orders" ? "Orders" : "Revenue"}
+                  size={170}
+                  thickness={26}
+                />
+                <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+                  {[
+                    { label: "Meta New", desc: "First-ever order, acquired by Meta", count: metaNewCustomersInRange, value: acqMode === "orders" ? metaNewOrdersInRange : metaNewRevenueInRange, color: "#7C3AED" },
+                    { label: "Meta Repeat", desc: "Returning Meta-acquired customer", count: metaRepeatCustomersInRange, value: acqMode === "orders" ? metaRepeatOrdersInRange : metaRepeatRevenueInRange, color: "#0891B2" },
+                    { label: "Meta Retargeted", desc: "Existing customer converted by Meta", count: metaRetargetedCustomersInRange, value: acqMode === "orders" ? metaRetargetedOrdersInRange : metaRetargetedRevenueInRange, color: "#B45309" },
+                  ].map(seg => {
+                    const isEmpty = seg.value === 0;
+                    return (
+                      <div key={seg.label} style={{ display: "flex", alignItems: "center", gap: "10px", opacity: isEmpty ? 0.45 : 1 }}>
+                        <div style={{ width: "12px", height: "12px", borderRadius: "3px", background: isEmpty ? "#D1D5DB" : seg.color, flexShrink: 0 }} />
+                        <div>
+                          <div style={{ fontSize: "13px", fontWeight: 600, color: isEmpty ? "#9CA3AF" : "#1F2937" }}>
+                            {acqMode === "orders" ? `${seg.value.toLocaleString()} order${seg.value !== 1 ? "s" : ""}` : `${cs}${Math.round(seg.value).toLocaleString()}`}
+                            <span style={{ fontWeight: 400, color: isEmpty ? "#D1D5DB" : "#6B7280" }}> — {seg.count} customer{seg.count !== 1 ? "s" : ""}</span>
+                          </div>
+                          <div style={{ fontSize: "11px", color: isEmpty ? "#D1D5DB" : "#9CA3AF" }}>
+                            {seg.label}: {seg.desc}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+              {acqMode === "orders" && totalMetaConversions > 0 && totalMetaConversions !== acqTotal && (
+                <Text as="p" variant="bodySm" tone="subdued">
+                  Meta reported {totalMetaConversions} conversion{totalMetaConversions !== 1 ? "s" : ""} in this period.
+                  {acqTotal > totalMetaConversions
+                    ? ` We matched ${acqTotal} — the extra ${acqTotal - totalMetaConversions} came from UTM tracking (orders Meta didn't log as conversions).`
+                    : ` We matched ${acqTotal} — the ${totalMetaConversions - acqTotal} unmatched exist because order values change after purchase (refunds, edits).`
+                  }
+                  {" "}Customer Demographics uses Meta's data directly, so may show a different total.
+                </Text>
+              )}
+            </BlockStack>
+          </Card>
+          )},
+          { id: "demographics", label: "Customer Demographics", span: 2, render: () => (
+          <Card>
+            <BlockStack gap="400">
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <div style={{ display: "flex", alignItems: "baseline", gap: "10px" }}>
+                  <Text as="h2" variant="headingMd">Customer Demographics</Text>
+                  <span style={{ fontSize: "13px", fontWeight: 700, color: "#7C3AED" }}>{activeDemoConversions} conversions</span>
+                </div>
+                <div className="toggle-group">
+                  <button className={`toggle-btn ${demoScope === "new" ? "active" : ""}`} onClick={() => setDemoScope("new")}>New Meta</button>
+                  <button className={`toggle-btn ${demoScope === "allMeta" ? "active" : ""}`} onClick={() => setDemoScope("allMeta")}>All Meta</button>
+                </div>
+              </div>
+              <Text as="p" variant="bodySm" tone="subdued">
+                {demoScope === "new"
+                  ? `Matched new customer orders with enriched demographics${newDemoExactCount > 0 ? ` (${newDemoExactCount} exact, ${newDemoConversions - newDemoExactCount} probabilistic)` : ""}`
+                  : "All Meta-reported conversions by age & gender"}
+              </Text>
+              <div className="demo-grid">
+                {/* Age distribution */}
+                <div>
+                  <div style={{ fontSize: "12px", fontWeight: 600, color: "#6B7280", marginBottom: "8px", textTransform: "uppercase", letterSpacing: "0.5px" }}>
+                    Age
+                  </div>
+                  {activeAgeBreakdown.length > 0 ? (
+                    <>
+                      <HBarChart
+                        items={activeAgeBreakdown.map((a: any) => ({
+                          label: a.label,
+                          value: a.conversions,
+                          subValue: demoSubValue(a),
+                        }))}
+                        colorFn={(i) => ageColors[i % ageColors.length]}
+                        formatValue={(v) => v.toLocaleString()}
+                      />
+                      <MetricSelector
+                        options={[{ value: "cpa", label: "CPA" }, { value: "roas", label: "ROAS" }, { value: "aov", label: "AOV" }]}
+                        active={demoMetric}
+                        onChange={setDemoMetric}
+                      />
+                    </>
+                  ) : (
+                    <div style={{ color: "#9CA3AF", fontSize: "13px", padding: "12px 0" }}>No age data available</div>
+                  )}
+                </div>
+
+                {/* Gender split */}
+                <div>
+                  <div style={{ fontSize: "12px", fontWeight: 600, color: "#6B7280", marginBottom: "8px", textTransform: "uppercase", letterSpacing: "0.5px" }}>
+                    Gender
+                  </div>
+                  {activeGenderBreakdown.length > 0 ? (
+                    <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+                      {/* Gender bar */}
+                      <div style={{ display: "flex", height: "32px", borderRadius: "8px", overflow: "hidden" }}>
+                        {activeGenderBreakdown.map((g: any) => {
+                          const pct = genderTotal > 0 ? (g.conversions / genderTotal) * 100 : 0;
+                          const color = g.label === "Female" ? "#EC4899" : g.label === "Male" ? "#3B82F6" : "#9CA3AF";
+                          return (
+                            <div
+                              key={g.label}
+                              style={{
+                                width: `${pct}%`, background: color, minWidth: pct > 0 ? "2px" : 0,
+                                display: "flex", alignItems: "center", justifyContent: "center",
+                                transition: "width 0.5s ease",
+                              }}
+                            >
+                              {pct > 15 && (
+                                <span style={{ fontSize: "12px", fontWeight: 700, color: "#fff" }}>
+                                  {Math.round(pct)}%
+                                </span>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                      {/* Gender labels */}
+                      <div style={{ display: "flex", gap: "16px", justifyContent: "center" }}>
+                        {activeGenderBreakdown.map((g: any) => {
+                          const color = g.label === "Female" ? "#EC4899" : g.label === "Male" ? "#3B82F6" : "#9CA3AF";
+                          const pct = genderTotal > 0 ? Math.round((g.conversions / genderTotal) * 100) : 0;
+                          return (
+                            <div key={g.label} style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                              <div style={{ width: "10px", height: "10px", borderRadius: "50%", background: color }} />
+                              <span style={{ fontSize: "12px", color: "#4B5563" }}>
+                                {g.label} <strong>{g.conversions.toLocaleString()}</strong> ({pct}%)
+                              </span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                      {/* Spend comparison */}
+                      <div style={{ display: "flex", gap: "12px", justifyContent: "center", marginTop: "4px" }}>
+                        {activeGenderBreakdown.map((g: any) => {
+                          const color = g.label === "Female" ? "#EC4899" : g.label === "Male" ? "#3B82F6" : "#9CA3AF";
+                          const cpa = g.conversions > 0 ? g.spend / g.conversions : 0;
+                          return (
+                            <div key={g.label} style={{ textAlign: "center" }}>
+                              <div style={{ fontSize: "18px", fontWeight: 700, color }}>{cs}{Math.round(cpa)}</div>
+                              <div style={{ fontSize: "10px", color: "#9CA3AF" }}>CPA ({g.label})</div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ) : (
+                    <div style={{ color: "#9CA3AF", fontSize: "13px", padding: "12px 0" }}>No gender data available</div>
+                  )}
+                </div>
+              </div>
+            </BlockStack>
+          </Card>
+          )},
+          { id: "geography", label: "Customer Geography", span: 2, render: () => (
+          <Card>
+            <BlockStack gap="400">
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <div style={{ display: "flex", alignItems: "baseline", gap: "10px" }}>
+                  <Text as="h2" variant="headingMd">Customer Geography</Text>
+                  <span style={{ fontSize: "13px", fontWeight: 700, color: "#10B981" }}>
+                    {activeGeoTotal} customers
+                  </span>
+                </div>
+                <div className="toggle-group">
+                  <button className={`toggle-btn ${geoScope === "new" ? "active" : ""}`} onClick={() => setGeoScope("new")}>New Meta</button>
+                  <button className={`toggle-btn ${geoScope === "allMeta" ? "active" : ""}`} onClick={() => setGeoScope("allMeta")}>All Meta</button>
+                  <button className={`toggle-btn ${geoScope === "all" ? "active" : ""}`} onClick={() => { setGeoScope("all"); if (geoMetric === "cpa" || geoMetric === "roas") setGeoMetric("rev"); }}>All Customers</button>
+                </div>
+              </div>
+              <Text as="p" variant="bodySm" tone="subdued">
+                {geoScope === "new"
+                  ? "Billing address of new customers acquired via Meta ads"
+                  : geoScope === "allMeta"
+                    ? "Billing address of all Meta-attributed customers (new + retargeted)"
+                    : "Billing address of all new customers acquired in this period"}
+              </Text>
+              <div className="demo-grid">
+                {/* Countries */}
+                <div>
+                  <div style={{ fontSize: "12px", fontWeight: 600, color: "#6B7280", marginBottom: "8px", textTransform: "uppercase", letterSpacing: "0.5px" }}>
+                    Top Countries
+                  </div>
+                  {activeGeoCountries.length > 0 ? (
+                    <>
+                      <HBarChart
+                        items={activeGeoCountries.map((c: any) => ({
+                          label: c.label, value: c.customers,
+                          subValue: geoSubValue(c),
+                        }))}
+                        total={activeGeoTotal}
+                        colorFn={(i) => ["#10B981", "#34D399", "#6EE7B7", "#A7F3D0", "#D1FAE5", "#ECFDF5"][i] || "#D1FAE5"}
+                        formatValue={(v) => v.toLocaleString()}
+                      />
+                      <MetricSelector
+                        options={[
+                          { value: "rev", label: "Revenue" },
+                          { value: "aov", label: "AOV" },
+                          ...(geoIsMeta ? [{ value: "cpa", label: "CPA" }, { value: "roas", label: "ROAS" }] : []),
+                        ]}
+                        active={geoMetric}
+                        onChange={setGeoMetric}
+                      />
+                    </>
+                  ) : (
+                    <div style={{ color: "#9CA3AF", fontSize: "13px", padding: "12px 0" }}>No country data</div>
+                  )}
+                </div>
+
+                {/* Cities */}
+                <div>
+                  <div style={{ fontSize: "12px", fontWeight: 600, color: "#6B7280", marginBottom: "8px", textTransform: "uppercase", letterSpacing: "0.5px" }}>
+                    Top Cities
+                  </div>
+                  {activeGeoCities.length > 0 ? (
+                    <HBarChart
+                      items={activeGeoCities.map((c: any) => ({
+                        label: c.label.length > 12 ? c.label.slice(0, 11) + "…" : c.label,
+                        value: c.customers,
+                        subValue: geoMetric === "aov" && c.orders > 0 ? `${cs}${Math.round(c.revenue / c.orders)} AOV` : `${cs}${Math.round(c.revenue / 1000)}k`,
+                      }))}
+                      total={activeGeoTotal}
+                      colorFn={(i) => ["#0EA5E9", "#38BDF8", "#7DD3FC", "#BAE6FD", "#E0F2FE", "#F0F9FF"][i] || "#BAE6FD"}
+                      formatValue={(v) => v.toLocaleString()}
+                    />
+                  ) : (
+                    <div style={{ color: "#9CA3AF", fontSize: "13px", padding: "12px 0" }}>No city data</div>
+                  )}
+                </div>
+              </div>
+            </BlockStack>
+          </Card>
+          )},
+          { id: "customerJourney", label: "Customer Journey", span: 2, render: () => (
+          <Card>
+            <BlockStack gap="300">
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <Text as="h2" variant="headingMd">Customer Journey</Text>
+                <div className="toggle-group">
+                  <button className={`toggle-btn ${journeyScope === "meta" ? "active" : ""}`} onClick={() => setJourneyScope("meta")}>Meta Customers</button>
+                  <button className={`toggle-btn ${journeyScope === "all" ? "active" : ""}`} onClick={() => setJourneyScope("all")}>All Customers</button>
+                </div>
+              </div>
+              <Text as="p" variant="bodySm" tone="subdued">
+                {journeyScope === "meta"
+                  ? "New customers acquired via Meta in this period — did they come back?"
+                  : "All new customers acquired in this period — did they come back?"}
+              </Text>
+              <JourneyFlow
+                firstAOV={journeyScope === "meta" ? journeyFirstAOV : allJourneyFirstAOV}
+                gapDays={journeyScope === "meta" ? journeyGapDays : allJourneyGapDays}
+                secondAOV={journeyScope === "meta" ? journeySecondAOV : allJourneySecondAOV}
+                thirdAOV={journeyScope === "meta" ? journeyThirdAOV : allJourneyThirdAOV}
+                gap2to3Days={journeyScope === "meta" ? journeyGap2to3Days : allJourneyGap2to3Days}
+                customerCount={journeyScope === "meta" ? journeyCustomerCount : allJourneyCustomerCount}
+                firstOrderCount={journeyScope === "meta" ? metaFirstOrderCount : allFirstOrderCount}
+                secondOrderCount={journeyScope === "meta" ? metaSecondOrderCount : allSecondOrderCount}
+                thirdOrderCount={journeyScope === "meta" ? metaThirdOrderCount : allThirdOrderCount}
+                cs={cs}
+              />
+            </BlockStack>
+          </Card>
+          )},
+          { id: "weeklyCohortRevenue", label: "Revenue by Weekly Cohort", span: 4, render: () => (
+            <Card>
+              <WeeklyCohortRevenue weekly={weeklyCohortSeries} cs={cs} />
+            </Card>
+          )},
           { id: "totalMetaCustomers", label: "Total Meta Orders", render: () => {
             // Total Meta Orders = matched Shopify orders attributed to Meta
             // (rollup .orders already excludes £0) + unmatched Meta conversions
@@ -1704,41 +2098,6 @@ export default function Customers() {
               subtitle={paybackOrders > 0 ? `Payback in ${paybackOrders} orders` : undefined}
               chartData={dailyData} prevChartData={prevDailyData} chartKey={(d) => d.newMetaCustomers > 0 && d.spend > 0 ? d.spend / d.newMetaCustomers : 0}
               chartColor="#DC2626" chartFormat={fmtPrice} />
-          )},
-          { id: "customerJourney", label: "Customer Journey", span: 2, render: () => (
-          <Card>
-            <BlockStack gap="300">
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <Text as="h2" variant="headingMd">Customer Journey</Text>
-                <div className="toggle-group">
-                  <button className={`toggle-btn ${journeyScope === "meta" ? "active" : ""}`} onClick={() => setJourneyScope("meta")}>Meta Customers</button>
-                  <button className={`toggle-btn ${journeyScope === "all" ? "active" : ""}`} onClick={() => setJourneyScope("all")}>All Customers</button>
-                </div>
-              </div>
-              <Text as="p" variant="bodySm" tone="subdued">
-                {journeyScope === "meta"
-                  ? "New customers acquired via Meta in this period — did they come back?"
-                  : "All new customers acquired in this period — did they come back?"}
-              </Text>
-              <JourneyFlow
-                firstAOV={journeyScope === "meta" ? journeyFirstAOV : allJourneyFirstAOV}
-                gapDays={journeyScope === "meta" ? journeyGapDays : allJourneyGapDays}
-                secondAOV={journeyScope === "meta" ? journeySecondAOV : allJourneySecondAOV}
-                thirdAOV={journeyScope === "meta" ? journeyThirdAOV : allJourneyThirdAOV}
-                gap2to3Days={journeyScope === "meta" ? journeyGap2to3Days : allJourneyGap2to3Days}
-                customerCount={journeyScope === "meta" ? journeyCustomerCount : allJourneyCustomerCount}
-                firstOrderCount={journeyScope === "meta" ? metaFirstOrderCount : allFirstOrderCount}
-                secondOrderCount={journeyScope === "meta" ? metaSecondOrderCount : allSecondOrderCount}
-                thirdOrderCount={journeyScope === "meta" ? metaThirdOrderCount : allThirdOrderCount}
-                cs={cs}
-              />
-            </BlockStack>
-          </Card>
-          )},
-          { id: "weeklyCohortRevenue", label: "Revenue by Weekly Cohort", span: 2, render: () => (
-            <Card>
-              <WeeklyCohortRevenue weekly={weeklyCohortSeries} cs={cs} />
-            </Card>
           )},
           { id: "ltvOverview", label: "Meta Customer Lifetime Value", span: 4, render: () => (
           <Card>
@@ -2023,254 +2382,6 @@ export default function Customers() {
                   </div>
                 );
               })()}
-            </BlockStack>
-          </Card>
-          )},
-          { id: "customerBreakdown", label: "Customer Breakdown", span: 2, render: () => (
-          <Card>
-            <BlockStack gap="300">
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <Text as="h2" variant="headingMd">Customer Breakdown</Text>
-                <div className="toggle-group">
-                  <button className={`toggle-btn ${acqMode === "orders" ? "active" : ""}`} onClick={() => setAcqMode("orders")}>Orders</button>
-                  <button className={`toggle-btn ${acqMode === "revenue" ? "active" : ""}`} onClick={() => setAcqMode("revenue")}>Revenue</button>
-                </div>
-              </div>
-
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: "32px", padding: "8px 0" }}>
-                <DonutChart
-                  segments={acqSegments}
-                  centerValue={acqMode === "orders" ? acqTotal.toLocaleString() : `${cs}${Math.round(acqTotal).toLocaleString()}`}
-                  centerLabel={acqMode === "orders" ? "Orders" : "Revenue"}
-                  size={170}
-                  thickness={26}
-                />
-                <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
-                  {[
-                    { label: "Meta New", desc: "First-ever order, acquired by Meta", count: metaNewCustomersInRange, value: acqMode === "orders" ? metaNewOrdersInRange : metaNewRevenueInRange, color: "#7C3AED" },
-                    { label: "Meta Repeat", desc: "Returning Meta-acquired customer", count: metaRepeatCustomersInRange, value: acqMode === "orders" ? metaRepeatOrdersInRange : metaRepeatRevenueInRange, color: "#0891B2" },
-                    { label: "Meta Retargeted", desc: "Existing customer converted by Meta", count: metaRetargetedCustomersInRange, value: acqMode === "orders" ? metaRetargetedOrdersInRange : metaRetargetedRevenueInRange, color: "#B45309" },
-                  ].map(seg => {
-                    const isEmpty = seg.value === 0;
-                    return (
-                      <div key={seg.label} style={{ display: "flex", alignItems: "center", gap: "10px", opacity: isEmpty ? 0.45 : 1 }}>
-                        <div style={{ width: "12px", height: "12px", borderRadius: "3px", background: isEmpty ? "#D1D5DB" : seg.color, flexShrink: 0 }} />
-                        <div>
-                          <div style={{ fontSize: "13px", fontWeight: 600, color: isEmpty ? "#9CA3AF" : "#1F2937" }}>
-                            {acqMode === "orders" ? `${seg.value.toLocaleString()} order${seg.value !== 1 ? "s" : ""}` : `${cs}${Math.round(seg.value).toLocaleString()}`}
-                            <span style={{ fontWeight: 400, color: isEmpty ? "#D1D5DB" : "#6B7280" }}> — {seg.count} customer{seg.count !== 1 ? "s" : ""}</span>
-                          </div>
-                          <div style={{ fontSize: "11px", color: isEmpty ? "#D1D5DB" : "#9CA3AF" }}>
-                            {seg.label}: {seg.desc}
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-              {acqMode === "orders" && totalMetaConversions > 0 && totalMetaConversions !== acqTotal && (
-                <Text as="p" variant="bodySm" tone="subdued">
-                  Meta reported {totalMetaConversions} conversion{totalMetaConversions !== 1 ? "s" : ""} in this period.
-                  {acqTotal > totalMetaConversions
-                    ? ` We matched ${acqTotal} — the extra ${acqTotal - totalMetaConversions} came from UTM tracking (orders Meta didn't log as conversions).`
-                    : ` We matched ${acqTotal} — the ${totalMetaConversions - acqTotal} unmatched exist because order values change after purchase (refunds, edits).`
-                  }
-                  {" "}Customer Demographics uses Meta's data directly, so may show a different total.
-                </Text>
-              )}
-            </BlockStack>
-          </Card>
-          )},
-          { id: "demographics", label: "Customer Demographics", span: 2, render: () => (
-          <Card>
-            <BlockStack gap="400">
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <div style={{ display: "flex", alignItems: "baseline", gap: "10px" }}>
-                  <Text as="h2" variant="headingMd">Customer Demographics</Text>
-                  <span style={{ fontSize: "13px", fontWeight: 700, color: "#7C3AED" }}>{activeDemoConversions} conversions</span>
-                </div>
-                <div className="toggle-group">
-                  <button className={`toggle-btn ${demoScope === "new" ? "active" : ""}`} onClick={() => setDemoScope("new")}>New Meta</button>
-                  <button className={`toggle-btn ${demoScope === "allMeta" ? "active" : ""}`} onClick={() => setDemoScope("allMeta")}>All Meta</button>
-                </div>
-              </div>
-              <Text as="p" variant="bodySm" tone="subdued">
-                {demoScope === "new"
-                  ? `Matched new customer orders with enriched demographics${newDemoExactCount > 0 ? ` (${newDemoExactCount} exact, ${newDemoConversions - newDemoExactCount} probabilistic)` : ""}`
-                  : "All Meta-reported conversions by age & gender"}
-              </Text>
-              <div className="demo-grid">
-                {/* Age distribution */}
-                <div>
-                  <div style={{ fontSize: "12px", fontWeight: 600, color: "#6B7280", marginBottom: "8px", textTransform: "uppercase", letterSpacing: "0.5px" }}>
-                    Age
-                  </div>
-                  {activeAgeBreakdown.length > 0 ? (
-                    <>
-                      <HBarChart
-                        items={activeAgeBreakdown.map((a: any) => ({
-                          label: a.label,
-                          value: a.conversions,
-                          subValue: demoSubValue(a),
-                        }))}
-                        colorFn={(i) => ageColors[i % ageColors.length]}
-                        formatValue={(v) => v.toLocaleString()}
-                      />
-                      <MetricSelector
-                        options={[{ value: "cpa", label: "CPA" }, { value: "roas", label: "ROAS" }, { value: "aov", label: "AOV" }]}
-                        active={demoMetric}
-                        onChange={setDemoMetric}
-                      />
-                    </>
-                  ) : (
-                    <div style={{ color: "#9CA3AF", fontSize: "13px", padding: "12px 0" }}>No age data available</div>
-                  )}
-                </div>
-
-                {/* Gender split */}
-                <div>
-                  <div style={{ fontSize: "12px", fontWeight: 600, color: "#6B7280", marginBottom: "8px", textTransform: "uppercase", letterSpacing: "0.5px" }}>
-                    Gender
-                  </div>
-                  {activeGenderBreakdown.length > 0 ? (
-                    <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
-                      {/* Gender bar */}
-                      <div style={{ display: "flex", height: "32px", borderRadius: "8px", overflow: "hidden" }}>
-                        {activeGenderBreakdown.map((g: any) => {
-                          const pct = genderTotal > 0 ? (g.conversions / genderTotal) * 100 : 0;
-                          const color = g.label === "Female" ? "#EC4899" : g.label === "Male" ? "#3B82F6" : "#9CA3AF";
-                          return (
-                            <div
-                              key={g.label}
-                              style={{
-                                width: `${pct}%`, background: color, minWidth: pct > 0 ? "2px" : 0,
-                                display: "flex", alignItems: "center", justifyContent: "center",
-                                transition: "width 0.5s ease",
-                              }}
-                            >
-                              {pct > 15 && (
-                                <span style={{ fontSize: "12px", fontWeight: 700, color: "#fff" }}>
-                                  {Math.round(pct)}%
-                                </span>
-                              )}
-                            </div>
-                          );
-                        })}
-                      </div>
-                      {/* Gender labels */}
-                      <div style={{ display: "flex", gap: "16px", justifyContent: "center" }}>
-                        {activeGenderBreakdown.map((g: any) => {
-                          const color = g.label === "Female" ? "#EC4899" : g.label === "Male" ? "#3B82F6" : "#9CA3AF";
-                          const pct = genderTotal > 0 ? Math.round((g.conversions / genderTotal) * 100) : 0;
-                          return (
-                            <div key={g.label} style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-                              <div style={{ width: "10px", height: "10px", borderRadius: "50%", background: color }} />
-                              <span style={{ fontSize: "12px", color: "#4B5563" }}>
-                                {g.label} <strong>{g.conversions.toLocaleString()}</strong> ({pct}%)
-                              </span>
-                            </div>
-                          );
-                        })}
-                      </div>
-                      {/* Spend comparison */}
-                      <div style={{ display: "flex", gap: "12px", justifyContent: "center", marginTop: "4px" }}>
-                        {activeGenderBreakdown.map((g: any) => {
-                          const color = g.label === "Female" ? "#EC4899" : g.label === "Male" ? "#3B82F6" : "#9CA3AF";
-                          const cpa = g.conversions > 0 ? g.spend / g.conversions : 0;
-                          return (
-                            <div key={g.label} style={{ textAlign: "center" }}>
-                              <div style={{ fontSize: "18px", fontWeight: 700, color }}>{cs}{Math.round(cpa)}</div>
-                              <div style={{ fontSize: "10px", color: "#9CA3AF" }}>CPA ({g.label})</div>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  ) : (
-                    <div style={{ color: "#9CA3AF", fontSize: "13px", padding: "12px 0" }}>No gender data available</div>
-                  )}
-                </div>
-              </div>
-            </BlockStack>
-          </Card>
-          )},
-          { id: "geography", label: "Customer Geography", span: 2, render: () => (
-          <Card>
-            <BlockStack gap="400">
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <div style={{ display: "flex", alignItems: "baseline", gap: "10px" }}>
-                  <Text as="h2" variant="headingMd">Customer Geography</Text>
-                  <span style={{ fontSize: "13px", fontWeight: 700, color: "#10B981" }}>
-                    {activeGeoTotal} customers
-                  </span>
-                </div>
-                <div className="toggle-group">
-                  <button className={`toggle-btn ${geoScope === "new" ? "active" : ""}`} onClick={() => setGeoScope("new")}>New Meta</button>
-                  <button className={`toggle-btn ${geoScope === "allMeta" ? "active" : ""}`} onClick={() => setGeoScope("allMeta")}>All Meta</button>
-                  <button className={`toggle-btn ${geoScope === "all" ? "active" : ""}`} onClick={() => { setGeoScope("all"); if (geoMetric === "cpa" || geoMetric === "roas") setGeoMetric("rev"); }}>All Customers</button>
-                </div>
-              </div>
-              <Text as="p" variant="bodySm" tone="subdued">
-                {geoScope === "new"
-                  ? "Billing address of new customers acquired via Meta ads"
-                  : geoScope === "allMeta"
-                    ? "Billing address of all Meta-attributed customers (new + retargeted)"
-                    : "Billing address of all new customers acquired in this period"}
-              </Text>
-              <div className="demo-grid">
-                {/* Countries */}
-                <div>
-                  <div style={{ fontSize: "12px", fontWeight: 600, color: "#6B7280", marginBottom: "8px", textTransform: "uppercase", letterSpacing: "0.5px" }}>
-                    Top Countries
-                  </div>
-                  {activeGeoCountries.length > 0 ? (
-                    <>
-                      <HBarChart
-                        items={activeGeoCountries.map((c: any) => ({
-                          label: c.label, value: c.customers,
-                          subValue: geoSubValue(c),
-                        }))}
-                        total={activeGeoTotal}
-                        colorFn={(i) => ["#10B981", "#34D399", "#6EE7B7", "#A7F3D0", "#D1FAE5", "#ECFDF5"][i] || "#D1FAE5"}
-                        formatValue={(v) => v.toLocaleString()}
-                      />
-                      <MetricSelector
-                        options={[
-                          { value: "rev", label: "Revenue" },
-                          { value: "aov", label: "AOV" },
-                          ...(geoIsMeta ? [{ value: "cpa", label: "CPA" }, { value: "roas", label: "ROAS" }] : []),
-                        ]}
-                        active={geoMetric}
-                        onChange={setGeoMetric}
-                      />
-                    </>
-                  ) : (
-                    <div style={{ color: "#9CA3AF", fontSize: "13px", padding: "12px 0" }}>No country data</div>
-                  )}
-                </div>
-
-                {/* Cities */}
-                <div>
-                  <div style={{ fontSize: "12px", fontWeight: 600, color: "#6B7280", marginBottom: "8px", textTransform: "uppercase", letterSpacing: "0.5px" }}>
-                    Top Cities
-                  </div>
-                  {activeGeoCities.length > 0 ? (
-                    <HBarChart
-                      items={activeGeoCities.map((c: any) => ({
-                        label: c.label.length > 12 ? c.label.slice(0, 11) + "…" : c.label,
-                        value: c.customers,
-                        subValue: geoMetric === "aov" && c.orders > 0 ? `${cs}${Math.round(c.revenue / c.orders)} AOV` : `${cs}${Math.round(c.revenue / 1000)}k`,
-                      }))}
-                      total={activeGeoTotal}
-                      colorFn={(i) => ["#0EA5E9", "#38BDF8", "#7DD3FC", "#BAE6FD", "#E0F2FE", "#F0F9FF"][i] || "#BAE6FD"}
-                      formatValue={(v) => v.toLocaleString()}
-                    />
-                  ) : (
-                    <div style={{ color: "#9CA3AF", fontSize: "13px", padding: "12px 0" }}>No city data</div>
-                  )}
-                </div>
-              </div>
             </BlockStack>
           </Card>
           )},
