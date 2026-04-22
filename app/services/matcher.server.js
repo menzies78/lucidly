@@ -1299,16 +1299,41 @@ export async function runFillGaps(shopDomain, lookbackDays = 30) {
       const naiveNeeded = ad.totalConversions - alreadyMatched;
       let neededConversions = Math.max(placeholderCount, naiveNeeded);
       const metaRevenue = ad.totalConversionValue;
-      // Compute remaining revenue as total minus already-matched — NOT a proportional
-      // share. Different hour slots can have very different values, so averaging
-      // produces a wrong target that the solver can't match.
-      const matchedRevenue = existingMatchedForAd.reduce((s, a) => s + (a.metaConversionValue || 0), 0);
-      let remainingRevenue = Math.max(0, metaRevenue - matchedRevenue);
 
       if (neededConversions <= 0) continue;
 
       const slots = ad.slots.sort((a, b) => a.hour - b.hour);
       const slotCaps = slots.map(s => Math.max(0, s.cap));
+
+      // Decrement slotCaps for each existing match by locating which slot
+      // its createdAt falls into. This gives a TRUE per-slot remainder —
+      // the target becomes the sum of Meta's original per-slot values for
+      // slots that aren't yet filled, rather than (metaRevenue - sumStored).
+      // The aggregate subtraction drifts whenever stored metaConversionValue
+      // diverges slightly from Meta's source slot value (rounding, per-slot
+      // averaging used in other code paths). On single-slot residuals
+      // (R=1) that drift — often ~1% — pushes the target outside the
+      // shop's matchingTolerance and leaves the slot permanently unfilled.
+      const dayOrderById = new Map(dayOrders.map(o => [o.shopifyOrderId, o]));
+      for (const existingMatch of existingMatchedForAd) {
+        const order = dayOrderById.get(existingMatch.shopifyOrderId);
+        if (!order) continue;
+        const orderMinute = dateToMinute(order.createdAt);
+        for (let i = 0; i < slots.length; i++) {
+          if (slotCaps[i] > 0 && minuteInRange(orderMinute, slots[i].start, slots[i].end)) {
+            slotCaps[i] -= 1;
+            break;
+          }
+        }
+      }
+
+      let remainingRevenue = 0;
+      for (let i = 0; i < slots.length; i++) {
+        if (slotCaps[i] <= 0) continue;
+        const perSlotValue = slots[i].cap > 0 ? slots[i].slotValue / slots[i].cap : 0;
+        remainingRevenue += perSlotValue * slotCaps[i];
+      }
+      remainingRevenue = Math.max(0, Math.round(remainingRevenue * 100) / 100);
 
       const candidates = [];
       for (const order of dayOrders) {
