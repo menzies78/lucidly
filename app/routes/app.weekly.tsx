@@ -103,11 +103,11 @@ export const loader = async ({ request }) => {
   const [orders, prevOrders, insights, prevInsights, breakdowns, allAttrs] = await Promise.all([
     queryCached(cacheKey("orders"), DEFAULT_TTL, () => db.order.findMany({
       where: { shopDomain, isOnlineStore: true, createdAt: { gte: monday, lte: sunday } },
-      select: { shopifyOrderId: true, shopifyCustomerId: true, frozenTotalPrice: true, createdAt: true, country: true, countryCode: true, lineItems: true, utmConfirmedMeta: true, metaAdId: true, metaAdName: true, metaCampaignName: true, metaAdSetName: true },
+      select: { shopifyOrderId: true, shopifyCustomerId: true, frozenTotalPrice: true, createdAt: true, country: true, countryCode: true, lineItems: true, utmConfirmedMeta: true, metaAdId: true, metaAdName: true, metaCampaignName: true, metaAdSetName: true, customerOrderCountAtPurchase: true },
     })),
     queryCached(cacheKey("prevOrders"), DEFAULT_TTL, () => db.order.findMany({
       where: { shopDomain, isOnlineStore: true, createdAt: { gte: prevMonday, lte: prevSunday } },
-      select: { shopifyOrderId: true, shopifyCustomerId: true, frozenTotalPrice: true, createdAt: true, country: true, countryCode: true, lineItems: true, utmConfirmedMeta: true, metaAdId: true, metaAdName: true, metaCampaignName: true, metaAdSetName: true },
+      select: { shopifyOrderId: true, shopifyCustomerId: true, frozenTotalPrice: true, createdAt: true, country: true, countryCode: true, lineItems: true, utmConfirmedMeta: true, metaAdId: true, metaAdName: true, metaCampaignName: true, metaAdSetName: true, customerOrderCountAtPurchase: true },
     })),
     queryCached(cacheKey("insights"), DEFAULT_TTL, () => db.metaInsight.findMany({
       where: { shopDomain, date: { gte: monday, lte: sunday } },
@@ -177,9 +177,12 @@ export const loader = async ({ request }) => {
     if (metaAcquiredCustomers.has(o.shopifyCustomerId)) continue;
     const customer = customerMap.get(o.shopifyCustomerId);
     if (!customer) continue;
-    const custFirstDate = customer.firstOrderDate ? shopLocalDayKey(tz, customer.firstOrderDate) : "";
-    const orderDate = shopLocalDayKey(tz, o.createdAt);
-    if (custFirstDate === orderDate) {
+    // Prefer Shopify's per-order count (ground truth) — date-matching
+    // misclassified same-day repeats as "first" orders.
+    const isFirst = o.customerOrderCountAtPurchase != null
+      ? o.customerOrderCountAtPurchase === 1
+      : shopLocalDayKey(tz, o.createdAt) === (customer.firstOrderDate ? shopLocalDayKey(tz, customer.firstOrderDate) : "");
+    if (isFirst) {
       metaAcquiredCustomers.add(o.shopifyCustomerId);
     }
   }
@@ -209,7 +212,7 @@ export const loader = async ({ request }) => {
   });
 
   // ── Helper: classify an order ──
-  function classifyOrder(order: { shopifyCustomerId: string | null; createdAt: Date }, attr: { isNewCustomer?: boolean | null } | undefined): "new" | "repeat" | "retargeted" | "organic" {
+  function classifyOrder(order: { shopifyCustomerId: string | null; createdAt: Date; customerOrderCountAtPurchase?: number | null }, attr: { isNewCustomer?: boolean | null } | undefined): "new" | "repeat" | "retargeted" | "organic" {
     if (!attr) return "organic";
     const custId = order.shopifyCustomerId;
     if (!custId) return "new";
@@ -217,9 +220,10 @@ export const loader = async ({ request }) => {
     if (!customer) return "new";
     const isMetaAcquired = metaAcquiredCustomers.has(custId);
     if (isMetaAcquired) {
-      const custFirstDate = customer.firstOrderDate ? shopLocalDayKey(tz, customer.firstOrderDate) : "";
-      const orderDate = shopLocalDayKey(tz, order.createdAt);
-      return custFirstDate === orderDate ? "new" : "repeat";
+      const isFirst = order.customerOrderCountAtPurchase != null
+        ? order.customerOrderCountAtPurchase === 1
+        : shopLocalDayKey(tz, order.createdAt) === (customer.firstOrderDate ? shopLocalDayKey(tz, customer.firstOrderDate) : "");
+      return isFirst ? "new" : "repeat";
     }
     return "retargeted";
   }

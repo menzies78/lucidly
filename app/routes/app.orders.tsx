@@ -146,10 +146,13 @@ export const loader = async ({ request }) => {
     if (custId && customer) {
       const isMetaAcquired = metaAcquiredCustomers.has(custId);
       if (isMetaAcquired) {
-        const custFirstDate = customer.firstOrderDate
-          ? shopLocalDayKey(tz, customer.firstOrderDate) : "";
-        const orderDate = shopLocalDayKey(tz, order.createdAt);
-        tag = custFirstDate === orderDate ? "Meta New" : "Meta Repeat";
+        // Use Shopify's per-order count (ground truth) rather than comparing
+        // the order's shop-local date to the customer's firstOrderDate — two
+        // orders placed on the same day would otherwise both tag as Meta New.
+        const isFirst = order.customerOrderCountAtPurchase != null
+          ? order.customerOrderCountAtPurchase === 1
+          : shopLocalDayKey(tz, order.createdAt) === (customer.firstOrderDate ? shopLocalDayKey(tz, customer.firstOrderDate) : "");
+        tag = isFirst ? "Meta New" : "Meta Repeat";
       } else {
         tag = "Meta Retargeted";
       }
@@ -224,10 +227,10 @@ export const loader = async ({ request }) => {
     if (custId && customer) {
       const isMetaAcquired = metaAcquiredCustomers.has(custId);
       if (isMetaAcquired) {
-        const custFirstDate = customer.firstOrderDate
-          ? shopLocalDayKey(tz, customer.firstOrderDate) : "";
-        const orderDate = shopLocalDayKey(tz, order.createdAt);
-        tag = custFirstDate === orderDate ? "Meta Unmatched New" : "Meta Unmatched Repeat";
+        const isFirst = order.customerOrderCountAtPurchase != null
+          ? order.customerOrderCountAtPurchase === 1
+          : shopLocalDayKey(tz, order.createdAt) === (customer.firstOrderDate ? shopLocalDayKey(tz, customer.firstOrderDate) : "");
+        tag = isFirst ? "Meta Unmatched New" : "Meta Unmatched Repeat";
       } else {
         tag = "Meta Unmatched Retargeted";
       }
@@ -277,10 +280,10 @@ export const loader = async ({ request }) => {
     let tag = isPOS ? "Non-Meta POS" : "Non-Meta";
 
     if (custId && metaAcquiredCustomers.has(custId) && customer) {
-      const custFirstDate = customer.firstOrderDate
-        ? shopLocalDayKey(tz, customer.firstOrderDate) : "";
-      const orderDate = shopLocalDayKey(tz, order.createdAt);
-      if (orderDate !== custFirstDate) {
+      const isFirst = order.customerOrderCountAtPurchase != null
+        ? order.customerOrderCountAtPurchase === 1
+        : shopLocalDayKey(tz, order.createdAt) === (customer.firstOrderDate ? shopLocalDayKey(tz, customer.firstOrderDate) : "");
+      if (!isFirst) {
         tag = "Meta Repeat";
       }
     }

@@ -54,9 +54,13 @@ function tagOrder(order, attrByOrderId, metaAcquiredCustomers, customerFirstOrde
   if (custId && customerFirstOrderMap[custId]) {
     const isMetaAcquired = metaAcquiredCustomers.has(custId);
     if (isMetaAcquired) {
-      const custFirstDate = customerFirstOrderMap[custId];
-      const orderDate = shopLocalDayKey(tz, order.createdAt);
-      return custFirstDate === orderDate ? "metaNew" : "metaRepeat";
+      // Shopify per-order count is the ground truth. Falling back to a
+      // date comparison against firstOrderDate misclassifies same-day
+      // repeat orders as metaNew.
+      const isFirst = order.customerOrderCountAtPurchase != null
+        ? order.customerOrderCountAtPurchase === 1
+        : customerFirstOrderMap[custId] === shopLocalDayKey(tz, order.createdAt);
+      return isFirst ? "metaNew" : "metaRepeat";
     }
     return "metaRetargeted";
   }
