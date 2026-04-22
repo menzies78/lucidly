@@ -1263,13 +1263,27 @@ export async function runFillGaps(shopDomain, lookbackDays = 30) {
       // Check if matched attributions already exist for this ad on this day
       // by seeing if any order on this day is already attributed to this ad
       const dayOrderIds = new Set(dayOrders.map(o => o.shopifyOrderId));
-      const existingMatchedForAd = await db.attribution.findMany({
+      const existingMatchedForAdRaw = await db.attribution.findMany({
         where: {
           shopDomain,
           metaAdId: ad.adId,
           confidence: { gt: 0 },
           shopifyOrderId: { in: [...dayOrderIds] },
         },
+      });
+      // Prev-day padding pulls orders from Apr-19 shop-local into Apr-20's
+      // dayOrderIds so we can catch Meta reporting lag into the next day's
+      // hour-0 slot. But an already-matched attribution on a padding order
+      // whose createdAt falls in *no* slot for this ad-day belongs to a
+      // different day's conversions entirely — counting it here would
+      // wrongly satisfy the quota and short-circuit Fill Gaps. Filter those
+      // out before the quota check.
+      const dayOrderByIdLookup = new Map(dayOrders.map(o => [o.shopifyOrderId, o]));
+      const existingMatchedForAd = existingMatchedForAdRaw.filter(a => {
+        const order = dayOrderByIdLookup.get(a.shopifyOrderId);
+        if (!order) return false;
+        const minute = dateToMinute(order.createdAt);
+        return ad.slots.some(s => minuteInRange(minute, s.start, s.end));
       });
 
       // Count unmatched placeholders for this ad on this day — each one is a
@@ -1319,9 +1333,8 @@ export async function runFillGaps(shopDomain, lookbackDays = 30) {
       // averaging used in other code paths). On single-slot residuals
       // (R=1) that drift — often ~1% — pushes the target outside the
       // shop's matchingTolerance and leaves the slot permanently unfilled.
-      const dayOrderById = new Map(dayOrders.map(o => [o.shopifyOrderId, o]));
       for (const existingMatch of existingMatchedForAd) {
-        const order = dayOrderById.get(existingMatch.shopifyOrderId);
+        const order = dayOrderByIdLookup.get(existingMatch.shopifyOrderId);
         if (!order) continue;
         const orderMinute = dateToMinute(order.createdAt);
         for (let i = 0; i < slots.length; i++) {
