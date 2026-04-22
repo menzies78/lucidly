@@ -502,7 +502,97 @@ export const loader = async ({ request }) => {
   const newDemoConversions = newMetaAttrsWithDemo.length;
   const newDemoExactCount = 0;
 
-  // Geography from cache blob — normalize to component-expected shape
+  // Date-scoped geography — computed at loader time from orders placed in
+  // the selected range, then joined to Attribution to classify each order
+  // as organic / allMeta / metaNew. Replaces the all-time geoBlob that
+  // previously fed this section (blob is left in place for other consumers
+  // but bypassed here so the tile + summary respond to the date picker).
+  const geoInRange = await queryCached(
+    `${shopDomain}:customerGeoInRange:${dateFromStr}:${dateToStr}`,
+    DEFAULT_TTL,
+    async () => {
+      const orders = await db.order.findMany({
+        where: {
+          shopDomain,
+          isOnlineStore: true,
+          createdAt: { gte: fromDate, lte: toDate },
+        },
+        select: {
+          shopifyOrderId: true, shopifyCustomerId: true,
+          country: true, city: true,
+          frozenTotalPrice: true, totalRefunded: true,
+        },
+      });
+      if (orders.length === 0) {
+        return {
+          all: { countries: [], cities: [], count: 0 },
+          allMeta: { countries: [], cities: [], count: 0 },
+          metaNew: { countries: [], cities: [], count: 0 },
+        };
+      }
+      const orderIds = orders.map(o => o.shopifyOrderId);
+      const attrs = await db.attribution.findMany({
+        where: { shopDomain, shopifyOrderId: { in: orderIds }, confidence: { gt: 0 } },
+        select: { shopifyOrderId: true, isNewCustomer: true },
+      });
+      const metaByOrderId = new Map<string, { isNew: boolean }>();
+      for (const a of attrs) metaByOrderId.set(a.shopifyOrderId, { isNew: !!a.isNewCustomer });
+
+      type Bucket = { customers: Set<string>; revenue: number; orders: number };
+      const mkAgg = () => ({} as Record<string, Bucket>);
+      const add = (agg: Record<string, Bucket>, label: string | null, cust: string | null, net: number) => {
+        if (!label) return;
+        if (!agg[label]) agg[label] = { customers: new Set(), revenue: 0, orders: 0 };
+        if (cust) agg[label].customers.add(cust);
+        agg[label].revenue += net;
+        agg[label].orders += 1;
+      };
+
+      const aCountry = mkAgg(), aCity = mkAgg();
+      const mCountry = mkAgg(), mCity = mkAgg();
+      const nCountry = mkAgg(), nCity = mkAgg();
+      const allCusts = new Set<string>();
+      const metaCusts = new Set<string>();
+      const newMetaCusts = new Set<string>();
+
+      for (const o of orders) {
+        const net = Math.max(0, (o.frozenTotalPrice || 0) - (o.totalRefunded || 0));
+        const cust = o.shopifyCustomerId || null;
+        if (cust) allCusts.add(cust);
+        add(aCountry, o.country || null, cust, net);
+        add(aCity, o.city || null, cust, net);
+        const meta = metaByOrderId.get(o.shopifyOrderId);
+        if (meta) {
+          if (cust) metaCusts.add(cust);
+          add(mCountry, o.country || null, cust, net);
+          add(mCity, o.city || null, cust, net);
+          if (meta.isNew) {
+            if (cust) newMetaCusts.add(cust);
+            add(nCountry, o.country || null, cust, net);
+            add(nCity, o.city || null, cust, net);
+          }
+        }
+      }
+
+      const toList = (agg: Record<string, Bucket>) => Object.entries(agg)
+        .map(([label, v]) => ({
+          label,
+          customers: v.customers.size,
+          revenue: Math.round(v.revenue * 100) / 100,
+          orders: v.orders,
+          spend: 0,
+        }))
+        .sort((a, b) => b.customers - a.customers)
+        .slice(0, 50);
+
+      return {
+        all: { countries: toList(aCountry), cities: toList(aCity), count: allCusts.size },
+        allMeta: { countries: toList(mCountry), cities: toList(mCity), count: metaCusts.size },
+        metaNew: { countries: toList(nCountry), cities: toList(nCity), count: newMetaCusts.size },
+      };
+    },
+  );
+
   const normalizeGeo = (arr: any[]) => (arr || []).map((item: any) => ({
     label: item.label || item.name || "",
     customers: item.customers || 0,
@@ -511,15 +601,15 @@ export const loader = async ({ request }) => {
     spend: item.spend || 0,
     countryCode: item.countryCode,
   })).filter((x: any) => x.label).slice(0, 6);
-  const topCountries = normalizeGeo(geoBlob?.countries?.all);
-  const topCities = normalizeGeo(geoBlob?.cities?.all);
-  const allMetaTopCountries = normalizeGeo(geoBlob?.countries?.allMeta);
-  const allMetaTopCities = normalizeGeo(geoBlob?.cities?.allMeta);
-  const metaNewTopCountries = normalizeGeo(geoBlob?.countries?.metaNew);
-  const metaNewTopCities = normalizeGeo(geoBlob?.cities?.metaNew);
-  const allGeoCount = geoBlob?.counts?.all || 0;
-  const allMetaGeoCount = geoBlob?.counts?.allMeta || 0;
-  const metaNewGeoCount = geoBlob?.counts?.metaNew || 0;
+  const topCountries = normalizeGeo(geoInRange.all.countries);
+  const topCities = normalizeGeo(geoInRange.all.cities);
+  const allMetaTopCountries = normalizeGeo(geoInRange.allMeta.countries);
+  const allMetaTopCities = normalizeGeo(geoInRange.allMeta.cities);
+  const metaNewTopCountries = normalizeGeo(geoInRange.metaNew.countries);
+  const metaNewTopCities = normalizeGeo(geoInRange.metaNew.cities);
+  const allGeoCount = geoInRange.all.count;
+  const allMetaGeoCount = geoInRange.allMeta.count;
+  const metaNewGeoCount = geoInRange.metaNew.count;
 
   // Single/Repeat splits — derive from customers
   let metaNewSingleCount = 0, metaNewSingleOrders = 0, metaNewSingleRevenue = 0;
@@ -1741,22 +1831,32 @@ export default function Customers() {
       });
     }
 
-    // 4) Payback: first-order AOV vs CAC
-    if (newCustomerCPA > 0 && paybackOrders > 0) {
-      // paybackOrders = CPA / avgFirstOrderValue (how many orders to recover CAC)
-      let tone: SummaryTone = "neutral";
-      let msg: React.ReactNode;
-      if (paybackOrders <= 1) {
-        tone = "positive";
-        msg = <>First order covers CAC ({(aovCpaRatio || 0).toFixed(2)}× AOV:CAC ratio).</>;
-      } else if (paybackOrders <= 2) {
-        tone = "neutral";
-        msg = <>Pays back in ~{paybackOrders.toFixed(1)} orders (AOV:CAC {(aovCpaRatio || 0).toFixed(2)}×).</>;
-      } else {
-        tone = "warning";
-        msg = <>Pays back in ~{paybackOrders.toFixed(1)} orders — CAC is outpacing first-order AOV.</>;
+    // 4) Payback: first-order AOV vs CAC. Fall back to all-time new-Meta
+    // cohort values when the selected range has no Meta spend logged, so
+    // short date ranges (that legitimately have 0 spend) still surface
+    // this bullet rather than silently dropping it.
+    {
+      const inRangeOk = newCustomerCPA > 0 && paybackOrders > 0;
+      const payback = inRangeOk ? paybackOrders : mnPaybackOrders;
+      const effectiveRatio = inRangeOk
+        ? aovCpaRatio
+        : (mnCPA > 0 && mnPaybackOrders > 0 ? 1 / mnPaybackOrders : 0);
+      const scope = inRangeOk ? "" : " (all-time)";
+      if (payback > 0) {
+        let tone: SummaryTone = "neutral";
+        let msg: React.ReactNode;
+        if (payback <= 1) {
+          tone = "positive";
+          msg = <>First order covers CAC ({(effectiveRatio || 0).toFixed(2)}× AOV:CAC ratio{scope}).</>;
+        } else if (payback <= 2) {
+          tone = "neutral";
+          msg = <>Pays back in ~{payback.toFixed(1)} orders (AOV:CAC {(effectiveRatio || 0).toFixed(2)}×{scope}).</>;
+        } else {
+          tone = "warning";
+          msg = <>Pays back in ~{payback.toFixed(1)} orders{scope} — CAC is outpacing first-order AOV.</>;
+        }
+        out.push({ tone, text: <><strong>Payback:</strong> {msg}</> });
       }
-      out.push({ tone, text: <><strong>Payback:</strong> {msg}</> });
     }
 
     // 5) Repeat rate: Meta vs Organic
@@ -1773,14 +1873,17 @@ export default function Customers() {
       });
     }
 
-    // 6) LTV:CAC at the longest mature benchmark window
+    // 6) LTV:CAC at the longest mature benchmark window. Falls back to
+    // all-time new-Meta CAC (mnCPA) when the range's CPA is 0.
     {
       const windows = (ltvBenchmark?.meta?.windows || []) as any[];
       const hero = windows.length > 0 ? windows[windows.length - 1] : null;
       const heroLtv = hero?.avgLtv || 0;
       const heroWindow = hero?.window || 0;
-      const ratio = newCustomerCPA > 0 && heroLtv > 0
-        ? Math.round((heroLtv / newCustomerCPA) * 100) / 100
+      const cac = newCustomerCPA > 0 ? newCustomerCPA : mnCPA;
+      const scope = newCustomerCPA > 0 ? "" : " all-time";
+      const ratio = cac > 0 && heroLtv > 0
+        ? Math.round((heroLtv / cac) * 100) / 100
         : 0;
       if (ratio > 0) {
         const label = heroWindow >= 365 ? `${Math.round(heroWindow / 365)}yr` : `${heroWindow}d`;
@@ -1790,7 +1893,7 @@ export default function Customers() {
         else if (ratio < 2) { tone = "warning"; tail = " — below 2× threshold."; }
         out.push({
           tone,
-          text: <><strong>LTV:CAC {ratio.toFixed(2)}×</strong> at {label} ({cs}{Math.round(heroLtv).toLocaleString()} LTV vs {cs}{newCustomerCPA.toLocaleString()} CAC){tail}</>,
+          text: <><strong>LTV:CAC {ratio.toFixed(2)}×</strong> at {label} ({cs}{Math.round(heroLtv).toLocaleString()} LTV vs {cs}{Math.round(cac).toLocaleString()}{scope} CAC){tail}</>,
         });
       }
     }
@@ -1818,6 +1921,7 @@ export default function Customers() {
     metaNewTopCountries, metaNewTopCities, metaNewGeoCount,
     metaCount, prevMetaCount, newCustomerCPA, prevNewCustomerCPA,
     paybackOrders, aovCpaRatio,
+    mnCPA, mnPaybackOrders,
     metaRepeatRate, organicRepeatRate,
     ltvBenchmark,
     matchedMetaOrdersInRange, unmatchedConversionsWithValue,
