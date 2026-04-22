@@ -17,6 +17,7 @@ import createGlobe from "cobe";
 import { getCachedInsights, computeDataHash, generateInsights } from "../services/aiAnalysis.server";
 import { setProgress, failProgress, completeProgress } from "../services/progress.server";
 import AiInsightsPanel from "../components/AiInsightsPanel";
+import PageSummary, { type SummaryBullet } from "../components/PageSummary";
 
 // ═══════════════════════════════════════════════════════════════
 // LOADER
@@ -975,6 +976,85 @@ export default function GeoPerformance() {
     return { topNewCust, bestROAS, cheapestCPA, topDrain, topDrainROAS, mismatchCountries, mismatchSpend };
   }, [overallRows, campaignEntities]);
 
+  // ── Page summary bullets ──
+  // At-a-glance country-level read-out for the selected range. All values
+  // come from the same overallRows / quickStats that power the tiles below,
+  // so the summary and tiles stay in lock-step.
+  const summaryBullets: SummaryBullet[] = useMemo(() => {
+    const out: SummaryBullet[] = [];
+
+    if (quickStats.topNewCust) {
+      out.push({
+        tone: "positive",
+        text: (
+          <>
+            <strong>Top new-customer country:</strong> {countryName(quickStats.topNewCust.country)} — {quickStats.topNewCust.newCustomers} new customers ({fmtCompact(quickStats.topNewCust.newCustomerRevenue, cs)} rev)
+          </>
+        ),
+      });
+    }
+
+    if (quickStats.bestROAS) {
+      out.push({
+        tone: "positive",
+        text: (
+          <>
+            <strong>Best Meta ROAS:</strong> {countryName(quickStats.bestROAS.country)} — {quickStats.bestROAS.blendedROAS}x ({quickStats.bestROAS.attributedOrders} orders)
+          </>
+        ),
+      });
+    }
+
+    if (quickStats.cheapestCPA) {
+      out.push({
+        tone: "positive",
+        text: (
+          <>
+            <strong>Cheapest Meta CPA:</strong> {countryName(quickStats.cheapestCPA.country)} — {cs}{Math.round(quickStats.cheapestCPA.cpa)} per order
+          </>
+        ),
+      });
+    }
+
+    if (quickStats.topDrain) {
+      out.push({
+        tone: "negative",
+        text: (
+          <>
+            <strong>Top spend drain:</strong> {quickStats.topDrain.entityName} — {fmtCompact(quickStats.topDrain.totalSpend, cs)} spent at {quickStats.topDrainROAS}x ROAS
+          </>
+        ),
+      });
+    }
+
+    if (quickStats.mismatchCountries.length > 0) {
+      out.push({
+        tone: "warning",
+        text: (
+          <>
+            <strong>Geo mismatch:</strong> {quickStats.mismatchCountries.length} {quickStats.mismatchCountries.length === 1 ? "country" : "countries"} with Meta spend but zero conversions — {fmtCompact(quickStats.mismatchSpend, cs)} at risk
+          </>
+        ),
+      });
+    }
+
+    // Country concentration — how top-heavy is the Meta spend?
+    const spendRows = [...overallRows].filter((r: any) => r.spend > 0).sort((a: any, b: any) => b.spend - a.spend);
+    if (spendRows.length > 0) {
+      const top = spendRows[0];
+      out.push({
+        tone: "neutral",
+        text: (
+          <>
+            <strong>Spend concentration:</strong> {countryName(top.country)} receives {top.spendPct}% of Meta spend
+          </>
+        ),
+      });
+    }
+
+    return out;
+  }, [quickStats, overallRows, cs]);
+
   const customerFilterToolbar = (
     <Popover
       active={customerFilterOpen}
@@ -1025,6 +1105,7 @@ export default function GeoPerformance() {
             isStale={aiIsStale}
             currencySymbol={cs}
           />
+          <PageSummary bullets={summaryBullets} columns={2} />
 
           {/* ═══ 0. QUICK-STAT TILES ═══ */}
           <TileGrid pageId="geo-v2" columns={4} tiles={[

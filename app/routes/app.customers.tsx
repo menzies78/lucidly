@@ -1605,11 +1605,6 @@ const layoutStyles = `
 .metric-link:hover { color: #6B7280; }
 .metric-link.active { color: #7C3AED; border-bottom-color: #7C3AED; font-weight: 700; }
 
-/* Top-of-page 50/50 row: Summary (left) + AI Insights (right) */
-.summary-ai-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: stretch; }
-.summary-ai-row > * { min-width: 0; }
-@media (max-width: 1100px) { .summary-ai-row { grid-template-columns: 1fr; } }
-
 /* Force paired tiles in the same row to render at the same height */
 [data-tile-id="customerBreakdown"],
 [data-tile-id="demographics"],
@@ -2147,16 +2142,14 @@ export default function Customers() {
       <style dangerouslySetInnerHTML={{ __html: layoutStyles }} />
       <ReportTabs>
       <BlockStack gap="500">
-        <div className="summary-ai-row">
-          <PageSummary bullets={summaryBullets} />
-          <AiInsightsPanel
-            pageKey="customers"
-            cachedInsights={aiCachedInsights}
-            generatedAt={aiGeneratedAt}
-            isStale={aiIsStale}
-            currencySymbol={cs}
-          />
-        </div>
+        <AiInsightsPanel
+          pageKey="customers"
+          cachedInsights={aiCachedInsights}
+          generatedAt={aiGeneratedAt}
+          isStale={aiIsStale}
+          currencySymbol={cs}
+        />
+        <PageSummary bullets={summaryBullets} columns={2} />
 
         {/* ═══ ALL TILES (drag/drop, show/hide) ═══ */}
         <TileGrid pageId="customers-v8" columns={4} tiles={[

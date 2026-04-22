@@ -10,6 +10,7 @@ import { usePageTheme } from "../components/PageTheme";
 import TileGrid from "../components/TileGrid";
 import type { TileDef } from "../components/TileGrid";
 import AiInsightsPanel from "../components/AiInsightsPanel";
+import PageSummary, { type SummaryBullet } from "../components/PageSummary";
 import SummaryTile from "../components/SummaryTile";
 import ChangesAnnotationStrip from "../components/ChangesAnnotationStrip";
 import EntityTimelineDrawer, { type EntityRef } from "../components/EntityTimelineDrawer";
@@ -2842,6 +2843,114 @@ export default function Campaigns() {
     zIndex: isActive ? 1 : 0,
   });
 
+  // ── Page summary bullets ──
+  // At-a-glance read-out of Meta spend efficiency for the selected range.
+  // Always computed off campaignRows so the values stay in sync with the
+  // Campaigns table footer, regardless of the active tab (campaign/adset/ad).
+  const summaryBullets: SummaryBullet[] = useMemo(() => {
+    const out: SummaryBullet[] = [];
+    const rows: any[] = (campaignRows as any[]) || [];
+    if (rows.length === 0) return out;
+
+    const totals = rows.reduce(
+      (acc, r) => {
+        acc.spend += r.spend || 0;
+        acc.attributedRevenue += r.attributedRevenue || 0;
+        acc.unverifiedRevenue += r.unverifiedRevenue || 0;
+        acc.attributedOrders += r.attributedOrders || 0;
+        acc.newCustomerOrders += r.newCustomerOrders || 0;
+        acc.newCustomerRevenue += r.newCustomerRevenue || 0;
+        return acc;
+      },
+      { spend: 0, attributedRevenue: 0, unverifiedRevenue: 0, attributedOrders: 0, newCustomerOrders: 0, newCustomerRevenue: 0 },
+    );
+
+    const blendedROAS = totals.spend > 0
+      ? Math.round(((totals.attributedRevenue + totals.unverifiedRevenue) / totals.spend) * 100) / 100
+      : 0;
+
+    if (totals.spend > 0) {
+      out.push({
+        tone: blendedROAS >= 1 ? "positive" : "negative",
+        text: (
+          <>
+            <strong>Meta spend:</strong> {cs}{Math.round(totals.spend).toLocaleString()} at {blendedROAS}x blended ROAS ({cs}{Math.round(totals.attributedRevenue + totals.unverifiedRevenue).toLocaleString()} total revenue)
+          </>
+        ),
+      });
+    }
+
+    if (totals.newCustomerOrders > 0) {
+      const cac = totals.spend > 0 ? Math.round(totals.spend / totals.newCustomerOrders) : null;
+      out.push({
+        tone: "neutral",
+        text: (
+          <>
+            <strong>New customers:</strong> {totals.newCustomerOrders.toLocaleString()} acquired via Meta{cac != null ? ` — ${cs}${cac} CAC` : ""}
+          </>
+        ),
+      });
+    }
+
+    const topSpender = [...rows].sort((a, b) => (b.spend || 0) - (a.spend || 0))[0];
+    if (topSpender) {
+      const roas = topSpender.spend > 0
+        ? Math.round(((topSpender.attributedRevenue + topSpender.unverifiedRevenue) / topSpender.spend) * 100) / 100
+        : 0;
+      out.push({
+        tone: "neutral",
+        text: (
+          <>
+            <strong>Biggest campaign:</strong> {topSpender.name || topSpender.campaignName || "—"} — {cs}{Math.round(topSpender.spend).toLocaleString()} at {roas}x ROAS
+          </>
+        ),
+      });
+    }
+
+    const topROAS = [...rows]
+      .filter((r) => (r.spend || 0) > 0 && (r.attributedOrders || 0) >= 5)
+      .sort((a, b) => (b.blendedROAS || 0) - (a.blendedROAS || 0))[0];
+    if (topROAS) {
+      out.push({
+        tone: "positive",
+        text: (
+          <>
+            <strong>Best ROAS:</strong> {topROAS.name || topROAS.campaignName || "—"} — {topROAS.blendedROAS}x on {cs}{Math.round(topROAS.spend).toLocaleString()}
+          </>
+        ),
+      });
+    }
+
+    const drains = rows
+      .filter((r) => (r.spend || 0) > 0 && (r.blendedROAS || 0) > 0 && r.blendedROAS < 1)
+      .sort((a, b) => (b.spend || 0) - (a.spend || 0));
+    const topDrain = drains[0];
+    if (topDrain) {
+      out.push({
+        tone: "negative",
+        text: (
+          <>
+            <strong>Biggest drain:</strong> {topDrain.name || topDrain.campaignName || "—"} — {cs}{Math.round(topDrain.spend).toLocaleString()} spent at {topDrain.blendedROAS}x ROAS
+          </>
+        ),
+      });
+    }
+
+    if (totals.attributedOrders > 0) {
+      const aov = totals.attributedRevenue > 0 ? Math.round(totals.attributedRevenue / totals.attributedOrders) : 0;
+      out.push({
+        tone: "neutral",
+        text: (
+          <>
+            <strong>Attributed orders:</strong> {totals.attributedOrders.toLocaleString()} matched via Meta — {cs}{aov} AOV
+          </>
+        ),
+      });
+    }
+
+    return out;
+  }, [campaignRows, cs]);
+
   return (
     <Page title="Ad Campaigns" fullWidth>
       <style dangerouslySetInnerHTML={{ __html: tileGridStyles }} />
@@ -2854,6 +2963,7 @@ export default function Campaigns() {
           isStale={aiIsStale}
           currencySymbol={cs}
         />
+        <PageSummary bullets={summaryBullets} columns={2} />
         {/* Breadcrumb */}
         {breadcrumbs.length > 0 && (
           <InlineStack gap="100" blockAlign="center">

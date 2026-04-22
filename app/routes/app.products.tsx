@@ -17,6 +17,7 @@ import type { ColumnDef } from "@tanstack/react-table";
 import { getCachedInsights, computeDataHash, generateInsights } from "../services/aiAnalysis.server";
 import { setProgress, failProgress, completeProgress } from "../services/progress.server";
 import AiInsightsPanel from "../components/AiInsightsPanel";
+import PageSummary, { type SummaryBullet } from "../components/PageSummary";
 
 // ── Variant stripping ──
 
@@ -1200,6 +1201,84 @@ export default function Products() {
     metaFirstPurchaseCount: rows.reduce((s, r) => s + r.metaFirstPurchaseCount, 0),
   }), [rows, cs]);
 
+  // ── Page summary bullets ──
+  // At-a-glance product read-out for the selected range, pulling from the
+  // same derived values that power the tiles below (topMetaProduct,
+  // topGatewayProduct, highestRefundProduct, etc.).
+  const summaryBullets: SummaryBullet[] = useMemo(() => {
+    const out: SummaryBullet[] = [];
+
+    if (topMetaProduct) {
+      out.push({
+        tone: "positive",
+        text: (
+          <>
+            <strong>Top Meta product:</strong> {topMetaProduct.product} — {cs}{Math.round(topMetaProduct.metaRevenue).toLocaleString()} rev across {topMetaProduct.metaOrders} Meta orders
+          </>
+        ),
+      });
+    }
+
+    if (topGatewayProduct) {
+      out.push({
+        tone: "positive",
+        text: (
+          <>
+            <strong>Top gateway product:</strong> {topGatewayProduct.product} — acquired {topGatewayProduct.metaFirstPurchaseCount} new Meta customers
+          </>
+        ),
+      });
+    }
+
+    if (highestRefundProduct) {
+      out.push({
+        tone: "negative",
+        text: (
+          <>
+            <strong>Highest refund rate:</strong> {highestRefundProduct.product} — {highestRefundProduct.refundRate}% ({highestRefundProduct.refundedOrders} of {highestRefundProduct.totalOrders} orders)
+          </>
+        ),
+      });
+    }
+
+    if (metaOrderCount > 0) {
+      out.push({
+        tone: "neutral",
+        text: (
+          <>
+            <strong>Meta basket:</strong> {metaAvgItemsPerBasket} items per order on average ({metaItemCount.toLocaleString()} items across {metaOrderCount.toLocaleString()} Meta orders)
+          </>
+        ),
+      });
+    }
+
+    const metaShare = (totalMetaRevenue + totalOrganicRevenue) > 0
+      ? Math.round((totalMetaRevenue / (totalMetaRevenue + totalOrganicRevenue)) * 100) : null;
+    if (metaShare != null) {
+      out.push({
+        tone: "neutral",
+        text: (
+          <>
+            <strong>Meta revenue share:</strong> {metaShare}% of product revenue ({cs}{Math.round(totalMetaRevenue).toLocaleString()} Meta vs {cs}{Math.round(totalOrganicRevenue).toLocaleString()} organic)
+          </>
+        ),
+      });
+    }
+
+    if (totalProductCount > 0) {
+      out.push({
+        tone: "neutral",
+        text: (
+          <>
+            <strong>Catalogue:</strong> {totalProductCount} distinct products sold in range
+          </>
+        ),
+      });
+    }
+
+    return out;
+  }, [topMetaProduct, topGatewayProduct, highestRefundProduct, metaOrderCount, metaItemCount, metaAvgItemsPerBasket, totalMetaRevenue, totalOrganicRevenue, totalProductCount, cs]);
+
   return (
     <Page title="Product Intelligence" fullWidth>
       <style dangerouslySetInnerHTML={{ __html: pageStyles }} />
@@ -1213,6 +1292,7 @@ export default function Products() {
           isStale={aiIsStale}
           currencySymbol={cs}
         />
+        <PageSummary bullets={summaryBullets} columns={2} />
 
         {/* ── All tiles (drag/drop, show/hide) — everything except main table ── */}
         <TileGrid pageId="products" columns={4} tiles={[

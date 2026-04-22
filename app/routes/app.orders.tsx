@@ -6,6 +6,7 @@ import SummaryTile from "../components/SummaryTile";
 import React, { useState, useMemo, useRef, useEffect } from "react";
 import { type ColumnDef } from "@tanstack/react-table";
 import InteractiveTable from "../components/InteractiveTable";
+import PageSummary, { type SummaryBullet } from "../components/PageSummary";
 import { authenticate } from "../shopify.server";
 import db from "../db.server";
 import { parseDateRange } from "../utils/dateRange.server";
@@ -758,6 +759,86 @@ export default function Orders() {
   const fmtPrice = (v: number) => `${cs}${v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   const fmtCount = (v: number) => Math.round(v).toLocaleString();
 
+  // ── Page summary bullets ──
+  // At-a-glance read-out of the orders in the selected range, derived from
+  // the same loader totals that power the header tiles so the summary and
+  // tiles never disagree.
+  const summaryBullets: SummaryBullet[] = useMemo(() => {
+    const out: SummaryBullet[] = [];
+    if (rows.length === 0) return out;
+
+    const fmtMoney = (v: number) => `${cs}${Math.round(v).toLocaleString()}`;
+
+    out.push({
+      tone: "neutral",
+      text: (
+        <>
+          <strong>Orders in range:</strong> {totalOrders.toLocaleString()} orders worth {fmtMoney(totalRevenue)} ({fmtMoney(aov)} AOV)
+        </>
+      ),
+    });
+
+    const metaPct = totalOrders > 0 ? Math.round((metaAttributed / totalOrders) * 100) : 0;
+    out.push({
+      tone: metaPct >= 25 ? "positive" : "neutral",
+      text: (
+        <>
+          <strong>Meta attributed:</strong> {metaAttributed.toLocaleString()} orders ({metaPct}% of total) — {fmtMoney(metaRevenue)}
+        </>
+      ),
+    });
+
+    if (onlineOrders > 0) {
+      out.push({
+        tone: matchRate >= 40 ? "positive" : "warning",
+        text: (
+          <>
+            <strong>Match rate:</strong> {matchRate}% of online orders ({metaAttributed.toLocaleString()} of {onlineOrders.toLocaleString()})
+          </>
+        ),
+      });
+    }
+
+    if (metaNew > 0 || metaRepeat > 0 || metaRetargeted > 0) {
+      out.push({
+        tone: "neutral",
+        text: (
+          <>
+            <strong>Meta mix:</strong> {metaNew.toLocaleString()} new · {metaRepeat.toLocaleString()} repeat · {metaRetargeted.toLocaleString()} retargeted
+          </>
+        ),
+      });
+    }
+
+    if (unattributed > 0) {
+      const unattrRev = rows.filter((r: any) => r.tag === "Unattributed").reduce((s: number, r: any) => s + (r.revenue || 0), 0);
+      out.push({
+        tone: "warning",
+        text: (
+          <>
+            <strong>Unattributed Meta conversions:</strong> {unattributed.toLocaleString()} worth {fmtMoney(unattrRev)} — Meta reports these but we couldn't match them to a Shopify order
+          </>
+        ),
+      });
+    }
+
+    const refundedRows = rows.filter((r: any) => (r.totalRefunded || 0) > 0);
+    if (refundedRows.length > 0) {
+      const refunded = refundedRows.reduce((s: number, r: any) => s + (r.totalRefunded || 0), 0);
+      const refundPct = totalOrders > 0 ? Math.round((refundedRows.length / totalOrders) * 100) : 0;
+      out.push({
+        tone: refundPct >= 10 ? "negative" : "neutral",
+        text: (
+          <>
+            <strong>Refunds:</strong> {refundedRows.length.toLocaleString()} orders ({refundPct}%) — {fmtMoney(refunded)} returned
+          </>
+        ),
+      });
+    }
+
+    return out;
+  }, [rows, totalOrders, totalRevenue, aov, metaAttributed, metaRevenue, onlineOrders, matchRate, metaNew, metaRepeat, metaRetargeted, unattributed, cs]);
+
   const footerRow = useMemo(() => {
     if (rows.length === 0) return undefined;
     const sum = (key: string) => rows.reduce((s, r) => s + (r[key] || 0), 0);
@@ -788,6 +869,8 @@ export default function Orders() {
     <Page title="Order Explorer" fullWidth>
       <ReportTabs>
       <BlockStack gap="500">
+
+        <PageSummary bullets={summaryBullets} columns={2} />
 
         <Card>
           <BlockStack gap="300">
