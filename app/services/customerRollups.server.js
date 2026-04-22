@@ -634,13 +634,18 @@ export async function rebuildCustomerRollups(shopDomain) {
   const tz = shopRow?.shopifyTimezone || "UTC";
 
   const [orders, customers] = await Promise.all([
+    // Load both online-store AND POS orders. POS orders are only counted
+    // below when a Meta-acquired customer is making a repeat purchase —
+    // Order Explorer tags these as "Meta Repeat". Every other POS order
+    // is dropped (no Meta relationship).
     db.order.findMany({
-      where: { shopDomain, isOnlineStore: true },
+      where: { shopDomain },
       orderBy: { createdAt: "asc" },
       select: {
         shopifyOrderId: true, shopifyCustomerId: true, createdAt: true,
         frozenTotalPrice: true, totalRefunded: true,
         customerOrderCountAtPurchase: true,
+        isOnlineStore: true,
       },
     }),
     db.customer.findMany({
@@ -684,7 +689,16 @@ export async function rebuildCustomerRollups(shopDomain) {
     const refunded = order.totalRefunded || 0;
 
     let orderSegment;
-    if (custSegment === "metaNew") {
+    if (!order.isOnlineStore) {
+      // POS / non-online orders only count when a Meta-acquired customer
+      // is making a repeat purchase (Order Explorer's "Meta Repeat" tag).
+      // Every other POS order has no Meta relationship — drop it.
+      if (custSegment === "metaNew" && !isFirstPurchase) {
+        orderSegment = "metaRepeat";
+      } else {
+        continue;
+      }
+    } else if (custSegment === "metaNew") {
       orderSegment = isFirstPurchase ? "metaNew" : "metaRepeat";
     } else {
       orderSegment = custSegment;

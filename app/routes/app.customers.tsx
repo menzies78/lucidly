@@ -732,7 +732,13 @@ export const loader = async ({ request }) => {
     async () => {
       const empty = { metaNew: { customers: 0, revenue: 0 }, metaRepeat: { customers: 0, revenue: 0 }, metaRetargeted: { customers: 0, revenue: 0 } };
       const orders = await db.order.findMany({
-        where: { shopDomain, createdAt: { gte: fromDate, lte: toDate } },
+        // Exclude £0 orders (staff / replacement / warranty) — same rule
+        // Order Explorer + the rollup apply so customer counts agree.
+        where: {
+          shopDomain,
+          createdAt: { gte: fromDate, lte: toDate },
+          frozenTotalPrice: { gt: 0 },
+        },
         select: {
           shopifyOrderId: true, shopifyCustomerId: true,
           frozenTotalPrice: true, totalRefunded: true,

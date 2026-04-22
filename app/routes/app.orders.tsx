@@ -31,7 +31,11 @@ export const loader = async ({ request }) => {
   const [orders, customers] = await Promise.all([
     queryCached(`${shopDomain}:ordersExplorer:${fromKey}:${toKey}`, DEFAULT_TTL, () =>
       db.order.findMany({
-        where: { shopDomain, createdAt: { gte: fromDate, lte: toDate } },
+        // £0 orders (staff / replacement / warranty) are excluded so the
+        // Order Explorer matches Meta-related tiles that already skip them.
+        // POS orders are kept — some are "Meta Repeat" (see 2c) and should
+        // still show up under the "All Meta" filter.
+        where: { shopDomain, createdAt: { gte: fromDate, lte: toDate }, frozenTotalPrice: { gt: 0 } },
         orderBy: { createdAt: "desc" },
       }),
     ),
@@ -192,6 +196,10 @@ export const loader = async ({ request }) => {
   // 2b: Unattributed Meta conversions (confidence = 0)
   for (const attr of attributions) {
     if (attr.confidence !== 0) continue;
+    // £0 unmatched Meta conversions (typically customer-service / replacement)
+    // aren't real sales — drop them so Order Explorer stays consistent with
+    // the other Meta tiles that only count value>0 conversions.
+    if ((attr.metaConversionValue || 0) <= 0) continue;
     if (tagFilter !== "all" && tagFilter !== "meta" && tagFilter !== "Unattributed") continue;
     if (campaignFilter !== "all" && attr.metaCampaignName !== campaignFilter) continue;
     const parts = attr.shopifyOrderId.split("_");
