@@ -1084,11 +1084,13 @@ export async function runFillGaps(shopDomain, lookbackDays = 30) {
     orderBy: { createdAt: "asc" },
   });
 
-  // Load all existing attributions for these orders
+  // Load all existing attributions for these orders. We also carry matchMethod
+  // and metaAdId so the statistical pick can decide whether to overwrite a
+  // UTM Layer 1 attribution (only allowed when the pick is unambiguous).
   const orderIds = allOrders.map(o => o.shopifyOrderId);
   const existingAttrs = await db.attribution.findMany({
     where: { shopDomain, shopifyOrderId: { in: orderIds } },
-    select: { shopifyOrderId: true, confidence: true },
+    select: { shopifyOrderId: true, confidence: true, matchMethod: true, metaAdId: true },
   });
   const attrByOrderId = new Map();
   for (const a of existingAttrs) attrByOrderId.set(a.shopifyOrderId, a);
@@ -1311,8 +1313,12 @@ export async function runFillGaps(shopDomain, lookbackDays = 30) {
       const candidates = [];
       for (const order of dayOrders) {
         if (usedOrders.has(order.id)) continue;
-        // Skip orders that already have ANY attribution
-        if (attrByOrderId.has(order.shopifyOrderId)) continue;
+        // Skip orders already claimed by a confident non-UTM attribution.
+        // UTM Layer 1 attributions remain eligible — a Layer 2 pick with
+        // rivalCount=0 is allowed to overwrite UTM last-click (handles
+        // view-through vs click-through divergence).
+        const existingAttr = attrByOrderId.get(order.shopifyOrderId);
+        if (existingAttr && existingAttr.confidence > 0 && existingAttr.matchMethod !== "utm") continue;
 
         const orderMinute = dateToMinute(order.createdAt);
         const orderTotal = revenueField === "subtotal_price"
@@ -1364,18 +1370,25 @@ export async function runFillGaps(shopDomain, lookbackDays = 30) {
             const utmMetaValue = candSlot
               ? Math.round((candSlot.slotValue / Math.max(1, candSlot.cap)) * 100) / 100
               : (ad.totalConversions > 0 ? Math.round((ad.totalConversionValue / ad.totalConversions) * 100) / 100 : 0);
-            await db.attribution.create({
-              data: {
-                shopDomain, shopifyOrderId: cand.orderId,
-                layer: 2, confidence: 100, rivalCount: 0,
-                metaCampaignId: ad.campaignId, metaCampaignName: ad.campaignName,
-                metaAdSetId: ad.adSetId, metaAdSetName: ad.adSetName,
-                metaAdId: ad.adId, metaAdName: ad.adName,
-                isNewCustomer: cand.isNew, isNewToMeta: cand.isNew,
-                matchMethod: "utm+fillgaps",
-                metaConversionValue: utmMetaValue,
-              },
+            // Upsert — the order may already have a Layer 1 UTM attribution
+            // from the incremental pass; this overwrite agrees with it and
+            // refines with per-slot Meta value.
+            const utmPassAttrData = {
+              shopDomain, shopifyOrderId: cand.orderId,
+              layer: 2, confidence: 100, rivalCount: 0,
+              metaCampaignId: ad.campaignId, metaCampaignName: ad.campaignName,
+              metaAdSetId: ad.adSetId, metaAdSetName: ad.adSetName,
+              metaAdId: ad.adId, metaAdName: ad.adName,
+              isNewCustomer: cand.isNew, isNewToMeta: cand.isNew,
+              matchMethod: "utm+fillgaps",
+              metaConversionValue: utmMetaValue,
+            };
+            await db.attribution.upsert({
+              where: { shopDomain_shopifyOrderId: { shopDomain, shopifyOrderId: cand.orderId } },
+              create: utmPassAttrData,
+              update: utmPassAttrData,
             });
+            attrByOrderId.set(cand.orderId, { shopifyOrderId: cand.orderId, confidence: 100, matchMethod: "utm+fillgaps", metaAdId: ad.adId });
             usedOrders.add(cand.id);
             totalMatched++;
             utmMatchCount++;
@@ -1422,8 +1435,6 @@ export async function runFillGaps(shopDomain, lookbackDays = 30) {
         if (picks.length > 0) {
           const pickedIds = new Set(picks.map(p => p.id));
           for (const pick of picks) {
-            usedOrders.add(pick.id);
-            totalMatched++;
             let rivalCount = 0;
             for (const cand of zeroCandidates) {
               if (pickedIds.has(cand.id)) continue;
@@ -1432,16 +1443,29 @@ export async function runFillGaps(shopDomain, lookbackDays = 30) {
               rivalCount++;
             }
             const confidence = Math.max(1, Math.round(100 / (1 + rivalCount)));
-            await db.attribution.create({
-              data: {
-                shopDomain, shopifyOrderId: pick.orderId || String(pick.id),
-                layer: 2, confidence, rivalCount,
-                metaCampaignId: ad.campaignId, metaCampaignName: ad.campaignName,
-                metaAdSetId: ad.adSetId, metaAdSetName: ad.adSetName, metaAdId: ad.adId, metaAdName: ad.adName,
-                isNewCustomer: pick.isNew, isNewToMeta: pick.isNew,
-                matchMethod: "exhaustive", metaConversionValue: 0,
-              },
+            const pickKey = pick.orderId || String(pick.id);
+            const existingForPick = attrByOrderId.get(pickKey);
+            // Preserve UTM Layer 1 unless this pick is unambiguous.
+            if (existingForPick && existingForPick.matchMethod === "utm" && rivalCount > 0) continue;
+            // If UTM agrees with this ad, blend labels so both methods show.
+            const finalMethod = (existingForPick && existingForPick.matchMethod === "utm" && existingForPick.metaAdId === ad.adId)
+              ? "utm + exhaustive" : "exhaustive";
+            usedOrders.add(pick.id);
+            totalMatched++;
+            const zeroAttrData = {
+              shopDomain, shopifyOrderId: pickKey,
+              layer: 2, confidence, rivalCount,
+              metaCampaignId: ad.campaignId, metaCampaignName: ad.campaignName,
+              metaAdSetId: ad.adSetId, metaAdSetName: ad.adSetName, metaAdId: ad.adId, metaAdName: ad.adName,
+              isNewCustomer: pick.isNew, isNewToMeta: pick.isNew,
+              matchMethod: finalMethod, metaConversionValue: 0,
+            };
+            await db.attribution.upsert({
+              where: { shopDomain_shopifyOrderId: { shopDomain, shopifyOrderId: pickKey } },
+              create: zeroAttrData,
+              update: zeroAttrData,
             });
+            attrByOrderId.set(pickKey, { shopifyOrderId: pickKey, confidence, matchMethod: finalMethod, metaAdId: ad.adId });
           }
           if (picks.length < neededConversions && !hasUnmatchedRecord) {
             totalUnmatched += neededConversions - picks.length;
@@ -1514,21 +1538,32 @@ export async function runFillGaps(shopDomain, lookbackDays = 30) {
           ? Math.round((assignedSlot.slotValue / Math.max(1, assignedSlot.cap)) * 100) / 100
           : Math.round((remainingRevenue / picks.length) * 100) / 100;
 
+        const { confidence, rivalCount } = calculateConfidence(pick, candidates, picks);
+        const pickKey = pick.orderId || String(pick.id);
+        const existingForPick = attrByOrderId.get(pickKey);
+        // Preserve UTM Layer 1 unless this pick is unambiguous.
+        if (existingForPick && existingForPick.matchMethod === "utm" && rivalCount > 0) continue;
+        // If UTM agrees with this ad, blend labels so both methods show.
+        const finalMethod = (existingForPick && existingForPick.matchMethod === "utm" && existingForPick.metaAdId === ad.adId)
+          ? `utm + ${matchMethod}` : matchMethod;
+
         usedOrders.add(pick.id);
         totalMatched++;
 
-        const { confidence, rivalCount } = calculateConfidence(pick, candidates, picks);
-
-        await db.attribution.create({
-          data: {
-            shopDomain, shopifyOrderId: pick.orderId || String(pick.id),
-            layer: 2, confidence, rivalCount,
-            metaCampaignId: ad.campaignId, metaCampaignName: ad.campaignName,
-            metaAdSetId: ad.adSetId, metaAdSetName: ad.adSetName, metaAdId: ad.adId, metaAdName: ad.adName,
-            isNewCustomer: pick.isNew, isNewToMeta: pick.isNew,
-            matchMethod, metaConversionValue: perPickValue,
-          },
+        const statAttrData = {
+          shopDomain, shopifyOrderId: pickKey,
+          layer: 2, confidence, rivalCount,
+          metaCampaignId: ad.campaignId, metaCampaignName: ad.campaignName,
+          metaAdSetId: ad.adSetId, metaAdSetName: ad.adSetName, metaAdId: ad.adId, metaAdName: ad.adName,
+          isNewCustomer: pick.isNew, isNewToMeta: pick.isNew,
+          matchMethod: finalMethod, metaConversionValue: perPickValue,
+        };
+        await db.attribution.upsert({
+          where: { shopDomain_shopifyOrderId: { shopDomain, shopifyOrderId: pickKey } },
+          create: statAttrData,
+          update: statAttrData,
         });
+        attrByOrderId.set(pickKey, { shopifyOrderId: pickKey, confidence, matchMethod: finalMethod, metaAdId: ad.adId });
       }
     }
   }

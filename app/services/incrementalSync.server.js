@@ -381,22 +381,25 @@ async function runUtmLayer1Pass(shopDomain, dayStr, dayOrders, newConversions, m
     convsByAd[conv.adId].push({ conv, start, end });
   }
 
-  // Load existing layer-1 attributions for these orders so we don't re-write
-  // the same UTM match every cycle.
+  // Skip orders that already have ANY confident attribution. This covers:
+  //   (a) UTM rows written in prior cycles (idempotent skip), and
+  //   (b) statistical rows that overrode a prior UTM when the Layer 2 pick
+  //       was unambiguous — re-running Layer 1 over those would undo the
+  //       override and flip the attribution back to UTM every cycle.
   const orderIdList = utmOrders.map(o => o.shopifyOrderId);
   const existing = await db.attribution.findMany({
     where: { shopDomain, shopifyOrderId: { in: orderIdList } },
-    select: { shopifyOrderId: true, layer: true, matchMethod: true },
+    select: { shopifyOrderId: true, confidence: true },
   });
-  const alreadyLayer1 = new Set(
-    existing.filter(a => a.layer === 1 && a.matchMethod === "utm").map(a => a.shopifyOrderId)
+  const alreadyAttributed = new Set(
+    existing.filter(a => a.confidence > 0).map(a => a.shopifyOrderId)
   );
 
   let layer1Written = 0;
   let slotCreditsConsumed = 0;
 
   for (const order of utmOrders) {
-    if (alreadyLayer1.has(order.shopifyOrderId)) continue;
+    if (alreadyAttributed.has(order.shopifyOrderId)) continue;
 
     const orderTotal = order.frozenTotalPrice || 0;
     const orderMinute = dateToMinute(order.createdAt);
@@ -578,8 +581,11 @@ async function recalculateConfidence(shopDomain, matchedOrderIds) {
 }
 
 async function matchSingleConversion(shopDomain, conv, todayOrders, revenueField, metaOffsetMinutes = 0, metaSpendCountries = null, adCountryDeltas = null) {
+  // UTM Layer 1 attributions remain eligible candidates so the statistical
+  // matcher can overwrite them when its pick is unambiguous (rivalCount=0).
+  // Non-UTM confident attributions are excluded as before.
   const allAttrs = await db.attribution.findMany({
-    where: { shopDomain, confidence: { gt: 0 } },
+    where: { shopDomain, confidence: { gt: 0 }, NOT: { matchMethod: "utm" } },
     select: { shopifyOrderId: true },
   });
   const allMatchedIds = new Set(allAttrs.map(a => a.shopifyOrderId));
@@ -980,16 +986,23 @@ export async function matchDayDeltas(shopDomain, dayStr) {
     const matched = await matchSingleConversion(shopDomain, conv, dayOrders, revenueField, metaOffsetMinutes, metaSpendCountries, null);
     if (matched.length > 0) {
       for (const pick of matched) {
-        // SAFETY: never overwrite an incremental match for this order.
+        // SAFETY: never overwrite an incremental or blended-incremental match.
         // Daily-sweep is last-resort only — fills gaps the incremental run missed.
         const existing = await db.attribution.findUnique({
           where: { shopDomain_shopifyOrderId: { shopDomain, shopifyOrderId: pick.orderId } },
-          select: { matchMethod: true, confidence: true },
+          select: { matchMethod: true, confidence: true, metaAdId: true },
         });
-        if (existing && existing.confidence > 0 && existing.matchMethod === "incremental") {
-          skippedIncremental++;
-          continue;
+        if (existing && existing.confidence > 0) {
+          if (existing.matchMethod === "incremental" || existing.matchMethod === "utm + incremental") {
+            skippedIncremental++;
+            continue;
+          }
+          // Preserve UTM Layer 1 unless the daily-sweep pick is unambiguous.
+          if (existing.matchMethod === "utm" && (pick.rivalCount || 0) > 0) continue;
         }
+        // Blend label when UTM and daily-sweep agree on the ad.
+        const finalMethod = (existing && existing.matchMethod === "utm" && existing.metaAdId === conv.adId)
+          ? "utm + daily-sweep" : "daily-sweep";
         // Store the META-reported per-conversion value (not Shopify order value).
         // conv.deltaValue / deltaConversions gives the exact per-conversion Meta value
         // for this specific hour slot.
@@ -1003,7 +1016,7 @@ export async function matchDayDeltas(shopDomain, dayStr) {
             metaCampaignId: conv.campaignId, metaCampaignName: conv.campaignName,
             metaAdSetId: conv.adSetId, metaAdSetName: conv.adSetName,
             metaAdId: conv.adId, metaAdName: conv.adName,
-            isNewCustomer: pick.isNew, isNewToMeta: pick.isNew, matchMethod: "daily-sweep",
+            isNewCustomer: pick.isNew, isNewToMeta: pick.isNew, matchMethod: finalMethod,
             metaConversionValue: metaPerConv,
           },
           update: {
@@ -1011,7 +1024,7 @@ export async function matchDayDeltas(shopDomain, dayStr) {
             metaCampaignId: conv.campaignId, metaCampaignName: conv.campaignName,
             metaAdSetId: conv.adSetId, metaAdSetName: conv.adSetName,
             metaAdId: conv.adId, metaAdName: conv.adName,
-            isNewCustomer: pick.isNew, isNewToMeta: pick.isNew, matchMethod: "daily-sweep",
+            isNewCustomer: pick.isNew, isNewToMeta: pick.isNew, matchMethod: finalMethod,
             metaConversionValue: metaPerConv,
           },
         });
@@ -1209,6 +1222,17 @@ export async function runIncrementalSync(shopDomain) {
   // Filter out conversions fully consumed by the Layer 1 pass.
   const remainingConversions = newConversions.filter(c => c.deltaConversions > 0);
 
+  // Load existing attributions so the statistical write can decide whether to
+  // overwrite a UTM Layer 1 row. Rule: overwrite only when the Layer 2 pick is
+  // unambiguous (rivalCount=0). When UTM and stat agree on the ad, blend the
+  // label to "utm + incremental" so both methods are visible in the UI.
+  const todayOrderIds = todayOrders.map(o => o.shopifyOrderId);
+  const existingAttrRows = await db.attribution.findMany({
+    where: { shopDomain, shopifyOrderId: { in: todayOrderIds }, confidence: { gt: 0 } },
+    select: { shopifyOrderId: true, matchMethod: true, metaAdId: true },
+  });
+  const existingAttrByOrderId = new Map(existingAttrRows.map(r => [r.shopifyOrderId, r]));
+
   let totalMatched = 0, totalUnmatched = 0;
   const matchedOrderIds = []; // Track for post-match confidence recalculation
 
@@ -1233,6 +1257,12 @@ export async function runIncrementalSync(shopDomain) {
       const metaPerConv = conv.deltaConversions > 0
         ? Math.round((conv.deltaValue / conv.deltaConversions) * 100) / 100 : 0;
       for (const pick of matched) {
+        const existing = existingAttrByOrderId.get(pick.orderId);
+        // Preserve UTM Layer 1 unless this pick is unambiguous.
+        if (existing && existing.matchMethod === "utm" && (pick.rivalCount || 0) > 0) continue;
+        // Blend label when UTM and stat agree on the ad.
+        const finalMethod = (existing && existing.matchMethod === "utm" && existing.metaAdId === conv.adId)
+          ? "utm + incremental" : "incremental";
         matchedOrderIds.push(pick.orderId);
         await db.attribution.upsert({
           where: { shopDomain_shopifyOrderId: { shopDomain, shopifyOrderId: pick.orderId } },
@@ -1242,7 +1272,7 @@ export async function runIncrementalSync(shopDomain) {
             metaCampaignId: conv.campaignId, metaCampaignName: conv.campaignName,
             metaAdSetId: conv.adSetId, metaAdSetName: conv.adSetName,
             metaAdId: conv.adId, metaAdName: conv.adName,
-            isNewCustomer: pick.isNew, isNewToMeta: pick.isNew, matchMethod: "incremental",
+            isNewCustomer: pick.isNew, isNewToMeta: pick.isNew, matchMethod: finalMethod,
             metaConversionValue: metaPerConv,
           },
           update: {
@@ -1250,10 +1280,11 @@ export async function runIncrementalSync(shopDomain) {
             metaCampaignId: conv.campaignId, metaCampaignName: conv.campaignName,
             metaAdSetId: conv.adSetId, metaAdSetName: conv.adSetName,
             metaAdId: conv.adId, metaAdName: conv.adName,
-            isNewCustomer: pick.isNew, isNewToMeta: pick.isNew, matchMethod: "incremental",
+            isNewCustomer: pick.isNew, isNewToMeta: pick.isNew, matchMethod: finalMethod,
             metaConversionValue: metaPerConv,
           },
         });
+        existingAttrByOrderId.set(pick.orderId, { shopifyOrderId: pick.orderId, matchMethod: finalMethod, metaAdId: conv.adId });
         totalMatched++;
       }
       // Clean up any stale unmatched placeholders for this ad-hour
