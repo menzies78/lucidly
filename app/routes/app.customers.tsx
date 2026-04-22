@@ -416,7 +416,9 @@ export const loader = async ({ request }) => {
   const metaRetargetedOrdersInRange = cur.metaRetargeted.orders;
   const metaRetargetedRevenueInRange = r2(cur.metaRetargeted.revenue);
   const metaRetargetedCustomersInRange = cur.metaRetargeted.newCustomers + cur.metaRetargeted.repeatCustomers;
-  const totalCustomersInRange = metaNewCustomersInRange + metaRepeatCustomersInRange + metaRetargetedCustomersInRange + cur.organic.newCustomers + cur.organic.repeatCustomers;
+  const organicCustomersInRange = cur.organic.newCustomers + cur.organic.repeatCustomers;
+  const organicRevenueInRange = r2(cur.organic.revenue);
+  const totalCustomersInRange = metaNewCustomersInRange + metaRepeatCustomersInRange + metaRetargetedCustomersInRange + organicCustomersInRange;
   const totalRevenueInRange = metaRevenue + organicRevenue;
   const prevMetaNewCustomersInRange = prv.metaNew.newCustomers;
   const prevMetaNewRevenueInRange = r2(prv.metaNew.revenue);
@@ -611,6 +613,113 @@ export const loader = async ({ request }) => {
   const allMetaGeoCount = geoInRange.allMeta.count;
   const metaNewGeoCount = geoInRange.metaNew.count;
 
+  // Date-scoped customer journey — customers whose FIRST order fell in the
+  // selected period. Fetch their first three orders (online store only) and
+  // compute median AOV + gap stats per scope (meta-new vs all). Replaces the
+  // all-time journeyBlob that previously fed this tile so the "New Customer
+  // Journey" responds to the date picker.
+  const journeyInRange = await queryCached(
+    `${shopDomain}:customerJourneyInRange:${dateFromStr}:${dateToStr}`,
+    DEFAULT_TTL,
+    async () => {
+      const emptyScope = {
+        firstAOV: 0, secondAOV: 0, thirdAOV: 0,
+        gap1to2Days: null as number | null, gap2to3Days: null as number | null,
+        firstOrderCount: 0, secondOrderCount: 0, thirdOrderCount: 0,
+      };
+      const custs = await db.customer.findMany({
+        where: {
+          shopDomain,
+          firstOrderDate: { gte: fromDate, lte: toDate },
+        },
+        select: { shopifyCustomerId: true, metaSegment: true },
+      });
+      if (custs.length === 0) return { meta: emptyScope, all: emptyScope };
+
+      const metaNewIds = new Set(
+        custs.filter(c => c.metaSegment === "metaNew").map(c => c.shopifyCustomerId)
+      );
+      const allIds = custs.map(c => c.shopifyCustomerId);
+
+      const orders = await db.order.findMany({
+        where: {
+          shopDomain,
+          isOnlineStore: true,
+          shopifyCustomerId: { in: allIds },
+          customerOrderCountAtPurchase: { in: [1, 2, 3] },
+        },
+        select: {
+          shopifyCustomerId: true,
+          customerOrderCountAtPurchase: true,
+          frozenTotalPrice: true,
+          totalRefunded: true,
+          createdAt: true,
+        },
+      });
+
+      type Slot = { val: number; date: Date };
+      type Triple = { first?: Slot; second?: Slot; third?: Slot };
+      const byCust = new Map<string, Triple>();
+      for (const o of orders) {
+        if (!o.shopifyCustomerId) continue;
+        let t = byCust.get(o.shopifyCustomerId);
+        if (!t) { t = {}; byCust.set(o.shopifyCustomerId, t); }
+        const val = Math.max(0, (o.frozenTotalPrice || 0) - (o.totalRefunded || 0));
+        const slot: Slot = { val, date: o.createdAt };
+        if (o.customerOrderCountAtPurchase === 1) t.first = slot;
+        else if (o.customerOrderCountAtPurchase === 2) t.second = slot;
+        else if (o.customerOrderCountAtPurchase === 3) t.third = slot;
+      }
+
+      const median = (arr: number[]): number => {
+        if (arr.length === 0) return 0;
+        const s = [...arr].sort((a, b) => a - b);
+        const m = Math.floor(s.length / 2);
+        return r2(s.length % 2 === 0 ? (s[m - 1] + s[m]) / 2 : s[m]);
+      };
+      const medianDays = (arr: number[]): number | null => {
+        if (arr.length === 0) return null;
+        const s = [...arr].sort((a, b) => a - b);
+        const m = Math.floor(s.length / 2);
+        return Math.round(s.length % 2 === 0 ? (s[m - 1] + s[m]) / 2 : s[m]);
+      };
+
+      const compute = (ids: Iterable<string>) => {
+        const firsts: number[] = [], seconds: number[] = [], thirds: number[] = [];
+        const g12: number[] = [], g23: number[] = [];
+        let fc = 0, sc = 0, tc = 0;
+        for (const id of ids) {
+          const t = byCust.get(id);
+          if (!t) continue;
+          if (t.first) { firsts.push(t.first.val); fc++; }
+          if (t.second) {
+            seconds.push(t.second.val); sc++;
+            if (t.first) g12.push((t.second.date.getTime() - t.first.date.getTime()) / DAY_MS);
+          }
+          if (t.third) {
+            thirds.push(t.third.val); tc++;
+            if (t.second) g23.push((t.third.date.getTime() - t.second.date.getTime()) / DAY_MS);
+          }
+        }
+        return {
+          firstAOV: median(firsts),
+          secondAOV: median(seconds),
+          thirdAOV: median(thirds),
+          gap1to2Days: medianDays(g12),
+          gap2to3Days: medianDays(g23),
+          firstOrderCount: fc,
+          secondOrderCount: sc,
+          thirdOrderCount: tc,
+        };
+      };
+
+      return {
+        meta: compute(metaNewIds),
+        all: compute(allIds),
+      };
+    },
+  );
+
   // Single/Repeat splits — derive from customers
   let metaNewSingleCount = 0, metaNewSingleOrders = 0, metaNewSingleRevenue = 0;
   let metaNewRepeatCount2 = 0, metaNewRepeatOrders = 0, metaNewRepeatRevenue = 0;
@@ -797,30 +906,31 @@ export const loader = async ({ request }) => {
     metaNewSingleCount, metaNewSingleOrders, metaNewSingleRevenue,
     metaNewRepeatCount: metaNewRepeatCount2, metaNewRepeatOrders, metaNewRepeatRevenue,
     metaRetargetedCount: metaRetargetedCountTile, metaRetargetedOrders: metaRetargetedOrdersTile, metaRetargetedRevenue: metaRetargetedRevenueTile,
-    journeyFirstAOV: journeyMeta.firstAOV || 0,
-    journeySecondAOV: journeyMeta.secondAOV || 0,
-    journeyThirdAOV: journeyMeta.thirdAOV || 0,
-    journeyGapDays: journeyMeta.gap1to2Days,
-    journeyGap2to3Days: journeyMeta.gap2to3Days,
-    journeyCustomerCount: journeyMeta.firstOrderCount || 0,
-    totalCustomerCount: journeyAll.firstOrderCount || 0,
-    totalMetaCustomerCount: journeyMeta.firstOrderCount || 0,
-    allJourneyFirstAOV: journeyAll.firstAOV || 0,
-    allJourneySecondAOV: journeyAll.secondAOV || 0,
-    allJourneyThirdAOV: journeyAll.thirdAOV || 0,
-    allJourneyGapDays: journeyAll.gap1to2Days,
-    allJourneyGap2to3Days: journeyAll.gap2to3Days,
-    allJourneyCustomerCount: journeyAll.firstOrderCount || 0,
-    metaFirstOrderCount: journeyMeta.firstOrderCount || 0,
-    metaSecondOrderCount: journeyMeta.secondOrderCount || 0,
-    metaThirdOrderCount: journeyMeta.thirdOrderCount || 0,
-    allFirstOrderCount: journeyAll.firstOrderCount || 0,
-    allSecondOrderCount: journeyAll.secondOrderCount || 0,
-    allThirdOrderCount: journeyAll.thirdOrderCount || 0,
+    journeyFirstAOV: journeyInRange.meta.firstAOV || 0,
+    journeySecondAOV: journeyInRange.meta.secondAOV || 0,
+    journeyThirdAOV: journeyInRange.meta.thirdAOV || 0,
+    journeyGapDays: journeyInRange.meta.gap1to2Days,
+    journeyGap2to3Days: journeyInRange.meta.gap2to3Days,
+    journeyCustomerCount: journeyInRange.meta.firstOrderCount || 0,
+    totalCustomerCount: journeyInRange.all.firstOrderCount || 0,
+    totalMetaCustomerCount: journeyInRange.meta.firstOrderCount || 0,
+    allJourneyFirstAOV: journeyInRange.all.firstAOV || 0,
+    allJourneySecondAOV: journeyInRange.all.secondAOV || 0,
+    allJourneyThirdAOV: journeyInRange.all.thirdAOV || 0,
+    allJourneyGapDays: journeyInRange.all.gap1to2Days,
+    allJourneyGap2to3Days: journeyInRange.all.gap2to3Days,
+    allJourneyCustomerCount: journeyInRange.all.firstOrderCount || 0,
+    metaFirstOrderCount: journeyInRange.meta.firstOrderCount || 0,
+    metaSecondOrderCount: journeyInRange.meta.secondOrderCount || 0,
+    metaThirdOrderCount: journeyInRange.meta.thirdOrderCount || 0,
+    allFirstOrderCount: journeyInRange.all.firstOrderCount || 0,
+    allSecondOrderCount: journeyInRange.all.secondOrderCount || 0,
+    allThirdOrderCount: journeyInRange.all.thirdOrderCount || 0,
     totalDemoConversions, totalMetaConversions, totalMetaConversionValue,
     metaNewOrdersInRange, metaNewRevenueInRange, metaNewCustomersInRange,
     metaRepeatOrdersInRange, metaRepeatRevenueInRange, metaRepeatCustomersInRange,
     metaRetargetedOrdersInRange, metaRetargetedRevenueInRange, metaRetargetedCustomersInRange,
+    organicCustomersInRange, organicRevenueInRange,
     metaNewCount: ltvMetaNewCount, mnAvgLtv, mnAvgOrders, mnRepeatRate, mnAvgAov,
     mnCPA, mnLtvCac, mnPaybackOrders, mnMedianTimeTo2nd, mnReorderWithin90,
     allCount, allAvgLtv, allAvgOrders, allRepeatRate, allAvgAov,
@@ -1461,6 +1571,7 @@ export default function Customers() {
     metaNewOrdersInRange, metaNewRevenueInRange, metaNewCustomersInRange,
     metaRepeatOrdersInRange, metaRepeatRevenueInRange, metaRepeatCustomersInRange,
     metaRetargetedOrdersInRange, metaRetargetedRevenueInRange, metaRetargetedCustomersInRange,
+    organicCustomersInRange, organicRevenueInRange,
     metaNewCount, mnAvgLtv, mnAvgOrders, mnRepeatRate, mnAvgAov,
     mnCPA, mnLtvCac, mnPaybackOrders, mnMedianTimeTo2nd, mnReorderWithin90,
     allCount, allAvgLtv, allAvgOrders, allRepeatRate, allAvgAov,
@@ -1522,14 +1633,16 @@ export default function Customers() {
         { label: "Meta New", value: metaNewCustomersInRange, color: "#7C3AED" },
         { label: "Meta Repeat", value: metaRepeatCustomersInRange, color: "#0891B2" },
         { label: "Meta Retargeted", value: metaRetargetedCustomersInRange, color: "#B45309" },
+        { label: "Organic", value: organicCustomersInRange, color: "#6B7280" },
       ];
     }
     return [
       { label: "Meta New", value: Math.round(metaNewRevenueInRange), color: "#7C3AED" },
       { label: "Meta Repeat", value: Math.round(metaRepeatRevenueInRange), color: "#0891B2" },
       { label: "Meta Retargeted", value: Math.round(metaRetargetedRevenueInRange), color: "#B45309" },
+      { label: "Organic", value: Math.round(organicRevenueInRange), color: "#6B7280" },
     ];
-  }, [acqMode, metaNewCustomersInRange, metaRepeatCustomersInRange, metaRetargetedCustomersInRange, metaNewRevenueInRange, metaRepeatRevenueInRange, metaRetargetedRevenueInRange]);
+  }, [acqMode, metaNewCustomersInRange, metaRepeatCustomersInRange, metaRetargetedCustomersInRange, organicCustomersInRange, metaNewRevenueInRange, metaRepeatRevenueInRange, metaRetargetedRevenueInRange, organicRevenueInRange]);
 
   const acqTotal = acqSegments.reduce((s, seg) => s + seg.value, 0);
 
@@ -1982,6 +2095,7 @@ export default function Customers() {
                     { label: "Meta New", desc: "First-ever order, acquired by Meta", count: metaNewCustomersInRange, value: acqMode === "customers" ? metaNewCustomersInRange : metaNewRevenueInRange, color: "#7C3AED" },
                     { label: "Meta Repeat", desc: "Returning Meta-acquired customer", count: metaRepeatCustomersInRange, value: acqMode === "customers" ? metaRepeatCustomersInRange : metaRepeatRevenueInRange, color: "#0891B2" },
                     { label: "Meta Retargeted", desc: "Existing customer converted by Meta", count: metaRetargetedCustomersInRange, value: acqMode === "customers" ? metaRetargetedCustomersInRange : metaRetargetedRevenueInRange, color: "#B45309" },
+                    { label: "Organic", desc: "No Meta attribution — direct / organic", count: organicCustomersInRange, value: acqMode === "customers" ? organicCustomersInRange : organicRevenueInRange, color: "#6B7280" },
                   ].map(seg => {
                     const isEmpty = seg.value === 0;
                     return (
@@ -2002,16 +2116,20 @@ export default function Customers() {
                   })}
                 </div>
               </div>
-              {acqMode === "customers" && totalMetaConversions > 0 && totalMetaConversions !== acqTotal && (
-                <Text as="p" variant="bodySm" tone="subdued">
-                  Meta reported {totalMetaConversions} conversion{totalMetaConversions !== 1 ? "s" : ""} in this period.
-                  {acqTotal > totalMetaConversions
-                    ? ` We matched ${acqTotal} — the extra ${acqTotal - totalMetaConversions} came from UTM tracking (orders Meta didn't log as conversions).`
-                    : ` We matched ${acqTotal} — the ${totalMetaConversions - acqTotal} unmatched exist because order values change after purchase (refunds, edits).`
-                  }
-                  {" "}Customer Demographics uses Meta's data directly, so may show a different total.
-                </Text>
-              )}
+              {acqMode === "customers" && totalMetaConversions > 0 && (() => {
+                const metaMatched = metaNewCustomersInRange + metaRepeatCustomersInRange + metaRetargetedCustomersInRange;
+                if (metaMatched === totalMetaConversions) return null;
+                return (
+                  <Text as="p" variant="bodySm" tone="subdued">
+                    Meta reported {totalMetaConversions} conversion{totalMetaConversions !== 1 ? "s" : ""} in this period.
+                    {metaMatched > totalMetaConversions
+                      ? ` We matched ${metaMatched} — the extra ${metaMatched - totalMetaConversions} came from UTM tracking (orders Meta didn't log as conversions).`
+                      : ` We matched ${metaMatched} — the ${totalMetaConversions - metaMatched} unmatched exist because order values change after purchase (refunds, edits).`
+                    }
+                    {" "}Customer Demographics uses Meta's data directly, so may show a different total.
+                  </Text>
+                );
+              })()}
             </BlockStack>
           </Card>
           )},
