@@ -557,65 +557,75 @@ export const loader = async ({ request }) => {
   // "metaNew" — covers both their first purchase and subsequent Meta Repeat
   // orders; excludes Meta Retargeted). Powers filter-driven product ranking
   // + auto-detected statistically significant "gems" on the client tile.
+  // Uses a single indexed JOIN via $queryRaw — building an IN clause with
+  // tens of thousands of order IDs on large shops (Vollebak: ~30k orders
+  // in 90d) overwhelms SQLite and blows up the response. We then cap the
+  // flat records to the top 100 products by volume so payload stays
+  // bounded (~10k records max on a big shop) without losing gem signal —
+  // a product that never makes top-100 overall is unlikely to be a true
+  // "absolute gem" anyway.
+  const _demoT0 = Date.now();
   const demoData = await queryCached(
     `${shopDomain}:demoProductRecords:${fromKey}:${toKey}`,
     DEFAULT_TTL,
     async () => {
-      const rangeOrders = await db.order.findMany({
-        where: {
-          shopDomain,
-          isOnlineStore: true,
-          frozenTotalPrice: { gt: 0 },
-          createdAt: { gte: fromDate, lte: toDate },
-        },
-        select: {
-          shopifyOrderId: true, shopifyCustomerId: true,
-          country: true, lineItems: true, frozenTotalPrice: true,
-        },
-      });
-      if (rangeOrders.length === 0) return { records: [], countries: [] as string[] };
+      try {
+        const rows = await db.$queryRaw<Array<{
+          metaAge: string; metaGender: string;
+          country: string | null; lineItems: string | null; frozenTotalPrice: number;
+        }>>`
+          SELECT a.metaAge, a.metaGender, o.country, o.lineItems, o.frozenTotalPrice
+          FROM Attribution a
+          JOIN "Order" o
+            ON a.shopDomain = o.shopDomain AND a.shopifyOrderId = o.shopifyOrderId
+          JOIN Customer c
+            ON c.shopDomain = o.shopDomain AND c.shopifyCustomerId = o.shopifyCustomerId
+          WHERE a.shopDomain = ${shopDomain}
+            AND a.confidence > 0
+            AND a.metaAge IS NOT NULL
+            AND a.metaGender IS NOT NULL
+            AND o.isOnlineStore = 1
+            AND o.frozenTotalPrice > 0
+            AND o.createdAt >= ${fromDate}
+            AND o.createdAt <= ${toDate}
+            AND c.metaSegment = 'metaNew'
+        `;
 
-      const orderIds = rangeOrders.map((o) => o.shopifyOrderId);
-      const [demoAttrs, metaNewCustomers] = await Promise.all([
-        db.attribution.findMany({
-          where: {
-            shopDomain,
-            shopifyOrderId: { in: orderIds },
-            confidence: { gt: 0 },
-            metaAge: { not: null },
-            metaGender: { not: null },
-          },
-          select: { shopifyOrderId: true, metaAge: true, metaGender: true },
-        }),
-        db.customer.findMany({
-          where: { shopDomain, metaSegment: "metaNew" },
-          select: { shopifyCustomerId: true },
-        }),
-      ]);
-      const attrByOrder = new Map(demoAttrs.map((a) => [a.shopifyOrderId, a]));
-      const metaNewIds = new Set(metaNewCustomers.map((c) => c.shopifyCustomerId));
+        if (rows.length === 0) return { records: [], countries: [] as string[] };
 
-      const records: { product: string; age: string; gender: string; country: string; revenue: number }[] = [];
-      const countrySet = new Set<string>();
-      for (const o of rangeOrders) {
-        const attr = attrByOrder.get(o.shopifyOrderId);
-        if (!attr) continue;
-        if (!o.shopifyCustomerId || !metaNewIds.has(o.shopifyCustomerId)) continue;
-        const items = (o.lineItems || "").split(", ").map((s) => toParentProduct(s.trim())).filter(Boolean);
-        if (items.length === 0) continue;
-        const perItem = (o.frozenTotalPrice || 0) / items.length;
-        const country = (o.country || "Unknown").trim() || "Unknown";
-        countrySet.add(country);
-        const gender = attr.metaGender === "male" ? "Male" : attr.metaGender === "female" ? "Female" : "Unknown";
-        for (const product of items) {
-          records.push({ product, age: attr.metaAge!, gender, country, revenue: perItem });
+        // First pass: build flat record list + per-product volume tally
+        type Rec = { product: string; age: string; gender: string; country: string; revenue: number };
+        const rawRecords: Rec[] = [];
+        const countrySet = new Set<string>();
+        const productVolume = new Map<string, number>();
+        for (const o of rows) {
+          const items = (o.lineItems || "").split(", ").map((s) => toParentProduct(s.trim())).filter(Boolean);
+          if (items.length === 0) continue;
+          const perItem = (o.frozenTotalPrice || 0) / items.length;
+          const country = (o.country || "Unknown").trim() || "Unknown";
+          countrySet.add(country);
+          const gender = o.metaGender === "male" ? "Male" : o.metaGender === "female" ? "Female" : "Unknown";
+          for (const product of items) {
+            rawRecords.push({ product, age: o.metaAge, gender, country, revenue: perItem });
+            productVolume.set(product, (productVolume.get(product) || 0) + 1);
+          }
         }
+
+        // Cap to top 100 products by volume to keep the JSON payload bounded
+        const topProducts = new Set(
+          [...productVolume.entries()].sort((a, b) => b[1] - a[1]).slice(0, 100).map(([p]) => p),
+        );
+        const records = rawRecords.filter((r) => topProducts.has(r.product));
+        return { records, countries: [...countrySet].sort() };
+      } catch (err) {
+        console.error("[products] demoProductRecords failed:", err);
+        return { records: [], countries: [] as string[] };
       }
-      return { records, countries: [...countrySet].sort() };
     },
   );
   const demoRecords = demoData.records;
   const demoCountries = demoData.countries;
+  console.log(`[products] demo ${Date.now() - _demoT0}ms (records=${demoRecords.length}, countries=${demoCountries.length})`);
 
   // ── Gem detection ──
   // For each top product × demographic slice, compare the slice's share of
