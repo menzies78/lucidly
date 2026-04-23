@@ -1292,7 +1292,7 @@ export default function Products() {
           isStale={aiIsStale}
           currencySymbol={cs}
         />
-        <PageSummary bullets={summaryBullets} columns={2} />
+        <PageSummary bullets={summaryBullets} />
 
         {/* ── All tiles (drag/drop, show/hide) — everything except main table ── */}
         <TileGrid pageId="products" columns={4} tiles={[

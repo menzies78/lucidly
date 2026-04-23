@@ -2191,7 +2191,7 @@ export default function Customers() {
           isStale={aiIsStale}
           currencySymbol={cs}
         />
-        <PageSummary bullets={summaryBullets} columns={2} />
+        <PageSummary bullets={summaryBullets} />
 
         {/* ═══ ALL TILES (drag/drop, show/hide) ═══ */}
         <TileGrid pageId="customers-v8" columns={4} tiles={[

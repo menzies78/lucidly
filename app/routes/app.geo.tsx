@@ -1105,7 +1105,7 @@ export default function GeoPerformance() {
             isStale={aiIsStale}
             currencySymbol={cs}
           />
-          <PageSummary bullets={summaryBullets} columns={2} />
+          <PageSummary bullets={summaryBullets} />
 
           {/* ═══ 0. QUICK-STAT TILES ═══ */}
           <TileGrid pageId="geo-v2" columns={4} tiles={[

@@ -13,7 +13,6 @@ export interface SummaryBullet {
 interface PageSummaryProps {
   title?: string;
   bullets: SummaryBullet[];
-  columns?: 1 | 2;
 }
 
 // ── Styles ──
@@ -29,23 +28,18 @@ const TONE_COLOR: Record<SummaryTone, string> = {
 // Rule-based page summary. Lives side-by-side with AiInsightsPanel at the
 // top of a page. Bullets are computed in the route loader from the same
 // pre-aggregated data that feeds the tiles below — no AI, no caching,
-// tied to the currently selected date range.
+// tied to the currently selected date range. Always single-column,
+// left-aligned.
 
-export default function PageSummary({ title = "Summary", bullets, columns = 1 }: PageSummaryProps) {
-  const listStyle: React.CSSProperties = columns === 2
-    ? { margin: 0, paddingLeft: 0, listStyle: "none", display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", columnGap: 24, rowGap: 10 }
-    : { margin: 0, paddingLeft: 0, listStyle: "none", display: "flex", flexDirection: "column", gap: 10 };
-
+export default function PageSummary({ title = "Summary", bullets }: PageSummaryProps) {
   return (
     <Card>
       <BlockStack gap="300">
-        <div style={{ textAlign: "center" }}>
-          <Text as="h2" variant="headingMd">{title}</Text>
-        </div>
+        <Text as="h2" variant="headingMd">{title}</Text>
         {bullets.length === 0 ? (
           <Text as="p" tone="subdued" variant="bodySm">No data for this period.</Text>
         ) : (
-          <ul style={listStyle}>
+          <ul style={{ margin: 0, paddingLeft: 0, listStyle: "none", display: "flex", flexDirection: "column", gap: 10 }}>
             {bullets.map((b, i) => {
               const color = TONE_COLOR[b.tone || "neutral"];
               return (
