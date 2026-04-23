@@ -1209,13 +1209,29 @@ function gemSentence(g: DemoGem, currencySymbol: string): { text: string; filter
   };
 }
 
-function ProductDemographicsExplorer({ records, countries, gems, currencySymbol }: {
+// Palette for the bar chart rows — varied, warm-to-cool so consecutive rows
+// are visually distinguishable instead of all-purple.
+const BAR_COLOURS: Array<[string, string]> = [
+  ["#7C3AED", "#A78BFA"], // purple
+  ["#EC4899", "#F9A8D4"], // pink
+  ["#F59E0B", "#FCD34D"], // amber
+  ["#10B981", "#6EE7B7"], // emerald
+  ["#0EA5E9", "#7DD3FC"], // sky
+  ["#EF4444", "#FCA5A5"], // red
+  ["#6366F1", "#A5B4FC"], // indigo
+  ["#14B8A6", "#5EEAD4"], // teal
+  ["#F97316", "#FDBA74"], // orange
+  ["#8B5CF6", "#C4B5FD"], // violet
+];
+
+function ProductDemographicsExplorer({ records, countries, gems, currencySymbol, imageMap }: {
   records: DemoRecord[];
   countries: string[];
   gems: DemoGem[];
   currencySymbol: string;
+  imageMap: Record<string, string>;
 }) {
-  const [gender, setGender] = useState<"All" | "Female" | "Male" | "Unknown">("All");
+  const [gender, setGender] = useState<"All" | "Female" | "Male">("All");
   const [ages, setAges] = useState<string[]>([]); // empty = all
   const [country, setCountry] = useState<string>("All");
   const [sortBy, setSortBy] = useState<"units" | "revenue">("units");
@@ -1293,42 +1309,12 @@ function ProductDemographicsExplorer({ records, countries, gems, currencySymbol 
           </Text>
         </BlockStack>
 
-        {/* Gems strip */}
-        {gems.length > 0 && (
-          <div style={{ background: "#FAF5FF", border: "1px solid #E9D5FF", borderRadius: "8px", padding: "12px 14px" }}>
-            <div style={{ fontSize: "12px", fontWeight: 700, color: "#6B21A8", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "8px" }}>
-              Gems spotted in this period
-            </div>
-            <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-              {gems.map((g, i) => {
-                const { text } = gemSentence(g, currencySymbol);
-                return (
-                  <button
-                    key={i}
-                    onClick={() => applyGem(g)}
-                    style={{
-                      textAlign: "left", background: "#fff", border: "1px solid #E9D5FF",
-                      borderRadius: "6px", padding: "8px 12px", fontSize: "13px", color: "#1F2937",
-                      cursor: "pointer", transition: "background 0.15s",
-                    }}
-                    onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = "#F5F3FF"; }}
-                    onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = "#fff"; }}
-                  >
-                    <span style={{ color: "#7C3AED", marginRight: "6px" }}>◆</span>
-                    {text}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-        )}
-
         {/* Filter bar */}
         <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
           {/* Gender */}
           <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
             <span style={{ fontSize: "12px", fontWeight: 600, color: "#6B7280", width: "70px", textTransform: "uppercase", letterSpacing: "0.5px" }}>Gender</span>
-            {(["All", "Female", "Male", "Unknown"] as const).map((g) => (
+            {(["All", "Female", "Male"] as const).map((g) => (
               <button
                 key={g}
                 onClick={() => setGender(g)}
@@ -1440,7 +1426,7 @@ function ProductDemographicsExplorer({ records, countries, gems, currencySymbol 
             No purchases match these filters.
           </div>
         ) : (
-          <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
             {topProducts.map((p, i) => {
               const value = sortBy === "units" ? p.units : p.revenue;
               const widthPct = Math.max((value / maxValue) * 100, 2);
@@ -1450,9 +1436,11 @@ function ProductDemographicsExplorer({ records, countries, gems, currencySymbol 
               const secondary = sortBy === "units"
                 ? `${currencySymbol}${Math.round(p.revenue).toLocaleString()}`
                 : `${p.units.toLocaleString()} units`;
+              const [c1, c2] = BAR_COLOURS[i % BAR_COLOURS.length];
               return (
                 <div key={p.product} style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-                  <div style={{ width: "28px", fontSize: "12px", color: "#9CA3AF", fontWeight: 600, textAlign: "right" }}>{i + 1}.</div>
+                  <div style={{ width: "22px", fontSize: "12px", color: "#9CA3AF", fontWeight: 600, textAlign: "right" }}>{i + 1}.</div>
+                  <ProductThumb url={imageMap[p.product]} size={36} />
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontSize: "13px", fontWeight: 600, color: "#1F2937", marginBottom: "3px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
                       {p.product}
@@ -1460,7 +1448,7 @@ function ProductDemographicsExplorer({ records, countries, gems, currencySymbol 
                     <div style={{ position: "relative", height: "22px", background: "#F3F4F6", borderRadius: "4px", overflow: "hidden" }}>
                       <div style={{
                         height: "100%", width: `${widthPct}%`,
-                        background: "linear-gradient(90deg, #7C3AED, #A78BFA)",
+                        background: `linear-gradient(90deg, ${c1}, ${c2})`,
                         borderRadius: "4px", transition: "width 0.4s ease",
                       }} />
                       <div style={{
@@ -1476,6 +1464,40 @@ function ProductDemographicsExplorer({ records, countries, gems, currencySymbol 
               );
             })}
           </div>
+        )}
+
+        {/* Gems — auto-surfaced statistical anomalies. Placed at the bottom
+            so the chart is the primary interaction; gems are a light,
+            colourful "did you notice" footer, no heavy framing. */}
+        {gems.length > 0 && (
+          <BlockStack gap="200">
+            <Text as="h3" variant="headingSm">
+              <span style={{ marginRight: 6 }}>💎</span>Gems spotted in this period
+            </Text>
+            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              {gems.map((g, i) => {
+                const { text } = gemSentence(g, currencySymbol);
+                const accent = BAR_COLOURS[i % BAR_COLOURS.length][0];
+                return (
+                  <button
+                    key={i}
+                    onClick={() => applyGem(g)}
+                    style={{
+                      textAlign: "left", background: "transparent", border: "none",
+                      padding: "4px 0", fontSize: "13px", color: "#1F2937",
+                      cursor: "pointer", display: "flex", alignItems: "flex-start", gap: 8,
+                      lineHeight: 1.45,
+                    }}
+                    onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = accent; }}
+                    onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = "#1F2937"; }}
+                  >
+                    <span style={{ flexShrink: 0 }}>💎</span>
+                    <span>{text}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </BlockStack>
         )}
 
         {/* Dynamic insight */}
@@ -1829,6 +1851,7 @@ export default function Products() {
               countries={demoCountries || []}
               gems={demoGems || []}
               currencySymbol={cs}
+              imageMap={imageMap}
             />
           )},
           { id: "refundRate", label: "Refund Rate Table", span: 2, render: () => (
