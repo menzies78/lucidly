@@ -1305,7 +1305,7 @@ function ProductDemographicsExplorer({ records, countries, gems, currencySymbol,
         </BlockStack>
 
         {/* Filter bar */}
-        <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: "10px", marginTop: 12 }}>
           {/* Gender */}
           <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
             <span style={{ fontSize: "12px", fontWeight: 600, color: "#6B7280", width: "70px", textTransform: "uppercase", letterSpacing: "0.5px" }}>Gender</span>
@@ -1395,7 +1395,7 @@ function ProductDemographicsExplorer({ records, countries, gems, currencySymbol,
         </div>
 
         {/* Sort toggle */}
-        <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "10px", marginTop: 12 }}>
           <span style={{ fontSize: "12px", fontWeight: 600, color: "#6B7280", textTransform: "uppercase", letterSpacing: "0.5px" }}>Sort by</span>
           <div style={{ display: "inline-flex", borderRadius: "6px", border: "1px solid #E5E7EB", overflow: "hidden" }}>
             {(["units", "revenue"] as const).map((s) => (
@@ -1465,6 +1465,7 @@ function ProductDemographicsExplorer({ records, countries, gems, currencySymbol,
             so the chart is the primary interaction; gems are a light,
             colourful "did you notice" footer, no heavy framing. */}
         {gems.length > 0 && (
+          <div style={{ marginTop: 16 }}>
           <BlockStack gap="200">
             <Text as="h3" variant="headingSm">
               <span style={{ marginRight: 6 }}>💎</span>Gems spotted in this period
@@ -1500,6 +1501,7 @@ function ProductDemographicsExplorer({ records, countries, gems, currencySymbol,
               })}
             </div>
           </BlockStack>
+          </div>
         )}
 
         {/* Dynamic insight */}
