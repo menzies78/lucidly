@@ -1209,19 +1209,14 @@ function gemSentence(g: DemoGem, currencySymbol: string): { text: string; filter
   };
 }
 
-// Palette for the bar chart rows — varied, warm-to-cool so consecutive rows
-// are visually distinguishable instead of all-purple.
+// Palette for the bar chart rows — a cohesive cool-tone family (indigo →
+// teal), desaturated slightly so rows vary without feeling like a rainbow.
 const BAR_COLOURS: Array<[string, string]> = [
-  ["#7C3AED", "#A78BFA"], // purple
-  ["#EC4899", "#F9A8D4"], // pink
-  ["#F59E0B", "#FCD34D"], // amber
-  ["#10B981", "#6EE7B7"], // emerald
-  ["#0EA5E9", "#7DD3FC"], // sky
-  ["#EF4444", "#FCA5A5"], // red
   ["#6366F1", "#A5B4FC"], // indigo
-  ["#14B8A6", "#5EEAD4"], // teal
-  ["#F97316", "#FDBA74"], // orange
-  ["#8B5CF6", "#C4B5FD"], // violet
+  ["#7C3AED", "#C4B5FD"], // violet
+  ["#0EA5E9", "#BAE6FD"], // sky
+  ["#0D9488", "#99F6E4"], // teal
+  ["#4F46E5", "#C7D2FE"], // deeper indigo
 ];
 
 function ProductDemographicsExplorer({ records, countries, gems, currencySymbol, imageMap }: {
@@ -1474,25 +1469,32 @@ function ProductDemographicsExplorer({ records, countries, gems, currencySymbol,
             <Text as="h3" variant="headingSm">
               <span style={{ marginRight: 6 }}>💎</span>Gems spotted in this period
             </Text>
-            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
               {gems.map((g, i) => {
                 const { text } = gemSentence(g, currencySymbol);
-                const accent = BAR_COLOURS[i % BAR_COLOURS.length][0];
                 return (
                   <button
                     key={i}
                     onClick={() => applyGem(g)}
                     style={{
-                      textAlign: "left", background: "transparent", border: "none",
-                      padding: "4px 0", fontSize: "13px", color: "#1F2937",
+                      textAlign: "left", background: "#fff",
+                      border: "1px solid #E5E7EB", borderRadius: 6,
+                      padding: "8px 12px", fontSize: 13, color: "#1F2937",
                       cursor: "pointer", display: "flex", alignItems: "flex-start", gap: 8,
-                      lineHeight: 1.45,
+                      lineHeight: 1.45, transition: "border-color 0.15s, background 0.15s",
                     }}
-                    onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = accent; }}
-                    onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = "#1F2937"; }}
+                    onMouseEnter={(e) => {
+                      (e.currentTarget as HTMLElement).style.borderColor = "#6366F1";
+                      (e.currentTarget as HTMLElement).style.background = "#F5F3FF";
+                    }}
+                    onMouseLeave={(e) => {
+                      (e.currentTarget as HTMLElement).style.borderColor = "#E5E7EB";
+                      (e.currentTarget as HTMLElement).style.background = "#fff";
+                    }}
                   >
                     <span style={{ flexShrink: 0 }}>💎</span>
-                    <span>{text}</span>
+                    <span style={{ flex: 1 }}>{text}</span>
+                    <span style={{ flexShrink: 0, color: "#6366F1", fontWeight: 600, fontSize: 12 }}>Apply →</span>
                   </button>
                 );
               })}
