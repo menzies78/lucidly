@@ -552,6 +552,142 @@ export const loader = async ({ request }) => {
   const avgItemsPerBasket = totalOrderCount > 0 ? Math.round((totalItemCount / totalOrderCount) * 10) / 10 : 0;
   const metaAvgItemsPerBasket = metaOrderCount > 0 ? Math.round((metaItemCount / metaOrderCount) * 10) / 10 : 0;
 
+  // ── Product Demographics Explorer data ──
+  // Flat per-line-item records for Meta-acquired customers (metaSegment =
+  // "metaNew" — covers both their first purchase and subsequent Meta Repeat
+  // orders; excludes Meta Retargeted). Powers filter-driven product ranking
+  // + auto-detected statistically significant "gems" on the client tile.
+  const demoData = await queryCached(
+    `${shopDomain}:demoProductRecords:${fromKey}:${toKey}`,
+    DEFAULT_TTL,
+    async () => {
+      const rangeOrders = await db.order.findMany({
+        where: {
+          shopDomain,
+          isOnlineStore: true,
+          frozenTotalPrice: { gt: 0 },
+          createdAt: { gte: fromDate, lte: toDate },
+        },
+        select: {
+          shopifyOrderId: true, shopifyCustomerId: true,
+          country: true, lineItems: true, frozenTotalPrice: true,
+        },
+      });
+      if (rangeOrders.length === 0) return { records: [], countries: [] as string[] };
+
+      const orderIds = rangeOrders.map((o) => o.shopifyOrderId);
+      const [demoAttrs, metaNewCustomers] = await Promise.all([
+        db.attribution.findMany({
+          where: {
+            shopDomain,
+            shopifyOrderId: { in: orderIds },
+            confidence: { gt: 0 },
+            metaAge: { not: null },
+            metaGender: { not: null },
+          },
+          select: { shopifyOrderId: true, metaAge: true, metaGender: true },
+        }),
+        db.customer.findMany({
+          where: { shopDomain, metaSegment: "metaNew" },
+          select: { shopifyCustomerId: true },
+        }),
+      ]);
+      const attrByOrder = new Map(demoAttrs.map((a) => [a.shopifyOrderId, a]));
+      const metaNewIds = new Set(metaNewCustomers.map((c) => c.shopifyCustomerId));
+
+      const records: { product: string; age: string; gender: string; country: string; revenue: number }[] = [];
+      const countrySet = new Set<string>();
+      for (const o of rangeOrders) {
+        const attr = attrByOrder.get(o.shopifyOrderId);
+        if (!attr) continue;
+        if (!o.shopifyCustomerId || !metaNewIds.has(o.shopifyCustomerId)) continue;
+        const items = (o.lineItems || "").split(", ").map((s) => toParentProduct(s.trim())).filter(Boolean);
+        if (items.length === 0) continue;
+        const perItem = (o.frozenTotalPrice || 0) / items.length;
+        const country = (o.country || "Unknown").trim() || "Unknown";
+        countrySet.add(country);
+        const gender = attr.metaGender === "male" ? "Male" : attr.metaGender === "female" ? "Female" : "Unknown";
+        for (const product of items) {
+          records.push({ product, age: attr.metaAge!, gender, country, revenue: perItem });
+        }
+      }
+      return { records, countries: [...countrySet].sort() };
+    },
+  );
+  const demoRecords = demoData.records;
+  const demoCountries = demoData.countries;
+
+  // ── Gem detection ──
+  // For each top product × demographic slice, compare the slice's share of
+  // that product to its overall share. A binomial z-test gates significance
+  // (z >= 1.96, ~95% CI) and a count floor (8) filters noise. Score by
+  // lift * sqrt(count) so a 3× lift on 30 purchases beats 1.6× on 8.
+  const demoGems = (() => {
+    if (demoRecords.length < 30) return [] as any[];
+    const total = demoRecords.length;
+    // Product totals
+    const productTotals = new Map<string, number>();
+    for (const r of demoRecords) productTotals.set(r.product, (productTotals.get(r.product) || 0) + 1);
+    // Only consider top 20 by volume
+    const topProducts = [...productTotals.entries()].sort((a, b) => b[1] - a[1]).slice(0, 20).map(([p]) => p);
+    const topProductSet = new Set(topProducts);
+
+    // Build slice indexes: per slice key -> {total, perProduct Map}
+    const slices = new Map<string, { total: number; perProduct: Map<string, number>; kind: string; value: string }>();
+    const bumpSlice = (kind: string, value: string, product: string) => {
+      const key = `${kind}:${value}`;
+      let s = slices.get(key);
+      if (!s) { s = { total: 0, perProduct: new Map(), kind, value }; slices.set(key, s); }
+      s.total++;
+      s.perProduct.set(product, (s.perProduct.get(product) || 0) + 1);
+    };
+    for (const r of demoRecords) {
+      if (!topProductSet.has(r.product)) continue;
+      // single-dimension
+      bumpSlice("gender", r.gender, r.product);
+      bumpSlice("age", r.age, r.product);
+      bumpSlice("country", r.country, r.product);
+      // pairs
+      bumpSlice("gender+age", `${r.gender}|${r.age}`, r.product);
+      bumpSlice("gender+country", `${r.gender}|${r.country}`, r.product);
+      bumpSlice("age+country", `${r.age}|${r.country}`, r.product);
+    }
+
+    type Gem = { product: string; kind: string; value: string; lift: number; count: number; expected: number; z: number; score: number };
+    const gems: Gem[] = [];
+    for (const product of topProducts) {
+      const productTotal = productTotals.get(product)!;
+      const productShare = productTotal / total;
+      for (const s of slices.values()) {
+        const countInSlice = s.perProduct.get(product) || 0;
+        if (countInSlice < 8) continue;
+        const expected = s.total * productShare;
+        if (expected <= 0) continue;
+        const lift = countInSlice / expected;
+        if (lift < 1.5) continue;
+        const variance = productShare * (1 - productShare) * s.total;
+        const std = Math.sqrt(variance);
+        const z = std > 0 ? (countInSlice - expected) / std : 0;
+        if (z < 1.96) continue;
+        gems.push({
+          product, kind: s.kind, value: s.value, lift, count: countInSlice,
+          expected, z, score: lift * Math.sqrt(countInSlice),
+        });
+      }
+    }
+    // De-dup: keep strongest gem per product (avoid same product in multiple slices dominating)
+    gems.sort((a, b) => b.score - a.score);
+    const seen = new Set<string>();
+    const unique: Gem[] = [];
+    for (const g of gems) {
+      if (seen.has(g.product)) continue;
+      seen.add(g.product);
+      unique.push(g);
+      if (unique.length >= 5) break;
+    }
+    return unique;
+  })();
+
   // ── AI Insights cache ──
   const dateFromStr = fromKey;
   const dateToStr = toKey;
@@ -603,6 +739,7 @@ export const loader = async ({ request }) => {
     prevDailyMetaOrdersChart,
     topAddonsAll, topAddonsMeta,
     unmatchedConversions, unmatchedRevenue,
+    demoRecords, demoCountries, demoGems,
     fromKey, toKey,
   });
 };
@@ -1020,6 +1157,326 @@ function HeaderTip({ text }: { text: string }) {
   );
 }
 
+// ═══════════════════════════════════════════════════════════════
+// Product Demographics Explorer
+// ═══════════════════════════════════════════════════════════════
+// One tile, three filters (Gender / Age / Country), one ranked bar
+// chart. Gems auto-surface statistically-significant over-indexed
+// combinations at the top — clicking a gem snaps the filters.
+
+const AGE_BRACKETS = ["13-17", "18-24", "25-34", "35-44", "45-54", "55-64", "65+"];
+
+type DemoRecord = { product: string; age: string; gender: string; country: string; revenue: number };
+type DemoGem = {
+  product: string; kind: string; value: string;
+  lift: number; count: number; expected: number; z: number; score: number;
+};
+
+function gemSentence(g: DemoGem, currencySymbol: string): { text: string; filters: { gender: string; ages: string[]; country: string } } {
+  const parts = g.value.split("|");
+  let gender = "All"; const ages: string[] = []; let country = "All";
+  if (g.kind === "gender") gender = parts[0];
+  else if (g.kind === "age") ages.push(parts[0]);
+  else if (g.kind === "country") country = parts[0];
+  else if (g.kind === "gender+age") { gender = parts[0]; ages.push(parts[1]); }
+  else if (g.kind === "gender+country") { gender = parts[0]; country = parts[1]; }
+  else if (g.kind === "age+country") { ages.push(parts[0]); country = parts[1]; }
+
+  // Friendly description of the slice
+  const sliceLabel = (() => {
+    if (g.kind === "gender") return gender === "Male" ? "men" : gender === "Female" ? "women" : "unknown-gender buyers";
+    if (g.kind === "age") return `buyers aged ${ages[0]}`;
+    if (g.kind === "country") return `buyers in ${country}`;
+    if (g.kind === "gender+age") return `${gender === "Male" ? "men" : gender === "Female" ? "women" : "buyers"} aged ${ages[0]}`;
+    if (g.kind === "gender+country") return `${gender === "Male" ? "men" : gender === "Female" ? "women" : "buyers"} in ${country}`;
+    if (g.kind === "age+country") return `${ages[0]} buyers in ${country}`;
+    return "this segment";
+  })();
+  const liftText = `${g.lift.toFixed(1)}×`;
+  return {
+    text: `${g.product} is ${liftText} more popular with ${sliceLabel} (${g.count} purchases vs ~${Math.round(g.expected)} expected)`,
+    filters: { gender, ages, country },
+  };
+}
+
+function ProductDemographicsExplorer({ records, countries, gems, currencySymbol }: {
+  records: DemoRecord[];
+  countries: string[];
+  gems: DemoGem[];
+  currencySymbol: string;
+}) {
+  const [gender, setGender] = useState<"All" | "Female" | "Male" | "Unknown">("All");
+  const [ages, setAges] = useState<string[]>([]); // empty = all
+  const [country, setCountry] = useState<string>("All");
+  const [sortBy, setSortBy] = useState<"units" | "revenue">("units");
+
+  const toggleAge = (bracket: string) => {
+    setAges((prev) => prev.includes(bracket) ? prev.filter((a) => a !== bracket) : [...prev, bracket]);
+  };
+
+  const applyGem = (g: DemoGem) => {
+    const { filters } = gemSentence(g, currencySymbol);
+    setGender(filters.gender as any);
+    setAges(filters.ages);
+    setCountry(filters.country);
+  };
+
+  const filtered = useMemo(() => {
+    return records.filter((r) => {
+      if (gender !== "All" && r.gender !== gender) return false;
+      if (ages.length > 0 && !ages.includes(r.age)) return false;
+      if (country !== "All" && r.country !== country) return false;
+      return true;
+    });
+  }, [records, gender, ages, country]);
+
+  const topProducts = useMemo(() => {
+    const agg = new Map<string, { units: number; revenue: number }>();
+    for (const r of filtered) {
+      const e = agg.get(r.product) || { units: 0, revenue: 0 };
+      e.units++;
+      e.revenue += r.revenue;
+      agg.set(r.product, e);
+    }
+    return [...agg.entries()]
+      .map(([product, v]) => ({ product, ...v }))
+      .sort((a, b) => sortBy === "units" ? b.units - a.units : b.revenue - a.revenue)
+      .slice(0, 10);
+  }, [filtered, sortBy]);
+
+  const insight = useMemo(() => {
+    if (filtered.length === 0) return "";
+    // Compose a one-liner: dominant gender + dominant age
+    const genderCount: Record<string, number> = {};
+    const ageCount: Record<string, number> = {};
+    const countryCount: Record<string, number> = {};
+    for (const r of filtered) {
+      genderCount[r.gender] = (genderCount[r.gender] || 0) + 1;
+      ageCount[r.age] = (ageCount[r.age] || 0) + 1;
+      countryCount[r.country] = (countryCount[r.country] || 0) + 1;
+    }
+    const total = filtered.length;
+    const [topGen, topGenN] = Object.entries(genderCount).sort((a, b) => b[1] - a[1])[0] || [null, 0];
+    const [topAge, topAgeN] = Object.entries(ageCount).sort((a, b) => b[1] - a[1])[0] || [null, 0];
+    const [topCountry, topCountryN] = Object.entries(countryCount).sort((a, b) => b[1] - a[1])[0] || [null, 0];
+    const bits: string[] = [];
+    if (topGen && topGenN / total >= 0.55) bits.push(`${Math.round(topGenN / total * 100)}% ${topGen === "Male" ? "men" : topGen === "Female" ? "women" : "unknown-gender"}`);
+    if (topAge && topAgeN / total >= 0.25) bits.push(`${Math.round(topAgeN / total * 100)}% aged ${topAge}`);
+    if (topCountry && topCountryN / total >= 0.25) bits.push(`${Math.round(topCountryN / total * 100)}% in ${topCountry}`);
+    if (bits.length === 0) return `${total.toLocaleString()} purchases across ${Object.keys(ageCount).length} age brackets and ${Object.keys(countryCount).length} countries.`;
+    return `${bits.join(" · ")} — out of ${total.toLocaleString()} purchases.`;
+  }, [filtered]);
+
+  const maxValue = topProducts.length > 0
+    ? (sortBy === "units" ? topProducts[0].units : topProducts[0].revenue)
+    : 1;
+
+  const activeFilterCount = (gender !== "All" ? 1 : 0) + ages.length + (country !== "All" ? 1 : 0);
+
+  return (
+    <Card>
+      <BlockStack gap="400">
+        <BlockStack gap="100">
+          <Text as="h2" variant="headingMd">Product Demographics Explorer</Text>
+          <Text as="p" variant="bodySm" tone="subdued">
+            Top products among Meta-acquired customers (Meta New + Meta Repeat) — filter by gender, age, and country to see what each segment buys.
+          </Text>
+        </BlockStack>
+
+        {/* Gems strip */}
+        {gems.length > 0 && (
+          <div style={{ background: "#FAF5FF", border: "1px solid #E9D5FF", borderRadius: "8px", padding: "12px 14px" }}>
+            <div style={{ fontSize: "12px", fontWeight: 700, color: "#6B21A8", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "8px" }}>
+              Gems spotted in this period
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+              {gems.map((g, i) => {
+                const { text } = gemSentence(g, currencySymbol);
+                return (
+                  <button
+                    key={i}
+                    onClick={() => applyGem(g)}
+                    style={{
+                      textAlign: "left", background: "#fff", border: "1px solid #E9D5FF",
+                      borderRadius: "6px", padding: "8px 12px", fontSize: "13px", color: "#1F2937",
+                      cursor: "pointer", transition: "background 0.15s",
+                    }}
+                    onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = "#F5F3FF"; }}
+                    onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = "#fff"; }}
+                  >
+                    <span style={{ color: "#7C3AED", marginRight: "6px" }}>◆</span>
+                    {text}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* Filter bar */}
+        <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+          {/* Gender */}
+          <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+            <span style={{ fontSize: "12px", fontWeight: 600, color: "#6B7280", width: "70px", textTransform: "uppercase", letterSpacing: "0.5px" }}>Gender</span>
+            {(["All", "Female", "Male", "Unknown"] as const).map((g) => (
+              <button
+                key={g}
+                onClick={() => setGender(g)}
+                style={{
+                  padding: "6px 12px", fontSize: "12px", fontWeight: 600,
+                  borderRadius: "6px", cursor: "pointer",
+                  background: gender === g ? "#7C3AED" : "#fff",
+                  color: gender === g ? "#fff" : "#4B5563",
+                  border: `1px solid ${gender === g ? "#7C3AED" : "#E5E7EB"}`,
+                  transition: "all 0.15s",
+                }}
+              >
+                {g}
+              </button>
+            ))}
+          </div>
+
+          {/* Age */}
+          <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+            <span style={{ fontSize: "12px", fontWeight: 600, color: "#6B7280", width: "70px", textTransform: "uppercase", letterSpacing: "0.5px" }}>Age</span>
+            <button
+              onClick={() => setAges([])}
+              style={{
+                padding: "6px 12px", fontSize: "12px", fontWeight: 600,
+                borderRadius: "6px", cursor: "pointer",
+                background: ages.length === 0 ? "#7C3AED" : "#fff",
+                color: ages.length === 0 ? "#fff" : "#4B5563",
+                border: `1px solid ${ages.length === 0 ? "#7C3AED" : "#E5E7EB"}`,
+              }}
+            >
+              All
+            </button>
+            {AGE_BRACKETS.map((b) => {
+              const selected = ages.includes(b);
+              return (
+                <button
+                  key={b}
+                  onClick={() => toggleAge(b)}
+                  style={{
+                    padding: "6px 12px", fontSize: "12px", fontWeight: 600,
+                    borderRadius: "6px", cursor: "pointer",
+                    background: selected ? "#7C3AED" : "#fff",
+                    color: selected ? "#fff" : "#4B5563",
+                    border: `1px solid ${selected ? "#7C3AED" : "#E5E7EB"}`,
+                  }}
+                >
+                  {b}
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Country */}
+          <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+            <span style={{ fontSize: "12px", fontWeight: 600, color: "#6B7280", width: "70px", textTransform: "uppercase", letterSpacing: "0.5px" }}>Country</span>
+            <select
+              value={country}
+              onChange={(e) => setCountry(e.target.value)}
+              style={{
+                padding: "6px 10px", fontSize: "12px", fontWeight: 600,
+                borderRadius: "6px", border: "1px solid #E5E7EB",
+                background: country !== "All" ? "#F5F3FF" : "#fff",
+                color: "#4B5563", cursor: "pointer", minWidth: "200px",
+              }}
+            >
+              <option value="All">All countries</option>
+              {countries.map((c) => <option key={c} value={c}>{c}</option>)}
+            </select>
+            {activeFilterCount > 0 && (
+              <button
+                onClick={() => { setGender("All"); setAges([]); setCountry("All"); }}
+                style={{
+                  padding: "6px 12px", fontSize: "12px", fontWeight: 500,
+                  borderRadius: "6px", cursor: "pointer",
+                  background: "transparent", color: "#6B7280",
+                  border: "1px solid transparent", textDecoration: "underline",
+                }}
+              >
+                Clear all filters
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Sort toggle */}
+        <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+          <span style={{ fontSize: "12px", fontWeight: 600, color: "#6B7280", textTransform: "uppercase", letterSpacing: "0.5px" }}>Sort by</span>
+          <div style={{ display: "inline-flex", borderRadius: "6px", border: "1px solid #E5E7EB", overflow: "hidden" }}>
+            {(["units", "revenue"] as const).map((s) => (
+              <button
+                key={s}
+                onClick={() => setSortBy(s)}
+                style={{
+                  padding: "6px 14px", fontSize: "12px", fontWeight: 600,
+                  background: sortBy === s ? "#7C3AED" : "#fff",
+                  color: sortBy === s ? "#fff" : "#4B5563",
+                  border: "none", cursor: "pointer",
+                }}
+              >
+                {s === "units" ? "Units" : "Revenue"}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Bar chart */}
+        {topProducts.length === 0 ? (
+          <div style={{ color: "#9CA3AF", fontSize: "13px", padding: "24px 0", textAlign: "center" }}>
+            No purchases match these filters.
+          </div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+            {topProducts.map((p, i) => {
+              const value = sortBy === "units" ? p.units : p.revenue;
+              const widthPct = Math.max((value / maxValue) * 100, 2);
+              const valueLabel = sortBy === "units"
+                ? `${p.units.toLocaleString()} units`
+                : `${currencySymbol}${Math.round(p.revenue).toLocaleString()}`;
+              const secondary = sortBy === "units"
+                ? `${currencySymbol}${Math.round(p.revenue).toLocaleString()}`
+                : `${p.units.toLocaleString()} units`;
+              return (
+                <div key={p.product} style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                  <div style={{ width: "28px", fontSize: "12px", color: "#9CA3AF", fontWeight: 600, textAlign: "right" }}>{i + 1}.</div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: "13px", fontWeight: 600, color: "#1F2937", marginBottom: "3px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                      {p.product}
+                    </div>
+                    <div style={{ position: "relative", height: "22px", background: "#F3F4F6", borderRadius: "4px", overflow: "hidden" }}>
+                      <div style={{
+                        height: "100%", width: `${widthPct}%`,
+                        background: "linear-gradient(90deg, #7C3AED, #A78BFA)",
+                        borderRadius: "4px", transition: "width 0.4s ease",
+                      }} />
+                      <div style={{
+                        position: "absolute", right: "8px", top: "50%", transform: "translateY(-50%)",
+                        fontSize: "11px", color: "#1F2937",
+                      }}>
+                        <strong>{valueLabel}</strong>
+                        <span style={{ color: "#6B7280", marginLeft: "8px" }}>· {secondary}</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {/* Dynamic insight */}
+        {insight && (
+          <Text as="p" variant="bodySm" tone="subdued">{insight}</Text>
+        )}
+      </BlockStack>
+    </Card>
+  );
+}
+
 export default function Products() {
   const {
     rows, currencySymbol: cs, imageMap,
@@ -1037,6 +1494,7 @@ export default function Products() {
     prevDailyMetaOrdersChart,
     topAddonsAll, topAddonsMeta,
     unmatchedConversions, unmatchedRevenue,
+    demoRecords, demoCountries, demoGems,
     fromKey, toKey,
   } = useLoaderData<typeof loader>();
 
@@ -1354,6 +1812,14 @@ export default function Products() {
             />
           ) : (
             <SummaryTile label="Highest Refunded Item" value={"\u2014"} subtitle="Not enough refund signal yet (5+ orders required)" tooltip={{ definition: "Product the matcher is most statistically confident has a high refund rate. Min 5 orders to enter the ranking." }} />
+          )},
+          { id: "productDemographicsExplorer", label: "Product Demographics Explorer", span: 4, render: () => (
+            <ProductDemographicsExplorer
+              records={demoRecords || []}
+              countries={demoCountries || []}
+              gems={demoGems || []}
+              currencySymbol={cs}
+            />
           )},
           { id: "refundRate", label: "Refund Rate Table", span: 2, render: () => (
             <Card>
