@@ -2963,7 +2963,7 @@ export default function Campaigns() {
           isStale={aiIsStale}
           currencySymbol={cs}
         />
-        <PageSummary bullets={summaryBullets} />
+        <PageSummary bullets={summaryBullets} fromKey={fromKey} toKey={toKey} />
         {/* Breadcrumb */}
         {breadcrumbs.length > 0 && (
           <InlineStack gap="100" blockAlign="center">

@@ -505,6 +505,7 @@ export const loader = async ({ request }) => {
     aiCachedInsights,
     aiGeneratedAt,
     aiIsStale,
+    fromKey, toKey,
   });
 };
 
@@ -728,6 +729,7 @@ export default function GeoPerformance() {
     overallRows, campaignEntities, adsetEntities, adEntities,
     shopifyByCountry, currencySymbol, hasData,
     aiCachedInsights, aiGeneratedAt, aiIsStale,
+    fromKey, toKey,
   } = useLoaderData<typeof loader>();
   const cs = currencySymbol || "\u00a3";
 
@@ -1105,7 +1107,7 @@ export default function GeoPerformance() {
             isStale={aiIsStale}
             currencySymbol={cs}
           />
-          <PageSummary bullets={summaryBullets} />
+          <PageSummary bullets={summaryBullets} fromKey={fromKey} toKey={toKey} />
 
           {/* ═══ 0. QUICK-STAT TILES ═══ */}
           <TileGrid pageId="geo-v2" columns={4} tiles={[

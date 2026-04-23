@@ -528,6 +528,11 @@ export const loader = async ({ request }) => {
           shopDomain,
           isOnlineStore: true,
           createdAt: { gte: fromDate, lte: toDate },
+          // Exclude £0 orders from geo aggregation. These are typically
+          // in-house/staff test orders that would otherwise bloat city/
+          // country counts (e.g. London) without representing real customers.
+          // Matches the rollup convention set in commit a02b4f8.
+          frozenTotalPrice: { gt: 0 },
         },
         select: {
           shopifyOrderId: true, shopifyCustomerId: true,
@@ -1040,6 +1045,7 @@ export const loader = async ({ request }) => {
     unmatchedConversions, unmatchedRevenue,
     ltvBenchmark, ltvTile, ltvRecent, ltvMonthly,
     weeklyCohortSeries,
+    fromKey, toKey,
   });
 };
 
@@ -2191,7 +2197,7 @@ export default function Customers() {
           isStale={aiIsStale}
           currencySymbol={cs}
         />
-        <PageSummary bullets={summaryBullets} />
+        <PageSummary bullets={summaryBullets} fromKey={data.fromKey} toKey={data.toKey} />
 
         {/* ═══ ALL TILES (drag/drop, show/hide) ═══ */}
         <TileGrid pageId="customers-v8" columns={4} tiles={[
@@ -2284,28 +2290,29 @@ export default function Customers() {
               <div className="demo-grid">
                 {/* Age distribution */}
                 <div>
-                  <div style={{ fontSize: "12px", fontWeight: 600, color: "#6B7280", marginBottom: "8px", textTransform: "uppercase", letterSpacing: "0.5px" }}>
-                    Age
-                  </div>
-                  {activeAgeBreakdown.length > 0 ? (
-                    <>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px", minHeight: "28px", marginBottom: "8px" }}>
+                    <div style={{ fontSize: "12px", fontWeight: 600, color: "#6B7280", textTransform: "uppercase", letterSpacing: "0.5px" }}>
+                      Age
+                    </div>
+                    {activeAgeBreakdown.length > 0 && (
                       <MetricSelector
                         options={[{ value: "cpa", label: "CPA" }, { value: "roas", label: "ROAS" }, { value: "aov", label: "AOV" }]}
                         active={demoMetric}
                         onChange={setDemoMetric}
                       />
-                      <div style={{ height: "8px" }} />
-                      <HBarChart
-                        items={activeAgeBreakdown.map((a: any) => ({
-                          label: a.label,
-                          value: a.conversions,
-                          subValue: demoSubValue(a),
-                        }))}
-                        colorFn={(i) => ageColors[i % ageColors.length]}
-                        formatValue={(v) => v.toLocaleString()}
-                        maxItems={10}
-                      />
-                    </>
+                    )}
+                  </div>
+                  {activeAgeBreakdown.length > 0 ? (
+                    <HBarChart
+                      items={activeAgeBreakdown.map((a: any) => ({
+                        label: a.label,
+                        value: a.conversions,
+                        subValue: demoSubValue(a),
+                      }))}
+                      colorFn={(i) => ageColors[i % ageColors.length]}
+                      formatValue={(v) => v.toLocaleString()}
+                      maxItems={10}
+                    />
                   ) : (
                     <div style={{ color: "#9CA3AF", fontSize: "13px", padding: "12px 0" }}>No age data available</div>
                   )}
@@ -2313,8 +2320,10 @@ export default function Customers() {
 
                 {/* Gender split */}
                 <div>
-                  <div style={{ fontSize: "12px", fontWeight: 600, color: "#6B7280", marginBottom: "8px", textTransform: "uppercase", letterSpacing: "0.5px" }}>
-                    Gender
+                  <div style={{ display: "flex", alignItems: "center", minHeight: "28px", marginBottom: "8px" }}>
+                    <div style={{ fontSize: "12px", fontWeight: 600, color: "#6B7280", textTransform: "uppercase", letterSpacing: "0.5px" }}>
+                      Gender
+                    </div>
                   </div>
                   {activeGenderBreakdown.length > 0 ? (
                     <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
@@ -2406,20 +2415,13 @@ export default function Customers() {
                   <button className={`toggle-btn ${geoScope === "all" ? "active" : ""}`} onClick={() => { setGeoScope("all"); if (geoMetric === "cpa" || geoMetric === "roas") setGeoMetric("rev"); }}>All Customers</button>
                 </div>
               </div>
-              <MetricSelector
-                options={[
-                  { value: "rev", label: "Revenue" },
-                  { value: "aov", label: "AOV" },
-                  ...(geoIsMeta ? [{ value: "cpa", label: "CPA" }, { value: "roas", label: "ROAS" }] : []),
-                ]}
-                active={geoMetric}
-                onChange={setGeoMetric}
-              />
               <div className="demo-grid">
                 {/* Countries */}
                 <div>
-                  <div style={{ fontSize: "12px", fontWeight: 600, color: "#6B7280", marginBottom: "8px", textTransform: "uppercase", letterSpacing: "0.5px" }}>
-                    Top Countries
+                  <div style={{ display: "flex", alignItems: "center", minHeight: "28px", marginBottom: "8px" }}>
+                    <div style={{ fontSize: "12px", fontWeight: 600, color: "#6B7280", textTransform: "uppercase", letterSpacing: "0.5px" }}>
+                      Top Countries
+                    </div>
                   </div>
                   {activeGeoCountries.length > 0 ? (
                     <HBarChart
@@ -2441,8 +2443,19 @@ export default function Customers() {
 
                 {/* Cities */}
                 <div>
-                  <div style={{ fontSize: "12px", fontWeight: 600, color: "#6B7280", marginBottom: "8px", textTransform: "uppercase", letterSpacing: "0.5px" }}>
-                    Top Cities
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px", minHeight: "28px", marginBottom: "8px" }}>
+                    <div style={{ fontSize: "12px", fontWeight: 600, color: "#6B7280", textTransform: "uppercase", letterSpacing: "0.5px" }}>
+                      Top Cities
+                    </div>
+                    <MetricSelector
+                      options={[
+                        { value: "rev", label: "Revenue" },
+                        { value: "aov", label: "AOV" },
+                        ...(geoIsMeta ? [{ value: "cpa", label: "CPA" }, { value: "roas", label: "ROAS" }] : []),
+                      ]}
+                      active={geoMetric}
+                      onChange={setGeoMetric}
+                    />
                   </div>
                   {activeGeoCities.length > 0 ? (
                     <HBarChart

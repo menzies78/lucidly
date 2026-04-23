@@ -13,6 +13,22 @@ export interface SummaryBullet {
 interface PageSummaryProps {
   title?: string;
   bullets: SummaryBullet[];
+  fromKey?: string; // YYYY-MM-DD — when provided alongside toKey, title becomes "Summary for <range>"
+  toKey?: string;
+}
+
+// Parse a YYYY-MM-DD date key as UTC so toLocaleDateString doesn't drift
+// across timezones when rendering server-side vs browser-local.
+function formatDateKey(key: string): string {
+  const [y, m, d] = key.split("-").map(Number);
+  const date = new Date(Date.UTC(y, m - 1, d));
+  return date.toLocaleDateString("en-GB", { day: "numeric", month: "short", timeZone: "UTC" });
+}
+
+function rangeLabel(fromKey: string, toKey: string): string {
+  const [yTo] = toKey.split("-").map(Number);
+  if (fromKey === toKey) return `${formatDateKey(fromKey)} ${yTo}`;
+  return `${formatDateKey(fromKey)} – ${formatDateKey(toKey)} ${yTo}`;
 }
 
 // ── Styles ──
@@ -31,11 +47,13 @@ const TONE_COLOR: Record<SummaryTone, string> = {
 // tied to the currently selected date range. Always single-column,
 // left-aligned.
 
-export default function PageSummary({ title = "Summary", bullets }: PageSummaryProps) {
+export default function PageSummary({ title, bullets, fromKey, toKey }: PageSummaryProps) {
+  const resolvedTitle = title
+    ?? (fromKey && toKey ? `Summary for ${rangeLabel(fromKey, toKey)}` : "Summary");
   return (
     <Card>
       <BlockStack gap="300">
-        <Text as="h2" variant="headingMd">{title}</Text>
+        <Text as="h2" variant="headingMd">{resolvedTitle}</Text>
         {bullets.length === 0 ? (
           <Text as="p" tone="subdued" variant="bodySm">No data for this period.</Text>
         ) : (

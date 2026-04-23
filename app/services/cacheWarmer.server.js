@@ -451,7 +451,8 @@ async function warmShop(shopDomain) {
         ),
         queryCached(`${shopDomain}:geoOrders:${fromKey}:${toKey}`, TTL, () =>
           db.order.findMany({
-            where: { shopDomain, isOnlineStore: true, createdAt: { gte: from, lte: to } },
+            // Exclude £0 orders (in-house / staff) — see commit a02b4f8.
+            where: { shopDomain, isOnlineStore: true, frozenTotalPrice: { gt: 0 }, createdAt: { gte: from, lte: to } },
           }),
         ),
       ]);

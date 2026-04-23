@@ -603,6 +603,7 @@ export const loader = async ({ request }) => {
     prevDailyMetaOrdersChart,
     topAddonsAll, topAddonsMeta,
     unmatchedConversions, unmatchedRevenue,
+    fromKey, toKey,
   });
 };
 
@@ -628,7 +629,7 @@ export const action = async ({ request }) => {
         const { fromDate, toDate, fromKey: dateFromStr, toKey: dateToStr } = parseDateRange(request, tz);
         const cs = (shop?.shopifyCurrency || "GBP") === "GBP" ? "\u00a3" : (shop?.shopifyCurrency || "GBP") === "EUR" ? "\u20ac" : "$";
 
-        const orders = await db.order.findMany({ where: { shopDomain, isOnlineStore: true, createdAt: { gte: fromDate, lte: toDate } } });
+        const orders = await db.order.findMany({ where: { shopDomain, isOnlineStore: true, frozenTotalPrice: { gt: 0 }, createdAt: { gte: fromDate, lte: toDate } } });
         const attributions = await db.attribution.findMany({ where: { shopDomain, confidence: { gt: 0 } } });
         const attrMap = {};
         for (const a of attributions) attrMap[a.shopifyOrderId] = a;
@@ -1036,6 +1037,7 @@ export default function Products() {
     prevDailyMetaOrdersChart,
     topAddonsAll, topAddonsMeta,
     unmatchedConversions, unmatchedRevenue,
+    fromKey, toKey,
   } = useLoaderData<typeof loader>();
 
   const fmtPrice = (v: number) => `${cs}${Math.round(v).toLocaleString()}`;
@@ -1292,7 +1294,7 @@ export default function Products() {
           isStale={aiIsStale}
           currencySymbol={cs}
         />
-        <PageSummary bullets={summaryBullets} />
+        <PageSummary bullets={summaryBullets} fromKey={fromKey} toKey={toKey} />
 
         {/* ── All tiles (drag/drop, show/hide) — everything except main table ── */}
         <TileGrid pageId="products" columns={4} tiles={[
