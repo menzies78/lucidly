@@ -2021,6 +2021,28 @@ export default function Customers() {
       });
     }
 
+    // 1b) CAC split by gender. Uses newGenderBreakdown.spend, which is
+    // (all-Meta avg CPA) × new conversions — same basis as the CPA chips
+    // under the Gender split on the Customer Demographics tile, so numbers
+    // tie out between the summary and the chart.
+    {
+      const femSpend = female?.spend || 0;
+      const maleSpend = male?.spend || 0;
+      const femConv = female?.conversions || 0;
+      const maleConv = male?.conversions || 0;
+      const femCpa = femConv > 0 ? Math.round(femSpend / femConv) : null;
+      const maleCpa = maleConv > 0 ? Math.round(maleSpend / maleConv) : null;
+      if (femCpa != null || maleCpa != null) {
+        const parts: string[] = [];
+        if (femCpa != null) parts.push(`${cs}${femCpa.toLocaleString()} female`);
+        if (maleCpa != null) parts.push(`${cs}${maleCpa.toLocaleString()} male`);
+        out.push({
+          tone: "neutral",
+          text: <><strong>CAC by gender:</strong> {parts.join(" · ")}</>,
+        });
+      }
+    }
+
     // 2) Top country + top city — identical data source and denominator
     // as the Customer Geography tile below (metaNewTopCountries/Cities +
     // metaNewGeoCount from geoBlob, customer-count based, all-time).
@@ -2638,80 +2660,87 @@ export default function Customers() {
                 const ltvCacRatio = cac > 0 ? Math.round(heroLtv / cac * 100) / 100 : 0;
                 const windowLabel = (d: number) => d >= 365 ? `${Math.round(d / 365)}yr` : `${d}d`;
 
+                const paybackDays = payback > 0 && medT2 != null
+                  ? (payback <= 1 ? 0 : Math.round(medT2 * (payback - 1)))
+                  : null;
+                const ratioColor = ltvCacRatio >= 3 ? "#059669" : ltvCacRatio >= 2 ? "#1F2937" : ltvCacRatio >= 1 ? "#D97706" : "#DC2626";
+                const ratioBlurb = ltvCacRatio >= 3 ? `Healthy — every ${cs}1 of ad spend returns ${cs}${ltvCacRatio.toFixed(2)} over ${heroLabel.replace(" LTV", "")}`
+                  : ltvCacRatio >= 2 ? `On track — ${cs}1 spent returns ${cs}${ltvCacRatio.toFixed(2)}`
+                  : ltvCacRatio >= 1 ? "Thin margin — lift repeat rate or lower CAC"
+                  : ltvCacRatio > 0 ? "Unprofitable — CAC is outpacing LTV"
+                  : "Not enough mature customers yet";
+
                 return (
                   <div>
-                    <div style={{ display: "flex", gap: "0", alignItems: "stretch", marginBottom: "20px" }}>
-                      <div style={{
-                        flex: "0 0 220px", padding: "20px 24px",
-                        background: "linear-gradient(135deg, #7C3AED 0%, #5B21B6 100%)",
-                        borderRadius: "10px", display: "flex", flexDirection: "column",
-                        justifyContent: "center", alignItems: "center", gap: "4px",
-                        position: "relative", overflow: "hidden",
-                      }}>
-                        <div style={{ position: "absolute", top: "-20px", right: "-20px", width: "80px", height: "80px", borderRadius: "50%", background: "rgba(255,255,255,0.08)" }} />
-                        <div style={{ position: "absolute", bottom: "-30px", left: "-15px", width: "60px", height: "60px", borderRadius: "50%", background: "rgba(255,255,255,0.05)" }} />
-                        <div style={{ fontSize: "11px", fontWeight: 600, color: "rgba(255,255,255,0.7)", textTransform: "uppercase", letterSpacing: "1px" }}>{heroLabel}</div>
-                        <div style={{ fontSize: "36px", fontWeight: 800, color: "#fff", lineHeight: 1.1 }}>
+                    {/* Three headline stats: LTV · LTV:CAC · Payback. Non-Meta
+                        tab drops the two CAC-dependent cards. */}
+                    <div style={{ display: "grid", gridTemplateColumns: isMeta ? "1.2fr 1fr 1fr" : "1fr", gap: "14px", marginBottom: "14px" }}>
+                      <div style={{ padding: "18px 22px", background: "linear-gradient(135deg, #EEF2FF 0%, #F5F3FF 100%)", borderRadius: "10px", border: "1px solid #E0E7FF" }}>
+                        <div style={{ fontSize: "11px", fontWeight: 700, color: "#6366F1", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "6px" }}>Lifetime Value</div>
+                        <div style={{ fontSize: "34px", fontWeight: 800, color: "#1F2937", lineHeight: 1.05 }}>
                           {heroLtv > 0 ? `${cs}${Math.round(heroLtv).toLocaleString()}` : "—"}
                         </div>
-                        <div style={{ fontSize: "12px", color: "rgba(255,255,255,0.6)", marginTop: "2px" }}>
+                        <div style={{ fontSize: "12px", color: "#4B5563", marginTop: "6px" }}>
+                          per customer by {heroLabel.replace(" LTV", "")}
+                        </div>
+                        <div style={{ fontSize: "11px", color: "#9CA3AF", marginTop: "2px" }}>
                           {heroCount.toLocaleString()} mature customer{heroCount !== 1 ? "s" : ""}
                         </div>
                       </div>
-                      <div style={{ flex: 1, display: "grid", gridTemplateColumns: isMeta ? "repeat(3, 1fr)" : "repeat(2, 1fr)", gap: "0", marginLeft: "16px" }}>
-                        <div style={{ padding: "12px 16px", borderBottom: "1px solid #F3F4F6" }}>
-                          <div style={{ fontSize: "10px", fontWeight: 600, color: "#9CA3AF", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "4px" }}>Avg Order Value</div>
-                          <div style={{ fontSize: "22px", fontWeight: 700, color: "#1F2937" }}>{avgAov > 0 ? `${cs}${Math.round(avgAov).toLocaleString()}` : "—"}</div>
-                          <div style={{ fontSize: "11px", color: "#9CA3AF" }}>{avgOrds > 0 ? `${avgOrds.toFixed(1)} orders / customer` : ""}</div>
-                        </div>
-                        <div style={{ padding: "12px 16px", borderBottom: "1px solid #F3F4F6" }}>
-                          <div style={{ fontSize: "10px", fontWeight: 600, color: "#9CA3AF", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "4px" }}>Days to 2nd Order</div>
-                          <div style={{ fontSize: "22px", fontWeight: 700, color: "#1F2937" }}>{medT2 !== null ? medT2 : "—"}</div>
-                          <div style={{ fontSize: "11px", color: "#9CA3AF" }}>median days</div>
-                        </div>
-                        {isMeta && (
-                          <div style={{ padding: "12px 16px", borderBottom: "1px solid #F3F4F6" }}>
-                            <div style={{ fontSize: "10px", fontWeight: 600, color: "#9CA3AF", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "4px" }}>LTV : CAC</div>
-                            <div style={{ display: "flex", alignItems: "baseline", gap: "6px" }}>
-                              <span style={{ fontSize: "22px", fontWeight: 700, color: ltvCacRatio >= 3 ? "#059669" : ltvCacRatio >= 1 ? "#D97706" : "#DC2626" }}>{ltvCacRatio > 0 ? `${ltvCacRatio}x` : "—"}</span>
-                              {ltvCacRatio > 0 && (
-                                <span style={{
-                                  fontSize: "10px", fontWeight: 600, padding: "2px 6px", borderRadius: "4px",
-                                  background: ltvCacRatio >= 3 ? "#ECFDF5" : ltvCacRatio >= 1 ? "#FFFBEB" : "#FEF2F2",
-                                  color: ltvCacRatio >= 3 ? "#059669" : ltvCacRatio >= 1 ? "#D97706" : "#DC2626",
-                                }}>{ltvCacRatio >= 3 ? "Healthy" : ltvCacRatio >= 1 ? "Break-even" : "Unprofitable"}</span>
-                              )}
+                      {isMeta && (
+                        <div style={{ padding: "18px 22px", background: "#fff", borderRadius: "10px", border: "1px solid #E5E7EB" }}>
+                          <div style={{ fontSize: "11px", fontWeight: 700, color: "#6366F1", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "6px" }}>LTV : CAC</div>
+                          <div style={{ fontSize: "34px", fontWeight: 800, color: ratioColor, lineHeight: 1.05 }}>
+                            {ltvCacRatio > 0 ? `${ltvCacRatio.toFixed(2)}×` : "—"}
+                          </div>
+                          <div style={{ fontSize: "12px", color: "#4B5563", marginTop: "6px" }}>{ratioBlurb}</div>
+                          {cac > 0 && heroLtv > 0 && (
+                            <div style={{ fontSize: "11px", color: "#9CA3AF", marginTop: "2px" }}>
+                              {cs}{Math.round(heroLtv).toLocaleString()} LTV vs {cs}{Math.round(cac).toLocaleString()} CAC
                             </div>
-                            {cac > 0 && <div style={{ fontSize: "11px", color: "#9CA3AF" }}>{cs}{Math.round(cac)} acquisition cost</div>}
-                          </div>
-                        )}
-                        <div style={{ padding: "12px 16px" }}>
-                          <div style={{ fontSize: "10px", fontWeight: 600, color: "#9CA3AF", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "4px" }}>Repeat Rate</div>
-                          <div style={{ fontSize: "22px", fontWeight: 700, color: "#1F2937" }}>{repeatRate}%</div>
-                          <div style={{ fontSize: "11px", color: "#9CA3AF" }}>{count.toLocaleString()} customers total</div>
+                          )}
                         </div>
-                        {isMeta ? (
-                          <div style={{ padding: "12px 16px" }}>
-                            <div style={{ fontSize: "10px", fontWeight: 600, color: "#9CA3AF", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "4px" }}>Payback Period</div>
-                            <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-                              <span style={{ fontSize: "22px", fontWeight: 700, color: "#1F2937" }}>{payback > 0 ? payback : "—"}</span>
-                              <span style={{ fontSize: "13px", color: "#6B7280" }}>orders</span>
+                      )}
+                      {isMeta && (
+                        <div style={{ padding: "18px 22px", background: "#fff", borderRadius: "10px", border: "1px solid #E5E7EB" }}>
+                          <div style={{ fontSize: "11px", fontWeight: 700, color: "#6366F1", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "6px" }}>Payback</div>
+                          <div style={{ fontSize: "34px", fontWeight: 800, color: "#1F2937", lineHeight: 1.05 }}>
+                            {payback > 0
+                              ? (paybackDays != null ? (paybackDays === 0 ? "Day 1" : `${paybackDays}d`) : `${payback.toFixed(1)} orders`)
+                              : "—"}
+                          </div>
+                          <div style={{ fontSize: "12px", color: "#4B5563", marginTop: "6px" }}>
+                            {payback > 0
+                              ? (payback <= 1
+                                  ? `First order (${cs}${Math.round(avgAov)} AOV) clears ${cs}${Math.round(cac)} CAC`
+                                  : `Recoups ${cs}${Math.round(cac)} CAC over ~${payback.toFixed(1)} orders`)
+                              : cac > 0 ? "Not enough orders to calculate" : ""}
+                          </div>
+                          {payback > 1 && medT2 != null && (
+                            <div style={{ fontSize: "11px", color: "#9CA3AF", marginTop: "2px" }}>
+                              median {medT2}d between 1st and 2nd order
                             </div>
-                          </div>
-                        ) : (
-                          <div style={{ padding: "12px 16px" }}>
-                            <div style={{ fontSize: "10px", fontWeight: 600, color: "#9CA3AF", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "4px" }}>Customers</div>
-                            <div style={{ fontSize: "22px", fontWeight: 700, color: "#1F2937" }}>{count.toLocaleString()}</div>
-                            <div style={{ fontSize: "11px", color: "#9CA3AF" }}>all time</div>
-                          </div>
-                        )}
-                        {isMeta && (
-                          <div style={{ padding: "12px 16px" }}>
-                            <div style={{ fontSize: "10px", fontWeight: 600, color: "#9CA3AF", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "4px" }}>Meta New Customers</div>
-                            <div style={{ fontSize: "22px", fontWeight: 700, color: "#1F2937" }}>{count.toLocaleString()}</div>
-                            <div style={{ fontSize: "11px", color: "#9CA3AF" }}>all time</div>
-                          </div>
-                        )}
+                          )}
+                        </div>
+                      )}
+                    </div>
+                    {/* Secondary row: the three previously-hero-ish stats, now
+                        de-emphasised so the narrative tiles above lead. */}
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "0", marginBottom: "20px", padding: "12px 16px", background: "#FAFAFA", borderRadius: "8px", border: "1px solid #F3F4F6" }}>
+                      <div style={{ borderRight: "1px solid #E5E7EB", paddingRight: "16px" }}>
+                        <div style={{ fontSize: "10px", fontWeight: 600, color: "#9CA3AF", textTransform: "uppercase", letterSpacing: "0.5px" }}>Avg Order</div>
+                        <div style={{ fontSize: "18px", fontWeight: 700, color: "#1F2937", marginTop: "2px" }}>{avgAov > 0 ? `${cs}${Math.round(avgAov).toLocaleString()}` : "—"}</div>
+                        <div style={{ fontSize: "11px", color: "#9CA3AF" }}>{avgOrds > 0 ? `${avgOrds.toFixed(1)} orders / customer` : "no data"}</div>
+                      </div>
+                      <div style={{ borderRight: "1px solid #E5E7EB", padding: "0 16px" }}>
+                        <div style={{ fontSize: "10px", fontWeight: 600, color: "#9CA3AF", textTransform: "uppercase", letterSpacing: "0.5px" }}>Days to 2nd Order</div>
+                        <div style={{ fontSize: "18px", fontWeight: 700, color: "#1F2937", marginTop: "2px" }}>{medT2 != null ? `${medT2}d` : "—"}</div>
+                        <div style={{ fontSize: "11px", color: "#9CA3AF" }}>median across cohort</div>
+                      </div>
+                      <div style={{ paddingLeft: "16px" }}>
+                        <div style={{ fontSize: "10px", fontWeight: 600, color: "#9CA3AF", textTransform: "uppercase", letterSpacing: "0.5px" }}>Repeat Rate</div>
+                        <div style={{ fontSize: "18px", fontWeight: 700, color: "#1F2937", marginTop: "2px" }}>{repeatRate}%</div>
+                        <div style={{ fontSize: "11px", color: "#9CA3AF" }}>{count.toLocaleString()} customer{count !== 1 ? "s" : ""}</div>
                       </div>
                     </div>
                     {(benchmarkWindows.length > 0 || (isMeta ? ltvMonthly?.meta : ltvMonthly?.all)?.rows?.length > 0) && (() => {
@@ -2743,83 +2772,127 @@ export default function Customers() {
                               <button className={`toggle-btn ${ltvView === "cohorts" ? "active" : ""}`} onClick={() => setLtvView("cohorts")}>Cohort Table</button>
                             </div>
                           </div>
-                          {ltvView === "progression" && benchmarkWindows.length > 0 && (
-                            <div>
-                              {(recentData || []).length > 0 && (
-                                <div style={{ display: "flex", gap: "16px", marginBottom: "10px", fontSize: "11px" }}>
-                                  <div style={{ display: "flex", alignItems: "center", gap: "5px" }}>
-                                    <div style={{ width: "14px", height: "10px", borderRadius: "2px", background: "linear-gradient(90deg, #7C3AED, #5B21B6)" }} />
+                          {ltvView === "progression" && benchmarkWindows.length > 0 && (() => {
+                            // Maturation chart. X-axis: days since acquisition
+                            // (0 → last benchmark window). Y-axis: cumulative
+                            // £/customer. Solid purple = benchmark, dashed
+                            // green = latest completed cohort, dashed red =
+                            // CAC. Payback day = where benchmark crosses CAC,
+                            // computed via linear interp between windows.
+                            const recentCap = Math.floor(benchmarkMaxWindow / 2);
+                            const chartWidth = 720;
+                            const chartHeight = 280;
+                            const padL = 56, padR = 24, padT = 18, padB = 42;
+                            const innerW = chartWidth - padL - padR;
+                            const innerH = chartHeight - padT - padB;
+                            const lastWindow = benchmarkWindows[benchmarkWindows.length - 1].window;
+                            const recentCut = (recentData || []).filter((r: any) => r.window <= recentCap);
+                            const ltvMaxRaw = Math.max(
+                              ...benchmarkWindows.map((w: any) => w.avgLtv),
+                              ...recentCut.map((r: any) => r.avgLtv),
+                              isMeta && cac > 0 ? cac * 1.15 : 0,
+                              1,
+                            );
+                            const ltvMax = ltvMaxRaw * 1.08;
+                            const xPos = (day: number) => padL + (day / lastWindow) * innerW;
+                            const yPos = (val: number) => padT + innerH - (val / ltvMax) * innerH;
+                            const benchPts = [{ window: 0, avgLtv: 0 }, ...benchmarkWindows];
+                            const benchPath = benchPts.map((p: any, i: number) => `${i === 0 ? "M" : "L"} ${xPos(p.window).toFixed(1)} ${yPos(p.avgLtv).toFixed(1)}`).join(" ");
+                            const recentPts = recentCut.length > 0 ? [{ window: 0, avgLtv: 0 }, ...recentCut] : [];
+                            const recentPath = recentPts.length > 1 ? recentPts.map((p: any, i: number) => `${i === 0 ? "M" : "L"} ${xPos(p.window).toFixed(1)} ${yPos(p.avgLtv).toFixed(1)}`).join(" ") : "";
+                            let paybackDay: number | null = null;
+                            if (isMeta && cac > 0) {
+                              for (let i = 1; i < benchPts.length; i++) {
+                                const a = benchPts[i - 1], b = benchPts[i];
+                                if (a.avgLtv <= cac && b.avgLtv >= cac && b.avgLtv !== a.avgLtv) {
+                                  paybackDay = Math.round(a.window + (b.window - a.window) * (cac - a.avgLtv) / (b.avgLtv - a.avgLtv));
+                                  break;
+                                }
+                              }
+                            }
+                            const gridVals = [0, ltvMax * 0.25, ltvMax * 0.5, ltvMax * 0.75, ltvMax];
+                            const benchLast = benchmarkWindows[benchmarkWindows.length - 1];
+                            const bench30 = benchmarkWindows.find((p: any) => p.window === 30);
+                            const recent30 = recentByWindow[30];
+                            const growthMultiple = bench30 && bench30.avgLtv > 0 ? benchLast.avgLtv / bench30.avgLtv : 0;
+                            const projected = recent30 && growthMultiple > 0 ? Math.round(recent30.avgLtv * growthMultiple) : null;
+                            return (
+                              <div>
+                                <div style={{ display: "flex", gap: "16px", marginBottom: "12px", fontSize: "11px", flexWrap: "wrap" }}>
+                                  <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                                    <svg width="22" height="8"><line x1="0" y1="4" x2="22" y2="4" stroke="#7C3AED" strokeWidth="2.5" strokeLinecap="round" /></svg>
                                     <span style={{ color: "#6B7280", fontWeight: 500 }}>All-time benchmark</span>
                                   </div>
-                                  <div style={{ display: "flex", alignItems: "center", gap: "5px" }}>
-                                    <div style={{ width: "14px", height: "10px", borderRadius: "2px", background: "#10B981", border: "1px solid #059669" }} />
-                                    <span style={{ color: "#6B7280", fontWeight: 500 }}>Latest completed cohort</span>
-                                  </div>
-                                </div>
-                              )}
-                              <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
-                                {benchmarkWindows.map((step: any, i: number) => {
-                                  const maxLtv = Math.max(...benchmarkWindows.map((x: any) => x.avgLtv), 1);
-                                  const barPct = step.avgLtv > 0 ? Math.max((step.avgLtv / maxLtv) * 100, 8) : 0;
-                                  const recentCap = Math.floor(benchmarkMaxWindow / 2);
-                                  const recent = step.window <= recentCap ? recentByWindow[step.window] : null;
-                                  const recentPct = recent ? Math.max((recent.avgLtv / maxLtv) * 100, 4) : 0;
-                                  const recentDelta = recent && step.avgLtv > 0 ? Math.round(((recent.avgLtv - step.avgLtv) / step.avgLtv) * 100) : null;
-                                  const gradients: Record<number, string> = { 30: "linear-gradient(90deg, #C4B5FD, #A78BFA)", 60: "linear-gradient(90deg, #A78BFA, #8B5CF6)", 90: "linear-gradient(90deg, #8B5CF6, #7C3AED)", 180: "linear-gradient(90deg, #7C3AED, #6D28D9)", 365: "linear-gradient(90deg, #6D28D9, #5B21B6)" };
-                                  const isLast = i === benchmarkWindows.length - 1;
-                                  return (
-                                    <div key={step.window}>
-                                      <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-                                        <div style={{ width: "50px", fontSize: "13px", fontWeight: isLast ? 700 : 600, color: "#4B5563", textAlign: "right", flexShrink: 0 }}>{windowLabel(step.window)}</div>
-                                        <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: "2px" }}>
-                                          <div style={{ height: "26px", background: "#F3F4F6", borderRadius: "5px", overflow: "hidden", position: "relative" }}>
-                                            <div style={{ height: "100%", width: `${barPct}%`, background: gradients[step.window] || gradients[90], borderRadius: "5px", transition: "width 0.6s ease" }} />
-                                            <div style={{ position: "absolute", left: "10px", top: "50%", transform: "translateY(-50%)", display: "flex", alignItems: "baseline", gap: "10px", fontSize: "12px", fontWeight: 700, color: barPct > 35 ? "#fff" : "#1F2937" }}>
-                                              <span>{cs}{Math.round(step.avgLtv).toLocaleString()}</span>
-                                              <span style={{ fontWeight: 500, fontSize: "10px", opacity: 0.8 }}>{step.avgOrders.toFixed(1)} orders · {step.repeatCount} repeats ({step.repeatRate}%) · {step.count} customers</span>
-                                            </div>
-                                          </div>
-                                          {recent && (
-                                            <div style={{ height: "22px", background: "#F0FDF4", borderRadius: "4px", overflow: "hidden", position: "relative" }}>
-                                              <div style={{ height: "100%", width: `${recentPct}%`, background: "linear-gradient(90deg, #34D399, #10B981)", borderRadius: "4px", transition: "width 0.6s ease" }} />
-                                              <div style={{ position: "absolute", left: "10px", top: "50%", transform: "translateY(-50%)", display: "flex", alignItems: "baseline", gap: "10px", fontSize: "11px", fontWeight: 700, color: recentPct > 35 ? "#fff" : "#065F46" }}>
-                                                <span>{cs}{Math.round(recent.avgLtv).toLocaleString()}</span>
-                                                <span style={{ fontWeight: 500, fontSize: "10px", opacity: 0.8 }}>{recent.avgOrders.toFixed(1)} orders · {recent.repeatCount} repeats ({recent.repeatRate}%) · {recent.count} customers</span>
-                                              </div>
-                                            </div>
-                                          )}
-                                        </div>
-                                        <div style={{ width: "65px", fontSize: "11px", textAlign: "right", flexShrink: 0 }}>
-                                          {recentDelta !== null ? (
-                                            <span style={{ fontWeight: 600, color: recentDelta > 0 ? "#059669" : recentDelta < 0 ? "#DC2626" : "#9CA3AF" }}>{recentDelta > 0 ? "+" : ""}{recentDelta}%</span>
-                                          ) : (
-                                            i > 0 && benchmarkWindows[i - 1].avgLtv > 0 ? (() => {
-                                              const delta = Math.round(((step.avgLtv - benchmarkWindows[i - 1].avgLtv) / benchmarkWindows[i - 1].avgLtv) * 100);
-                                              return delta > 0 ? <span style={{ color: "#059669", fontWeight: 600 }}>+{delta}%</span> : <span style={{ color: "#9CA3AF" }}>—</span>;
-                                            })() : <span style={{ color: "#9CA3AF" }}>base</span>
-                                          )}
-                                        </div>
-                                      </div>
+                                  {recentPath && (
+                                    <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                                      <svg width="22" height="8"><line x1="0" y1="4" x2="22" y2="4" stroke="#10B981" strokeWidth="2.5" strokeDasharray="5 3" strokeLinecap="round" /></svg>
+                                      <span style={{ color: "#6B7280", fontWeight: 500 }}>Latest completed cohort</span>
                                     </div>
-                                  );
-                                })}
-                              </div>
-                              {(() => {
-                                const recent30 = recentByWindow[30];
-                                const benchLast = benchmarkWindows[benchmarkWindows.length - 1];
-                                const bench30 = benchmarkWindows.find((p: any) => p.window === 30);
-                                if (!recent30 || !bench30 || !benchLast || bench30.avgLtv === 0) return null;
-                                const growthMultiple = benchLast.avgLtv / bench30.avgLtv;
-                                const projected = Math.round(recent30.avgLtv * growthMultiple);
-                                return (
-                                  <div style={{ marginTop: "12px", padding: "10px 16px", background: "#ECFDF5", borderRadius: "8px", border: "1px solid #A7F3D0", fontSize: "13px", color: "#065F46" }}>
-                                    <strong>Projected:</strong> If the latest cohort follows the benchmark growth curve, their {windowLabel(benchLast.window)} LTV would be ~<strong>{cs}{projected.toLocaleString()}</strong>
-                                    {" "}(based on {(growthMultiple).toFixed(2)}x growth from 30d to {windowLabel(benchLast.window)})
+                                  )}
+                                  {isMeta && cac > 0 && (
+                                    <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                                      <svg width="22" height="8"><line x1="0" y1="4" x2="22" y2="4" stroke="#DC2626" strokeWidth="1.5" strokeDasharray="2 2" /></svg>
+                                      <span style={{ color: "#6B7280", fontWeight: 500 }}>CAC ({cs}{Math.round(cac).toLocaleString()})</span>
+                                    </div>
+                                  )}
+                                </div>
+                                <svg viewBox={`0 0 ${chartWidth} ${chartHeight}`} style={{ width: "100%", height: "auto", maxHeight: 300, display: "block" }}>
+                                  {gridVals.map((v, i) => (
+                                    <g key={i}>
+                                      <line x1={padL} x2={chartWidth - padR} y1={yPos(v)} y2={yPos(v)} stroke="#F3F4F6" strokeWidth="1" />
+                                      <text x={padL - 6} y={yPos(v) + 3} textAnchor="end" fontSize="10" fill="#9CA3AF">{cs}{Math.round(v).toLocaleString()}</text>
+                                    </g>
+                                  ))}
+                                  {benchmarkWindows.map((w: any) => (
+                                    <g key={w.window}>
+                                      <line x1={xPos(w.window)} x2={xPos(w.window)} y1={padT + innerH} y2={padT + innerH + 4} stroke="#9CA3AF" />
+                                      <text x={xPos(w.window)} y={chartHeight - padB + 18} textAnchor="middle" fontSize="10" fill="#6B7280">{windowLabel(w.window)}</text>
+                                    </g>
+                                  ))}
+                                  {isMeta && cac > 0 && cac < ltvMax && (
+                                    <line x1={padL} x2={chartWidth - padR} y1={yPos(cac)} y2={yPos(cac)} stroke="#DC2626" strokeWidth="1.5" strokeDasharray="2 2" />
+                                  )}
+                                  <path d={benchPath} fill="none" stroke="#7C3AED" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+                                  {benchmarkWindows.map((p: any) => (
+                                    <g key={p.window}>
+                                      <circle cx={xPos(p.window)} cy={yPos(p.avgLtv)} r="4" fill="#7C3AED" />
+                                      <text x={xPos(p.window)} y={yPos(p.avgLtv) - 10} textAnchor="middle" fontSize="10" fontWeight="600" fill="#5B21B6">{cs}{Math.round(p.avgLtv).toLocaleString()}</text>
+                                    </g>
+                                  ))}
+                                  {recentPath && (
+                                    <>
+                                      <path d={recentPath} fill="none" stroke="#10B981" strokeWidth="2.5" strokeDasharray="5 3" strokeLinecap="round" strokeLinejoin="round" />
+                                      {recentCut.map((p: any) => (
+                                        <circle key={p.window} cx={xPos(p.window)} cy={yPos(p.avgLtv)} r="3.5" fill="#10B981" />
+                                      ))}
+                                    </>
+                                  )}
+                                  {paybackDay != null && (
+                                    <g>
+                                      <line x1={xPos(paybackDay)} x2={xPos(paybackDay)} y1={yPos(cac)} y2={padT + innerH} stroke="#DC2626" strokeWidth="1" strokeDasharray="2 2" />
+                                      <circle cx={xPos(paybackDay)} cy={yPos(cac)} r="5" fill="#fff" stroke="#DC2626" strokeWidth="2" />
+                                      <text x={xPos(paybackDay)} y={yPos(cac) - 10} textAnchor="middle" fontSize="10" fontWeight="700" fill="#DC2626">Payback ~{paybackDay}d</text>
+                                    </g>
+                                  )}
+                                </svg>
+                                {isMeta && paybackDay != null && (
+                                  <div style={{ marginTop: "10px", padding: "10px 14px", background: "#ECFDF5", border: "1px solid #A7F3D0", borderRadius: "8px", fontSize: "13px", color: "#065F46" }}>
+                                    <strong>Payback:</strong> Meta customers recoup their {cs}{Math.round(cac).toLocaleString()} acquisition cost around day {paybackDay}. By {windowLabel(lastWindow)}, cumulative spend reaches {cs}{Math.round(benchLast.avgLtv).toLocaleString()} per customer ({ltvCacRatio.toFixed(2)}× CAC).
                                   </div>
-                                );
-                              })()}
-                            </div>
-                          )}
+                                )}
+                                {isMeta && paybackDay == null && cac > 0 && benchLast.avgLtv > 0 && (
+                                  <div style={{ marginTop: "10px", padding: "10px 14px", background: "#FFFBEB", border: "1px solid #FCD34D", borderRadius: "8px", fontSize: "13px", color: "#92400E" }}>
+                                    <strong>Payback:</strong> benchmark LTV at {windowLabel(lastWindow)} ({cs}{Math.round(benchLast.avgLtv).toLocaleString()}) hasn&apos;t yet crossed CAC ({cs}{Math.round(cac).toLocaleString()}). Lift repeat rate or lower CAC to close the gap.
+                                  </div>
+                                )}
+                                {projected != null && (
+                                  <div style={{ marginTop: "8px", padding: "10px 14px", background: "#EEF2FF", border: "1px solid #C7D2FE", borderRadius: "8px", fontSize: "13px", color: "#3730A3" }}>
+                                    <strong>Projected:</strong> If the latest cohort keeps the benchmark&apos;s growth curve ({growthMultiple.toFixed(2)}× from 30d → {windowLabel(benchLast.window)}), their {windowLabel(benchLast.window)} LTV lands at ~<strong>{cs}{projected.toLocaleString()}</strong>.
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })()}
                           {ltvView === "cohorts" && monthlyRows.length > 0 && (() => {
                             const colAvgs: Record<number, number> = {};
                             for (let m = 0; m <= maxMonthCol; m++) {

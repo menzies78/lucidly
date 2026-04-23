@@ -153,7 +153,7 @@ export const loader = async ({ request }) => {
   const _t0 = Date.now();
 
   // Cache the per-window rollup queries (date-keyed) and the analysis blob (per-shop)
-  const [currentRollup, prevRollup, analysisCacheRow, unmatchedAgg, imageMap, periodOrders] = await Promise.all([
+  const [currentRollup, prevRollup, analysisCacheRow, unmatchedAgg, imageMap, periodOrders, entryToLtvRaw] = await Promise.all([
     queryCached(`${shopDomain}:productRollup:${fromKey}:${toKey}`, DEFAULT_TTL, () =>
       db.dailyProductRollup.findMany({
         where: { shopDomain, date: { gte: fromDate, lte: toDate } },
@@ -182,6 +182,30 @@ export const loader = async ({ request }) => {
         where: { shopDomain, isOnlineStore: true, createdAt: { gte: fromDate, lte: toDate } },
         select: { shopifyOrderId: true, lineItems: true, utmConfirmedMeta: true },
       }),
+    ),
+    // Entry-to-LTV: for every metaNew customer acquired in this period, pull
+    // their earliest online-store order's line items + the customer's
+    // totalSpent. The first line item is treated as the "gateway product";
+    // we aggregate average LTV per gateway product in JS below.
+    queryCached(`${shopDomain}:entryToLtv:${fromKey}:${toKey}`, DEFAULT_TTL, () =>
+      db.$queryRaw`
+        SELECT
+          c.shopifyCustomerId AS customerId,
+          c.totalSpent AS totalSpent,
+          (
+            SELECT o.lineItems FROM "Order" o
+            WHERE o.shopDomain = c.shopDomain
+              AND o.shopifyCustomerId = c.shopifyCustomerId
+              AND o.isOnlineStore = 1
+            ORDER BY o.createdAt ASC
+            LIMIT 1
+          ) AS firstLineItems
+        FROM Customer c
+        WHERE c.shopDomain = ${shopDomain}
+          AND c.metaSegment = 'metaNew'
+          AND c.firstOrderDate >= ${fromDate}
+          AND c.firstOrderDate <= ${toDate}
+      ` as Promise<Array<{ customerId: string; totalSpent: number | null; firstLineItems: string | null }>>,
     ),
   ]);
 
@@ -474,6 +498,36 @@ export const loader = async ({ request }) => {
   const totalMetaRevenue = rows.reduce((s, r) => s + r.metaRevenue, 0);
   const totalOrganicRevenue = rows.reduce((s, r) => s + r.organicRevenue, 0);
 
+  // Entry-to-LTV: group metaNew customers by their gateway product (first
+  // line item on their earliest order), then surface avg Customer.totalSpent
+  // per group. Min 5 customers per product to avoid noisy rankings on
+  // low-volume SKUs. Parent-stripped so variants roll up.
+  const entryToLtvMap: Record<string, { customers: number; totalSpent: number }> = {};
+  for (const r of entryToLtvRaw || []) {
+    const firstItem = (r.firstLineItems || "").split(",")[0]?.trim();
+    if (!firstItem) continue;
+    const parent = toParentProduct(firstItem);
+    if (!parent || parent.toLowerCase() === "gift card") continue;
+    if (!entryToLtvMap[parent]) entryToLtvMap[parent] = { customers: 0, totalSpent: 0 };
+    entryToLtvMap[parent].customers++;
+    entryToLtvMap[parent].totalSpent += Number(r.totalSpent || 0);
+  }
+  const entryToLtv = Object.entries(entryToLtvMap)
+    .filter(([, d]) => d.customers >= 5)
+    .map(([product, d]) => ({
+      product,
+      customers: d.customers,
+      avgLtv: Math.round(d.totalSpent / d.customers),
+      imageUrl: imageMap[product] || "",
+    }))
+    .sort((a, b) => b.avgLtv - a.avgLtv)
+    .slice(0, 10);
+  const entryToLtvCohortAvg = (() => {
+    let custs = 0, spent = 0;
+    for (const d of Object.values(entryToLtvMap)) { custs += d.customers; spent += d.totalSpent; }
+    return custs > 0 ? Math.round(spent / custs) : 0;
+  })();
+
   // Gateway: sort by metaFirstPurchaseCount (Meta-only) — blends % with volume naturally
   // Exclude Gift Card, require 5+ Meta orders
   const topGatewayProduct = rows
@@ -763,6 +817,7 @@ export const loader = async ({ request }) => {
     topAddonsAll, topAddonsMeta,
     unmatchedConversions, unmatchedRevenue,
     demoRecords, demoCountries, demoGems,
+    entryToLtv, entryToLtvCohortAvg,
     fromKey, toKey,
   });
 };
@@ -1585,6 +1640,7 @@ export default function Products() {
     topAddonsAll, topAddonsMeta,
     unmatchedConversions, unmatchedRevenue,
     demoRecords, demoCountries, demoGems,
+    entryToLtv, entryToLtvCohortAvg,
     fromKey, toKey,
   } = useLoaderData<typeof loader>();
 
@@ -1812,6 +1868,26 @@ export default function Products() {
       });
     }
 
+    // Top gateway products by lifetime value — highest-LTV front doors for
+    // Meta-acquired customers. Two bullets: the top 2 ranked by avg LTV,
+    // then a lift callout if the #1 is meaningfully above the cohort avg.
+    if (entryToLtv && entryToLtv.length > 0) {
+      const top2 = entryToLtv.slice(0, 2);
+      const parts: string[] = top2.map((e: any) => `${e.product} (${cs}${e.avgLtv.toLocaleString()} LTV, ${e.customers} customers)`);
+      out.push({
+        tone: "positive",
+        text: <><strong>Highest-LTV gateway products:</strong> {parts.join(" · ")}</>,
+      });
+      const leader = entryToLtv[0];
+      if (entryToLtvCohortAvg > 0 && leader.avgLtv >= entryToLtvCohortAvg * 1.3) {
+        const lift = (leader.avgLtv / entryToLtvCohortAvg).toFixed(1);
+        out.push({
+          tone: "positive",
+          text: <><strong>Entry-product lift:</strong> customers acquired through {leader.product} are worth {lift}× the average new Meta customer ({cs}{entryToLtvCohortAvg.toLocaleString()} cohort avg LTV)</>,
+        });
+      }
+    }
+
     if (metaOrderCount > 0) {
       out.push({
         tone: "neutral",
@@ -1837,7 +1913,7 @@ export default function Products() {
     }
 
     return out;
-  }, [metaOrderCount, metaItemCount, metaAvgItemsPerBasket, totalMetaRevenue, totalOrganicRevenue, cs, demoGems, demoRecords, topAddonsMeta]);
+  }, [metaOrderCount, metaItemCount, metaAvgItemsPerBasket, totalMetaRevenue, totalOrganicRevenue, cs, demoGems, demoRecords, topAddonsMeta, entryToLtv, entryToLtvCohortAvg]);
 
   return (
     <Page title="Product Intelligence" fullWidth>
@@ -2141,6 +2217,73 @@ export default function Products() {
               </div>
             </Card>
           )},
+          { id: "entryToLtv", label: "Entry-to-LTV Map", span: 2, render: () => {
+            const maxLtv = entryToLtv.length > 0 ? Math.max(...entryToLtv.map((e: any) => e.avgLtv)) : 1;
+            return (
+            <Card>
+              <div style={{ height: 340, display: "flex", flexDirection: "column" }}>
+              <BlockStack gap="300">
+                <BlockStack gap="100">
+                  <Text as="h2" variant="headingLg">Entry-to-LTV Map</Text>
+                  <Text as="p" variant="bodySm" tone="subdued">
+                    Which first-purchase products produce the highest-value customers over their lifetime. Min 5 new Meta customers per product.
+                  </Text>
+                </BlockStack>
+                {entryToLtv.length === 0 ? (
+                  <div style={{ padding: 20, textAlign: "center", color: "#9CA3AF" }}>Not enough Meta-acquired customers in this period</div>
+                ) : (
+                  <div className="scrollable-list" style={{ flex: 1, overflow: "auto" }}>
+                    <table className="combo-table">
+                      <thead>
+                        <tr>
+                          <th style={{ width: 24 }}>#</th>
+                          <th>Gateway product</th>
+                          <th className="num">
+                            Customers
+                            <HeaderTip text="New Meta customers whose first online order opened with this product" />
+                          </th>
+                          <th className="num">
+                            Avg LTV
+                            <HeaderTip text={`Average lifetime spend of those customers. Cohort average ${cs}${entryToLtvCohortAvg.toLocaleString()}.`} />
+                          </th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {entryToLtv.map((item: any, i: number) => {
+                          const pct = maxLtv > 0 ? (item.avgLtv / maxLtv) * 100 : 0;
+                          const aboveCohort = entryToLtvCohortAvg > 0 && item.avgLtv > entryToLtvCohortAvg;
+                          return (
+                            <tr key={item.product}>
+                              <td style={{ color: "#9CA3AF", fontSize: 12 }}>{i + 1}</td>
+                              <td>
+                                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                                  <ProductThumb url={imageMap[item.product]} size={24} />
+                                  <span title={item.product} style={{ fontSize: 11.5, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 200 }}>{item.product}</span>
+                                </div>
+                              </td>
+                              <td className="num">{item.customers.toLocaleString()}</td>
+                              <td className="num" style={{ position: "relative" }}>
+                                <div style={{ position: "absolute", inset: 0, padding: "0 8px", display: "flex", alignItems: "center", justifyContent: "flex-end" }}>
+                                  <div style={{ position: "absolute", left: 4, right: 4, bottom: 2, height: 3, background: "#F3F4F6", borderRadius: 2 }}>
+                                    <div style={{ width: `${pct}%`, height: "100%", background: aboveCohort ? "#10B981" : "#6366F1", borderRadius: 2 }} />
+                                  </div>
+                                  <span style={{ position: "relative", fontWeight: aboveCohort ? 600 : 400, color: aboveCohort ? "#047857" : undefined }}>
+                                    {cs}{item.avgLtv.toLocaleString()}
+                                  </span>
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </BlockStack>
+              </div>
+            </Card>
+            );
+          }},
           { id: "productJourney", label: "Product Journey", span: 4, render: () => (
             <Card>
               <BlockStack gap="400">
