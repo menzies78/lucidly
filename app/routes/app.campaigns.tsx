@@ -3154,7 +3154,7 @@ export default function Campaigns() {
             backgroundColor: "#fff",
             paddingTop: "4px",
           }}>
-            <Text as="h2" variant="headingMd">Performance</Text>
+            <Text as="h2" variant="headingLg">Performance</Text>
             <div style={{ display: "flex", alignItems: "flex-end", marginTop: "12px" }}>
               {TAB_LABELS.map((label, i) => (
                 <button

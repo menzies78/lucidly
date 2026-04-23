@@ -282,7 +282,7 @@ export default function UtmManagement() {
         {/* UTM Template */}
         <Card>
           <BlockStack gap="300">
-            <Text as="h2" variant="headingMd">UTM Template</Text>
+            <Text as="h2" variant="headingLg">UTM Template</Text>
             <Text as="p" variant="bodySm" tone="subdued">
               Applied when filling missing UTMs. Macros: {"{{campaign.name}}"}, {"{{adset.name}}"}, {"{{ad.name}}"}, {"{{ad.id}}"}
             </Text>
@@ -354,7 +354,7 @@ export default function UtmManagement() {
         {auditResult?.adList && (
           <Card>
             <BlockStack gap="300">
-              <Text as="h2" variant="headingMd">
+              <Text as="h2" variant="headingLg">
                 All Ads ({auditResult.adList.length})
                 {editCount > 0 && <Badge tone="attention">{editCount} pending edit{editCount !== 1 ? "s" : ""}</Badge>}
               </Text>
@@ -373,7 +373,7 @@ export default function UtmManagement() {
         {auditResult && (
           <Card>
             <BlockStack gap="300">
-              <Text as="h2" variant="headingMd">Audit Detail</Text>
+              <Text as="h2" variant="headingLg">Audit Detail</Text>
 
               {auditResult.patterns?.length > 0 && (
                 <BlockStack gap="200">

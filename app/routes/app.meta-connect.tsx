@@ -76,7 +76,7 @@ export default function MetaConnect() {
 
         <Card>
           <BlockStack gap="300">
-            <Text as="h2" variant="headingMd">Meta Ads Account</Text>
+            <Text as="h2" variant="headingLg">Meta Ads Account</Text>
             <Text as="p" variant="bodyMd">
               Connect your Meta Ads account to pull campaign data and match it against your Shopify orders.
               Lucidly only requests read access to your ad performance data.

@@ -52,8 +52,8 @@ export default function PageSummary({ title, bullets, fromKey, toKey }: PageSumm
     ?? (fromKey && toKey ? `Summary for ${rangeLabel(fromKey, toKey)}` : "Summary");
   return (
     <Card>
-      <BlockStack gap="300">
-        <Text as="h2" variant="headingMd">{resolvedTitle}</Text>
+      <BlockStack gap="400">
+        <Text as="h2" variant="headingLg">{resolvedTitle}</Text>
         {bullets.length === 0 ? (
           <Text as="p" tone="subdued" variant="bodySm">No data for this period.</Text>
         ) : (

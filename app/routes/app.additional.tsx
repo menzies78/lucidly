@@ -43,7 +43,7 @@ export default function AdditionalPage() {
         <Layout.Section variant="oneThird">
           <Card>
             <BlockStack gap="200">
-              <Text as="h2" variant="headingMd">
+              <Text as="h2" variant="headingLg">
                 Resources
               </Text>
               <List>

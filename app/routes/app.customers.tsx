@@ -1428,7 +1428,7 @@ function WeeklyCohortRevenue({ weekly, cs }: { weekly: { all: WeeklyCohortPoint[
   return (
     <BlockStack gap="300">
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-        <Text as="h2" variant="headingMd">Revenue by Weekly Cohort</Text>
+        <Text as="h2" variant="headingLg">Revenue by Weekly Cohort</Text>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           <div className="toggle-group">
             <button className={`toggle-btn ${segment === "meta" ? "active" : ""}`} onClick={() => setSegment("meta")}>Meta Customers</button>
@@ -2206,7 +2206,7 @@ export default function Customers() {
             <BlockStack gap="300">
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
                 <div style={{ flex: 1, textAlign: "center" }}>
-                  <Text as="h2" variant="headingMd">Customer Breakdown</Text>
+                  <Text as="h2" variant="headingLg">Customer Breakdown</Text>
                   <Text as="p" variant="bodySm" tone="subdued">
                     New, repeat, and retargeted Meta customers for the selected period
                   </Text>
@@ -2275,7 +2275,7 @@ export default function Customers() {
             <BlockStack gap="400">
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
                 <div style={{ flex: 1, textAlign: "center" }}>
-                  <Text as="h2" variant="headingMd">Customer Demographics</Text>
+                  <Text as="h2" variant="headingLg">Customer Demographics</Text>
                   <Text as="p" variant="bodySm" tone="subdued">
                     {demoScope === "new"
                       ? "All New customer Meta-reported conversions by age & gender"
@@ -2400,7 +2400,7 @@ export default function Customers() {
             <BlockStack gap="400">
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
                 <div style={{ flex: 1, textAlign: "center" }}>
-                  <Text as="h2" variant="headingMd">Customer Geography</Text>
+                  <Text as="h2" variant="headingLg">Customer Geography</Text>
                   <Text as="p" variant="bodySm" tone="subdued">
                     {geoScope === "new"
                       ? "Billing address of new customers acquired via Meta ads"
@@ -2484,7 +2484,7 @@ export default function Customers() {
           <Card>
             <BlockStack gap="300">
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <Text as="h2" variant="headingMd">New Customer Journey</Text>
+                <Text as="h2" variant="headingLg">New Customer Journey</Text>
                 <div className="toggle-group">
                   <button className={`toggle-btn ${journeyScope === "meta" ? "active" : ""}`} onClick={() => setJourneyScope("meta")}>Meta Customers</button>
                   <button className={`toggle-btn ${journeyScope === "all" ? "active" : ""}`} onClick={() => setJourneyScope("all")}>All Customers</button>
@@ -2612,7 +2612,7 @@ export default function Customers() {
           <Card>
             <BlockStack gap="400">
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <Text as="h2" variant="headingMd">{ltvTab === "meta" ? "Meta Customer Lifetime Value" : "All Customer Lifetime Value"}</Text>
+                <Text as="h2" variant="headingLg">{ltvTab === "meta" ? "Meta Customer Lifetime Value" : "All Customer Lifetime Value"}</Text>
                 <div className="toggle-group">
                   <button className={`toggle-btn ${ltvTab === "meta" ? "active" : ""}`} onClick={() => setLtvTab("meta")}>Meta Customers</button>
                   <button className={`toggle-btn ${ltvTab === "all" ? "active" : ""}`} onClick={() => setLtvTab("all")}>All Customers</button>

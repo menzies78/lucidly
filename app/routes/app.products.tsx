@@ -1361,7 +1361,7 @@ export default function Products() {
               <BlockStack gap="300">
                 <div className="tile-header-row">
                   <BlockStack gap="100">
-                    <Text as="h2" variant="headingMd">Products with Highest Refund Rate</Text>
+                    <Text as="h2" variant="headingLg">Products with Highest Refund Rate</Text>
                     <Text as="p" variant="bodySm" tone="subdued">Products with 3+ orders, ranked by refund rate</Text>
                   </BlockStack>
                   <div className="segment-toggle">
@@ -1413,7 +1413,7 @@ export default function Products() {
               <BlockStack gap="300">
                 <div className="tile-header-row">
                   <BlockStack gap="100">
-                    <Text as="h2" variant="headingMd">New Customer First Purchases</Text>
+                    <Text as="h2" variant="headingLg">New Customer First Purchases</Text>
                     <Text as="p" variant="bodySm" tone="subdued">What customers buy on their very first order — your gateway products</Text>
                   </BlockStack>
                   <div className="segment-toggle">
@@ -1451,7 +1451,7 @@ export default function Products() {
               <div style={{ height: 340, display: "flex", flexDirection: "column" }}>
               <BlockStack gap="300">
                 <BlockStack gap="100">
-                  <Text as="h2" variant="headingMd">Revenue by Product</Text>
+                  <Text as="h2" variant="headingLg">Revenue by Product</Text>
                   <Text as="p" variant="bodySm" tone="subdued">Top 10 products by total revenue. Hover for breakdown.</Text>
                 </BlockStack>
                 <div style={{ flex: 1, overflow: "auto" }}>
@@ -1467,7 +1467,7 @@ export default function Products() {
               <BlockStack gap="300">
                 <div className="tile-header-row">
                   <BlockStack gap="100">
-                    <Text as="h2" variant="headingMd">Basket Analysis</Text>
+                    <Text as="h2" variant="headingLg">Basket Analysis</Text>
                     <Text as="p" variant="bodySm" tone="subdued">Products most frequently purchased together</Text>
                   </BlockStack>
                   <div className="segment-toggle">
@@ -1521,7 +1521,7 @@ export default function Products() {
               <BlockStack gap="300">
                 <div className="tile-header-row">
                   <BlockStack gap="100">
-                    <Text as="h2" variant="headingMd">Top Add-on Products</Text>
+                    <Text as="h2" variant="headingLg">Top Add-on Products</Text>
                     <Text as="p" variant="bodySm" tone="subdued">Products most frequently purchased alongside other items. Consider promoting these products throughout your website.</Text>
                   </BlockStack>
                   <div className="segment-toggle">
@@ -1575,7 +1575,7 @@ export default function Products() {
               <BlockStack gap="400">
                 <div className="tile-header-row">
                   <BlockStack gap="100">
-                    <Text as="h2" variant="headingMd">Customer Product Journey</Text>
+                    <Text as="h2" variant="headingLg">Customer Product Journey</Text>
                     <Text as="p" variant="bodySm" tone="subdued">What customers buy first, and what different product they buy next. Same-product repurchases excluded.</Text>
                   </BlockStack>
                   <div className="segment-toggle">
@@ -1600,7 +1600,7 @@ export default function Products() {
         <Card>
           <BlockStack gap="300">
             <BlockStack gap="100">
-              <Text as="h2" variant="headingMd">Product Breakdown</Text>
+              <Text as="h2" variant="headingLg">Product Breakdown</Text>
               <Text as="p" variant="bodySm" tone="subdued">Every product sold online, with Meta attribution and customer type breakdown. Variants grouped by parent product.</Text>
             </BlockStack>
             <InteractiveTable

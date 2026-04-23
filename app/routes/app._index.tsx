@@ -402,7 +402,7 @@ export default function Index() {
         <Layout>
           <Layout.Section variant="oneHalf">
             <Card><BlockStack gap="200">
-              <Text as="h2" variant="headingMd">Shopify</Text>
+              <Text as="h2" variant="headingLg">Shopify</Text>
               <Banner tone="success">
                 <p>Connected — {orderCount.toLocaleString()} orders</p>
               </Banner>
@@ -430,7 +430,7 @@ export default function Index() {
           </Layout.Section>
           <Layout.Section variant="oneHalf">
             <Card><BlockStack gap="200">
-              <Text as="h2" variant="headingMd">Meta Ads</Text>
+              <Text as="h2" variant="headingLg">Meta Ads</Text>
               {metaConnected ? (
                 <>
                   <Banner tone="success"><p>Connected — {metaAdAccountId}</p></Banner>
@@ -454,7 +454,7 @@ export default function Index() {
         {!onboardingCompleted && (
           <Card>
             <BlockStack gap="300">
-              <Text as="h2" variant="headingMd">Getting Started</Text>
+              <Text as="h2" variant="headingLg">Getting Started</Text>
               <InlineStack gap="400" wrap>
                 <BlockStack gap="100">
                   <Button variant={orderCount === 0 ? "primary" : undefined} onClick={() => startTask("syncOrders")} disabled={isRunning} loading={activeTask === "syncOrders"}>
@@ -540,7 +540,7 @@ export default function Index() {
 
         <Card>
           <BlockStack gap="300">
-            <Text as="h2" variant="headingMd">Data Pipeline</Text>
+            <Text as="h2" variant="headingLg">Data Pipeline</Text>
             <InlineStack gap="300" wrap>
               <BlockStack gap="100">
                 <Button variant="primary" onClick={() => startTask("syncOrders")} disabled={isRunning}

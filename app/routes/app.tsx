@@ -88,6 +88,12 @@ export default function App() {
 
   return (
     <AppProvider isEmbeddedApp apiKey={apiKey}>
+      {/* Global: add breathing room beneath tile/chart titles.
+          Targets any <Text as="h2"> used as a tile or section heading.
+          Pairs with the sitewide bump from headingMd → headingLg. */}
+      <style>{`
+        h2.Polaris-Text--root { margin-bottom: 6px; }
+      `}</style>
       <LoadingIndicator />
       <NavMenu>
         <Link to="/app" rel="home">Dashboard</Link>

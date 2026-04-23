@@ -470,7 +470,7 @@ export default function ChangeLog() {
             <BlockStack gap="300">
               <InlineStack align="space-between" blockAlign="center">
                 <BlockStack gap="100">
-                  <Text as="h2" variant="headingMd">Meta ad account changes</Text>
+                  <Text as="h2" variant="headingLg">Meta ad account changes</Text>
                   <Text as="p" variant="bodyMd" tone="subdued">
                     Every create / update / pause / delete event from Meta's activity log, normalised into categories.
                     Use the date selector to narrow the range.
@@ -518,7 +518,7 @@ export default function ChangeLog() {
           {totalEver === 0 ? (
             <Card>
               <BlockStack gap="200">
-                <Text as="h3" variant="headingMd">No change history imported yet</Text>
+                <Text as="h3" variant="headingLg">No change history imported yet</Text>
                 <Text as="p" variant="bodyMd" tone="subdued">
                   Click "Import Meta change history" above to pull the last 90 days of ad-account events.
                   After the first import, new events are picked up hourly.
@@ -528,7 +528,7 @@ export default function ChangeLog() {
           ) : rows.length === 0 ? (
             <Card>
               <BlockStack gap="200">
-                <Text as="h3" variant="headingMd">No changes in this period</Text>
+                <Text as="h3" variant="headingLg">No changes in this period</Text>
                 <Text as="p" variant="bodyMd" tone="subdued">
                   Widen the date range to see earlier events.
                 </Text>
@@ -539,7 +539,7 @@ export default function ChangeLog() {
               <Card>
                 <BlockStack gap="200">
                   <InlineStack align="space-between" blockAlign="center">
-                    <Text as="h3" variant="headingMd">Activity by day</Text>
+                    <Text as="h3" variant="headingLg">Activity by day</Text>
                     {noiseCount > 0 && (
                       <label style={{ fontSize: 12, color: "#6b7280", cursor: "pointer" }}>
                         <input

@@ -15,7 +15,7 @@ export default function WasteDetector() {
       <BlockStack gap="500">
         <Card>
           <BlockStack gap="300">
-            <Text as="h2" variant="headingMd">Ad Spend Waste Detector</Text>
+            <Text as="h2" variant="headingLg">Ad Spend Waste Detector</Text>
             <Text as="p" variant="bodyMd" tone="subdued">
               "You wasted £X on ads this week." Breakdown: spend on existing customers (retargeting waste),
               fatigued audiences (frequency decay), low-converting creative.
