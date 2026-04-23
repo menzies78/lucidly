@@ -507,6 +507,12 @@ export const loader = async ({ request }) => {
     qty: dailyMetaProductSales[topMetaProduct.product]?.[date]?.orders || 0,
   })) : [];
 
+  // Top Gateway Product daily chart (Meta orders of the gateway product)
+  const topGatewayProductChart = topGatewayProduct ? chartDates.map(date => ({
+    date,
+    qty: dailyMetaProductSales[topGatewayProduct.product]?.[date]?.orders || 0,
+  })) : [];
+
   // Highest refund product daily chart (orders vs refunds)
   const highestRefundChart = highestRefundProduct ? chartDates.map(date => ({
     date,
@@ -571,10 +577,10 @@ export const loader = async ({ request }) => {
     async () => {
       try {
         const rows = await db.$queryRaw<Array<{
-          metaAge: string; metaGender: string;
+          metaAge: string; metaGender: string; metaSegment: string;
           country: string | null; lineItems: string | null; frozenTotalPrice: number;
         }>>`
-          SELECT a.metaAge, a.metaGender, o.country, o.lineItems, o.frozenTotalPrice
+          SELECT a.metaAge, a.metaGender, c.metaSegment, o.country, o.lineItems, o.frozenTotalPrice
           FROM Attribution a
           JOIN "Order" o
             ON a.shopDomain = o.shopDomain AND a.shopifyOrderId = o.shopifyOrderId
@@ -588,13 +594,13 @@ export const loader = async ({ request }) => {
             AND o.frozenTotalPrice > 0
             AND o.createdAt >= ${fromDate}
             AND o.createdAt <= ${toDate}
-            AND c.metaSegment = 'metaNew'
+            AND c.metaSegment IN ('metaNew', 'metaRetargeted')
         `;
 
         if (rows.length === 0) return { records: [], countries: [] as string[] };
 
         // First pass: build flat record list + per-product volume tally
-        type Rec = { product: string; age: string; gender: string; country: string; revenue: number };
+        type Rec = { product: string; age: string; gender: string; country: string; segment: string; revenue: number };
         const rawRecords: Rec[] = [];
         const countrySet = new Set<string>();
         const productVolume = new Map<string, number>();
@@ -605,8 +611,9 @@ export const loader = async ({ request }) => {
           const country = (o.country || "Unknown").trim() || "Unknown";
           countrySet.add(country);
           const gender = o.metaGender === "male" ? "Male" : o.metaGender === "female" ? "Female" : "Unknown";
+          const segment = o.metaSegment === "metaNew" ? "acquired" : "retargeted";
           for (const product of items) {
-            rawRecords.push({ product, age: o.metaAge, gender, country, revenue: perItem });
+            rawRecords.push({ product, age: o.metaAge, gender, country, segment, revenue: perItem });
             productVolume.set(product, (productVolume.get(product) || 0) + 1);
           }
         }
@@ -633,11 +640,16 @@ export const loader = async ({ request }) => {
   // (z >= 1.96, ~95% CI) and a count floor (8) filters noise. Score by
   // lift * sqrt(count) so a 3× lift on 30 purchases beats 1.6× on 8.
   const demoGems = (() => {
-    if (demoRecords.length < 30) return [] as any[];
-    const total = demoRecords.length;
+    // Run gem detection against acquired-customer slice only — that's the
+    // most actionable "which audience over-indexes on this product" signal.
+    // Retargeting records are included in the raw dataset for the segment
+    // filter, but gems should not conflate the two.
+    const gemRecords = demoRecords.filter((r) => r.segment === "acquired");
+    if (gemRecords.length < 30) return [] as any[];
+    const total = gemRecords.length;
     // Product totals
     const productTotals = new Map<string, number>();
-    for (const r of demoRecords) productTotals.set(r.product, (productTotals.get(r.product) || 0) + 1);
+    for (const r of gemRecords) productTotals.set(r.product, (productTotals.get(r.product) || 0) + 1);
     // Only consider top 20 by volume
     const topProducts = [...productTotals.entries()].sort((a, b) => b[1] - a[1]).slice(0, 20).map(([p]) => p);
     const topProductSet = new Set(topProducts);
@@ -651,7 +663,7 @@ export const loader = async ({ request }) => {
       s.total++;
       s.perProduct.set(product, (s.perProduct.get(product) || 0) + 1);
     };
-    for (const r of demoRecords) {
+    for (const r of gemRecords) {
       if (!topProductSet.has(r.product)) continue;
       // single-dimension
       bumpSlice("gender", r.gender, r.product);
@@ -741,6 +753,7 @@ export const loader = async ({ request }) => {
     revenueBarData,
     dailyMetaOrdersChart,
     topMetaProductChart,
+    topGatewayProductChart,
     highestRefundChart,
     top20RefundRateAll,
     top20RefundRateMeta,
@@ -1176,7 +1189,7 @@ function HeaderTip({ text }: { text: string }) {
 
 const AGE_BRACKETS = ["13-17", "18-24", "25-34", "35-44", "45-54", "55-64", "65+"];
 
-type DemoRecord = { product: string; age: string; gender: string; country: string; revenue: number };
+type DemoRecord = { product: string; age: string; gender: string; country: string; segment: string; revenue: number };
 type DemoGem = {
   product: string; kind: string; value: string;
   lift: number; count: number; expected: number; z: number; score: number;
@@ -1230,6 +1243,35 @@ function ProductDemographicsExplorer({ records, countries, gems, currencySymbol,
   const [ages, setAges] = useState<string[]>([]); // empty = all
   const [country, setCountry] = useState<string>("All");
   const [sortBy, setSortBy] = useState<"units" | "revenue">("units");
+  const [segment, setSegment] = useState<"acquired" | "retargeted" | "all">("acquired");
+
+  // Segment-scoped base pool — filter all other dimensions against this.
+  const segmentRecords = useMemo(
+    () => segment === "all" ? records : records.filter((r) => r.segment === segment),
+    [records, segment],
+  );
+
+  // Available age brackets & countries — respect every *other* active filter
+  // so tabs/options hide when that combination has zero results.
+  const availableAges = useMemo(() => {
+    const set = new Set<string>();
+    for (const r of segmentRecords) {
+      if (gender !== "All" && r.gender !== gender) continue;
+      if (country !== "All" && r.country !== country) continue;
+      set.add(r.age);
+    }
+    return set;
+  }, [segmentRecords, gender, country]);
+
+  const availableCountries = useMemo(() => {
+    const set = new Set<string>();
+    for (const r of segmentRecords) {
+      if (gender !== "All" && r.gender !== gender) continue;
+      if (ages.length > 0 && !ages.includes(r.age)) continue;
+      set.add(r.country);
+    }
+    return [...set].sort();
+  }, [segmentRecords, gender, ages]);
 
   const toggleAge = (bracket: string) => {
     setAges((prev) => prev.includes(bracket) ? prev.filter((a) => a !== bracket) : [...prev, bracket]);
@@ -1243,13 +1285,13 @@ function ProductDemographicsExplorer({ records, countries, gems, currencySymbol,
   };
 
   const filtered = useMemo(() => {
-    return records.filter((r) => {
+    return segmentRecords.filter((r) => {
       if (gender !== "All" && r.gender !== gender) return false;
       if (ages.length > 0 && !ages.includes(r.age)) return false;
       if (country !== "All" && r.country !== country) return false;
       return true;
     });
-  }, [records, gender, ages, country]);
+  }, [segmentRecords, gender, ages, country]);
 
   const topProducts = useMemo(() => {
     const agg = new Map<string, { units: number; revenue: number }>();
@@ -1297,12 +1339,19 @@ function ProductDemographicsExplorer({ records, countries, gems, currencySymbol,
   return (
     <Card>
       <BlockStack gap="400">
-        <BlockStack gap="100">
-          <Text as="h2" variant="headingMd">Product Demographics Explorer</Text>
-          <Text as="p" variant="bodySm" tone="subdued">
-            Top products among Meta-acquired customers (Meta New + Meta Repeat) — filter by gender, age, and country to see what each segment buys.
-          </Text>
-        </BlockStack>
+        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 16 }}>
+          <BlockStack gap="100">
+            <Text as="h2" variant="headingMd">Product Demographics Explorer</Text>
+            <Text as="p" variant="bodySm" tone="subdued">
+              Top products among Meta customers — filter by gender, age, and country to see what each segment buys.
+            </Text>
+          </BlockStack>
+          <div className="segment-toggle" style={{ flexShrink: 0 }}>
+            <button className={segment === "acquired" ? "active" : ""} onClick={() => setSegment("acquired")}>Meta Acquired</button>
+            <button className={segment === "retargeted" ? "active" : ""} onClick={() => setSegment("retargeted")}>Meta Retargeted</button>
+            <button className={segment === "all" ? "active" : ""} onClick={() => setSegment("all")}>All Meta</button>
+          </div>
+        </div>
 
         {/* Filter bar */}
         <div style={{ display: "flex", flexDirection: "column", gap: "10px", marginTop: 12 }}>
@@ -1342,7 +1391,7 @@ function ProductDemographicsExplorer({ records, countries, gems, currencySymbol,
             >
               All
             </button>
-            {AGE_BRACKETS.map((b) => {
+            {AGE_BRACKETS.filter((b) => availableAges.has(b) || ages.includes(b)).map((b) => {
               const selected = ages.includes(b);
               return (
                 <button
@@ -1376,7 +1425,7 @@ function ProductDemographicsExplorer({ records, countries, gems, currencySymbol,
               }}
             >
               <option value="All">All countries</option>
-              {countries.map((c) => <option key={c} value={c}>{c}</option>)}
+              {countries.filter((c) => availableCountries.includes(c) || c === country).map((c) => <option key={c} value={c}>{c}</option>)}
             </select>
             {activeFilterCount > 0 && (
               <button
@@ -1461,15 +1510,21 @@ function ProductDemographicsExplorer({ records, countries, gems, currencySymbol,
           </div>
         )}
 
+        {/* Dynamic insight — sits between the bar chart and the gems,
+            summarising the current filter slice in one sentence. */}
+        {insight && (
+          <div style={{ paddingTop: 16, paddingBottom: 8 }}>
+            <Text as="p" variant="bodySm" tone="subdued">{insight}</Text>
+          </div>
+        )}
+
         {/* Gems — auto-surfaced statistical anomalies. Placed at the bottom
             so the chart is the primary interaction; gems are a light,
             colourful "did you notice" footer, no heavy framing. */}
         {gems.length > 0 && (
           <div style={{ marginTop: 16 }}>
           <BlockStack gap="200">
-            <Text as="h3" variant="headingSm">
-              <span style={{ marginRight: 6 }}>💎</span>Gems spotted in this period
-            </Text>
+            <Text as="h3" variant="headingSm">Gems spotted in this period</Text>
             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
               {gems.map((g, i) => {
                 const { text } = gemSentence(g, currencySymbol);
@@ -1503,11 +1558,6 @@ function ProductDemographicsExplorer({ records, countries, gems, currencySymbol,
           </BlockStack>
           </div>
         )}
-
-        {/* Dynamic insight */}
-        {insight && (
-          <Text as="p" variant="bodySm" tone="subdued">{insight}</Text>
-        )}
       </BlockStack>
     </Card>
   );
@@ -1523,7 +1573,7 @@ export default function Products() {
     metaOrderCount, metaItemCount, totalOrderCount, totalItemCount,
     avgItemsPerBasket, metaAvgItemsPerBasket,
     topGatewayProduct, topMetaProduct, highestRefundProduct, revenueBarData,
-    dailyMetaOrdersChart, topMetaProductChart, highestRefundChart,
+    dailyMetaOrdersChart, topMetaProductChart, topGatewayProductChart, highestRefundChart,
     top20RefundRateAll, top20RefundRateMeta,
     aiCachedInsights, aiGeneratedAt, aiIsStale,
     prevMetaOrderCount, prevMetaItemCount, prevHighestRefund,
@@ -1704,39 +1754,6 @@ export default function Products() {
   const summaryBullets: SummaryBullet[] = useMemo(() => {
     const out: SummaryBullet[] = [];
 
-    if (topMetaProduct) {
-      out.push({
-        tone: "positive",
-        text: (
-          <>
-            <strong>Top Meta product:</strong> {topMetaProduct.product} — {cs}{Math.round(topMetaProduct.metaRevenue).toLocaleString()} rev across {topMetaProduct.metaOrders} Meta orders
-          </>
-        ),
-      });
-    }
-
-    if (topGatewayProduct) {
-      out.push({
-        tone: "positive",
-        text: (
-          <>
-            <strong>Top gateway product:</strong> {topGatewayProduct.product} — acquired {topGatewayProduct.metaFirstPurchaseCount} new Meta customers
-          </>
-        ),
-      });
-    }
-
-    if (highestRefundProduct) {
-      out.push({
-        tone: "negative",
-        text: (
-          <>
-            <strong>Highest refund rate:</strong> {highestRefundProduct.product} — {highestRefundProduct.refundRate}% ({highestRefundProduct.refundedOrders} of {highestRefundProduct.totalOrders} orders)
-          </>
-        ),
-      });
-    }
-
     if (metaOrderCount > 0) {
       out.push({
         tone: "neutral",
@@ -1761,19 +1778,8 @@ export default function Products() {
       });
     }
 
-    if (totalProductCount > 0) {
-      out.push({
-        tone: "neutral",
-        text: (
-          <>
-            <strong>Catalogue:</strong> {totalProductCount} distinct products sold in range
-          </>
-        ),
-      });
-    }
-
     return out;
-  }, [topMetaProduct, topGatewayProduct, highestRefundProduct, metaOrderCount, metaItemCount, metaAvgItemsPerBasket, totalMetaRevenue, totalOrganicRevenue, totalProductCount, cs]);
+  }, [metaOrderCount, metaItemCount, metaAvgItemsPerBasket, totalMetaRevenue, totalOrganicRevenue, cs]);
 
   return (
     <Page title="Product Intelligence" fullWidth>
@@ -1821,17 +1827,21 @@ export default function Products() {
           ) : (
             <SummaryTile label="Top Meta Product" value={"\u2014"} subtitle="No Meta orders in this period" tooltip={{ definition: "Product generating the most Meta-attributed revenue within the selected date range" }} />
           )},
-          { id: "bestGateway", label: "Best Gateway Product", render: () => topGatewayProduct ? (
+          { id: "bestGateway", label: "Top Gateway Product", render: () => topGatewayProduct ? (
             <SummaryTile
-              label="Best Gateway Product"
+              label="Top Gateway Product"
               value={topGatewayProduct.product}
               valueVariant="headingMd"
               subtitle={`${topGatewayProduct.metaFirstPurchaseCount} new Meta customers · ${topGatewayProduct.metaOrders} Meta orders`}
               imageUrl={topGatewayProduct.imageUrl}
               tooltip={{ definition: "Product most often bought as a first purchase by Meta-acquired customers", calc: "Ranked by Meta first purchase count (min 5 Meta orders)" }}
+              chartData={topGatewayProductChart}
+              chartKey="qty"
+              chartColor="#7C3AED"
+              chartFormat={(v) => `${v} Meta orders`}
             />
           ) : (
-            <SummaryTile label="Best Gateway Product" value={"\u2014"} subtitle="Not enough data (5+ Meta orders required)" tooltip={{ definition: "Product most often bought as a first purchase by Meta-acquired customers" }} />
+            <SummaryTile label="Top Gateway Product" value={"\u2014"} subtitle="Not enough data (5+ Meta orders required)" tooltip={{ definition: "Product most often bought as a first purchase by Meta-acquired customers" }} />
           )},
           { id: "highestRefund", label: "Highest Refunded Item", render: () => highestRefundProduct && (highestRefundProduct.refundedOrders || 0) > 0 ? (
             <SummaryTile

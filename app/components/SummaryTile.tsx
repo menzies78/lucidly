@@ -112,7 +112,7 @@ export default function SummaryTile({
 
   return (
     <Card>
-      <div style={{ minHeight: 220, height: "100%", display: "flex", flexDirection: "column" }}>
+      <div style={{ minHeight: 180, height: "100%", display: "flex", flexDirection: "column" }}>
         {/* Header: label + delta badge */}
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6, marginBottom: 4 }}>
           <div
