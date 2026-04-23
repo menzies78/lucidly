@@ -157,6 +157,17 @@ async function runDailyCycle() {
         } catch (err) {
           console.error(`[Scheduler] UTM linkage failed for ${shop.shopDomain}:`, err.message);
         }
+
+        // Refresh product images so new products (e.g. recent launches)
+        // appear with thumbs on the Products page without waiting for the
+        // 24 h DB cache to expire naturally.
+        try {
+          const { refreshProductImages } = await import("./productImageSync.server.js");
+          const imgResult = await refreshProductImages(shop.shopDomain);
+          console.log(`[Scheduler] Product images for ${shop.shopDomain}: ${imgResult.count} cached`);
+        } catch (err) {
+          console.error(`[Scheduler] Product image refresh failed for ${shop.shopDomain}:`, err.message);
+        }
       } catch (err) {
         console.error(`[Scheduler] Daily sync failed for ${shop.shopDomain}:`, err.message);
       }

@@ -96,7 +96,12 @@ export default function App() {
       `}</style>
       <LoadingIndicator />
       <NavMenu>
-        <Link to="/app" rel="home">Dashboard</Link>
+        {/* Shopify's NavMenu requires `rel="home"` on the first Link — it
+            pins that tab to the app-title slot at the left of the embedded
+            nav. The remaining Links render in declared order after it.
+            This means the "home" tab is always visually first and cannot
+            be moved to the end without breaking embedding. Rename only. */}
+        <Link to="/app" rel="home">Setup</Link>
         <Link to="/app/customers">Customers</Link>
         <Link to="/app/products">Products</Link>
         <Link to="/app/campaigns">Ad Campaigns</Link>

@@ -1490,7 +1490,7 @@ function WeeklyCohortRevenue({ weekly, cs }: { weekly: { all: WeeklyCohortPoint[
                       }}
                     >
                       <div style={{
-                        height: repeatH, background: isHover ? "#6366F1" : "#818CF8",
+                        height: repeatH, background: isHover ? "#DB2777" : "#EC4899",
                         borderTopLeftRadius: 2, borderTopRightRadius: 2,
                         transition: "background 0.15s",
                       }} />
@@ -1615,7 +1615,7 @@ function WeeklyCohortRevenue({ weekly, cs }: { weekly: { all: WeeklyCohortPoint[
               <span style={{ width: 10, height: 10, background: "#4F46E5", borderRadius: 2 }} /> First order
             </span>
             <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
-              <span style={{ width: 10, height: 10, background: "#818CF8", borderRadius: 2 }} /> Repeat revenue
+              <span style={{ width: 10, height: 10, background: "#EC4899", borderRadius: 2 }} /> Repeat revenue
             </span>
             <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
               <span style={{ width: 14, height: 2, background: lineColor }} /> Repeat %
@@ -2719,8 +2719,12 @@ export default function Customers() {
                       const recentByWindow: Record<number, any> = {};
                       for (const r of (recentData || [])) recentByWindow[r.window] = r;
                       const monthlyDataObj = isMeta ? ltvMonthly?.meta : ltvMonthly?.all;
-                      const monthlyRows = monthlyDataObj?.rows || [];
-                      const maxMonthCol = monthlyDataObj?.maxMonth || 0;
+                      const allMonthlyRows = monthlyDataObj?.rows || [];
+                      // Cap the cohort view to the most recent 12 cohort rows
+                      // and 12 month columns — anything older/longer is
+                      // diminishing-returns noise for merchant decisions.
+                      const monthlyRows = allMonthlyRows.slice(-12);
+                      const maxMonthCol = Math.min(monthlyDataObj?.maxMonth || 0, 12);
                       return (
                         <div style={{ borderTop: "1px solid #E5E7EB", paddingTop: "16px" }}>
                           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "12px" }}>

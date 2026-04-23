@@ -1341,9 +1341,13 @@ function ProductDemographicsExplorer({ records, countries, gems, currencySymbol,
       <BlockStack gap="400">
         <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 16 }}>
           <BlockStack gap="100">
-            <Text as="h2" variant="headingMd">Product Demographics Explorer</Text>
+            <Text as="h2" variant="headingLg">Product Demographics Explorer</Text>
             <Text as="p" variant="bodySm" tone="subdued">
-              Top products among Meta customers — filter by gender, age, and country to see what each segment buys.
+              {segment === "acquired"
+                ? "Top products among Meta acquired customers, including first and any subsequent orders. Filter by gender, age, and country to see what each segment buys."
+                : segment === "retargeted"
+                ? "Top products among Meta retargeted customers. Filter by gender, age, and country to see what each segment buys."
+                : "Top products among all Meta customers (acquired and retargeted). Filter by gender, age, and country to see what each segment buys."}
             </Text>
           </BlockStack>
           <div className="segment-toggle" style={{ flexShrink: 0 }}>
@@ -1550,7 +1554,7 @@ function ProductDemographicsExplorer({ records, countries, gems, currencySymbol,
                   >
                     <span style={{ flexShrink: 0 }}>💎</span>
                     <span style={{ flex: 1 }}>{text}</span>
-                    <span style={{ flexShrink: 0, color: "#6366F1", fontWeight: 600, fontSize: 12 }}>Apply →</span>
+                    <span style={{ flexShrink: 0, color: "#6366F1", fontWeight: 600, fontSize: 12 }}>Click Me</span>
                   </button>
                 );
               })}
@@ -1754,6 +1758,60 @@ export default function Products() {
   const summaryBullets: SummaryBullet[] = useMemo(() => {
     const out: SummaryBullet[] = [];
 
+    // Top 1–2 gems (statistical anomalies) — give the merchant the
+    // stand-out "did you notice" findings right in the summary.
+    if (demoGems && demoGems.length > 0) {
+      const topGems = demoGems.slice(0, 2);
+      for (const g of topGems) {
+        const { text } = gemSentence(g, cs);
+        out.push({ tone: "positive", text: (<><strong>Gem:</strong> {text}</>) });
+      }
+    }
+
+    // Most popular product per gender among Meta-acquired customers —
+    // instantly actionable for creative/copy decisions.
+    if (demoRecords && demoRecords.length > 0) {
+      const acquired = demoRecords.filter((r: any) => r.segment === "acquired");
+      const byGender = (g: string) => {
+        const tally: Record<string, number> = {};
+        for (const r of acquired) {
+          if (r.gender !== g) continue;
+          tally[r.product] = (tally[r.product] || 0) + 1;
+        }
+        const top = Object.entries(tally).sort((a, b) => b[1] - a[1])[0];
+        return top ? { product: top[0], count: top[1] } : null;
+      };
+      const topF = byGender("Female");
+      const topM = byGender("Male");
+      if (topF || topM) {
+        out.push({
+          tone: "neutral",
+          text: (
+            <>
+              <strong>Most popular by gender:</strong>
+              {topF ? <> women → {topF.product}</> : null}
+              {topF && topM ? " · " : null}
+              {topM ? <>men → {topM.product}</> : null}
+              {" "}(Meta-acquired customers)
+            </>
+          ),
+        });
+      }
+    }
+
+    // Most-co-purchased product — surfaces the strongest bundle candidate.
+    if (topAddonsMeta && topAddonsMeta.length > 0) {
+      const top = topAddonsMeta[0];
+      out.push({
+        tone: "neutral",
+        text: (
+          <>
+            <strong>Most co-purchased:</strong> {top.product} — appears alongside other items in {top.appearances} Meta baskets{top.addonRate != null ? ` (${top.addonRate}% of multi-item Meta orders)` : ""}
+          </>
+        ),
+      });
+    }
+
     if (metaOrderCount > 0) {
       out.push({
         tone: "neutral",
@@ -1779,7 +1837,7 @@ export default function Products() {
     }
 
     return out;
-  }, [metaOrderCount, metaItemCount, metaAvgItemsPerBasket, totalMetaRevenue, totalOrganicRevenue, cs]);
+  }, [metaOrderCount, metaItemCount, metaAvgItemsPerBasket, totalMetaRevenue, totalOrganicRevenue, cs, demoGems, demoRecords, topAddonsMeta]);
 
   return (
     <Page title="Product Intelligence" fullWidth>
@@ -1843,9 +1901,9 @@ export default function Products() {
           ) : (
             <SummaryTile label="Top Gateway Product" value={"\u2014"} subtitle="Not enough data (5+ Meta orders required)" tooltip={{ definition: "Product most often bought as a first purchase by Meta-acquired customers" }} />
           )},
-          { id: "highestRefund", label: "Highest Refunded Item", render: () => highestRefundProduct && (highestRefundProduct.refundedOrders || 0) > 0 ? (
+          { id: "highestRefund", label: "Top Refund Warning", render: () => highestRefundProduct && (highestRefundProduct.refundedOrders || 0) > 0 ? (
             <SummaryTile
-              label="Highest Refunded Item"
+              label="Top Refund Warning"
               value={`${highestRefundProduct.refundRate}%`}
               subtitle={`${highestRefundProduct.product} · ${highestRefundProduct.refundedOrders} of ${highestRefundProduct.totalOrders} refunded · ${fmtPrice(highestRefundProduct.totalRefunded)} lost`}
               tooltip={{ definition: "Product the matcher is most statistically confident has a high refund rate. Filters out tiny samples (min 5 orders) and one-off cash losses by ranking on the Wilson lower bound of the binomial proportion.", calc: `Wilson 95% lower bound on refunds ÷ orders. This product's true rate is at least ${highestRefundProduct.wilsonRate ?? 0}% with 95% confidence.` }}
@@ -1857,7 +1915,7 @@ export default function Products() {
               imageUrl={highestRefundProduct.imageUrl}
             />
           ) : (
-            <SummaryTile label="Highest Refunded Item" value={"\u2014"} subtitle="Not enough refund signal yet (5+ orders required)" tooltip={{ definition: "Product the matcher is most statistically confident has a high refund rate. Min 5 orders to enter the ranking." }} />
+            <SummaryTile label="Top Refund Warning" value={"\u2014"} subtitle="Not enough refund signal yet (5+ orders required)" tooltip={{ definition: "Product the matcher is most statistically confident has a high refund rate. Min 5 orders to enter the ranking." }} />
           )},
           { id: "productDemographicsExplorer", label: "Product Demographics Explorer", span: 4, render: () => (
             <ProductDemographicsExplorer
@@ -1974,14 +2032,14 @@ export default function Products() {
               </div>
             </Card>
           )},
-          { id: "basketAnalysis", label: "Basket Analysis", span: 2, render: () => (
+          { id: "basketAnalysis", label: "Bundle Opportunities", span: 2, render: () => (
             <Card>
               <div style={{ height: 340, display: "flex", flexDirection: "column" }}>
               <BlockStack gap="300">
                 <div className="tile-header-row">
                   <BlockStack gap="100">
-                    <Text as="h2" variant="headingLg">Basket Analysis</Text>
-                    <Text as="p" variant="bodySm" tone="subdued">Products most frequently purchased together</Text>
+                    <Text as="h2" variant="headingLg">Bundle Opportunities</Text>
+                    <Text as="p" variant="bodySm" tone="subdued">Products most frequently purchased together — why not create bundles / packs to increase sales further?</Text>
                   </BlockStack>
                   <div className="segment-toggle">
                     <button className={basketMode === "meta" ? "active" : ""} onClick={() => setBasketMode("meta")}>Meta Customers</button>
