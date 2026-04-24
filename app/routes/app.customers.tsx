@@ -2212,13 +2212,16 @@ export default function Customers() {
       <style dangerouslySetInnerHTML={{ __html: layoutStyles }} />
       <ReportTabs>
       <BlockStack gap="500">
-        <AiInsightsPanel
-          pageKey="customers"
-          cachedInsights={aiCachedInsights}
-          generatedAt={aiGeneratedAt}
-          isStale={aiIsStale}
-          currencySymbol={cs}
-        />
+        {/* Hidden for V1 — bring back in V2. Loader wiring kept intact. */}
+        {false && (
+          <AiInsightsPanel
+            pageKey="customers"
+            cachedInsights={aiCachedInsights}
+            generatedAt={aiGeneratedAt}
+            isStale={aiIsStale}
+            currencySymbol={cs}
+          />
+        )}
         <PageSummary bullets={summaryBullets} fromKey={data.fromKey} toKey={data.toKey} />
 
         {/* ═══ ALL TILES (drag/drop, show/hide) ═══ */}

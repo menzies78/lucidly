@@ -1814,16 +1814,6 @@ export default function Products() {
   const summaryBullets: SummaryBullet[] = useMemo(() => {
     const out: SummaryBullet[] = [];
 
-    // Top 1–2 gems (statistical anomalies) — give the merchant the
-    // stand-out "did you notice" findings right in the summary.
-    if (demoGems && demoGems.length > 0) {
-      const topGems = demoGems.slice(0, 2);
-      for (const g of topGems) {
-        const { text } = gemSentence(g, cs);
-        out.push({ tone: "positive", text: (<><strong>Gem:</strong> {text}</>) });
-      }
-    }
-
     // Most popular product per gender among Meta-acquired customers —
     // instantly actionable for creative/copy decisions.
     if (demoRecords && demoRecords.length > 0) {
@@ -1868,32 +1858,25 @@ export default function Products() {
       });
     }
 
-    // Top gateway products by lifetime value — highest-LTV front doors for
-    // Meta-acquired customers. Two bullets: the top 2 ranked by avg LTV,
-    // then a lift callout if the #1 is meaningfully above the cohort avg.
+    // Top gateway product by lifetime value — the highest-LTV front door
+    // for Meta-acquired customers.
     if (entryToLtv && entryToLtv.length > 0) {
-      const top2 = entryToLtv.slice(0, 2);
-      const parts: string[] = top2.map((e: any) => `${e.product} (${cs}${e.avgLtv.toLocaleString()} LTV, ${e.customers} customers)`);
+      const leader = entryToLtv[0];
       out.push({
         tone: "positive",
-        text: <><strong>Highest-LTV gateway products:</strong> {parts.join(" · ")}</>,
+        text: <><strong>Highest-LTV gateway product:</strong> {leader.product} ({cs}{leader.avgLtv.toLocaleString()} LTV, {leader.customers} customers)</>,
       });
-      const leader = entryToLtv[0];
-      if (entryToLtvCohortAvg > 0 && leader.avgLtv >= entryToLtvCohortAvg * 1.3) {
-        const lift = (leader.avgLtv / entryToLtvCohortAvg).toFixed(1);
-        out.push({
-          tone: "positive",
-          text: <><strong>Entry-product lift:</strong> customers acquired through {leader.product} are worth {lift}× the average new Meta customer ({cs}{entryToLtvCohortAvg.toLocaleString()} cohort avg LTV)</>,
-        });
-      }
     }
 
     if (metaOrderCount > 0) {
+      const compareSuffix = avgItemsPerBasket > 0 && avgItemsPerBasket !== metaAvgItemsPerBasket
+        ? <> (compared to {avgItemsPerBasket} for all website customers)</>
+        : null;
       out.push({
         tone: "neutral",
         text: (
           <>
-            <strong>Meta basket:</strong> {metaAvgItemsPerBasket} items per order on average ({metaItemCount.toLocaleString()} items across {metaOrderCount.toLocaleString()} Meta orders)
+            <strong>Meta basket:</strong> {metaAvgItemsPerBasket} items per order on average{compareSuffix}
           </>
         ),
       });
@@ -1912,8 +1895,29 @@ export default function Products() {
       });
     }
 
+    // Gems last — statistical anomalies in demographic buying patterns.
+    // Dedupe by product family (everything before the first fullstop) so
+    // e.g. "Graphene T Shirt. Black edition" and "Graphene T Shirt. Blue
+    // edition" collapse to a single gem for the family.
+    if (demoGems && demoGems.length > 0) {
+      const familyKey = (name: string) => name.split(".")[0].trim().toLowerCase();
+      const seen = new Set<string>();
+      const unique: DemoGem[] = [];
+      for (const g of demoGems) {
+        const k = familyKey(g.product);
+        if (seen.has(k)) continue;
+        seen.add(k);
+        unique.push(g);
+        if (unique.length >= 2) break;
+      }
+      for (const g of unique) {
+        const { text } = gemSentence(g, cs);
+        out.push({ tone: "positive", text });
+      }
+    }
+
     return out;
-  }, [metaOrderCount, metaItemCount, metaAvgItemsPerBasket, totalMetaRevenue, totalOrganicRevenue, cs, demoGems, demoRecords, topAddonsMeta, entryToLtv, entryToLtvCohortAvg]);
+  }, [metaOrderCount, metaItemCount, metaAvgItemsPerBasket, avgItemsPerBasket, totalMetaRevenue, totalOrganicRevenue, cs, demoGems, demoRecords, topAddonsMeta, entryToLtv]);
 
   return (
     <Page title="Product Intelligence" fullWidth>
@@ -1921,13 +1925,16 @@ export default function Products() {
       <ReportTabs>
       <BlockStack gap="500">
 
-        <AiInsightsPanel
-          pageKey="products"
-          cachedInsights={aiCachedInsights}
-          generatedAt={aiGeneratedAt}
-          isStale={aiIsStale}
-          currencySymbol={cs}
-        />
+        {/* Hidden for V1 — bring back in V2. Loader wiring kept intact. */}
+        {false && (
+          <AiInsightsPanel
+            pageKey="products"
+            cachedInsights={aiCachedInsights}
+            generatedAt={aiGeneratedAt}
+            isStale={aiIsStale}
+            currencySymbol={cs}
+          />
+        )}
         <PageSummary bullets={summaryBullets} fromKey={fromKey} toKey={toKey} />
 
         {/* ── All tiles (drag/drop, show/hide) — everything except main table ── */}

@@ -1100,13 +1100,16 @@ export default function GeoPerformance() {
       <ReportTabs>
         <BlockStack gap="500">
 
-          <AiInsightsPanel
-            pageKey="geo"
-            cachedInsights={aiCachedInsights}
-            generatedAt={aiGeneratedAt}
-            isStale={aiIsStale}
-            currencySymbol={cs}
-          />
+          {/* Hidden for V1 — bring back in V2. Loader wiring kept intact. */}
+          {false && (
+            <AiInsightsPanel
+              pageKey="geo"
+              cachedInsights={aiCachedInsights}
+              generatedAt={aiGeneratedAt}
+              isStale={aiIsStale}
+              currencySymbol={cs}
+            />
+          )}
           <PageSummary bullets={summaryBullets} fromKey={fromKey} toKey={toKey} />
 
           {/* ═══ 0. QUICK-STAT TILES ═══ */}
