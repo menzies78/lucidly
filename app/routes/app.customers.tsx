@@ -1,7 +1,7 @@
 import { json } from "@remix-run/node";
 import { useLoaderData, useSearchParams, useSubmit, useActionData, useRevalidator } from "@remix-run/react";
 import { Page, Card, BlockStack, Text, Select } from "@shopify/polaris";
-import React, { useState, useMemo, useRef } from "react";
+import React, { useState, useMemo, useRef, useEffect } from "react";
 import ReportTabs from "../components/ReportTabs";
 // import InteractiveTable from "../components/InteractiveTable"; // table removed
 import TileGrid from "../components/TileGrid";
@@ -928,6 +928,13 @@ export const loader = async ({ request }) => {
   const ltvBenchmark = ltvBlob?.ltvBenchmark || { meta: { maxWindow: 0, windows: [] }, all: { maxWindow: 0, windows: [] } };
   const ltvRecent = ltvBlob?.ltvRecent || { meta: [], all: [] };
   const ltvMonthly = ltvBlob?.ltvMonthly || { meta: { rows: [], maxMonth: 0 }, all: { rows: [], maxMonth: 0 } };
+  // Per-metaNew-customer records for the filterable LTV tile exploration.
+  const ltvCustomers: Array<{
+    gender: string | null; age: string | null; country: string | null;
+    ltv: number; firstOrder: number; orders: number;
+    timeTo2nd: number | null; acqMonth: string;
+    ltvByWindow: Record<string, number>;
+  }> = ltvBlob?.ltvCustomers || [];
 
   // LTV tile component fields (mn = Meta New, all = all customers)
   const mnAvgLtv = ltvTile.meta?.avgLtv || 0;
@@ -1043,7 +1050,7 @@ export const loader = async ({ request }) => {
     allMedianTimeTo2nd, allReorderWithin90,
     metaAvgAov, totalMetaSpend,
     unmatchedConversions, unmatchedRevenue,
-    ltvBenchmark, ltvTile, ltvRecent, ltvMonthly,
+    ltvBenchmark, ltvTile, ltvRecent, ltvMonthly, ltvCustomers,
     weeklyCohortSeries,
     fromKey, toKey, preset,
   });
@@ -1711,7 +1718,7 @@ export default function Customers() {
     allMedianTimeTo2nd, allReorderWithin90,
     metaAvgAov, totalMetaSpend,
     unmatchedConversions, unmatchedRevenue,
-    ltvBenchmark, ltvTile, ltvRecent, ltvMonthly,
+    ltvBenchmark, ltvTile, ltvRecent, ltvMonthly, ltvCustomers,
     weeklyCohortSeries,
     prevMetaCount, prevMetaAvgFirstOrder, prevAovCpaRatio, prevNewCustomerCPA,
     prevMetaRepeatRate, prevMetaRevenue,
@@ -1737,6 +1744,97 @@ export default function Customers() {
   const [ltvTab, setLtvTab] = useState<"meta" | "all">("meta");
   const [ltvView, setLtvView] = useState<"progression" | "cohorts">("progression");
   const [cohortMetric, setCohortMetric] = useState<"ltv" | "retention">("ltv");
+
+  // ── LTV exploration state ─────────────────────────────────────────
+  // Filters target the metaNew cohort (ltvCustomers) to answer
+  // "which segments have the highest LTV?". Persistent via localStorage
+  // so the explorer remembers the user's last cut between sessions.
+  const [ltvFilterGender, setLtvFilterGender] = useState<"All" | "male" | "female">("All");
+  const [ltvFilterAges, setLtvFilterAges] = useState<string[]>([]); // empty = all
+  const [ltvFilterCountry, setLtvFilterCountry] = useState<string>("All");
+  const [ltvWindowPreset, setLtvWindowPreset] = useState<"lifetime" | 30 | 60 | 90 | 180 | 365>("lifetime");
+  // Gross margin % for the profit-payback calc. Default 60 — reasonable
+  // midpoint for DTC/fashion. Revenue-based payback was misleading
+  // ("1 order = payback" sounds great but ROAS=1 doesn't cover product
+  // cost, fulfilment, fees). Persist per-browser — eventually migrate
+  // to Shop.defaultMargin.
+  const [marginPct, setMarginPct] = useState<number>(60);
+  const [chartHover, setChartHover] = useState<{ window: number; bench: number; recent: number | null } | null>(null);
+
+  // Load persisted prefs on mount
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem("lucidly.ltvExplorer");
+      if (raw) {
+        const p = JSON.parse(raw);
+        if (p.gender) setLtvFilterGender(p.gender);
+        if (Array.isArray(p.ages)) setLtvFilterAges(p.ages);
+        if (p.country) setLtvFilterCountry(p.country);
+        if (p.window) setLtvWindowPreset(p.window);
+        if (typeof p.margin === "number" && p.margin >= 0 && p.margin <= 100) setMarginPct(p.margin);
+      }
+    } catch {}
+  }, []);
+  useEffect(() => {
+    try {
+      localStorage.setItem("lucidly.ltvExplorer", JSON.stringify({
+        gender: ltvFilterGender, ages: ltvFilterAges, country: ltvFilterCountry,
+        window: ltvWindowPreset, margin: marginPct,
+      }));
+    } catch {}
+  }, [ltvFilterGender, ltvFilterAges, ltvFilterCountry, ltvWindowPreset, marginPct]);
+
+  // Unique age brackets + countries pulled from the per-customer dataset.
+  const ltvAgeOptions = useMemo(() => {
+    const s = new Set<string>();
+    for (const c of ltvCustomers) { if (c.age) s.add(c.age); }
+    return [...s].sort();
+  }, [ltvCustomers]);
+  const ltvCountryOptions = useMemo(() => {
+    const tally: Record<string, number> = {};
+    for (const c of ltvCustomers) { if (c.country) tally[c.country] = (tally[c.country] || 0) + 1; }
+    return Object.entries(tally).sort((a, b) => b[1] - a[1]).map(([k]) => k);
+  }, [ltvCustomers]);
+
+  // Filtered view + derived stats. When filters are inactive the result
+  // matches the unfiltered metaNew cohort powering the existing tile.
+  const ltvFiltered = useMemo(() => {
+    const filterActive = ltvFilterGender !== "All" || ltvFilterAges.length > 0 || ltvFilterCountry !== "All";
+    let subset = ltvCustomers;
+    if (filterActive) {
+      subset = ltvCustomers.filter((c) => {
+        if (ltvFilterGender !== "All" && c.gender !== ltvFilterGender) return false;
+        if (ltvFilterAges.length > 0 && (!c.age || !ltvFilterAges.includes(c.age))) return false;
+        if (ltvFilterCountry !== "All" && c.country !== ltvFilterCountry) return false;
+        return true;
+      });
+    }
+    const count = subset.length;
+    const totalLtv = subset.reduce((s, c) => s + c.ltv, 0);
+    const totalFirst = subset.reduce((s, c) => s + c.firstOrder, 0);
+    const totalOrders = subset.reduce((s, c) => s + c.orders, 0);
+    const avgLtv = count > 0 ? Math.round((totalLtv / count) * 100) / 100 : 0;
+    const avgFirst = count > 0 ? Math.round((totalFirst / count) * 100) / 100 : 0;
+    const repeatCount = subset.filter((c) => c.orders > 1).length;
+    const repeatRate = count > 0 ? Math.round((repeatCount / count) * 100) : 0;
+    const t2 = subset.map((c) => c.timeTo2nd).filter((v): v is number => v != null).sort((a, b) => a - b);
+    const medT2 = t2.length > 0 ? (t2.length % 2 ? t2[(t2.length - 1) / 2] : (t2[t2.length / 2 - 1] + t2[t2.length / 2]) / 2) : null;
+    // Per-window avg LTV over the filtered subset (mirrors ltvBenchmark
+    // shape so the chart can consume it interchangeably).
+    const windows = [30, 60, 90, 180, 365];
+    const byWindow = windows.map((w) => {
+      const wStr = String(w);
+      const mature = subset.filter((c) => c.ltvByWindow[wStr] !== undefined);
+      if (mature.length < 3) return null; // under-powered, don't show
+      const sum = mature.reduce((s, c) => s + (c.ltvByWindow[wStr] || 0), 0);
+      return { window: w, count: mature.length, avgLtv: Math.round((sum / mature.length) * 100) / 100 };
+    }).filter(Boolean) as Array<{ window: number; count: number; avgLtv: number }>;
+    return {
+      filterActive, count, avgLtv, avgFirst, avgOrders: count > 0 ? Math.round((totalOrders / count) * 100) / 100 : 0,
+      repeatRate, medianTimeTo2nd: medT2 != null ? Math.round(medT2) : null,
+      benchmarkWindows: byWindow,
+    };
+  }, [ltvCustomers, ltvFilterGender, ltvFilterAges, ltvFilterCountry]);
 
   const tagFilter = searchParams.get("tag") || "all";
   const handleTagChange = (value: string) => {
@@ -2650,26 +2748,115 @@ export default function Customers() {
                   <button className={`toggle-btn ${ltvTab === "all" ? "active" : ""}`} onClick={() => setLtvTab("all")}>All Customers</button>
                 </div>
               </div>
+              {/* LTV explorer controls — only shown on the Meta tab. Filters
+                  cut the per-customer dataset by gender/age/country and
+                  recompute the three headline stats + the maturation chart.
+                  Window tabs affect which benchmark window drives the "LTV by
+                  X" hero. Margin slider flips Payback from revenue-based to
+                  profit-based (CAC ÷ first-order gross profit). */}
+              {ltvTab === "meta" && (
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 12, alignItems: "center", padding: "10px 12px", background: "#F9FAFB", border: "1px solid #E5E7EB", borderRadius: 8 }}>
+                  <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                    <span style={{ fontSize: 11, fontWeight: 600, color: "#6B7280", textTransform: "uppercase", letterSpacing: 0.5 }}>Window</span>
+                    <div className="toggle-group">
+                      {(["lifetime", 365, 180, 90, 60, 30] as const).map((w) => (
+                        <button key={String(w)} className={`toggle-btn ${ltvWindowPreset === w ? "active" : ""}`} onClick={() => setLtvWindowPreset(w)}>
+                          {w === "lifetime" ? "Lifetime" : w === 365 ? "1yr" : `${w}d`}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                    <span style={{ fontSize: 11, fontWeight: 600, color: "#6B7280", textTransform: "uppercase", letterSpacing: 0.5 }}>Gender</span>
+                    <div className="toggle-group">
+                      {(["All", "female", "male"] as const).map((g) => (
+                        <button key={g} className={`toggle-btn ${ltvFilterGender === g ? "active" : ""}`} onClick={() => setLtvFilterGender(g)}>
+                          {g === "All" ? "All" : g === "female" ? "Women" : "Men"}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  {ltvAgeOptions.length > 0 && (
+                    <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+                      <span style={{ fontSize: 11, fontWeight: 600, color: "#6B7280", textTransform: "uppercase", letterSpacing: 0.5 }}>Age</span>
+                      <div className="toggle-group">
+                        <button className={`toggle-btn ${ltvFilterAges.length === 0 ? "active" : ""}`} onClick={() => setLtvFilterAges([])}>All</button>
+                        {ltvAgeOptions.map((a) => (
+                          <button key={a} className={`toggle-btn ${ltvFilterAges.includes(a) ? "active" : ""}`} onClick={() => setLtvFilterAges((prev) => prev.includes(a) ? prev.filter((x) => x !== a) : [...prev, a])}>
+                            {a}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {ltvCountryOptions.length > 0 && (
+                    <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                      <span style={{ fontSize: 11, fontWeight: 600, color: "#6B7280", textTransform: "uppercase", letterSpacing: 0.5 }}>Country</span>
+                      <select value={ltvFilterCountry} onChange={(e) => setLtvFilterCountry(e.target.value)} style={{ fontSize: 12, padding: "4px 8px", border: "1px solid #D1D5DB", borderRadius: 6, background: "#fff" }}>
+                        <option value="All">All</option>
+                        {ltvCountryOptions.slice(0, 30).map((c) => <option key={c} value={c}>{c}</option>)}
+                      </select>
+                    </div>
+                  )}
+                  <div style={{ display: "flex", gap: 8, alignItems: "center", marginLeft: "auto" }}>
+                    <span style={{ fontSize: 11, fontWeight: 600, color: "#6B7280", textTransform: "uppercase", letterSpacing: 0.5 }}>Margin</span>
+                    <input type="range" min={0} max={90} step={5} value={marginPct} onChange={(e) => setMarginPct(parseInt(e.target.value, 10))} style={{ width: 120 }} />
+                    <span style={{ fontSize: 13, fontWeight: 600, color: "#1F2937", minWidth: 36 }}>{marginPct}%</span>
+                  </div>
+                  {ltvFiltered.filterActive && (
+                    <button onClick={() => { setLtvFilterGender("All"); setLtvFilterAges([]); setLtvFilterCountry("All"); }} style={{ fontSize: 11, padding: "4px 8px", border: "1px solid #D1D5DB", borderRadius: 6, background: "#fff", cursor: "pointer", color: "#6B7280" }}>
+                      Clear filters
+                    </button>
+                  )}
+                </div>
+              )}
               {(() => {
                 const isMeta = ltvTab === "meta";
                 const tile = isMeta ? ltvTile?.meta : ltvTile?.all;
-                const count = tile?.count || 0;
-                const avgAov = tile?.avgAov || 0;
-                const avgOrds = tile?.avgOrders || 0;
-                const repeatRate = tile?.repeatRate || 0;
-                const medT2 = tile?.medianTimeTo2nd ?? null;
+                const baseCount = tile?.count || 0;
+                const baseAvgAov = tile?.avgAov || 0;
+                const baseAvgOrds = tile?.avgOrders || 0;
+                const baseRepeatRate = tile?.repeatRate || 0;
+                const baseMedT2 = tile?.medianTimeTo2nd ?? null;
                 const cac = isMeta ? (tile as any)?.cpa || 0 : 0;
-                const payback = isMeta ? (tile as any)?.paybackOrders || 0 : 0;
-                const benchmark = isMeta ? ltvBenchmark?.meta : ltvBenchmark?.all;
-                const benchmarkWindows = benchmark?.windows || [];
-                const benchmarkMaxWindow = benchmark?.maxWindow || 0;
-                const heroEntry = benchmarkWindows.length > 0 ? benchmarkWindows[benchmarkWindows.length - 1] : null;
-                const heroLtv = heroEntry ? heroEntry.avgLtv : (tile?.avgLtv || 0);
+                const baseBenchmark = isMeta ? ltvBenchmark?.meta : ltvBenchmark?.all;
+                const baseBenchmarkWindows = baseBenchmark?.windows || [];
+
+                // When filters are active on the Meta tab, source all stats
+                // from the filtered subset. Otherwise use the pre-computed
+                // cohort stats from the blob (faster, no recompute).
+                const useFiltered = isMeta && ltvFiltered.filterActive;
+                const count = useFiltered ? ltvFiltered.count : baseCount;
+                const avgAov = useFiltered && ltvFiltered.avgFirst > 0 ? ltvFiltered.avgFirst : baseAvgAov;
+                const avgOrds = useFiltered ? ltvFiltered.avgOrders : baseAvgOrds;
+                const repeatRate = useFiltered ? ltvFiltered.repeatRate : baseRepeatRate;
+                const medT2 = useFiltered ? ltvFiltered.medianTimeTo2nd : baseMedT2;
+                const benchmarkWindows = useFiltered ? ltvFiltered.benchmarkWindows : baseBenchmarkWindows;
+                const benchmarkMaxWindow = benchmarkWindows.length > 0 ? benchmarkWindows[benchmarkWindows.length - 1].window : 0;
+
+                // Hero LTV respects the window preset. "Lifetime" uses the
+                // longest matured window (same as before); any other preset
+                // picks that specific window if present.
+                const preset = ltvWindowPreset;
+                const heroEntry = benchmarkWindows.length > 0
+                  ? (preset === "lifetime"
+                      ? benchmarkWindows[benchmarkWindows.length - 1]
+                      : benchmarkWindows.find((w: any) => w.window === preset) || benchmarkWindows[benchmarkWindows.length - 1])
+                  : null;
+                const heroLtv = heroEntry ? heroEntry.avgLtv : (useFiltered ? ltvFiltered.avgLtv : (tile?.avgLtv || 0));
                 const heroLabel = heroEntry ? `${heroEntry.window >= 365 ? "1yr" : heroEntry.window + "d"} LTV` : "Avg LTV";
                 const heroCount = heroEntry ? heroEntry.count : count;
                 const ltvCacRatio = cac > 0 ? Math.round(heroLtv / cac * 100) / 100 : 0;
                 const windowLabel = (d: number) => d >= 365 ? `${Math.round(d / 365)}yr` : `${d}d`;
 
+                // Profit-payback: CAC recovered through first-order gross
+                // profit (AOV × margin%), not first-order revenue. Falls
+                // back to revenue-based payback if margin is 0.
+                const marginFrac = marginPct / 100;
+                const grossPerOrder = avgAov * (marginFrac > 0 ? marginFrac : 1);
+                const profitPaybackOrders = grossPerOrder > 0 && cac > 0
+                  ? Math.round((cac / grossPerOrder) * 100) / 100 : 0;
+                const payback = profitPaybackOrders;
                 const paybackDays = payback > 0 && medT2 != null
                   ? (payback <= 1 ? 0 : Math.round(medT2 * (payback - 1)))
                   : null;
@@ -2754,7 +2941,7 @@ export default function Customers() {
                       </div>
                     </div>
                     {(benchmarkWindows.length > 0 || (isMeta ? ltvMonthly?.meta : ltvMonthly?.all)?.rows?.length > 0) && (() => {
-                      const recentData = isMeta ? ltvRecent?.meta : ltvRecent?.all;
+                      const recentData = useFiltered ? [] : (isMeta ? ltvRecent?.meta : ltvRecent?.all);
                       const recentByWindow: Record<number, any> = {};
                       for (const r of (recentData || [])) recentByWindow[r.window] = r;
                       const monthlyDataObj = isMeta ? ltvMonthly?.meta : ltvMonthly?.all;
@@ -2771,7 +2958,7 @@ export default function Customers() {
                               <Text as="p" variant="headingSm">{ltvView === "progression" ? "LTV Progression" : "Monthly Cohort Table"}</Text>
                               <Text as="p" variant="bodySm" tone="subdued">
                                 {ltvView === "progression"
-                                  ? "Benchmark: all customers who've completed each window. Recent: latest fully-matured cohort (e.g. 30d = acquired 30–60 days ago)."
+                                  ? "Benchmark (all matured cohorts): average cumulative revenue per customer at each window. Recent cohort: the latest group that has completed each window (e.g. 30d = acquired 30–60 days ago)."
                                   : cohortMetric === "ltv"
                                     ? "Each row is an acquisition month. Values show cumulative revenue per customer through each 30-day period."
                                     : "Each row is an acquisition month. Values show % of customers who placed at least one order in each 30-day period."}
@@ -2789,14 +2976,16 @@ export default function Customers() {
                             // green = latest completed cohort, dashed red =
                             // CAC. Payback day = where benchmark crosses CAC,
                             // computed via linear interp between windows.
+                            // Recent cohort overlay is suppressed when filters
+                            // are active (recent data isn't filter-aware in v1).
                             const recentCap = Math.floor(benchmarkMaxWindow / 2);
-                            const chartWidth = 720;
-                            const chartHeight = 280;
-                            const padL = 56, padR = 24, padT = 18, padB = 42;
+                            const chartWidth = 960;
+                            const chartHeight = 360;
+                            const padL = 64, padR = 28, padT = 24, padB = 48;
                             const innerW = chartWidth - padL - padR;
                             const innerH = chartHeight - padT - padB;
                             const lastWindow = benchmarkWindows[benchmarkWindows.length - 1].window;
-                            const recentCut = (recentData || []).filter((r: any) => r.window <= recentCap);
+                            const recentCut = useFiltered ? [] : (recentData || []).filter((r: any) => r.window <= recentCap);
                             const ltvMaxRaw = Math.max(
                               ...benchmarkWindows.map((w: any) => w.avgLtv),
                               ...recentCut.map((r: any) => r.avgLtv),
@@ -2831,12 +3020,12 @@ export default function Customers() {
                                 <div style={{ display: "flex", gap: "16px", marginBottom: "12px", fontSize: "11px", flexWrap: "wrap" }}>
                                   <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
                                     <svg width="22" height="8"><line x1="0" y1="4" x2="22" y2="4" stroke="#7C3AED" strokeWidth="2.5" strokeLinecap="round" /></svg>
-                                    <span style={{ color: "#6B7280", fontWeight: 500 }}>All-time benchmark</span>
+                                    <span style={{ color: "#6B7280", fontWeight: 500 }}>Benchmark (all matured cohorts)</span>
                                   </div>
                                   {recentPath && (
                                     <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
                                       <svg width="22" height="8"><line x1="0" y1="4" x2="22" y2="4" stroke="#10B981" strokeWidth="2.5" strokeDasharray="5 3" strokeLinecap="round" /></svg>
-                                      <span style={{ color: "#6B7280", fontWeight: 500 }}>Latest completed cohort</span>
+                                      <span style={{ color: "#6B7280", fontWeight: 500 }}>Recent cohort (latest fully-matured)</span>
                                     </div>
                                   )}
                                   {isMeta && cac > 0 && (
@@ -2845,46 +3034,89 @@ export default function Customers() {
                                       <span style={{ color: "#6B7280", fontWeight: 500 }}>CAC ({cs}{Math.round(cac).toLocaleString()})</span>
                                     </div>
                                   )}
+                                  {useFiltered && (
+                                    <div style={{ color: "#9CA3AF", fontStyle: "italic" }}>Recent-cohort overlay hidden while filters are active.</div>
+                                  )}
                                 </div>
-                                <svg viewBox={`0 0 ${chartWidth} ${chartHeight}`} style={{ width: "100%", height: "auto", maxHeight: 300, display: "block" }}>
+                                <div style={{ position: "relative", width: "100%" }}>
+                                <svg viewBox={`0 0 ${chartWidth} ${chartHeight}`} preserveAspectRatio="none" style={{ width: "100%", height: "360px", display: "block" }}>
+                                  <defs>
+                                    <linearGradient id="benchGradient" x1="0" y1="0" x2="0" y2="1">
+                                      <stop offset="0%" stopColor="#7C3AED" stopOpacity="0.18" />
+                                      <stop offset="100%" stopColor="#7C3AED" stopOpacity="0" />
+                                    </linearGradient>
+                                  </defs>
                                   {gridVals.map((v, i) => (
                                     <g key={i}>
                                       <line x1={padL} x2={chartWidth - padR} y1={yPos(v)} y2={yPos(v)} stroke="#F3F4F6" strokeWidth="1" />
-                                      <text x={padL - 6} y={yPos(v) + 3} textAnchor="end" fontSize="10" fill="#9CA3AF">{cs}{Math.round(v).toLocaleString()}</text>
+                                      <text x={padL - 8} y={yPos(v) + 3} textAnchor="end" fontSize="11" fill="#9CA3AF">{cs}{Math.round(v).toLocaleString()}</text>
                                     </g>
                                   ))}
                                   {benchmarkWindows.map((w: any) => (
                                     <g key={w.window}>
                                       <line x1={xPos(w.window)} x2={xPos(w.window)} y1={padT + innerH} y2={padT + innerH + 4} stroke="#9CA3AF" />
-                                      <text x={xPos(w.window)} y={chartHeight - padB + 18} textAnchor="middle" fontSize="10" fill="#6B7280">{windowLabel(w.window)}</text>
+                                      <text x={xPos(w.window)} y={chartHeight - padB + 20} textAnchor="middle" fontSize="11" fill="#6B7280">{windowLabel(w.window)}</text>
                                     </g>
                                   ))}
+                                  {/* Gradient fill under benchmark curve */}
+                                  <path
+                                    d={`${benchPath} L ${xPos(lastWindow).toFixed(1)} ${(padT + innerH).toFixed(1)} L ${xPos(0).toFixed(1)} ${(padT + innerH).toFixed(1)} Z`}
+                                    fill="url(#benchGradient)"
+                                    stroke="none"
+                                  />
                                   {isMeta && cac > 0 && cac < ltvMax && (
                                     <line x1={padL} x2={chartWidth - padR} y1={yPos(cac)} y2={yPos(cac)} stroke="#DC2626" strokeWidth="1.5" strokeDasharray="2 2" />
                                   )}
                                   <path d={benchPath} fill="none" stroke="#7C3AED" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
-                                  {benchmarkWindows.map((p: any) => (
-                                    <g key={p.window}>
-                                      <circle cx={xPos(p.window)} cy={yPos(p.avgLtv)} r="4" fill="#7C3AED" />
-                                      <text x={xPos(p.window)} y={yPos(p.avgLtv) - 10} textAnchor="middle" fontSize="10" fontWeight="600" fill="#5B21B6">{cs}{Math.round(p.avgLtv).toLocaleString()}</text>
-                                    </g>
-                                  ))}
                                   {recentPath && (
-                                    <>
-                                      <path d={recentPath} fill="none" stroke="#10B981" strokeWidth="2.5" strokeDasharray="5 3" strokeLinecap="round" strokeLinejoin="round" />
-                                      {recentCut.map((p: any) => (
-                                        <circle key={p.window} cx={xPos(p.window)} cy={yPos(p.avgLtv)} r="3.5" fill="#10B981" />
-                                      ))}
-                                    </>
+                                    <path d={recentPath} fill="none" stroke="#10B981" strokeWidth="2.5" strokeDasharray="5 3" strokeLinecap="round" strokeLinejoin="round" />
                                   )}
+                                  {benchmarkWindows.map((p: any) => {
+                                    const recent = recentByWindow[p.window];
+                                    const isHover = chartHover?.window === p.window;
+                                    return (
+                                      <g key={p.window} style={{ cursor: "pointer" }} onMouseEnter={() => setChartHover({ window: p.window, bench: p.avgLtv, recent: recent?.avgLtv ?? null })} onMouseLeave={() => setChartHover(null)}>
+                                        {/* invisible hit target */}
+                                        <rect x={xPos(p.window) - 20} y={padT} width={40} height={innerH} fill="transparent" />
+                                        <circle cx={xPos(p.window)} cy={yPos(p.avgLtv)} r={isHover ? 6 : 4} fill="#7C3AED" stroke="#fff" strokeWidth={isHover ? 2 : 0} />
+                                        {recent && (
+                                          <circle cx={xPos(p.window)} cy={yPos(recent.avgLtv)} r={isHover ? 5 : 3.5} fill="#10B981" stroke="#fff" strokeWidth={isHover ? 2 : 0} />
+                                        )}
+                                        {!isHover && (
+                                          <text x={xPos(p.window)} y={yPos(p.avgLtv) - 10} textAnchor="middle" fontSize="11" fontWeight="600" fill="#5B21B6">{cs}{Math.round(p.avgLtv).toLocaleString()}</text>
+                                        )}
+                                      </g>
+                                    );
+                                  })}
                                   {paybackDay != null && (
                                     <g>
                                       <line x1={xPos(paybackDay)} x2={xPos(paybackDay)} y1={yPos(cac)} y2={padT + innerH} stroke="#DC2626" strokeWidth="1" strokeDasharray="2 2" />
-                                      <circle cx={xPos(paybackDay)} cy={yPos(cac)} r="5" fill="#fff" stroke="#DC2626" strokeWidth="2" />
-                                      <text x={xPos(paybackDay)} y={yPos(cac) - 10} textAnchor="middle" fontSize="10" fontWeight="700" fill="#DC2626">Payback ~{paybackDay}d</text>
+                                      <circle cx={xPos(paybackDay)} cy={yPos(cac)} r="6" fill="#fff" stroke="#DC2626" strokeWidth="2" />
+                                      <text x={xPos(paybackDay)} y={yPos(cac) - 12} textAnchor="middle" fontSize="11" fontWeight="700" fill="#DC2626">Payback ~{paybackDay}d</text>
                                     </g>
                                   )}
+                                  {/* Hover tooltip */}
+                                  {chartHover && (() => {
+                                    const hx = xPos(chartHover.window);
+                                    const tipW = 170;
+                                    const tipH = chartHover.recent != null ? 68 : 50;
+                                    const leftSide = hx > chartWidth / 2;
+                                    const tx = leftSide ? hx - tipW - 12 : hx + 12;
+                                    const ty = padT + 8;
+                                    return (
+                                      <g pointerEvents="none">
+                                        <line x1={hx} x2={hx} y1={padT} y2={padT + innerH} stroke="#9CA3AF" strokeWidth="1" strokeDasharray="2 3" />
+                                        <rect x={tx} y={ty} width={tipW} height={tipH} rx="6" fill="#111827" opacity="0.95" />
+                                        <text x={tx + 10} y={ty + 18} fontSize="12" fontWeight="700" fill="#fff">{windowLabel(chartHover.window)}</text>
+                                        <text x={tx + 10} y={ty + 36} fontSize="11" fill="#C4B5FD">Benchmark: {cs}{Math.round(chartHover.bench).toLocaleString()}</text>
+                                        {chartHover.recent != null && (
+                                          <text x={tx + 10} y={ty + 54} fontSize="11" fill="#6EE7B7">Recent: {cs}{Math.round(chartHover.recent).toLocaleString()}</text>
+                                        )}
+                                      </g>
+                                    );
+                                  })()}
                                 </svg>
+                                </div>
                                 {isMeta && paybackDay != null && (
                                   <div style={{ marginTop: "10px", padding: "10px 14px", background: "#ECFDF5", border: "1px solid #A7F3D0", borderRadius: "8px", fontSize: "13px", color: "#065F46" }}>
                                     <strong>Payback:</strong> Meta customers recoup their {cs}{Math.round(cac).toLocaleString()} acquisition cost around day {paybackDay}. By {windowLabel(lastWindow)}, cumulative spend reaches {cs}{Math.round(benchLast.avgLtv).toLocaleString()} per customer ({ltvCacRatio.toFixed(2)}× CAC).

@@ -71,6 +71,7 @@ export async function rebuildCustomerSegments(shopDomain) {
       select: {
         shopifyOrderId: true, confidence: true,
         metaCampaignName: true, metaAdSetName: true, metaAdName: true,
+        metaAge: true, metaGender: true,
       },
     }),
     db.customer.findMany({
@@ -132,6 +133,8 @@ export async function rebuildCustomerSegments(shopDomain) {
           campaign: attr.metaCampaignName || "",
           adSet: attr.metaAdSetName || "",
           ad: attr.metaAdName || "",
+          age: attr.metaAge || null,
+          gender: attr.metaGender || null,
         });
         break;
       }
@@ -141,6 +144,8 @@ export async function rebuildCustomerSegments(shopDomain) {
           campaign: o.metaCampaignName || o.utmCampaign || "",
           adSet: o.metaAdSetName || o.utmTerm || "",
           ad: o.metaAdName || o.utmContent || "",
+          age: null,
+          gender: null,
         });
         break;
       }
@@ -199,6 +204,13 @@ export async function rebuildCustomerSegments(shopDomain) {
   // Journey accumulators
   const metaJourney = { firstAOV: [], secondAOV: [], thirdAOV: [], gap1to2: [], gap2to3: [] };
   const allJourney = { firstAOV: [], secondAOV: [], thirdAOV: [], gap1to2: [], gap2to3: [] };
+
+  // Per-customer LTV records (metaNew only) for filterable exploration.
+  // Each record is the input to the Customers page LTV tile filters
+  // (gender/age/country) and powers recompute of avgLtv, LTV:CAC, payback,
+  // and the maturation line. Kept minimal to cap blob size: typical
+  // merchants with 5–10k metaNew customers produce a ~400–800 KB blob.
+  const ltvCustomers = [];
 
   // Geo accumulators (overall, all-history)
   const metaNewCountryAgg = {};
@@ -302,7 +314,9 @@ export async function rebuildCustomerSegments(shopDomain) {
       if (timeTo2nd != null) ltvMetaNewTimeTo2nd.push(timeTo2nd);
     }
 
-    // Maturity-windowed LTV
+    // Maturity-windowed LTV — plus per-customer window snapshots (metaNew
+    // only) for the filterable LTV tile exploration.
+    const customerLtvByWindow = {};
     for (const w of LTV_WINDOWS) {
       if (daysSinceAcq < w) continue;
       const windowEndTime = acqTime + w * DAY_MS;
@@ -321,6 +335,7 @@ export async function rebuildCustomerSegments(shopDomain) {
         metaNewLtvByWindow[w].revenue += windowRev;
         metaNewLtvByWindow[w].orders += windowOrd;
         if (windowOrd > 1) metaNewLtvByWindow[w].repeatCount++;
+        customerLtvByWindow[w] = r2(windowRev);
       }
 
       // Recent overlay: customer matured past W and was acquired within last 2W days
@@ -336,6 +351,24 @@ export async function rebuildCustomerSegments(shopDomain) {
           if (windowOrd > 1) metaNewRecent[w].repeatCount++;
         }
       }
+    }
+
+    // Capture per-customer record for LTV exploration. Gender/age from
+    // first attribution (captured at acquisition time); country from first
+    // order shipping address. LTV is net of refunds.
+    if (segment === "metaNew") {
+      const firstAttr2 = customerFirstAttr.get(custId);
+      ltvCustomers.push({
+        gender: firstAttr2?.gender || null,
+        age: firstAttr2?.age || null,
+        country: firstOrder?.country || null,
+        ltv: r2(netRevenue),
+        firstOrder: r2(firstOrder.frozenTotalPrice || 0),
+        orders: custOrders.length,
+        timeTo2nd,
+        acqMonth: shopLocalDayKey(tz, firstOrder.createdAt).slice(0, 7),
+        ltvByWindow: customerLtvByWindow,
+      });
     }
 
     // Monthly cohort (shop-local)
@@ -551,6 +584,11 @@ export async function rebuildCustomerSegments(shopDomain) {
       meta: buildMonthlyTable(metaNewMonthlyCohorts),
       all: buildMonthlyTable(allMonthlyCohorts),
     },
+    // Per-metaNew-customer records powering the filterable LTV tile.
+    // Consumers: app.customers.tsx MetaLtvTile — filters by gender/age/country
+    // and recomputes avg LTV, LTV:CAC, payback, and maturation line from this
+    // array.
+    ltvCustomers,
   };
 
   // ── Build journey blob ──
