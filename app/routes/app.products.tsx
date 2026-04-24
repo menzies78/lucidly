@@ -50,7 +50,7 @@ export const loader = async ({ request }) => {
   const shopDomain = session.shop;
   const shopForTz = await db.shop.findUnique({ where: { shopDomain } });
   const tz = shopForTz?.shopifyTimezone || "UTC";
-  const { fromDate, toDate, fromKey, toKey } = parseDateRange(request, tz);
+  const { fromDate, toDate, fromKey, toKey, preset } = parseDateRange(request, tz);
 
   const addDaysKey = (key: string, delta: number): string => {
     const [y, m, d] = key.split("-").map(Number);
@@ -818,7 +818,7 @@ export const loader = async ({ request }) => {
     unmatchedConversions, unmatchedRevenue,
     demoRecords, demoCountries, demoGems,
     entryToLtv, entryToLtvCohortAvg,
-    fromKey, toKey,
+    fromKey, toKey, preset,
   });
 };
 
@@ -1193,7 +1193,7 @@ const pageStyles = `
 .refund-table td { font-size: 13px; padding: 8px 12px; border-bottom: 1px solid #F3F4F6; }
 .refund-table tr:hover td { background: #F9FAFB; }
 .refund-table .num { text-align: right; font-variant-numeric: tabular-nums; }
-.scrollable-list { max-height: 440px; overflow-y: auto; }
+.scrollable-list { max-height: 260px; overflow-y: auto; padding-bottom: 12px; min-height: 0; }
 `;
 
 // ── Component ──
@@ -1641,7 +1641,7 @@ export default function Products() {
     unmatchedConversions, unmatchedRevenue,
     demoRecords, demoCountries, demoGems,
     entryToLtv, entryToLtvCohortAvg,
-    fromKey, toKey,
+    fromKey, toKey, preset,
   } = useLoaderData<typeof loader>();
 
   const fmtPrice = (v: number) => `${cs}${Math.round(v).toLocaleString()}`;
@@ -1935,7 +1935,7 @@ export default function Products() {
             currencySymbol={cs}
           />
         )}
-        <PageSummary bullets={summaryBullets} fromKey={fromKey} toKey={toKey} />
+        <PageSummary bullets={summaryBullets} fromKey={fromKey} toKey={toKey} preset={preset} />
 
         {/* ── All tiles (drag/drop, show/hide) — everything except main table ── */}
         <TileGrid pageId="products" columns={4} tiles={[

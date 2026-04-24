@@ -20,6 +20,11 @@ export interface DateRange {
   toDate: Date;
   fromKey: string;
   toKey: string;
+  // Active preset value ("last30", "thisWeek", "all", …) when the selector's
+  // preset was applied, or "" when the user picked a custom range via the
+  // date picker. Consumers use this to label the summary header — preset
+  // name when set, explicit date range otherwise.
+  preset: string;
   compareFrom: Date | null;
   compareTo: Date | null;
   compareFromKey: string | null;
@@ -202,6 +207,7 @@ export function parseDateRange(request: Request, tz: Tz = "UTC"): DateRange {
     toDate,
     fromKey,
     toKey,
+    preset,
     compareFrom,
     compareTo,
     compareFromKey,

@@ -320,7 +320,7 @@ export const loader = async ({ request }) => {
   const shop = await db.shop.findUnique({ where: { shopDomain } });
   const tz = shop?.shopifyTimezone || "UTC";
 
-  const { fromDate, toDate, fromKey, toKey, compareFrom, compareTo, compareFromKey, compareToKey, hasComparison, compareLabel } = parseDateRange(request, tz);
+  const { fromDate, toDate, fromKey, toKey, preset, compareFrom, compareTo, compareFromKey, compareToKey, hasComparison, compareLabel } = parseDateRange(request, tz);
 
   const _t0 = Date.now();
 
@@ -1058,7 +1058,7 @@ export const loader = async ({ request }) => {
     aiCachedInsights, aiGeneratedAt, aiIsStale,
     uniqueNewMetaCustomers, prevUniqueNewMetaCustomers, totalNewCustomersInPeriod,
     shopDomain,
-    fromKey, toKey,
+    fromKey, toKey, preset,
     changeEvents: changeEventsForStrip,
     changeCountsByObjectId,
   });
@@ -2206,7 +2206,7 @@ export default function Campaigns() {
     platformPerf, placementPerf,
     aiCachedInsights, aiGeneratedAt, aiIsStale,
     uniqueNewMetaCustomers, prevUniqueNewMetaCustomers, totalNewCustomersInPeriod,
-    shopDomain, fromKey, toKey,
+    shopDomain, fromKey, toKey, preset,
     changeEvents, changeCountsByObjectId,
   } = useLoaderData();
   const cs = currencySymbol || currencySymbolFromCode(null);
@@ -2966,7 +2966,7 @@ export default function Campaigns() {
             currencySymbol={cs}
           />
         )}
-        <PageSummary bullets={summaryBullets} fromKey={fromKey} toKey={toKey} />
+        <PageSummary bullets={summaryBullets} fromKey={fromKey} toKey={toKey} preset={preset} />
         {/* Breadcrumb */}
         {breadcrumbs.length > 0 && (
           <InlineStack gap="100" blockAlign="center">

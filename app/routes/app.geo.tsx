@@ -31,7 +31,7 @@ export const loader = async ({ request }) => {
   const currencySymbol = currencySymbolFromCode(shop?.shopifyCurrency);
 
   const tz = shop?.shopifyTimezone || "UTC";
-  const { fromDate, toDate, fromKey, toKey } = parseDateRange(request, tz);
+  const { fromDate, toDate, fromKey, toKey, preset } = parseDateRange(request, tz);
   const { DEFAULT_TTL } = await import("../services/queryCache.server");
 
   // ── All queries in parallel, with caching ──
@@ -505,7 +505,7 @@ export const loader = async ({ request }) => {
     aiCachedInsights,
     aiGeneratedAt,
     aiIsStale,
-    fromKey, toKey,
+    fromKey, toKey, preset,
   });
 };
 
@@ -729,7 +729,7 @@ export default function GeoPerformance() {
     overallRows, campaignEntities, adsetEntities, adEntities,
     shopifyByCountry, currencySymbol, hasData,
     aiCachedInsights, aiGeneratedAt, aiIsStale,
-    fromKey, toKey,
+    fromKey, toKey, preset,
   } = useLoaderData<typeof loader>();
   const cs = currencySymbol || "\u00a3";
 
@@ -1110,7 +1110,7 @@ export default function GeoPerformance() {
               currencySymbol={cs}
             />
           )}
-          <PageSummary bullets={summaryBullets} fromKey={fromKey} toKey={toKey} />
+          <PageSummary bullets={summaryBullets} fromKey={fromKey} toKey={toKey} preset={preset} />
 
           {/* ═══ 0. QUICK-STAT TILES ═══ */}
           <TileGrid pageId="geo-v2" columns={4} tiles={[

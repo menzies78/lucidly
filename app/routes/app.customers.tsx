@@ -29,7 +29,7 @@ export const loader = async ({ request }) => {
   const shopDomain = session.shop;
   const shopForTz = await db.shop.findUnique({ where: { shopDomain } });
   const tz = shopForTz?.shopifyTimezone || "UTC";
-  const { fromDate, toDate, fromKey, toKey } = parseDateRange(request, tz);
+  const { fromDate, toDate, fromKey, toKey, preset } = parseDateRange(request, tz);
   const _t0 = Date.now();
 
   const r2 = (v: number) => Math.round(v * 100) / 100;
@@ -1045,7 +1045,7 @@ export const loader = async ({ request }) => {
     unmatchedConversions, unmatchedRevenue,
     ltvBenchmark, ltvTile, ltvRecent, ltvMonthly,
     weeklyCohortSeries,
-    fromKey, toKey,
+    fromKey, toKey, preset,
   });
 };
 
@@ -2138,17 +2138,24 @@ export default function Customers() {
       }
     }
 
-    // 5) Repeat rate: Meta vs Organic
-    if (metaRepeatRate > 0 || organicRepeatRate > 0) {
-      const gap = metaRepeatRate - organicRepeatRate;
+    // 5) Returning Meta customers — absolute count of Meta-attributed
+    // customers who made a repeat purchase in this period. Prior framing
+    // as "repeat rate" divided returning customers by newly-acquired in
+    // the same window (different cohorts) which produced nonsense
+    // percentages >100% and bogus "lagging organic by N pts" tails.
+    if (metaRepeatTotal > 0) {
       let tone: SummaryTone = "neutral";
-      let tail: React.ReactNode;
-      if (gap >= 2) { tone = "positive"; tail = <> — beating organic by {gap} pts.</>; }
-      else if (gap <= -5) { tone = "warning"; tail = <> — lagging organic by {Math.abs(gap)} pts.</>; }
-      else { tail = <> — roughly in line with organic ({organicRepeatRate}%).</>; }
+      let delta: React.ReactNode = null;
+      if (prevMetaRepeatTotal > 0) {
+        const diff = metaRepeatTotal - prevMetaRepeatTotal;
+        const pct = Math.round((diff / prevMetaRepeatTotal) * 100);
+        if (pct >= 10) { tone = "positive"; delta = <> — up {pct}% vs previous period.</>; }
+        else if (pct <= -10) { tone = "warning"; delta = <> — down {Math.abs(pct)}% vs previous period.</>; }
+        else { delta = <> — roughly flat vs previous period.</>; }
+      }
       out.push({
         tone,
-        text: <><strong>Repeat rate:</strong> {metaRepeatRate}% of Meta new customers come back{tail}</>,
+        text: <><strong>Returning Meta customers:</strong> {metaRepeatTotal.toLocaleString()} came back to buy again in this period{delta}</>,
       });
     }
 
@@ -2222,7 +2229,7 @@ export default function Customers() {
             currencySymbol={cs}
           />
         )}
-        <PageSummary bullets={summaryBullets} fromKey={data.fromKey} toKey={data.toKey} />
+        <PageSummary bullets={summaryBullets} fromKey={data.fromKey} toKey={data.toKey} preset={data.preset} />
 
         {/* ═══ ALL TILES (drag/drop, show/hide) ═══ */}
         <TileGrid pageId="customers-v8" columns={4} tiles={[

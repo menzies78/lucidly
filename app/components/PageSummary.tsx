@@ -15,7 +15,31 @@ interface PageSummaryProps {
   bullets: SummaryBullet[];
   fromKey?: string; // YYYY-MM-DD — when provided alongside toKey, title becomes "Summary for <range>"
   toKey?: string;
+  // Active preset slug from DateRangeSelector (e.g. "last90", "thisMonth",
+  // "all"). When set, title reads "Summary for <preset label>" instead of
+  // the explicit date range. Empty string means the user picked custom
+  // dates, in which case the fromKey/toKey range is shown verbatim.
+  preset?: string;
 }
+
+// Preset slug → human label. Must stay in sync with PRESETS in
+// DateRangeSelector.tsx.
+const PRESET_LABELS: Record<string, string> = {
+  today: "Today",
+  yesterday: "Yesterday",
+  last7: "Last 7 days",
+  last14: "Last 14 days",
+  last30: "Last 30 days",
+  last90: "Last 90 days",
+  thisWeek: "This week",
+  lastWeek: "Last week",
+  thisMonth: "This month",
+  lastMonth: "Last month",
+  thisYear: "This year",
+  lastYear: "Last year",
+  last365: "Last 365 days",
+  all: "All time",
+};
 
 // Parse a YYYY-MM-DD date key as UTC so toLocaleDateString doesn't drift
 // across timezones when rendering server-side vs browser-local.
@@ -47,9 +71,11 @@ const TONE_COLOR: Record<SummaryTone, string> = {
 // tied to the currently selected date range. Always single-column,
 // left-aligned.
 
-export default function PageSummary({ title, bullets, fromKey, toKey }: PageSummaryProps) {
+export default function PageSummary({ title, bullets, fromKey, toKey, preset }: PageSummaryProps) {
+  const presetLabel = preset ? PRESET_LABELS[preset] : undefined;
   const resolvedTitle = title
-    ?? (fromKey && toKey ? `Summary for ${rangeLabel(fromKey, toKey)}` : "Summary");
+    ?? (presetLabel ? `Summary for ${presetLabel}` :
+        (fromKey && toKey ? `Summary for ${rangeLabel(fromKey, toKey)}` : "Summary"));
   return (
     <Card>
       <BlockStack gap="400">
