@@ -3038,8 +3038,8 @@ export default function Customers() {
                                     <div style={{ color: "#9CA3AF", fontStyle: "italic" }}>Recent-cohort overlay hidden while filters are active.</div>
                                   )}
                                 </div>
-                                <div style={{ position: "relative", width: "100%" }}>
-                                <svg viewBox={`0 0 ${chartWidth} ${chartHeight}`} preserveAspectRatio="none" style={{ width: "100%", height: "360px", display: "block" }}>
+                                <div style={{ position: "relative", width: "75%" }}>
+                                <svg viewBox={`0 0 ${chartWidth} ${chartHeight}`} style={{ width: "100%", height: "auto", display: "block" }}>
                                   <defs>
                                     <linearGradient id="benchGradient" x1="0" y1="0" x2="0" y2="1">
                                       <stop offset="0%" stopColor="#7C3AED" stopOpacity="0.18" />
