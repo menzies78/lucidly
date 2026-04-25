@@ -85,6 +85,8 @@ model Customer {
   acquisitionAd       String?
   country             String?
   city                String?
+  lat                 Float?
+  lng                 Float?
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
 

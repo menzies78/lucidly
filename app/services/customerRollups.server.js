@@ -25,6 +25,7 @@
 
 import db from "../db.server.js";
 import { shopLocalDayKey } from "../utils/shopTime.server";
+import { geocodeCity } from "./geo/geocoder.server.js";
 
 const DAY_MS = 86400000;
 const MONTH_MS = 30 * DAY_MS;
@@ -52,6 +53,19 @@ export async function rebuildCustomerSegments(shopDomain) {
   const tz = shopRow?.shopifyTimezone || "UTC";
 
   // ── Single data load ──
+  // discountedOrderIds: orders that had at least one line item with
+  // totalDiscount > 0. Used to flag "Discount" vs "Full price" customers
+  // in the Customer Map Explorer. Captured at time of purchase via
+  // originalUnitPrice − discountedUnitPrice in orderSync (so this is the
+  // closest signal we have to the merchant's intended question of
+  // "compareAtPrice > price at purchase" without snapshotting variants).
+  const discountedRows = await db.$queryRaw`
+    SELECT DISTINCT shopifyOrderId
+    FROM OrderLineItem
+    WHERE shopDomain = ${shopDomain} AND totalDiscount > 0
+  `;
+  const discountedOrderIds = new Set(discountedRows.map((r) => r.shopifyOrderId));
+
   const [orders, attributions, customers] = await Promise.all([
     db.order.findMany({
       where: { shopDomain, isOnlineStore: true },
@@ -62,7 +76,7 @@ export async function rebuildCustomerSegments(shopDomain) {
         utmConfirmedMeta: true, lineItems: true, discountCodes: true,
         metaCampaignName: true, metaAdSetName: true, metaAdName: true,
         utmCampaign: true, utmTerm: true, utmContent: true,
-        country: true, city: true,
+        country: true, countryCode: true, city: true,
         customerOrderCountAtPurchase: true,
       },
     }),
@@ -220,6 +234,12 @@ export async function rebuildCustomerSegments(shopDomain) {
   const allMetaCityAgg = {};
   const allCityAgg = {};
 
+  // Customer Map Explorer points. One row per geocoded customer with the
+  // minimum data needed for client-side filtering + clustering. The full
+  // blob is sent to the browser; supercluster handles aggregation visually.
+  // Typical 30k-customer merchant = ~3 MB JSON / ~250 KB gzipped.
+  const customerMapPoints = [];
+
   // Per-customer update batches
   const CHUNK = 500;
   let customerUpdates = [];
@@ -243,6 +263,7 @@ export async function rebuildCustomerSegments(shopDomain) {
 
     // Per-customer aggregates (single pass over their orders)
     let totalRevenue = 0, totalRefunded = 0, metaOrdersCount = 0, discountOrdersCount = 0;
+    let lineDiscountOrdersCount = 0;
     const productCounts = {};
     const confidences = [];
     for (const o of custOrders) {
@@ -250,6 +271,7 @@ export async function rebuildCustomerSegments(shopDomain) {
       totalRefunded += (o.totalRefunded || 0);
       if (metaAttributedOrderIds.has(o.shopifyOrderId)) metaOrdersCount++;
       if (o.discountCodes) discountOrdersCount++;
+      if (discountedOrderIds.has(o.shopifyOrderId)) lineDiscountOrdersCount++;
       const items = (o.lineItems || "").split(", ").filter(Boolean);
       for (const item of items) productCounts[item] = (productCounts[item] || 0) + 1;
       const attr = attrByOrderId.get(o.shopifyOrderId);
@@ -264,6 +286,16 @@ export async function rebuildCustomerSegments(shopDomain) {
     const lastOrder = custOrders[custOrders.length - 1];
     const secondOrder = custOrders[1];
     const firstAttr = customerFirstAttr.get(custId);
+
+    // Geocode the customer's billing address (taken from their first order's
+    // billing address). geocodeCity returns the country centroid when the
+    // city is missing or unmatched, so we still get a marker as long as the
+    // country is known.
+    const geo = firstOrder
+      ? geocodeCity(firstOrder.countryCode, firstOrder.city)
+      : null;
+    const lat = geo ? geo[0] : null;
+    const lng = geo ? geo[1] : null;
 
     customerUpdates.push(db.customer.update({
       where: { shopDomain_shopifyCustomerId: { shopDomain, shopifyCustomerId: custId } },
@@ -284,9 +316,48 @@ export async function rebuildCustomerSegments(shopDomain) {
         acquisitionAd: firstAttr?.ad || null,
         country: firstOrder?.country || null,
         city: firstOrder?.city || null,
+        lat, lng,
       },
     }));
     if (customerUpdates.length >= CHUNK) await flushUpdates();
+
+    // Map Explorer point. Only push customers we could place geographically;
+    // unplaceable customers (no country, exotic country code) are dropped
+    // rather than rendered at lat 0,0 in the Atlantic.
+    if (lat != null && lng != null && custOrders.length > 0) {
+      const netSpent = totalRevenue - totalRefunded;
+      const refundRate = totalRevenue > 0 ? totalRefunded / totalRevenue : 0;
+      customerMapPoints.push({
+        // Identifier — short to keep blob compact. Map back to Customer via
+        // shopifyCustomerId server-side if drill-down is ever wired up.
+        id: custId,
+        lat, lng,
+        seg: segment,                 // metaNew | metaRetargeted | organic
+        // Demographic info: only known for metaNew (carried from first
+        // attribution). We persist on every row anyway so client filtering
+        // doesn't have to special-case missing keys.
+        gender: firstAttr?.gender || null,
+        age: firstAttr?.age || null,
+        country: firstOrder?.country || null,
+        countryCode: firstOrder?.countryCode || null,
+        city: firstOrder?.city || null,
+        // Money/behaviour
+        spent: r2(totalRevenue),
+        refunded: r2(totalRefunded),
+        net: r2(netSpent),
+        orders: custOrders.length,
+        refundRate: Math.round(refundRate * 1000) / 1000,
+        // Cohort flags
+        discountEver: lineDiscountOrdersCount > 0,
+        fullPrice: lineDiscountOrdersCount === 0,
+        // Recency days since lastOrderDate (browser converts to band)
+        daysSinceLast: lastOrder ? Math.floor((now - lastOrder.createdAt.getTime()) / DAY_MS) : null,
+        // Geocode source: "city" (precise) or "country" (centroid). The map
+        // layer can render country-centroid markers with a faint halo to
+        // signal "approximate".
+        approx: !firstOrder?.city,
+      });
+    }
 
     // ── Now accumulate analysis blobs (LTV/journey/geo) ──
     if (custOrders.length === 0 || !firstOrder?.createdAt) continue;
@@ -639,6 +710,47 @@ export async function rebuildCustomerSegments(shopDomain) {
     },
   };
 
+  // ── Customer Map Explorer blob ──
+  // VIP thresholds: top 5% / 10% / 20% by net revenue. Computed once across
+  // all geocoded customers so the client filter pills can use the same
+  // bands without re-sorting client-side. The "highestRefunds" band is the
+  // top 10% by refundRate among customers who actually have refunds.
+  const sortedNet = [...customerMapPoints].map((p) => p.net).sort((a, b) => b - a);
+  const pickThreshold = (pct) => {
+    if (sortedNet.length === 0) return 0;
+    const idx = Math.max(0, Math.floor(sortedNet.length * (pct / 100)) - 1);
+    return sortedNet[idx] ?? 0;
+  };
+  const vipThresholds = {
+    top5: pickThreshold(5),
+    top10: pickThreshold(10),
+    top20: pickThreshold(20),
+  };
+  const refundedNonZero = customerMapPoints.filter((p) => p.refundRate > 0)
+    .map((p) => p.refundRate).sort((a, b) => b - a);
+  const highestRefundThreshold = refundedNonZero.length > 0
+    ? refundedNonZero[Math.max(0, Math.floor(refundedNonZero.length * 0.1) - 1)] ?? 0
+    : 0;
+
+  // Tag VIP band on each point so the client doesn't have to recompute.
+  for (const p of customerMapPoints) {
+    p.vipBand = p.net >= vipThresholds.top5 && vipThresholds.top5 > 0
+      ? 5
+      : p.net >= vipThresholds.top10 && vipThresholds.top10 > 0
+        ? 10
+        : p.net >= vipThresholds.top20 && vipThresholds.top20 > 0
+          ? 20
+          : null;
+    p.highestRefunds = highestRefundThreshold > 0 && p.refundRate >= highestRefundThreshold;
+  }
+
+  const customerMapBlob = {
+    points: customerMapPoints,
+    thresholds: vipThresholds,
+    highestRefundThreshold,
+    computedAt: new Date().toISOString(),
+  };
+
   // ── Persist blobs to ShopAnalysisCache ──
   await db.shopAnalysisCache.upsert({
     where: { shopDomain_cacheKey: { shopDomain, cacheKey: "customers:ltv" } },
@@ -654,6 +766,11 @@ export async function rebuildCustomerSegments(shopDomain) {
     where: { shopDomain_cacheKey: { shopDomain, cacheKey: "customers:geo" } },
     create: { shopDomain, cacheKey: "customers:geo", payload: JSON.stringify(geoBlob) },
     update: { payload: JSON.stringify(geoBlob), computedAt: new Date() },
+  });
+  await db.shopAnalysisCache.upsert({
+    where: { shopDomain_cacheKey: { shopDomain, cacheKey: "customers:map" } },
+    create: { shopDomain, cacheKey: "customers:map", payload: JSON.stringify(customerMapBlob) },
+    update: { payload: JSON.stringify(customerMapBlob), computedAt: new Date() },
   });
 
   console.log(`[customerRollups] segments: ${totalUpdated} customers + ltv/journey/geo blobs in ${Date.now() - t0}ms (metaNew=${metaAcquiredCustomers.size}, retargeted=${retargetedCustomers.size}, organic=${totalUpdated - metaAcquiredCustomers.size - retargetedCustomers.size})`);

@@ -7,13 +7,13 @@ import {
 import ReportTabs from "../components/ReportTabs";
 import TileGrid, { type TileDef } from "../components/TileGrid";
 import SummaryTile from "../components/SummaryTile";
-import { useState, useMemo, useCallback, useRef, useEffect } from "react";
+import CustomerMapExplorer from "../components/CustomerMapExplorer";
+import { useState, useMemo, useCallback } from "react";
 import { authenticate } from "../shopify.server";
 import db from "../db.server";
 import { parseDateRange } from "../utils/dateRange.server";
 import { currencySymbolFromCode } from "../utils/currency";
 import { cached as queryCached } from "../services/queryCache.server";
-import createGlobe from "cobe";
 import { getCachedInsights, computeDataHash, generateInsights } from "../services/aiAnalysis.server";
 import { setProgress, failProgress, completeProgress } from "../services/progress.server";
 import AiInsightsPanel from "../components/AiInsightsPanel";
@@ -485,6 +485,17 @@ export const loader = async ({ request }) => {
     shopifyByCountry[cc].revenue += (o.frozenTotalPrice || 0) - (o.totalRefunded || 0);
   }
 
+  // ── Customer Map Explorer blob (computed at rollup time) ──
+  // Independent of the date range — the explorer is an all-time geographic
+  // view of every geocoded customer, with cohort filters that apply across
+  // the customer's entire history. If the rollup hasn't run yet, the
+  // component renders an empty state.
+  const customerMapRow = await db.shopAnalysisCache.findUnique({
+    where: { shopDomain_cacheKey: { shopDomain, cacheKey: "customers:map" } },
+    select: { payload: true },
+  });
+  const customerMapBlob = customerMapRow?.payload ? JSON.parse(customerMapRow.payload) : null;
+
   // ── AI Insights cache ──
   const dateFromStr = fromKey;
   const dateToStr = toKey;
@@ -500,6 +511,7 @@ export const loader = async ({ request }) => {
     adsetEntities,
     adEntities,
     shopifyByCountry,
+    customerMapBlob,
     currencySymbol,
     hasData: breakdownData.length > 0,
     aiCachedInsights,
@@ -652,36 +664,6 @@ function roasStyle(roas: number): { bg: string; text: string } {
   return { bg: "#FEF2F2", text: "#DC2626" };
 }
 
-// Country centroids [lat, lng] — used by cobe globe for marker positions
-const CENTROIDS: Record<string, [number, number]> = {
-  GB: [54, -2], IE: [53.4, -7.6], US: [39, -98], CA: [56, -106],
-  AU: [-25, 134], NZ: [-41, 174], DE: [51, 10], FR: [46, 2],
-  ES: [40, -4], IT: [42, 12], NL: [52, 5], BE: [50.8, 4],
-  CH: [47, 8], AT: [47.5, 14], SE: [62, 15], NO: [62, 10],
-  DK: [56, 10], FI: [64, 26], PL: [52, 20], CZ: [50, 15],
-  PT: [39.5, -8], GR: [39, 22], HU: [47, 19], RO: [46, 25],
-  BG: [43, 25], HR: [45.2, 15.5], SK: [48.7, 19.5], SI: [46, 15],
-  LT: [55.5, 24], LV: [57, 25], EE: [59, 25], RS: [44, 21],
-  BA: [44, 18], AL: [41, 20], MK: [41.5, 22], ME: [42.5, 19.3],
-  IS: [65, -18], LU: [49.8, 6.1], MT: [35.9, 14.4], CY: [35, 33],
-  AE: [24, 54], SA: [24, 45], KW: [29.5, 47.5], BH: [26, 50.5],
-  QA: [25.3, 51.2], OM: [21, 57], JO: [31, 36], LB: [33.8, 35.8],
-  IL: [31.5, 35], TR: [39, 35], EG: [27, 30], MA: [32, -5],
-  ZA: [-30, 25], KE: [-1, 38], NG: [10, 8], GH: [8, -2],
-  TZ: [-6, 35], ET: [9, 38], DZ: [28, 3], TN: [34, 9],
-  JP: [36, 138], KR: [36, 128], CN: [35, 105], HK: [22.3, 114.2],
-  SG: [1.3, 103.8], MY: [4, 102], TH: [15, 101], ID: [-2, 118],
-  PH: [13, 122], IN: [21, 78], PK: [30, 70], BD: [24, 90],
-  VN: [16, 108], TW: [23.5, 121], MM: [19, 96], KH: [13, 105],
-  BR: [-10, -55], AR: [-34, -64], MX: [23, -102], CO: [4, -72],
-  CL: [-35, -71], PE: [-10, -76], VE: [8, -66], EC: [-2, -78],
-  UY: [-33, -56], PY: [-23, -58], BO: [-17, -65],
-  RU: [60, 100], UA: [49, 32], KZ: [48, 67], UZ: [41, 65],
-  JE: [49.2, -2.1], GG: [49.5, -2.5], IM: [54.2, -4.5],
-  MU: [-20.3, 57.6], LK: [7, 81], NP: [28, 84],
-  PA: [9, -80], CR: [10, -84], DO: [19, -70], JM: [18, -77],
-};
-
 const TAB_LEVELS = ["all", "campaign", "adset", "ad"] as const;
 const TAB_LABELS = ["All", "Campaigns", "Ad Sets", "Ads"];
 
@@ -689,18 +671,6 @@ const CUSTOMER_FILTERS = [
   { label: "All Customers", value: "all" },
   { label: "New Customers", value: "new" },
   { label: "Existing Customers", value: "existing" },
-];
-
-const MAP_SCOPES = [
-  { label: "All Meta", value: "allMeta" },
-  { label: "Meta New", value: "metaNew" },
-  { label: "All Customers", value: "all" },
-];
-
-const MAP_METRICS = [
-  { label: "Revenue", value: "revenue" },
-  { label: "Orders", value: "orders" },
-  { label: "Spend", value: "spend" },
 ];
 
 // ═══════════════════════════════════════════════════════════════
@@ -727,7 +697,7 @@ const PAGE_STYLES = `
 export default function GeoPerformance() {
   const {
     overallRows, campaignEntities, adsetEntities, adEntities,
-    shopifyByCountry, currencySymbol, hasData,
+    shopifyByCountry, customerMapBlob, currencySymbol, hasData,
     aiCachedInsights, aiGeneratedAt, aiIsStale,
     fromKey, toKey, preset,
   } = useLoaderData<typeof loader>();
@@ -736,12 +706,8 @@ export default function GeoPerformance() {
   const [selectedTab, setSelectedTab] = useState(0);
   const [customerFilter, setCustomerFilter] = useState("all");
   const [customerFilterOpen, setCustomerFilterOpen] = useState(false);
-  const [mapScope, setMapScope] = useState("allMeta");
-  const [mapMetric, setMapMetric] = useState("revenue");
   const [hoveredCountry, setHoveredCountry] = useState<string | null>(null);
   const [expandedEntities, setExpandedEntities] = useState<Set<string>>(new Set());
-
-  const canvasRef = useRef<HTMLCanvasElement>(null);
 
   const toggleEntity = useCallback((id: string) => {
     setExpandedEntities(prev => {
@@ -788,123 +754,6 @@ export default function GeoPerformance() {
   const totalSpend = filteredRows.reduce((s: number, r: any) => s + r.spend, 0);
   const totalRevenue = filteredRows.reduce((s: number, r: any) => s + r.attributedRevenue + r.unverifiedRevenue, 0);
   const totalOrders = filteredRows.reduce((s: number, r: any) => s + r.attributedOrders, 0);
-
-  // Map data
-  const mapData = useMemo(() => {
-    const entries: { cc: string; value: number; label: string; spend: number; revenue: number; orders: number; roas: number }[] = [];
-
-    if (mapScope === "all") {
-      for (const [cc, d] of Object.entries(shopifyByCountry as Record<string, { orders: number; revenue: number }>)) {
-        const metaRow = overallRows.find((r: any) => r.country === cc);
-        entries.push({
-          cc, value: mapMetric === "revenue" ? d.revenue : mapMetric === "orders" ? d.orders : metaRow?.spend || 0,
-          label: countryName(cc), spend: metaRow?.spend || 0, revenue: d.revenue, orders: d.orders,
-          roas: metaRow && metaRow.spend > 0 ? r2((metaRow.attributedRevenue + metaRow.unverifiedRevenue) / metaRow.spend) : 0,
-        });
-      }
-    } else {
-      for (const row of overallRows) {
-        const rev = mapScope === "metaNew" ? row.newCustomerRevenue : row.attributedRevenue;
-        const ord = mapScope === "metaNew" ? row.newCustomerOrders : row.attributedOrders;
-        const val = mapMetric === "revenue" ? rev : mapMetric === "orders" ? ord : row.spend;
-        if (val === 0 && row.spend === 0) continue;
-        entries.push({
-          cc: row.country, value: val,
-          label: countryName(row.country), spend: row.spend, revenue: rev, orders: ord,
-          roas: row.blendedROAS,
-        });
-      }
-    }
-    return entries.filter(e => e.value > 0);
-  }, [overallRows, shopifyByCountry, mapScope, mapMetric]);
-
-  const maxMapValue = Math.max(...mapData.map(d => d.value), 1);
-
-  // ── Cobe Globe ──
-  useEffect(() => {
-    if (!canvasRef.current) return;
-    let phi = 0;
-    let isDragging = false;
-    let pointerX = 0;
-    let pointerInteracting: number | null = null;
-    let pointerInteractionMovement = 0;
-
-    const markers = mapData.map(d => {
-      const coords = CENTROIDS[d.cc];
-      if (!coords) return { location: [0, 0] as [number, number], size: 0 };
-      return {
-        location: [coords[0], coords[1]] as [number, number],
-        size: 0.03 + (d.value / maxMapValue) * 0.15,
-      };
-    }).filter(m => m.size > 0);
-
-    const globe = createGlobe(canvasRef.current, {
-      devicePixelRatio: 2,
-      width: 600,
-      height: 600,
-      phi: 0,
-      theta: 0.2,
-      dark: 1,
-      diffuse: 1.2,
-      mapSamples: 16000,
-      mapBrightness: 6,
-      baseColor: [0.12, 0.1, 0.29],
-      markerColor: [0.49, 0.23, 0.93],
-      glowColor: [0.12, 0.1, 0.29],
-      markers,
-    });
-
-    // Auto-rotate via requestAnimationFrame
-    let animId: number;
-    const animate = () => {
-      if (!isDragging) {
-        phi += 0.003;
-      }
-      globe.update({ phi: phi + pointerInteractionMovement });
-      animId = requestAnimationFrame(animate);
-    };
-    animId = requestAnimationFrame(animate);
-
-    // Drag support
-    const canvas = canvasRef.current;
-    const onPointerDown = (e: PointerEvent) => {
-      isDragging = true;
-      pointerInteracting = e.clientX;
-      canvas.style.cursor = "grabbing";
-    };
-    const onPointerUp = () => {
-      isDragging = false;
-      pointerInteracting = null;
-      canvas.style.cursor = "grab";
-    };
-    const onPointerOut = () => {
-      isDragging = false;
-      pointerInteracting = null;
-      canvas.style.cursor = "grab";
-    };
-    const onPointerMove = (e: PointerEvent) => {
-      if (pointerInteracting !== null) {
-        const delta = e.clientX - pointerInteracting;
-        pointerInteractionMovement += delta * 0.005;
-        pointerInteracting = e.clientX;
-      }
-    };
-
-    canvas.addEventListener("pointerdown", onPointerDown);
-    canvas.addEventListener("pointerup", onPointerUp);
-    canvas.addEventListener("pointerout", onPointerOut);
-    canvas.addEventListener("pointermove", onPointerMove);
-    canvas.style.cursor = "grab";
-
-    return () => {
-      cancelAnimationFrame(animId);
-      globe.destroy();
-      canvas.removeEventListener("pointerdown", onPointerDown);
-      canvas.removeEventListener("pointerup", onPointerUp);
-      canvas.removeEventListener("pointerout", onPointerOut);
-      canvas.removeEventListener("pointermove", onPointerMove);
-    };
-  }, [mapData, maxMapValue]);
 
   // Untapped markets: countries with Shopify revenue but zero Meta spend
   const untappedMarkets = useMemo(() => {
@@ -1111,6 +960,9 @@ export default function GeoPerformance() {
             />
           )}
           <PageSummary bullets={summaryBullets} fromKey={fromKey} toKey={toKey} preset={preset} />
+
+          {/* ═══ CUSTOMER MAP EXPLORER ═══ */}
+          <CustomerMapExplorer blob={customerMapBlob} cs={cs} />
 
           {/* ═══ 0. QUICK-STAT TILES ═══ */}
           <TileGrid pageId="geo-v2" columns={4} tiles={[
@@ -1476,49 +1328,8 @@ export default function GeoPerformance() {
             </BlockStack>
           </Card>
 
-          {/* ═══ 2. GLOBE + VISUAL TILES row ═══ */}
-          <div style={{ display: "flex", gap: "16px", alignItems: "flex-start" }}>
-          <div style={{ width: "50%", flexShrink: 0 }}>
-          <Card>
-            <BlockStack gap="200">
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: "8px" }}>
-                <Text as="h2" variant="headingSm">Customer Map</Text>
-                <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
-                  <div style={{ display: "flex", gap: "2px" }}>
-                    {MAP_SCOPES.map(s => (
-                      <button key={s.value} className={`geo-toggle ${mapScope === s.value ? "geo-toggle-active" : "geo-toggle-inactive"}`} onClick={() => setMapScope(s.value)}>
-                        {s.label}
-                      </button>
-                    ))}
-                  </div>
-                  <div style={{ display: "flex", gap: "2px" }}>
-                    {MAP_METRICS.map(m => (
-                      <button key={m.value} className={`geo-toggle ${mapMetric === m.value ? "geo-toggle-active" : "geo-toggle-inactive"}`} onClick={() => setMapMetric(m.value)}>
-                        {m.label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              </div>
-
-              {/* Cobe Globe */}
-              <div style={{ position: "relative", background: "#1E1B4B", borderRadius: "10px", overflow: "hidden", display: "flex", justifyContent: "center", alignItems: "center", padding: "10px 0" }}>
-                <canvas
-                  ref={canvasRef}
-                  style={{
-                    width: "300px",
-                    height: "300px",
-                    maxWidth: "100%",
-                    aspectRatio: "1",
-                  }}
-                />
-              </div>
-            </BlockStack>
-          </Card>
-          </div>
-
-          {/* ═══ 3. VISUAL TILES (right 50%) ═══ */}
-          <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: "16px" }}>
+          {/* ═══ 2. VISUAL TILES (full width) ═══ */}
+          <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
 
             {/* ── Spend vs Revenue ── */}
             <Card>
@@ -1660,8 +1471,7 @@ export default function GeoPerformance() {
                 )}
               </BlockStack>
             </Card>
-          </div>
-          </div>{/* close flex row: map + tiles */}
+          </div>{/* close visual tiles column */}
 
         </BlockStack>
       </ReportTabs>
