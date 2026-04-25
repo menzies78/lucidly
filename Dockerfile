@@ -10,7 +10,7 @@ ENV NODE_ENV=production
 COPY package.json package-lock.json* .npmrc ./
 
 # Install all deps (incl. dev) so the build has access to remix tooling.
-RUN npm ci
+RUN npm ci --include=dev
 
 COPY . .
 
