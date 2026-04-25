@@ -2640,11 +2640,6 @@ export default function Customers() {
             </BlockStack>
           </Card>
           )},
-          { id: "weeklyCohortRevenue", label: "Revenue by Weekly Cohort", span: 4, render: () => (
-            <Card>
-              <WeeklyCohortRevenue weekly={weeklyCohortSeries} cs={cs} />
-            </Card>
-          )},
           { id: "totalMetaCustomers", label: "Total Meta Orders", render: () => {
             // Total Meta Orders = matched Shopify orders attributed to Meta
             // (rollup .orders already excludes £0) + unmatched Meta conversions
@@ -3212,6 +3207,11 @@ export default function Customers() {
               })()}
             </BlockStack>
           </Card>
+          )},
+          { id: "weeklyCohortRevenue", label: "Revenue by Weekly Cohort", span: 4, render: () => (
+            <Card>
+              <WeeklyCohortRevenue weekly={weeklyCohortSeries} cs={cs} />
+            </Card>
           )},
         ] as TileDef[]} />
 
