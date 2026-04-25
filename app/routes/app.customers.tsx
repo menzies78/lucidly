@@ -1798,6 +1798,17 @@ export default function Customers() {
 
   // Filtered view + derived stats. When filters are inactive the result
   // matches the unfiltered metaNew cohort powering the existing tile.
+  //
+  // Chart strategy: pick a single FIXED cohort (the customers mature enough
+  // to have completed the longest still-populated window) and average their
+  // ltvByWindow at every window. Same customers at every point => curve is
+  // guaranteed monotonically non-decreasing. This is the standard approach
+  // used by Lifetimely / Polar / Triple Whale for cohort LTV curves.
+  //
+  // CAC strategy: when a gender or age filter narrows the cohort we
+  // proportionally re-allocate Meta-New spend using the per-segment CPA
+  // approximations from newGenderBreakdown / newAgeBreakdown. Country-only
+  // filtering falls back to the base blended CAC (no country breakdown).
   const ltvFiltered = useMemo(() => {
     const filterActive = ltvFilterGender !== "All" || ltvFilterAges.length > 0 || ltvFilterCountry !== "All";
     let subset = ltvCustomers;
@@ -1819,22 +1830,61 @@ export default function Customers() {
     const repeatRate = count > 0 ? Math.round((repeatCount / count) * 100) : 0;
     const t2 = subset.map((c) => c.timeTo2nd).filter((v): v is number => v != null).sort((a, b) => a - b);
     const medT2 = t2.length > 0 ? (t2.length % 2 ? t2[(t2.length - 1) / 2] : (t2[t2.length / 2 - 1] + t2[t2.length / 2]) / 2) : null;
-    // Per-window avg LTV over the filtered subset (mirrors ltvBenchmark
-    // shape so the chart can consume it interchangeably).
+
+    // Fixed-cohort chart. Walk windows long-to-short and pick the longest
+    // window where ≥5 of the filtered customers are mature. That defines
+    // the cohort. Then average their cumulative spend at every window
+    // ≤ pivot. The same customers contribute to every point => monotonic.
     const windows = [30, 60, 90, 180, 365];
-    const byWindow = windows.map((w) => {
-      const wStr = String(w);
-      const mature = subset.filter((c) => c.ltvByWindow[wStr] !== undefined);
-      if (mature.length < 3) return null; // under-powered, don't show
-      const sum = mature.reduce((s, c) => s + (c.ltvByWindow[wStr] || 0), 0);
-      return { window: w, count: mature.length, avgLtv: Math.round((sum / mature.length) * 100) / 100 };
-    }).filter(Boolean) as Array<{ window: number; count: number; avgLtv: number }>;
+    let pivotIdx = -1;
+    let fixedCohort: typeof subset = [];
+    for (let i = windows.length - 1; i >= 0; i--) {
+      const w = String(windows[i]);
+      const mature = subset.filter((c) => c.ltvByWindow[w] !== undefined);
+      if (mature.length >= 5) { pivotIdx = i; fixedCohort = mature; break; }
+    }
+    const byWindow: Array<{ window: number; count: number; avgLtv: number }> = [];
+    if (pivotIdx >= 0 && fixedCohort.length > 0) {
+      for (let i = 0; i <= pivotIdx; i++) {
+        const w = windows[i];
+        const wStr = String(w);
+        const sum = fixedCohort.reduce((s, c) => s + (c.ltvByWindow[wStr] || 0), 0);
+        byWindow.push({ window: w, count: fixedCohort.length, avgLtv: Math.round((sum / fixedCohort.length) * 100) / 100 });
+      }
+    }
+
+    // Filter-aware CAC. Allocate Meta-New spend by selected segment(s) using
+    // the per-segment CPA approximations from the loader. When multiple
+    // segment-axes are filtered we average their CPAs (loader doesn't cross
+    // gender × age, so a true cross-segment CPA isn't available).
+    const baseCpa = newCustomerCPA || 0;
+    let filteredCpa = baseCpa;
+    if (filterActive) {
+      const segCpas: number[] = [];
+      if (ltvFilterGender !== "All") {
+        const label = ltvFilterGender === "female" ? "Female" : ltvFilterGender === "male" ? "Male" : "Unknown";
+        const seg = newGenderBreakdown.find((g: any) => g.label === label);
+        if (seg && seg.conversions > 0) segCpas.push(seg.spend / seg.conversions);
+      }
+      if (ltvFilterAges.length > 0) {
+        const segs = newAgeBreakdown.filter((a: any) => ltvFilterAges.includes(a.label));
+        const sSpend = segs.reduce((s: number, a: any) => s + a.spend, 0);
+        const sConv = segs.reduce((s: number, a: any) => s + a.conversions, 0);
+        if (sConv > 0) segCpas.push(sSpend / sConv);
+      }
+      if (segCpas.length > 0) {
+        filteredCpa = segCpas.reduce((s, c) => s + c, 0) / segCpas.length;
+      }
+      // country-only filter: keep baseCpa
+    }
+
     return {
       filterActive, count, avgLtv, avgFirst, avgOrders: count > 0 ? Math.round((totalOrders / count) * 100) / 100 : 0,
       repeatRate, medianTimeTo2nd: medT2 != null ? Math.round(medT2) : null,
       benchmarkWindows: byWindow,
+      cac: Math.round(filteredCpa * 100) / 100,
     };
-  }, [ltvCustomers, ltvFilterGender, ltvFilterAges, ltvFilterCountry]);
+  }, [ltvCustomers, ltvFilterGender, ltvFilterAges, ltvFilterCountry, newCustomerCPA, newGenderBreakdown, newAgeBreakdown]);
 
   const tagFilter = searchParams.get("tag") || "all";
   const handleTagChange = (value: string) => {
@@ -2758,9 +2808,9 @@ export default function Customers() {
                   X" hero. Margin slider flips Payback from revenue-based to
                   profit-based (CAC ÷ first-order gross profit). */}
               {ltvTab === "meta" && (
-                <div style={{ display: "flex", flexWrap: "wrap", gap: 12, alignItems: "center", padding: "10px 12px", background: "#F9FAFB", border: "1px solid #E5E7EB", borderRadius: 8 }}>
-                  <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                    <span style={{ fontSize: 11, fontWeight: 600, color: "#6B7280", textTransform: "uppercase", letterSpacing: 0.5 }}>Window</span>
+                <div style={{ display: "flex", flexDirection: "column", gap: "10px", marginTop: 12 }}>
+                  <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: "10px" }}>
+                    <span style={{ fontSize: "12px", fontWeight: 600, color: "#6B7280", width: "70px", textTransform: "uppercase", letterSpacing: 0.5 }}>Window</span>
                     <div className="toggle-group">
                       {(["lifetime", 365, 180, 90, 60, 30] as const).map((w) => (
                         <button key={String(w)} className={`toggle-btn ${ltvWindowPreset === w ? "active" : ""}`} onClick={() => setLtvWindowPreset(w)}>
@@ -2769,8 +2819,8 @@ export default function Customers() {
                       ))}
                     </div>
                   </div>
-                  <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                    <span style={{ fontSize: 11, fontWeight: 600, color: "#6B7280", textTransform: "uppercase", letterSpacing: 0.5 }}>Gender</span>
+                  <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: "10px" }}>
+                    <span style={{ fontSize: "12px", fontWeight: 600, color: "#6B7280", width: "70px", textTransform: "uppercase", letterSpacing: 0.5 }}>Gender</span>
                     <div className="toggle-group">
                       {(["All", "female", "male"] as const).map((g) => (
                         <button key={g} className={`toggle-btn ${ltvFilterGender === g ? "active" : ""}`} onClick={() => setLtvFilterGender(g)}>
@@ -2780,8 +2830,8 @@ export default function Customers() {
                     </div>
                   </div>
                   {ltvAgeOptions.length > 0 && (
-                    <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
-                      <span style={{ fontSize: 11, fontWeight: 600, color: "#6B7280", textTransform: "uppercase", letterSpacing: 0.5 }}>Age</span>
+                    <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: "10px" }}>
+                      <span style={{ fontSize: "12px", fontWeight: 600, color: "#6B7280", width: "70px", textTransform: "uppercase", letterSpacing: 0.5 }}>Age</span>
                       <div className="toggle-group">
                         <button className={`toggle-btn ${ltvFilterAges.length === 0 ? "active" : ""}`} onClick={() => setLtvFilterAges([])}>All</button>
                         {ltvAgeOptions.map((a) => (
@@ -2793,23 +2843,29 @@ export default function Customers() {
                     </div>
                   )}
                   {ltvCountryOptions.length > 0 && (
-                    <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                      <span style={{ fontSize: 11, fontWeight: 600, color: "#6B7280", textTransform: "uppercase", letterSpacing: 0.5 }}>Country</span>
-                      <select value={ltvFilterCountry} onChange={(e) => setLtvFilterCountry(e.target.value)} style={{ fontSize: 12, padding: "4px 8px", border: "1px solid #D1D5DB", borderRadius: 6, background: "#fff" }}>
+                    <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: "10px" }}>
+                      <span style={{ fontSize: "12px", fontWeight: 600, color: "#6B7280", width: "70px", textTransform: "uppercase", letterSpacing: 0.5 }}>Country</span>
+                      <select value={ltvFilterCountry} onChange={(e) => setLtvFilterCountry(e.target.value)} style={{ fontSize: 12, padding: "6px 12px", border: "1px solid #D1D5DB", borderRadius: 6, background: "#fff" }}>
                         <option value="All">All</option>
                         {ltvCountryOptions.slice(0, 30).map((c) => <option key={c} value={c}>{c}</option>)}
                       </select>
                     </div>
                   )}
-                  <div style={{ display: "flex", gap: 8, alignItems: "center", marginLeft: "auto" }}>
-                    <span style={{ fontSize: 11, fontWeight: 600, color: "#6B7280", textTransform: "uppercase", letterSpacing: 0.5 }}>Margin</span>
-                    <input type="range" min={0} max={90} step={5} value={marginPct} onChange={(e) => setMarginPct(parseInt(e.target.value, 10))} style={{ width: 120 }} />
+                  <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: "10px" }}>
+                    <span style={{ fontSize: "12px", fontWeight: 600, color: "#6B7280", width: "70px", textTransform: "uppercase", letterSpacing: 0.5 }}>Margin</span>
+                    <input type="range" min={0} max={90} step={5} value={marginPct} onChange={(e) => setMarginPct(parseInt(e.target.value, 10))} style={{ width: 160 }} />
                     <span style={{ fontSize: 13, fontWeight: 600, color: "#1F2937", minWidth: 36 }}>{marginPct}%</span>
+                    <span style={{ fontSize: 12, color: "#9CA3AF", fontStyle: "italic" }}>
+                      Gross margin on first order — only affects Payback. Set to 0% to see revenue-based payback.
+                    </span>
                   </div>
                   {ltvFiltered.filterActive && (
-                    <button onClick={() => { setLtvFilterGender("All"); setLtvFilterAges([]); setLtvFilterCountry("All"); }} style={{ fontSize: 11, padding: "4px 8px", border: "1px solid #D1D5DB", borderRadius: 6, background: "#fff", cursor: "pointer", color: "#6B7280" }}>
-                      Clear filters
-                    </button>
+                    <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                      <span style={{ width: "70px" }} />
+                      <button onClick={() => { setLtvFilterGender("All"); setLtvFilterAges([]); setLtvFilterCountry("All"); }} style={{ fontSize: 11, padding: "4px 10px", border: "1px solid #D1D5DB", borderRadius: 6, background: "#fff", cursor: "pointer", color: "#6B7280" }}>
+                        Clear filters
+                      </button>
+                    </div>
                   )}
                 </div>
               )}
@@ -2821,7 +2877,12 @@ export default function Customers() {
                 const baseAvgOrds = tile?.avgOrders || 0;
                 const baseRepeatRate = tile?.repeatRate || 0;
                 const baseMedT2 = tile?.medianTimeTo2nd ?? null;
-                const cac = isMeta ? (tile as any)?.cpa || 0 : 0;
+                // Filter-aware CAC on the Meta tab. When the user narrows
+                // the cohort by gender/age, ltvFiltered.cac re-allocates
+                // Meta-New spend so Payback and LTV:CAC actually move.
+                const cac = isMeta
+                  ? (ltvFiltered.filterActive ? ltvFiltered.cac : ((tile as any)?.cpa || 0))
+                  : 0;
                 const baseBenchmark = isMeta ? ltvBenchmark?.meta : ltvBenchmark?.all;
                 const baseBenchmarkWindows = baseBenchmark?.windows || [];
 
@@ -2961,7 +3022,7 @@ export default function Customers() {
                               <Text as="p" variant="headingSm">{ltvView === "progression" ? "LTV Progression" : "Monthly Cohort Table"}</Text>
                               <Text as="p" variant="bodySm" tone="subdued">
                                 {ltvView === "progression"
-                                  ? "Benchmark (all matured cohorts): average cumulative revenue per customer at each window. Recent cohort: the latest group that has completed each window (e.g. 30d = acquired 30–60 days ago)."
+                                  ? "Benchmark cohort: the longest-tenured group of Meta-acquired customers, tracked at every window. Same customers at every point — curve shows their cumulative revenue growing over time. Recent cohort: latest fully-matured group, for trend comparison."
                                   : cohortMetric === "ltv"
                                     ? "Each row is an acquisition month. Values show cumulative revenue per customer through each 30-day period."
                                     : "Each row is an acquisition month. Values show % of customers who placed at least one order in each 30-day period."}
@@ -3023,7 +3084,7 @@ export default function Customers() {
                                 <div style={{ display: "flex", gap: "16px", marginBottom: "12px", fontSize: "11px", flexWrap: "wrap" }}>
                                   <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
                                     <svg width="22" height="8"><line x1="0" y1="4" x2="22" y2="4" stroke="#7C3AED" strokeWidth="2.5" strokeLinecap="round" /></svg>
-                                    <span style={{ color: "#6B7280", fontWeight: 500 }}>Benchmark (all matured cohorts)</span>
+                                    <span style={{ color: "#6B7280", fontWeight: 500 }}>Benchmark cohort (longest-tenured)</span>
                                   </div>
                                   {recentPath && (
                                     <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
@@ -3036,9 +3097,6 @@ export default function Customers() {
                                       <svg width="22" height="8"><line x1="0" y1="4" x2="22" y2="4" stroke="#DC2626" strokeWidth="1.5" strokeDasharray="2 2" /></svg>
                                       <span style={{ color: "#6B7280", fontWeight: 500 }}>CAC ({cs}{Math.round(cac).toLocaleString()})</span>
                                     </div>
-                                  )}
-                                  {useFiltered && (
-                                    <div style={{ color: "#9CA3AF", fontStyle: "italic" }}>Recent-cohort overlay hidden while filters are active.</div>
                                   )}
                                 </div>
                                 <div style={{ position: "relative", width: "75%" }}>
