@@ -2733,14 +2733,22 @@ export default function Customers() {
               chartData={dailyData} prevChartData={prevDailyData} chartKey={(d) => d.newMetaCustomers > 0 && d.spend > 0 ? d.spend / d.newMetaCustomers : 0}
               chartColor="#DC2626" chartFormat={fmtPrice} />
           )},
-          { id: "ltvOverview", label: "Meta Customer Lifetime Value", span: 4, render: () => (
+          { id: "ltvOverview", label: "Meta Customer Lifetime Value Explorer", span: 4, render: () => (
           <Card>
             <BlockStack gap="400">
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <Text as="h2" variant="headingLg">{ltvTab === "meta" ? "Meta Customer Lifetime Value" : "All Customer Lifetime Value"}</Text>
-                <div className="toggle-group">
-                  <button className={`toggle-btn ${ltvTab === "meta" ? "active" : ""}`} onClick={() => setLtvTab("meta")}>Meta Customers</button>
-                  <button className={`toggle-btn ${ltvTab === "all" ? "active" : ""}`} onClick={() => setLtvTab("all")}>All Customers</button>
+              {/* 3-col header: spacer | centered title | toggle pinned right.
+                  Spacer keeps the title visually centered in the card while
+                  the toggle stays right-aligned. */}
+              <div style={{ display: "flex", alignItems: "center" }}>
+                <div style={{ flex: 1 }} />
+                <div style={{ flex: 1, textAlign: "center" }}>
+                  <Text as="h2" variant="headingLg">{ltvTab === "meta" ? "Meta Customer Lifetime Value Explorer" : "All Customer Lifetime Value Explorer"}</Text>
+                </div>
+                <div style={{ flex: 1, display: "flex", justifyContent: "flex-end" }}>
+                  <div className="toggle-group">
+                    <button className={`toggle-btn ${ltvTab === "meta" ? "active" : ""}`} onClick={() => setLtvTab("meta")}>Meta Customers</button>
+                    <button className={`toggle-btn ${ltvTab === "all" ? "active" : ""}`} onClick={() => setLtvTab("all")}>All Customers</button>
+                  </div>
                 </div>
               </div>
               {/* LTV explorer controls — only shown on the Meta tab. Filters
