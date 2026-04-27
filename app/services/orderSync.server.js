@@ -575,111 +575,101 @@ export async function syncOrders(admin, shopDomain) {
  * that fix have empty names — which makes name-based gender inference a
  * no-op for the vast majority of customers.
  *
- * This pages through every order in the shop, asking ONLY for id +
- * billingAddress.firstName, and updates orders whose stored
- * customerFirstName is empty. After the backfill it re-runs gender
- * inference. It deliberately doesn't touch any other fields so it can be
- * triggered safely at any time.
+ * Memory-conservative implementation:
+ *   • Page size 50 (matches existing syncOrders).
+ *   • One raw-SQL UPDATE per order, with the empty-only filter pushed into
+ *     the WHERE clause. No JS-side findMany or Map/Set accumulation, so
+ *     per-page allocations stay bounded and webhook-set names are never
+ *     overwritten by accident.
+ *   • Sequential updates (no Promise.all of 100 in-flight queries that pile
+ *     into the connection pool).
+ *   • Manual global.gc() every 5 pages when --expose-gc is on (it is).
+ *   • Frequent console logging so progress is visible in `flyctl logs`
+ *     even if SIGKILL truncates the in-memory progress map.
  *
- * Returns: { ordersScanned, ordersUpdated, customersTouched, gender }
+ * Returns: { ordersScanned, ordersUpdated, gender }
  */
 export async function backfillCustomerFirstNames(admin, shopDomain) {
   console.log(`[backfillFirstNames] Starting for ${shopDomain}`);
   const taskId = `backfillFirstNames:${shopDomain}`;
-  setProgress(taskId, { status: "running", message: "Querying Shopify for billing first names..." });
+  setProgress(taskId, { status: "running", message: "Starting Shopify scan..." });
 
   let cursor = null;
   let hasNextPage = true;
   let pageCount = 0;
   let scanned = 0;
   let updated = 0;
-  const touchedCustomerIds = new Set();
+  const PAGE_SIZE = 50;
 
   while (hasNextPage) {
     const query = `
       query GetFirstNames($cursor: String) {
-        orders(first: 100, after: $cursor, sortKey: CREATED_AT, query: "status:any") {
+        orders(first: ${PAGE_SIZE}, after: $cursor, sortKey: CREATED_AT, query: "status:any") {
           edges {
             cursor
-            node {
-              id
-              billingAddress { firstName }
-              customer { id }
-            }
+            node { id billingAddress { firstName } }
           }
           pageInfo { hasNextPage }
         }
       }
     `;
-    const data = await graphqlWithRetry(admin, query, { cursor }, "backfillFirstNames");
-    const edges = data.data?.orders?.edges || [];
-    hasNextPage = data.data?.orders?.pageInfo?.hasNextPage || false;
-    if (edges.length > 0) cursor = edges[edges.length - 1].cursor;
-    pageCount++;
-
-    // Build a list of {shopifyOrderId, firstName} pairs from this page
-    // and look up which already have customerFirstName populated, so we
-    // only write rows that need it.
-    const pageRows = edges.map((e) => {
-      const id = e.node.id?.replace("gid://shopify/Order/", "");
-      const fn = (e.node.billingAddress?.firstName || "").trim();
-      const custId = e.node.customer?.id?.replace("gid://shopify/Customer/", "") || null;
-      return { shopifyOrderId: id, firstName: fn, shopifyCustomerId: custId };
-    }).filter((r) => r.shopifyOrderId && r.firstName);
-
-    scanned += edges.length;
-
-    if (pageRows.length === 0) {
-      setProgress(taskId, { status: "running", message: `Scanning orders... page ${pageCount}, ${scanned.toLocaleString()} scanned, ${updated.toLocaleString()} updated` });
-      continue;
+    let edges;
+    try {
+      const data = await graphqlWithRetry(admin, query, { cursor }, "backfillFirstNames");
+      edges = data.data?.orders?.edges || [];
+      hasNextPage = data.data?.orders?.pageInfo?.hasNextPage || false;
+      if (edges.length > 0) cursor = edges[edges.length - 1].cursor;
+    } catch (err) {
+      console.error(`[backfillFirstNames] page ${pageCount + 1} GraphQL failed: ${err?.message || err}`);
+      throw err;
     }
 
-    // Find which of these orders need updating (currently empty firstName).
-    const existing = await db.order.findMany({
-      where: {
-        shopDomain,
-        shopifyOrderId: { in: pageRows.map((r) => r.shopifyOrderId) },
-      },
-      select: { shopifyOrderId: true, customerFirstName: true },
-    });
-    const existingMap = new Map(existing.map((o) => [o.shopifyOrderId, o.customerFirstName || ""]));
+    pageCount++;
+    scanned += edges.length;
 
-    const toUpdate = pageRows.filter((r) => !existingMap.get(r.shopifyOrderId));
-    if (toUpdate.length > 0) {
-      await Promise.all(toUpdate.map((r) =>
-        db.order.update({
-          where: { shopDomain_shopifyOrderId: { shopDomain, shopifyOrderId: r.shopifyOrderId } },
-          data: { customerFirstName: r.firstName },
-        }).catch((err) => {
-          // Order may not exist locally if it was outside our 2-year window
-          // when imported. Tolerate the miss rather than failing the whole run.
-          if (!String(err?.message || "").includes("not found")) {
-            console.warn(`[backfillFirstNames] update failed for ${r.shopifyOrderId}: ${err?.message || err}`);
-          }
-        })
-      ));
-      updated += toUpdate.length;
-      for (const r of toUpdate) {
-        if (r.shopifyCustomerId) touchedCustomerIds.add(r.shopifyCustomerId);
+    // Sequential per-row UPDATE. The WHERE clause asserts the row's
+    // customerFirstName is currently empty so populated values (typically
+    // set via webhook) are never overwritten.
+    for (const e of edges) {
+      const id = e.node.id?.replace("gid://shopify/Order/", "");
+      const fn = (e.node.billingAddress?.firstName || "").trim();
+      if (!id || !fn) continue;
+      try {
+        const affected = await db.$executeRaw`
+          UPDATE "Order"
+          SET "customerFirstName" = ${fn}
+          WHERE "shopDomain" = ${shopDomain}
+            AND "shopifyOrderId" = ${id}
+            AND ("customerFirstName" IS NULL OR "customerFirstName" = '')
+        `;
+        if (affected > 0) updated++;
+      } catch (err) {
+        console.warn(`[backfillFirstNames] update failed for ${id}: ${err?.message || err}`);
       }
     }
 
-    setProgress(taskId, { status: "running", message: `Scanning orders... page ${pageCount}, ${scanned.toLocaleString()} scanned, ${updated.toLocaleString()} updated` });
+    if (pageCount === 1 || pageCount % 20 === 0 || !hasNextPage) {
+      console.log(`[backfillFirstNames] page=${pageCount} scanned=${scanned} updated=${updated}`);
+    }
+    setProgress(taskId, {
+      status: "running",
+      message: `Page ${pageCount}: ${scanned.toLocaleString()} scanned, ${updated.toLocaleString()} updated`,
+    });
+
+    // Encourage GC every few pages so per-page allocations don't accumulate.
+    // Node is started with --expose-gc on Fly.
+    if (typeof global !== "undefined" && typeof global.gc === "function" && pageCount % 5 === 0) {
+      global.gc();
+    }
   }
 
-  console.log(`[backfillFirstNames] Order pass done: ${scanned} scanned, ${updated} updated, ${touchedCustomerIds.size} customers touched`);
+  console.log(`[backfillFirstNames] Order pass complete: ${scanned} scanned, ${updated} updated`);
+  setProgress(taskId, { status: "running", message: `Inferring gender from names...` });
 
-  // Now re-run gender inference now that we have names.
-  setProgress(taskId, { status: "running", message: `Inferring gender from ${touchedCustomerIds.size.toLocaleString()} new names...` });
   const gender = await backfillShopInferredGender(db, shopDomain);
   console.log(`[backfillFirstNames] Gender inference: scanned=${gender.scanned} inferred=${gender.inferred} ambiguous=${gender.ambiguous} noName=${gender.noName}`);
 
-  const result = {
-    ordersScanned: scanned,
-    ordersUpdated: updated,
-    customersTouched: touchedCustomerIds.size,
-    gender,
-  };
+  const result = { ordersScanned: scanned, ordersUpdated: updated, gender };
   completeProgress(taskId, result);
   return result;
 }
