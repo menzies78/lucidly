@@ -509,9 +509,13 @@ function ProtomapsBaseLayer({ apiKey, protomapsL, useMap }: { apiKey: string; pr
   const map = useMap();
   useEffect(() => {
     if (!map || !protomapsL) return;
+    // v5 API: option is `flavor` (not `theme`), URL must be a Z/X/Y .mvt
+    // endpoint or a .pmtiles archive — passing the v4.json TileJSON URL
+    // silently fails to render.
     const layer = protomapsL.leafletLayer({
-      url: `https://api.protomaps.com/tiles/v4.json?key=${apiKey}`,
-      theme: "light",
+      url: `https://api.protomaps.com/tiles/v4/{z}/{x}/{y}.mvt?key=${apiKey}`,
+      flavor: "light",
+      lang: "en",
       attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> · <a href="https://protomaps.com">Protomaps</a>',
     });
     layer.addTo(map);
