@@ -4,30 +4,28 @@
 //
 // Module-level state is loaded lazily on first call so server boot stays
 // fast and tests that don't need geocoding don't pay the JSON parse cost.
-import fs from "fs";
-import path from "path";
-import url from "url";
+//
+// cities.json is imported (not fs.readFileSync'd) so Vite knows to ship it
+// with the production bundle. Reading it via __dirname resolved to
+// build/server/assets/ in prod, where the file didn't exist — ENOENT
+// crashed customerRollups every cycle on Apr 27 2026.
+import citiesData from "./cities.json";
 import { COUNTRY_CENTROIDS } from "./countryCentroids.js";
-
-const __filename = url.fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 
 let CITY_INDEX = null;
 
-/** Lazy-load and index the cities dump. Index shape:
+/** Build the index from the imported cities dump. Index shape:
  *   Map<countryCode, Map<normalizedCity, [lat, lng]>>
- * The index is kept on globalThis so Vite's dev mode HMR doesn't reload the
- * 3MB JSON on every request. */
+ * Kept on globalThis so Vite's dev mode HMR doesn't reload the 3MB JSON
+ * on every request. */
 function loadIndex() {
   if (CITY_INDEX) return CITY_INDEX;
   if (globalThis.__lucidlyCityIndex) {
     CITY_INDEX = globalThis.__lucidlyCityIndex;
     return CITY_INDEX;
   }
-  const file = path.join(__dirname, "cities.json");
-  const raw = JSON.parse(fs.readFileSync(file, "utf8"));
   const idx = new Map();
-  for (const [cc, rows] of Object.entries(raw)) {
+  for (const [cc, rows] of Object.entries(citiesData)) {
     const m = new Map();
     for (const [name, asciiName, lat, lng] of rows) {
       const k1 = normalizeCity(name);

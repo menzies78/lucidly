@@ -232,8 +232,24 @@ export default function CustomerMapExplorer({ blob, cs }: Props) {
           </div>
         </div>
 
+        {/* Map + side panel — placed above the filters per Andy's preference:
+            users want to see the map first and tweak filters below it. */}
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 280px", gap: "16px", minHeight: 540 }}>
+          <MapCanvas points={filtered} cs={cs} />
+          <TopCitiesPanel cities={topCities} cs={cs} />
+        </div>
+
+        {/* Stat strip */}
+        <div style={{ borderTop: "1px solid #E5E7EB", paddingTop: 10, fontSize: "12px", color: "#6B7280" }}>
+          Showing <strong style={{ color: "#111827" }}>{filtered.length.toLocaleString()}</strong> of {totalCount.toLocaleString()} customers
+          across <strong style={{ color: "#111827" }}>{countryCount}</strong> countr{countryCount === 1 ? "y" : "ies"}
+          {filtered.length > 0 && (
+            <> · Avg net spend <strong style={{ color: "#111827" }}>{cs}{Math.round(filtered.reduce((s, p) => s + (p.$ - p.r), 0) / filtered.length).toLocaleString()}</strong></>
+          )}
+        </div>
+
         {/* Filter bar */}
-        <div style={{ display: "flex", flexDirection: "column", gap: "10px", marginTop: 12 }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: "10px", marginTop: 4 }}>
           {/* Gender (Meta Acquired only) */}
           <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
             <span style={labelStyle}>Gender</span>
@@ -373,21 +389,6 @@ export default function CustomerMapExplorer({ blob, cs }: Props) {
               </button>
             </div>
           )}
-        </div>
-
-        {/* Stat strip */}
-        <div style={{ borderTop: "1px solid #E5E7EB", paddingTop: 10, fontSize: "12px", color: "#6B7280" }}>
-          Showing <strong style={{ color: "#111827" }}>{filtered.length.toLocaleString()}</strong> of {totalCount.toLocaleString()} customers
-          across <strong style={{ color: "#111827" }}>{countryCount}</strong> countr{countryCount === 1 ? "y" : "ies"}
-          {filtered.length > 0 && (
-            <> · Avg net spend <strong style={{ color: "#111827" }}>{cs}{Math.round(filtered.reduce((s, p) => s + (p.$ - p.r), 0) / filtered.length).toLocaleString()}</strong></>
-          )}
-        </div>
-
-        {/* Map + side panel */}
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 280px", gap: "16px", minHeight: 540 }}>
-          <MapCanvas points={filtered} cs={cs} />
-          <TopCitiesPanel cities={topCities} cs={cs} />
         </div>
       </BlockStack>
     </Card>
