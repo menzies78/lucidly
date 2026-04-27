@@ -87,6 +87,14 @@ model Customer {
   city                String?
   lat                 Float?
   lng                 Float?
+  // Name-derived gender inference. Independent of metaGender (which lives
+  // on Attribution and only covers the small slice of orders enriched via
+  // MetaBreakdown). Populated from customerFirstName on the customer's
+  // first order, country-aware. inferredGenderConfidence is the dataset's
+  // probability for the chosen label (0–1); only stored when ≥ 0.95.
+  inferredGender           String?
+  inferredGenderConfidence Float?
+  inferredGenderSource     String?  // "name" — reserved for future signals
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
 
@@ -94,6 +102,7 @@ model Customer {
   @@index([shopDomain])
   @@index([shopDomain, metaSegment])
   @@index([emailHash])
+  @@index([shopDomain, inferredGender])
 }
 
 model Order {

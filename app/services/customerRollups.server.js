@@ -90,7 +90,7 @@ export async function rebuildCustomerSegments(shopDomain) {
     }),
     db.customer.findMany({
       where: { shopDomain },
-      select: { shopifyCustomerId: true, firstOrderDate: true },
+      select: { shopifyCustomerId: true, firstOrderDate: true, inferredGender: true },
     }),
   ]);
 
@@ -106,9 +106,16 @@ export async function rebuildCustomerSegments(shopDomain) {
 
   // Customer first-order-date map (shop-local YYYY-MM-DD keys)
   const customerFirstOrderMap = new Map();
+  // shopifyCustomerId -> name-derived gender, used as a fallback when
+  // attribution-level metaGender is missing (which is most of the time
+  // for orders older than the MetaBreakdown lookback window).
+  const customerInferredGenderMap = new Map();
   for (const c of customers) {
     if (c.firstOrderDate) {
       customerFirstOrderMap.set(c.shopifyCustomerId, shopLocalDayKey(tz, c.firstOrderDate));
+    }
+    if (c.inferredGender) {
+      customerInferredGenderMap.set(c.shopifyCustomerId, c.inferredGender);
     }
   }
 
@@ -429,8 +436,14 @@ export async function rebuildCustomerSegments(shopDomain) {
     // order shipping address. LTV is net of refunds.
     if (segment === "metaNew") {
       const firstAttr2 = customerFirstAttr.get(custId);
+      // Gender resolution: prefer the observed attribution gender (Meta
+      // breakdown enrichment), fall back to name-based inference, then
+      // null. Coverage on attribution gender is sparse (only orders whose
+      // ad+date intersect with MetaBreakdown rows), so the fallback fills
+      // the long tail of historical customers.
+      const resolvedGender = firstAttr2?.gender || customerInferredGenderMap.get(custId) || null;
       ltvCustomers.push({
-        gender: firstAttr2?.gender || null,
+        gender: resolvedGender,
         age: firstAttr2?.age || null,
         country: firstOrder?.country || null,
         ltv: r2(netRevenue),

@@ -2,6 +2,7 @@ import db from "../db.server";
 import crypto from "crypto";
 import { isPaidMetaUtm } from "../utils/utmClassification.js";
 import { parseElevarVisitorInfo } from "../utils/parseElevarVisitorInfo.js";
+import { updateCustomerInferredGenderIfMissing } from "./nameGender.server.js";
 
 /**
  * Processes a single Shopify order from a webhook payload (REST format).
@@ -283,6 +284,13 @@ export async function processOrderWebhook(shopDomain, payload, isCreate) {
         ...(isNewCustomerOrder ? { firstOrderDate: orderDate } : {}),
       },
     });
+
+    // Name-based gender inference. Fire-and-forget — only sets a value
+    // when missing, never overwrites. Failure is non-fatal (logged).
+    if (finalFirstName) {
+      updateCustomerInferredGenderIfMissing(db, shopDomain, customerId, finalFirstName, countryCode)
+        .catch((err) => console.error(`[OrderWebhook] inferGender failed for ${customerId}:`, err?.message || err));
+    }
   }
 
   // Set customerOrderCountAtPurchase for this order.

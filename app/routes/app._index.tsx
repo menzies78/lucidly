@@ -131,7 +131,7 @@ export const loader = async ({ request }) => {
   const isNewInstall = !shop?.lastOrderSync && orderCount === 0;
 
   // Check if any background task is currently running for this shop
-  const taskNames = ["syncOrders", "syncMeta", "syncMetaHistorical", "runAttribution", "dateRangeRematch", "fillGaps", "incrementalSync", "startOngoingSync", "calibratePixel"];
+  const taskNames = ["syncOrders", "syncMeta", "syncMetaHistorical", "runAttribution", "dateRangeRematch", "fillGaps", "incrementalSync", "startOngoingSync", "calibratePixel", "inferGender"];
   let activeTaskFromServer = null;
   for (const t of taskNames) {
     const p = getProgress(`${t}:${shopDomain}`);
@@ -249,6 +249,14 @@ export const action = async ({ request }) => {
       return runIncrementalSync(shopDomain);
     });
     return json({ started: true, task: "incrementalSync" });
+  }
+  if (actionType === "inferGender") {
+    runInBackground(async () => {
+      const { backfillShopInferredGender } = await import("../services/nameGender.server.js");
+      const result = await backfillShopInferredGender(db, shopDomain);
+      completeProgress(taskId, result);
+    });
+    return json({ started: true, task: "inferGender" });
   }
   return json({ success: false });
 };
@@ -598,6 +606,15 @@ export default function Index() {
                     {activeTask === "dateRangeRematch" ? "Running..." : "Re-match Oct-Jan"}
                   </Button>
                   <Text as="p" variant="bodySm" tone="subdued">Re-matches Oct 18 – Jan 30 only</Text>
+                </BlockStack>
+              )}
+              {orderCount > 0 && (
+                <BlockStack gap="100">
+                  <Button onClick={() => startTask("inferGender")} disabled={isRunning}
+                    loading={activeTask === "inferGender"}>
+                    {activeTask === "inferGender" ? "Running..." : "Infer Gender from Names"}
+                  </Button>
+                  <Text as="p" variant="bodySm" tone="subdued">Backfill demographics from billing names</Text>
                 </BlockStack>
               )}
             </InlineStack>

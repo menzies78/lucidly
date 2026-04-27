@@ -4,6 +4,7 @@ import { setProgress, completeProgress, failProgress } from "./progress.server";
 import { isPaidMetaUtm } from "../utils/utmClassification.js";
 import { parseElevarVisitorInfo } from "../utils/parseElevarVisitorInfo.js";
 import { withRetry } from "./retry.server.js";
+import { backfillShopInferredGender } from "./nameGender.server.js";
 
 // Wraps admin.graphql with retry on transient errors.
 async function graphqlWithRetry(admin, query, variables, label) {
@@ -534,6 +535,21 @@ export async function syncOrders(admin, shopDomain) {
     await computeOrderCounts(shopDomain);
   } else {
     await computeOrderCounts(shopDomain, Array.from(touchedCustomerIds));
+  }
+
+  // Initial backfill: also infer gender from billing first names. Skipped on
+  // incremental syncs — webhooks handle per-order updates as they arrive.
+  if (isInitialBackfill) {
+    setProgress(`syncOrders:${shopDomain}`, {
+      status: "running",
+      message: `Inferring customer demographics from billing names...`,
+    });
+    try {
+      const result = await backfillShopInferredGender(db, shopDomain);
+      console.log(`[OrderSync] inferGender: scanned=${result.scanned} inferred=${result.inferred} ambiguous=${result.ambiguous} noName=${result.noName}`);
+    } catch (err) {
+      console.error(`[OrderSync] inferGender backfill failed:`, err?.message || err);
+    }
   }
 
   await db.shop.upsert({
