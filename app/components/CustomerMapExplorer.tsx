@@ -75,9 +75,13 @@ const countryDisplay: (code: string | null) => string | null = (() => {
 interface Props {
   blob: MapBlob | null;
   cs: string;
+  /** Protomaps API key (referrer-restricted, safe in client). When null we
+   *  fall back to the CARTO Voyager raster basemap — fine for dev, NOT
+   *  acceptable for App Store launch (CARTO's CDN is fair-use only). */
+  protomapsKey?: string | null;
 }
 
-export default function CustomerMapExplorer({ blob, cs }: Props) {
+export default function CustomerMapExplorer({ blob, cs, protomapsKey = null }: Props) {
   const [scope, setScope] = useState<Scope>("metaAcquired");
   const [gender, setGender] = useState<"All" | "Female" | "Male">("All");
   const [ages, setAges] = useState<string[]>([]);
@@ -235,7 +239,7 @@ export default function CustomerMapExplorer({ blob, cs }: Props) {
         {/* Map + side panel — placed above the filters per Andy's preference:
             users want to see the map first and tweak filters below it. */}
         <div style={{ display: "grid", gridTemplateColumns: "1fr 280px", gap: "16px", minHeight: 540 }}>
-          <MapCanvas points={filtered} cs={cs} />
+          <MapCanvas points={filtered} cs={cs} protomapsKey={protomapsKey} />
           <TopCitiesPanel cities={topCities} cs={cs} />
         </div>
 
@@ -402,23 +406,28 @@ export default function CustomerMapExplorer({ blob, cs }: Props) {
 interface MapCanvasProps {
   points: MapPoint[];
   cs: string;
+  protomapsKey: string | null;
 }
 
-function MapCanvas({ points, cs }: MapCanvasProps) {
+function MapCanvas({ points, cs, protomapsKey }: MapCanvasProps) {
   const [ready, setReady] = useState(false);
   const [mods, setMods] = useState<{
     MapContainer: any; TileLayer: any; useMap: any;
-    L: any; Supercluster: any;
+    L: any; Supercluster: any; protomapsL: any;
   } | null>(null);
 
   useEffect(() => {
     let mounted = true;
     (async () => {
-      const [rl, leaflet, sc] = await Promise.all([
+      // protomaps-leaflet is only loaded when we actually have a key —
+      // saves ~80kb on the initial chunk for dev/CARTO-fallback users.
+      const imports: Promise<any>[] = [
         import("react-leaflet"),
         import("leaflet"),
         import("supercluster"),
-      ]);
+      ];
+      if (protomapsKey) imports.push(import("protomaps-leaflet"));
+      const [rl, leaflet, sc, pm] = await Promise.all(imports);
       // Side-effect: leaflet ships its CSS separately; pull it via a CDN
       // link tag to avoid having Vite bundle the CSS into the route chunk.
       if (!document.querySelector('link[data-lucidly-leaflet]')) {
@@ -436,11 +445,12 @@ function MapCanvas({ points, cs }: MapCanvasProps) {
         useMap: rl.useMap,
         L: (leaflet as any).default || leaflet,
         Supercluster: (sc as any).default || sc,
+        protomapsL: pm ? ((pm as any).default || pm) : null,
       });
       setReady(true);
     })();
     return () => { mounted = false; };
-  }, []);
+  }, [protomapsKey]);
 
   if (!ready || !mods) {
     return (
@@ -456,25 +466,58 @@ function MapCanvas({ points, cs }: MapCanvasProps) {
   }
 
   const { MapContainer, TileLayer } = mods;
+  // Protomaps planet build covers z=0-15, so cap maxZoom there when we use
+  // it. CARTO Voyager goes to z=20 but we never need that depth for a
+  // customer dot map; 16 was fine before, 15 is fine now.
+  const maxZoom = protomapsKey ? 15 : 16;
   return (
     <div style={{ borderRadius: "8px", overflow: "hidden", border: "1px solid #E5E7EB", height: "540px" }}>
       <MapContainer
         center={[20, 0] as any}
         zoom={2}
         minZoom={2}
-        maxZoom={16}
+        maxZoom={maxZoom}
         style={{ width: "100%", height: "100%" }}
         worldCopyJump={true}
         scrollWheelZoom={true}
       >
-        <TileLayer
-          attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> · <a href="https://carto.com/attributions">CARTO</a>'
-          url="https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png"
-        />
+        {protomapsKey ? (
+          <ProtomapsBaseLayer apiKey={protomapsKey} protomapsL={mods.protomapsL} useMap={mods.useMap} />
+        ) : (
+          <TileLayer
+            attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> · <a href="https://carto.com/attributions">CARTO</a>'
+            url="https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png"
+          />
+        )}
         <ClusterLayer points={points} L={mods.L} useMap={mods.useMap} Supercluster={mods.Supercluster} cs={cs} />
       </MapContainer>
     </div>
   );
+}
+
+// ProtomapsBaseLayer — vector basemap from api.protomaps.com.
+//
+// Why this exists: react-leaflet has no native binding for protomaps-leaflet,
+// which uses an imperative `leafletLayer({ url, theme }).addTo(map)` API.
+// We hook in via useMap (same pattern as ClusterLayer) and clean up on
+// unmount so HMR / theme switches don't leak layers.
+//
+// API key is referrer-restricted by Protomaps — safe in client bundle. If
+// the key ever needs rotating, swap PROTOMAPS_API_KEY in fly secrets and
+// redeploy. No code change required.
+function ProtomapsBaseLayer({ apiKey, protomapsL, useMap }: { apiKey: string; protomapsL: any; useMap: any }) {
+  const map = useMap();
+  useEffect(() => {
+    if (!map || !protomapsL) return;
+    const layer = protomapsL.leafletLayer({
+      url: `https://api.protomaps.com/tiles/v4.json?key=${apiKey}`,
+      theme: "light",
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> · <a href="https://protomaps.com">Protomaps</a>',
+    });
+    layer.addTo(map);
+    return () => { map.removeLayer(layer); };
+  }, [map, protomapsL, apiKey]);
+  return null;
 }
 
 interface ClusterLayerProps {
