@@ -3099,6 +3099,19 @@ export default function Customers() {
                                     </div>
                                   )}
                                 </div>
+                                {/* Diagnostic readout — surfaces fixed-cohort
+                                    size + per-window values so flat curves can
+                                    be read directly without guessing. */}
+                                <div style={{ display: "flex", flexWrap: "wrap", gap: "10px", marginBottom: "10px", fontSize: "11px", color: "#6B7280", background: "#FAFAFA", border: "1px solid #F3F4F6", borderRadius: 6, padding: "6px 10px" }}>
+                                  <span style={{ fontWeight: 600 }}>Cohort: {benchmarkWindows.length > 0 ? benchmarkWindows[0].count.toLocaleString() : 0} customer{(benchmarkWindows.length > 0 ? benchmarkWindows[0].count : 0) === 1 ? "" : "s"}</span>
+                                  <span style={{ color: "#9CA3AF" }}>|</span>
+                                  {benchmarkWindows.map((w: any, i: number) => (
+                                    <span key={w.window}>
+                                      {windowLabel(w.window)}: <strong style={{ color: "#1F2937" }}>{cs}{Math.round(w.avgLtv).toLocaleString()}</strong>
+                                      {i < benchmarkWindows.length - 1 && <span style={{ color: "#D1D5DB", marginLeft: 8 }}>·</span>}
+                                    </span>
+                                  ))}
+                                </div>
                                 <div style={{ position: "relative", width: "75%" }}>
                                 <svg viewBox={`0 0 ${chartWidth} ${chartHeight}`} style={{ width: "100%", height: "auto", display: "block" }}>
                                   <defs>
