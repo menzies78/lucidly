@@ -594,17 +594,37 @@ export async function backfillCustomerFirstNames(admin, shopDomain) {
   const taskId = `backfillFirstNames:${shopDomain}`;
   setProgress(taskId, { status: "running", message: "Starting Shopify scan..." });
 
+  // Anchor the Shopify scan to the earliest order we actually have in the DB.
+  // Without this floor the query walks Shopify's full history (Vollebak has
+  // orders going back to 2015) and every UPDATE returns affected=0 because
+  // the row doesn't exist in our DB. Vollebak's sync window starts much
+  // later, so we'd burn through tens of thousands of pre-window orders for
+  // nothing.
+  const earliest = await db.order.findFirst({
+    where: { shopDomain },
+    orderBy: { createdAt: "asc" },
+    select: { createdAt: true },
+  });
+  const sinceIso = earliest?.createdAt?.toISOString() || null;
+  const queryFilter = sinceIso
+    ? `created_at:>='${sinceIso}' status:any`
+    : "status:any";
+  console.log(`[backfillFirstNames] sinceDate=${sinceIso || "(none — scanning all)"}`);
+
   let cursor = null;
   let hasNextPage = true;
   let pageCount = 0;
   let scanned = 0;
   let updated = 0;
+  let noBillingAddr = 0;
+  let emptyFirstName = 0;
+  let notInDb = 0;
   const PAGE_SIZE = 50;
 
   while (hasNextPage) {
     const query = `
       query GetFirstNames($cursor: String) {
-        orders(first: ${PAGE_SIZE}, after: $cursor, sortKey: CREATED_AT, query: "status:any") {
+        orders(first: ${PAGE_SIZE}, after: $cursor, sortKey: CREATED_AT, query: "${queryFilter}") {
           edges {
             cursor
             node { id billingAddress { firstName } }
@@ -632,8 +652,10 @@ export async function backfillCustomerFirstNames(admin, shopDomain) {
     // set via webhook) are never overwritten.
     for (const e of edges) {
       const id = e.node.id?.replace("gid://shopify/Order/", "");
+      if (!e.node.billingAddress) { noBillingAddr++; continue; }
       const fn = (e.node.billingAddress?.firstName || "").trim();
-      if (!id || !fn) continue;
+      if (!fn) { emptyFirstName++; continue; }
+      if (!id) continue;
       try {
         const affected = await db.$executeRaw`
           UPDATE "Order"
@@ -643,13 +665,14 @@ export async function backfillCustomerFirstNames(admin, shopDomain) {
             AND ("customerFirstName" IS NULL OR "customerFirstName" = '')
         `;
         if (affected > 0) updated++;
+        else notInDb++;
       } catch (err) {
         console.warn(`[backfillFirstNames] update failed for ${id}: ${err?.message || err}`);
       }
     }
 
     if (pageCount === 1 || pageCount % 20 === 0 || !hasNextPage) {
-      console.log(`[backfillFirstNames] page=${pageCount} scanned=${scanned} updated=${updated}`);
+      console.log(`[backfillFirstNames] page=${pageCount} scanned=${scanned} updated=${updated} noBilling=${noBillingAddr} emptyName=${emptyFirstName} notInDb=${notInDb}`);
     }
     setProgress(taskId, {
       status: "running",
@@ -663,13 +686,20 @@ export async function backfillCustomerFirstNames(admin, shopDomain) {
     }
   }
 
-  console.log(`[backfillFirstNames] Order pass complete: ${scanned} scanned, ${updated} updated`);
+  console.log(`[backfillFirstNames] Order pass complete: scanned=${scanned} updated=${updated} noBilling=${noBillingAddr} emptyName=${emptyFirstName} notInDb=${notInDb}`);
   setProgress(taskId, { status: "running", message: `Inferring gender from names...` });
 
   const gender = await backfillShopInferredGender(db, shopDomain);
   console.log(`[backfillFirstNames] Gender inference: scanned=${gender.scanned} inferred=${gender.inferred} ambiguous=${gender.ambiguous} noName=${gender.noName}`);
 
-  const result = { ordersScanned: scanned, ordersUpdated: updated, gender };
+  const result = {
+    ordersScanned: scanned,
+    ordersUpdated: updated,
+    noBillingAddr,
+    emptyFirstName,
+    notInDb,
+    gender,
+  };
   completeProgress(taskId, result);
   return result;
 }
