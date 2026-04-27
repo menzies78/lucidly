@@ -131,7 +131,7 @@ export const loader = async ({ request }) => {
   const isNewInstall = !shop?.lastOrderSync && orderCount === 0;
 
   // Check if any background task is currently running for this shop
-  const taskNames = ["syncOrders", "syncMeta", "syncMetaHistorical", "runAttribution", "dateRangeRematch", "fillGaps", "incrementalSync", "startOngoingSync", "calibratePixel", "inferGender"];
+  const taskNames = ["syncOrders", "syncMeta", "syncMetaHistorical", "runAttribution", "dateRangeRematch", "fillGaps", "incrementalSync", "startOngoingSync", "calibratePixel", "inferGender", "backfillFirstNames"];
   let activeTaskFromServer = null;
   for (const t of taskNames) {
     const p = getProgress(`${t}:${shopDomain}`);
@@ -257,6 +257,14 @@ export const action = async ({ request }) => {
       completeProgress(taskId, result);
     });
     return json({ started: true, task: "inferGender" });
+  }
+  if (actionType === "backfillFirstNames") {
+    runInBackground(async () => {
+      const { backfillCustomerFirstNames } = await import("../services/orderSync.server.js");
+      await backfillCustomerFirstNames(admin, shopDomain);
+      // backfillCustomerFirstNames calls completeProgress itself
+    });
+    return json({ started: true, task: "backfillFirstNames" });
   }
   return json({ success: false });
 };
@@ -615,6 +623,15 @@ export default function Index() {
                     {activeTask === "inferGender" ? "Running..." : "Infer Gender from Names"}
                   </Button>
                   <Text as="p" variant="bodySm" tone="subdued">Backfill demographics from billing names</Text>
+                </BlockStack>
+              )}
+              {orderCount > 0 && (
+                <BlockStack gap="100">
+                  <Button onClick={() => startTask("backfillFirstNames")} disabled={isRunning}
+                    loading={activeTask === "backfillFirstNames"}>
+                    {activeTask === "backfillFirstNames" ? "Running..." : "Backfill First Names"}
+                  </Button>
+                  <Text as="p" variant="bodySm" tone="subdued">Pulls billing first names from Shopify, then re-runs gender inference</Text>
                 </BlockStack>
               )}
             </InlineStack>

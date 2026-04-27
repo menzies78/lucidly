@@ -287,7 +287,7 @@ export async function syncOrders(admin, shopDomain) {
                   }
                 }
               }
-              billingAddress { country countryCode city provinceCode }
+              billingAddress { country countryCode city provinceCode firstName }
               shippingAddress { country countryCode city provinceCode }
               lineItems(first: 50) {
                 edges {
@@ -418,12 +418,18 @@ export async function syncOrders(admin, shopDomain) {
         : totalRefunded >= totalPrice ? "full" : "partial";
       const refundLineItems = buildRefundLineItems(order.refunds);
 
-      // Customer name fields are protected — preserve existing values if already populated
+      // Customer name fields are protected — preserve existing values if already
+      // populated. When the DB row has no firstName yet (typical for orders that
+      // came in via the GraphQL backfill before this branch was added), fall back
+      // to the billing firstName from Shopify so name-based gender inference has
+      // something to work with.
       const existingOrder = await db.order.findUnique({
         where: { shopDomain_shopifyOrderId: { shopDomain, shopifyOrderId } },
         select: { customerFirstName: true, customerLastInitial: true },
       });
-      const customerFirstName = existingOrder?.customerFirstName || "";
+      const customerFirstName = existingOrder?.customerFirstName
+        || (billing?.firstName || "").trim()
+        || "";
       const customerLastInitial = existingOrder?.customerLastInitial || "";
       // Don't set customerOrderCountAtPurchase during import — it will be computed
       // correctly by computeOrderCounts() after all orders are imported, using the
@@ -561,4 +567,119 @@ export async function syncOrders(admin, shopDomain) {
   completeProgress(`syncOrders:${shopDomain}`, { totalImported, totalCustomers });
   console.log(`[OrderSync] Complete: ${totalImported} orders, ${totalCustomers} customers`);
   return { totalImported, totalCustomers };
+}
+
+/**
+ * Targeted backfill for Order.customerFirstName. The original GraphQL query
+ * never asked for billing.firstName, so historical orders imported before
+ * that fix have empty names — which makes name-based gender inference a
+ * no-op for the vast majority of customers.
+ *
+ * This pages through every order in the shop, asking ONLY for id +
+ * billingAddress.firstName, and updates orders whose stored
+ * customerFirstName is empty. After the backfill it re-runs gender
+ * inference. It deliberately doesn't touch any other fields so it can be
+ * triggered safely at any time.
+ *
+ * Returns: { ordersScanned, ordersUpdated, customersTouched, gender }
+ */
+export async function backfillCustomerFirstNames(admin, shopDomain) {
+  console.log(`[backfillFirstNames] Starting for ${shopDomain}`);
+  const taskId = `backfillFirstNames:${shopDomain}`;
+  setProgress(taskId, { status: "running", message: "Querying Shopify for billing first names..." });
+
+  let cursor = null;
+  let hasNextPage = true;
+  let pageCount = 0;
+  let scanned = 0;
+  let updated = 0;
+  const touchedCustomerIds = new Set();
+
+  while (hasNextPage) {
+    const query = `
+      query GetFirstNames($cursor: String) {
+        orders(first: 100, after: $cursor, sortKey: CREATED_AT, query: "status:any") {
+          edges {
+            cursor
+            node {
+              id
+              billingAddress { firstName }
+              customer { id }
+            }
+          }
+          pageInfo { hasNextPage }
+        }
+      }
+    `;
+    const data = await graphqlWithRetry(admin, query, { cursor }, "backfillFirstNames");
+    const edges = data.data?.orders?.edges || [];
+    hasNextPage = data.data?.orders?.pageInfo?.hasNextPage || false;
+    if (edges.length > 0) cursor = edges[edges.length - 1].cursor;
+    pageCount++;
+
+    // Build a list of {shopifyOrderId, firstName} pairs from this page
+    // and look up which already have customerFirstName populated, so we
+    // only write rows that need it.
+    const pageRows = edges.map((e) => {
+      const id = e.node.id?.replace("gid://shopify/Order/", "");
+      const fn = (e.node.billingAddress?.firstName || "").trim();
+      const custId = e.node.customer?.id?.replace("gid://shopify/Customer/", "") || null;
+      return { shopifyOrderId: id, firstName: fn, shopifyCustomerId: custId };
+    }).filter((r) => r.shopifyOrderId && r.firstName);
+
+    scanned += edges.length;
+
+    if (pageRows.length === 0) {
+      setProgress(taskId, { status: "running", message: `Scanning orders... page ${pageCount}, ${scanned.toLocaleString()} scanned, ${updated.toLocaleString()} updated` });
+      continue;
+    }
+
+    // Find which of these orders need updating (currently empty firstName).
+    const existing = await db.order.findMany({
+      where: {
+        shopDomain,
+        shopifyOrderId: { in: pageRows.map((r) => r.shopifyOrderId) },
+      },
+      select: { shopifyOrderId: true, customerFirstName: true },
+    });
+    const existingMap = new Map(existing.map((o) => [o.shopifyOrderId, o.customerFirstName || ""]));
+
+    const toUpdate = pageRows.filter((r) => !existingMap.get(r.shopifyOrderId));
+    if (toUpdate.length > 0) {
+      await Promise.all(toUpdate.map((r) =>
+        db.order.update({
+          where: { shopDomain_shopifyOrderId: { shopDomain, shopifyOrderId: r.shopifyOrderId } },
+          data: { customerFirstName: r.firstName },
+        }).catch((err) => {
+          // Order may not exist locally if it was outside our 2-year window
+          // when imported. Tolerate the miss rather than failing the whole run.
+          if (!String(err?.message || "").includes("not found")) {
+            console.warn(`[backfillFirstNames] update failed for ${r.shopifyOrderId}: ${err?.message || err}`);
+          }
+        })
+      ));
+      updated += toUpdate.length;
+      for (const r of toUpdate) {
+        if (r.shopifyCustomerId) touchedCustomerIds.add(r.shopifyCustomerId);
+      }
+    }
+
+    setProgress(taskId, { status: "running", message: `Scanning orders... page ${pageCount}, ${scanned.toLocaleString()} scanned, ${updated.toLocaleString()} updated` });
+  }
+
+  console.log(`[backfillFirstNames] Order pass done: ${scanned} scanned, ${updated} updated, ${touchedCustomerIds.size} customers touched`);
+
+  // Now re-run gender inference now that we have names.
+  setProgress(taskId, { status: "running", message: `Inferring gender from ${touchedCustomerIds.size.toLocaleString()} new names...` });
+  const gender = await backfillShopInferredGender(db, shopDomain);
+  console.log(`[backfillFirstNames] Gender inference: scanned=${gender.scanned} inferred=${gender.inferred} ambiguous=${gender.ambiguous} noName=${gender.noName}`);
+
+  const result = {
+    ordersScanned: scanned,
+    ordersUpdated: updated,
+    customersTouched: touchedCustomerIds.size,
+    gender,
+  };
+  completeProgress(taskId, result);
+  return result;
 }
