@@ -121,20 +121,23 @@ export async function backfillShopInferredGender(db, shopDomain) {
 
   // For each customer, find their earliest order with a non-empty first
   // name. We only need (firstName, countryCode); a single query per
-  // customer would be slow at 30k+ rows, so pull all-orders-with-name in
-  // one go and pick the earliest per customer client-side.
+  // customer would be slow at 30k+ rows, so pull all orders for this
+  // shop in one go and pick the earliest qualifying order per customer
+  // client-side. Note: we deliberately don't pass `shopifyCustomerId in
+  // [...]` here — at 30k+ IDs combined with a negation filter Prisma
+  // hits SQLite's parameter limit (and can't auto-split). The shopDomain
+  // scope alone is correct since every order belongs to a customer in
+  // this shop's customer list.
   const orders = await db.order.findMany({
-    where: {
-      shopDomain,
-      shopifyCustomerId: { in: customers.map((c) => c.shopifyCustomerId) },
-      customerFirstName: { not: "" },
-    },
+    where: { shopDomain },
     select: { shopifyCustomerId: true, customerFirstName: true, countryCode: true, createdAt: true },
     orderBy: { createdAt: "asc" },
   });
 
   const firstByCustomer = new Map();
   for (const o of orders) {
+    if (!o.shopifyCustomerId) continue;
+    if (!o.customerFirstName) continue;
     if (!firstByCustomer.has(o.shopifyCustomerId)) {
       firstByCustomer.set(o.shopifyCustomerId, o);
     }
