@@ -332,37 +332,36 @@ export async function rebuildCustomerSegments(shopDomain) {
     // unplaceable customers (no country, exotic country code) are dropped
     // rather than rendered at lat 0,0 in the Atlantic.
     if (lat != null && lng != null && custOrders.length > 0) {
-      const netSpent = totalRevenue - totalRefunded;
-      const refundRate = totalRevenue > 0 ? totalRefunded / totalRevenue : 0;
+      // Compact point shape — single-letter keys + only fields the client
+      // can't trivially derive. The blob is held in memory alongside every
+      // other rollup data structure, so trimming each point ~60% (vs the
+      // verbose object shape) keeps a 30k-customer merchant inside the
+      // 3 GB heap. Client (CustomerMapExplorer) decodes the codes back to
+      // human-readable values; net revenue and refundRate are computed on
+      // the fly there.
+      //   i  id            la lat            lo lng
+      //   s  seg (m/r/o)   g  gender (f/m/null)
+      //   a  age bracket   c  countryCode    t  city
+      //   $  spent (£)     r  refunded (£)   n  num orders
+      //   d  daysSinceLast x  approx (1=country centroid)
+      //   p  discountEver (1=ever bought a discounted line item)
+      //   v  vipBand (5/10/20, set in second pass)
+      //   h  highestRefunds (1, set in second pass)
       customerMapPoints.push({
-        // Identifier — short to keep blob compact. Map back to Customer via
-        // shopifyCustomerId server-side if drill-down is ever wired up.
-        id: custId,
-        lat, lng,
-        seg: segment,                 // metaNew | metaRetargeted | organic
-        // Demographic info: only known for metaNew (carried from first
-        // attribution). We persist on every row anyway so client filtering
-        // doesn't have to special-case missing keys.
-        gender: firstAttr?.gender || null,
-        age: firstAttr?.age || null,
-        country: firstOrder?.country || null,
-        countryCode: firstOrder?.countryCode || null,
-        city: firstOrder?.city || null,
-        // Money/behaviour
-        spent: r2(totalRevenue),
-        refunded: r2(totalRefunded),
-        net: r2(netSpent),
-        orders: custOrders.length,
-        refundRate: Math.round(refundRate * 1000) / 1000,
-        // Cohort flags
-        discountEver: lineDiscountOrdersCount > 0,
-        fullPrice: lineDiscountOrdersCount === 0,
-        // Recency days since lastOrderDate (browser converts to band)
-        daysSinceLast: lastOrder ? Math.floor((now - lastOrder.createdAt.getTime()) / DAY_MS) : null,
-        // Geocode source: "city" (precise) or "country" (centroid). The map
-        // layer can render country-centroid markers with a faint halo to
-        // signal "approximate".
-        approx: !firstOrder?.city,
+        i: custId,
+        la: Math.round(lat * 10000) / 10000,   // 4dp ≈ 11m precision
+        lo: Math.round(lng * 10000) / 10000,
+        s: segment === "metaNew" ? "m" : segment === "metaRetargeted" ? "r" : "o",
+        g: firstAttr?.gender ? (firstAttr.gender[0] === "f" ? "f" : "m") : null,
+        a: firstAttr?.age || null,
+        c: firstOrder?.countryCode || null,
+        t: firstOrder?.city || null,
+        $: r2(totalRevenue),
+        r: r2(totalRefunded),
+        n: custOrders.length,
+        d: lastOrder ? Math.floor((now - lastOrder.createdAt.getTime()) / DAY_MS) : null,
+        x: !firstOrder?.city ? 1 : 0,
+        p: lineDiscountOrdersCount > 0 ? 1 : 0,
       });
     }
 
@@ -724,11 +723,12 @@ export async function rebuildCustomerSegments(shopDomain) {
   };
 
   // ── Customer Map Explorer blob ──
-  // VIP thresholds: top 5% / 10% / 20% by net revenue. Computed once across
-  // all geocoded customers so the client filter pills can use the same
-  // bands without re-sorting client-side. The "highestRefunds" band is the
-  // top 10% by refundRate among customers who actually have refunds.
-  const sortedNet = [...customerMapPoints].map((p) => p.net).sort((a, b) => b - a);
+  // VIP thresholds: top 5% / 10% / 20% by NET revenue (spent − refunded).
+  // The "highestRefunds" band is the top 10% by refund rate among
+  // customers who have any refunds at all. Both are computed once here so
+  // the client doesn't have to re-sort 30k points to know which dot is a
+  // VIP. The point shape uses single-letter keys ($/r = spent/refunded).
+  const sortedNet = customerMapPoints.map((p) => p.$ - p.r).sort((a, b) => b - a);
   const pickThreshold = (pct) => {
     if (sortedNet.length === 0) return 0;
     const idx = Math.max(0, Math.floor(sortedNet.length * (pct / 100)) - 1);
@@ -739,32 +739,51 @@ export async function rebuildCustomerSegments(shopDomain) {
     top10: pickThreshold(10),
     top20: pickThreshold(20),
   };
-  const refundedNonZero = customerMapPoints.filter((p) => p.refundRate > 0)
-    .map((p) => p.refundRate).sort((a, b) => b - a);
+  const refundedNonZero = customerMapPoints
+    .filter((p) => p.$ > 0 && p.r > 0)
+    .map((p) => p.r / p.$)
+    .sort((a, b) => b - a);
   const highestRefundThreshold = refundedNonZero.length > 0
     ? refundedNonZero[Math.max(0, Math.floor(refundedNonZero.length * 0.1) - 1)] ?? 0
     : 0;
 
-  // Tag VIP band on each point so the client doesn't have to recompute.
+  // Tag VIP band + highest-refunds on each point. Done in-place to avoid
+  // doubling the array footprint.
   for (const p of customerMapPoints) {
-    p.vipBand = p.net >= vipThresholds.top5 && vipThresholds.top5 > 0
+    const net = p.$ - p.r;
+    p.v = net >= vipThresholds.top5 && vipThresholds.top5 > 0
       ? 5
-      : p.net >= vipThresholds.top10 && vipThresholds.top10 > 0
+      : net >= vipThresholds.top10 && vipThresholds.top10 > 0
         ? 10
-        : p.net >= vipThresholds.top20 && vipThresholds.top20 > 0
+        : net >= vipThresholds.top20 && vipThresholds.top20 > 0
           ? 20
-          : null;
-    p.highestRefunds = highestRefundThreshold > 0 && p.refundRate >= highestRefundThreshold;
+          : 0;
+    const rate = p.$ > 0 ? p.r / p.$ : 0;
+    p.h = highestRefundThreshold > 0 && rate >= highestRefundThreshold ? 1 : 0;
   }
 
-  const customerMapBlob = {
+  // ── Persist blobs to ShopAnalysisCache ──
+  // Map blob FIRST so we can free the points array before stringify-ing
+  // the LTV/journey/geo blobs. For Vollebak (~30k customers) this saved
+  // ~50 MB of peak heap and prevented the OOM kill that caught the first
+  // hourly cycle after the Customer Map deploy. (anon-rss 3.79 GB on a
+  // 3 GB --max-old-space-size process — every byte matters.)
+  let customerMapBlob = {
     points: customerMapPoints,
     thresholds: vipThresholds,
     highestRefundThreshold,
     computedAt: new Date().toISOString(),
   };
+  await db.shopAnalysisCache.upsert({
+    where: { shopDomain_cacheKey: { shopDomain, cacheKey: "customers:map" } },
+    create: { shopDomain, cacheKey: "customers:map", payload: JSON.stringify(customerMapBlob) },
+    update: { payload: JSON.stringify(customerMapBlob), computedAt: new Date() },
+  });
+  // Drop references and force GC before the other three big stringifies.
+  customerMapBlob = null;
+  customerMapPoints.length = 0;
+  if (global.gc) global.gc();
 
-  // ── Persist blobs to ShopAnalysisCache ──
   await db.shopAnalysisCache.upsert({
     where: { shopDomain_cacheKey: { shopDomain, cacheKey: "customers:ltv" } },
     create: { shopDomain, cacheKey: "customers:ltv", payload: JSON.stringify(ltvBlob) },
@@ -779,11 +798,6 @@ export async function rebuildCustomerSegments(shopDomain) {
     where: { shopDomain_cacheKey: { shopDomain, cacheKey: "customers:geo" } },
     create: { shopDomain, cacheKey: "customers:geo", payload: JSON.stringify(geoBlob) },
     update: { payload: JSON.stringify(geoBlob), computedAt: new Date() },
-  });
-  await db.shopAnalysisCache.upsert({
-    where: { shopDomain_cacheKey: { shopDomain, cacheKey: "customers:map" } },
-    create: { shopDomain, cacheKey: "customers:map", payload: JSON.stringify(customerMapBlob) },
-    update: { payload: JSON.stringify(customerMapBlob), computedAt: new Date() },
   });
 
   console.log(`[customerRollups] segments: ${totalUpdated} customers + ltv/journey/geo blobs in ${Date.now() - t0}ms (metaNew=${metaAcquiredCustomers.size}, retargeted=${retargetedCustomers.size}, organic=${totalUpdated - metaAcquiredCustomers.size - retargetedCustomers.size})`);

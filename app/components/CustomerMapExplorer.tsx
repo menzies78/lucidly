@@ -21,32 +21,30 @@ import { Card, BlockStack, Text } from "@shopify/polaris";
 
 const AGE_BRACKETS = ["13-17", "18-24", "25-34", "35-44", "45-54", "55-64", "65+"];
 
-type Segment = "metaNew" | "metaRetargeted" | "organic";
+type SegCode = "m" | "r" | "o";
 type Scope = "metaAcquired" | "allMeta" | "all";
 type RecencyBand = "any" | "active" | "dormant" | "lapsed";
 type OrderBand = "any" | "1" | "2-3" | "4+";
 
+// Compact wire shape — keys are single letters to keep the JSON blob small.
+// Server side: app/services/customerRollups.server.js builds this.
 export interface MapPoint {
-  id: string;
-  lat: number;
-  lng: number;
-  seg: Segment;
-  gender: string | null;
-  age: string | null;
-  country: string | null;
-  countryCode: string | null;
-  city: string | null;
-  spent: number;
-  refunded: number;
-  net: number;
-  orders: number;
-  refundRate: number;
-  discountEver: boolean;
-  fullPrice: boolean;
-  daysSinceLast: number | null;
-  approx: boolean;
-  vipBand: 5 | 10 | 20 | null;
-  highestRefunds: boolean;
+  i: string;                       // customer id
+  la: number;                      // lat
+  lo: number;                      // lng
+  s: SegCode;                      // segment: m=metaNew, r=metaRetargeted, o=organic
+  g: "f" | "m" | null;             // gender: f=female, m=male
+  a: string | null;                // age bracket
+  c: string | null;                // ISO country code
+  t: string | null;                // city ("town")
+  $: number;                       // total revenue
+  r: number;                       // total refunded
+  n: number;                       // order count
+  d: number | null;                // days since last order
+  x: 0 | 1;                        // approx geocode (country centroid)
+  p: 0 | 1;                        // bought on discount ever
+  v: 0 | 5 | 10 | 20;              // VIP band (0 = none)
+  h: 0 | 1;                        // highest-refunds flag
 }
 
 export interface MapBlob {
@@ -55,6 +53,24 @@ export interface MapBlob {
   highestRefundThreshold: number;
   computedAt: string;
 }
+
+// Browser-side country code → display name. Falls back to the code itself
+// if Intl.DisplayNames is unavailable or the code is unknown.
+const countryDisplay: (code: string | null) => string | null = (() => {
+  if (typeof Intl === "undefined" || !(Intl as any).DisplayNames) {
+    return (code) => code;
+  }
+  let dn: any;
+  try {
+    dn = new (Intl as any).DisplayNames(["en"], { type: "region" });
+  } catch {
+    return (code) => code;
+  }
+  return (code) => {
+    if (!code) return null;
+    try { return dn.of(code) || code; } catch { return code; }
+  };
+})();
 
 interface Props {
   blob: MapBlob | null;
@@ -81,32 +97,32 @@ export default function CustomerMapExplorer({ blob, cs }: Props) {
   // pass. This keeps state stable across scope toggles.
   const isMetaAcquired = scope === "metaAcquired";
 
-  const segmentSet = useMemo<Set<Segment>>(() => {
-    if (scope === "metaAcquired") return new Set(["metaNew"]);
-    if (scope === "allMeta") return new Set(["metaNew", "metaRetargeted"]);
-    return new Set(["metaNew", "metaRetargeted", "organic"]);
+  const segmentSet = useMemo<Set<SegCode>>(() => {
+    if (scope === "metaAcquired") return new Set(["m"]);
+    if (scope === "allMeta") return new Set(["m", "r"]);
+    return new Set(["m", "r", "o"]);
   }, [scope]);
 
   const filtered = useMemo(() => {
     return points.filter((p) => {
-      if (!segmentSet.has(p.seg)) return false;
+      if (!segmentSet.has(p.s)) return false;
       if (isMetaAcquired) {
-        if (gender === "Female" && p.gender !== "female") return false;
-        if (gender === "Male" && p.gender !== "male") return false;
-        if (ages.length > 0 && (!p.age || !ages.includes(p.age))) return false;
+        if (gender === "Female" && p.g !== "f") return false;
+        if (gender === "Male" && p.g !== "m") return false;
+        if (ages.length > 0 && (!p.a || !ages.includes(p.a))) return false;
       }
-      if (country !== "All" && p.country !== country) return false;
-      if (vip === "top5" && p.vipBand !== 5) return false;
-      if (vip === "top10" && (p.vipBand !== 5 && p.vipBand !== 10)) return false;
-      if (vip === "top20" && p.vipBand == null) return false;
-      if (pricing === "discount" && !p.discountEver) return false;
-      if (pricing === "fullPrice" && !p.fullPrice) return false;
-      if (refundsTop && !p.highestRefunds) return false;
-      if (orderBand === "1" && p.orders !== 1) return false;
-      if (orderBand === "2-3" && (p.orders < 2 || p.orders > 3)) return false;
-      if (orderBand === "4+" && p.orders < 4) return false;
+      if (country !== "All" && p.c !== country) return false;
+      if (vip === "top5" && p.v !== 5) return false;
+      if (vip === "top10" && (p.v !== 5 && p.v !== 10)) return false;
+      if (vip === "top20" && p.v === 0) return false;
+      if (pricing === "discount" && p.p !== 1) return false;
+      if (pricing === "fullPrice" && p.p !== 0) return false;
+      if (refundsTop && p.h !== 1) return false;
+      if (orderBand === "1" && p.n !== 1) return false;
+      if (orderBand === "2-3" && (p.n < 2 || p.n > 3)) return false;
+      if (orderBand === "4+" && p.n < 4) return false;
       if (recency !== "any") {
-        const d = p.daysSinceLast;
+        const d = p.d;
         if (d == null) return false;
         if (recency === "active" && d > 90) return false;
         if (recency === "dormant" && (d <= 90 || d > 365)) return false;
@@ -117,13 +133,14 @@ export default function CustomerMapExplorer({ blob, cs }: Props) {
   }, [points, segmentSet, isMetaAcquired, gender, ages, country, vip, pricing, refundsTop, orderBand, recency]);
 
   // Country dropdown options + age availability come from the active
-  // segmentSet so the user can't pick a value with zero customers.
+  // segmentSet so the user can't pick a value with zero customers. Stored
+  // as ISO codes; we render the human-readable name via Intl.DisplayNames.
   const countryOptions = useMemo(() => {
     const counts: Record<string, number> = {};
     for (const p of points) {
-      if (!segmentSet.has(p.seg)) continue;
-      if (!p.country) continue;
-      counts[p.country] = (counts[p.country] || 0) + 1;
+      if (!segmentSet.has(p.s)) continue;
+      if (!p.c) continue;
+      counts[p.c] = (counts[p.c] || 0) + 1;
     }
     return Object.entries(counts).sort((a, b) => b[1] - a[1]).map(([c]) => c);
   }, [points, segmentSet]);
@@ -131,29 +148,29 @@ export default function CustomerMapExplorer({ blob, cs }: Props) {
   const availableAges = useMemo(() => {
     const set = new Set<string>();
     if (!isMetaAcquired) return set;
-    for (const p of points) if (p.age && segmentSet.has(p.seg)) set.add(p.age);
+    for (const p of points) if (p.a && segmentSet.has(p.s)) set.add(p.a);
     return set;
   }, [points, segmentSet, isMetaAcquired]);
 
   const totalCount = useMemo(() => {
     let c = 0;
-    for (const p of points) if (segmentSet.has(p.seg)) c++;
+    for (const p of points) if (segmentSet.has(p.s)) c++;
     return c;
   }, [points, segmentSet]);
 
   const countryCount = useMemo(() => {
     const set = new Set<string>();
-    for (const p of filtered) if (p.country) set.add(p.country);
+    for (const p of filtered) if (p.c) set.add(p.c);
     return set.size;
   }, [filtered]);
 
   const topCities = useMemo(() => {
     const agg: Record<string, { city: string; country: string | null; customers: number; revenue: number; lat: number; lng: number; }> = {};
     for (const p of filtered) {
-      const key = `${p.country}|${p.city || "(unknown)"}`;
-      if (!agg[key]) agg[key] = { city: p.city || "(unknown)", country: p.country, customers: 0, revenue: 0, lat: p.lat, lng: p.lng };
+      const key = `${p.c}|${p.t || "(unknown)"}`;
+      if (!agg[key]) agg[key] = { city: p.t || "(unknown)", country: countryDisplay(p.c), customers: 0, revenue: 0, lat: p.la, lng: p.lo };
       agg[key].customers += 1;
-      agg[key].revenue += p.net;
+      agg[key].revenue += (p.$ - p.r);
     }
     return Object.values(agg).sort((a, b) => b.customers - a.customers).slice(0, 15);
   }, [filtered]);
@@ -278,7 +295,7 @@ export default function CustomerMapExplorer({ blob, cs }: Props) {
               }}
             >
               <option value="All">All countries</option>
-              {countryOptions.map((c) => <option key={c} value={c}>{c}</option>)}
+              {countryOptions.map((c) => <option key={c} value={c}>{countryDisplay(c)}</option>)}
             </select>
           </div>
 
@@ -363,7 +380,7 @@ export default function CustomerMapExplorer({ blob, cs }: Props) {
           Showing <strong style={{ color: "#111827" }}>{filtered.length.toLocaleString()}</strong> of {totalCount.toLocaleString()} customers
           across <strong style={{ color: "#111827" }}>{countryCount}</strong> countr{countryCount === 1 ? "y" : "ies"}
           {filtered.length > 0 && (
-            <> · Avg net spend <strong style={{ color: "#111827" }}>{cs}{Math.round(filtered.reduce((s, p) => s + p.net, 0) / filtered.length).toLocaleString()}</strong></>
+            <> · Avg net spend <strong style={{ color: "#111827" }}>{cs}{Math.round(filtered.reduce((s, p) => s + (p.$ - p.r), 0) / filtered.length).toLocaleString()}</strong></>
           )}
         </div>
 
@@ -480,8 +497,8 @@ function ClusterLayer({ points, L, useMap, Supercluster, cs }: ClusterLayerProps
   useEffect(() => {
     const features = points.map((p) => ({
       type: "Feature" as const,
-      properties: { id: p.id, point: p },
-      geometry: { type: "Point" as const, coordinates: [p.lng, p.lat] },
+      properties: { id: p.i, point: p },
+      geometry: { type: "Point" as const, coordinates: [p.lo, p.la] },
     }));
     const idx = new Supercluster({ radius: 60, maxZoom: 16, minPoints: 2 });
     idx.load(features);
@@ -525,34 +542,38 @@ function ClusterLayer({ points, L, useMap, Supercluster, cs }: ClusterLayerProps
           group.addLayer(m);
         } else {
           const p = c.properties.point as MapPoint;
-          const isVip = p.vipBand != null;
+          const isVip = p.v !== 0;
           const radius = isVip ? 7 : 5;
-          const fill = isVip ? "#7C3AED" : p.discountEver ? "#F59E0B" : "#10B981";
+          const fill = isVip ? "#7C3AED" : p.p === 1 ? "#F59E0B" : "#10B981";
           const m = L.circleMarker([lat, lng], {
             radius,
             color: "#fff",
             weight: 1.5,
             fillColor: fill,
-            fillOpacity: p.approx ? 0.45 : 0.85,
+            fillOpacity: p.x === 1 ? 0.45 : 0.85,
           });
-          const refundLine = p.refunded > 0
-            ? `<div style="color:#DC2626;">Refunded: ${cs}${Math.round(p.refunded).toLocaleString()}</div>`
+          const net = p.$ - p.r;
+          const refundLine = p.r > 0
+            ? `<div style="color:#DC2626;">Refunded: ${cs}${Math.round(p.r).toLocaleString()}</div>`
             : "";
-          const ageGenderLine = p.gender || p.age
-            ? `<div style="color:#6B7280;">${[p.gender, p.age].filter(Boolean).join(" · ")}</div>`
+          const genderLabel = p.g === "f" ? "female" : p.g === "m" ? "male" : null;
+          const ageGenderLine = genderLabel || p.a
+            ? `<div style="color:#6B7280;">${[genderLabel, p.a].filter(Boolean).join(" · ")}</div>`
             : "";
+          const countryName = countryDisplay(p.c);
+          const segLabel = p.s === "m" ? "Meta acquired" : p.s === "r" ? "Meta retargeted" : "Organic";
           const popup = `
             <div style="font-size:12px;line-height:1.4;">
               <div style="font-weight:700;font-size:13px;margin-bottom:4px;">
-                ${p.city || "(unknown city)"}${p.country ? `, ${p.country}` : ""}
-                ${isVip ? `<span style="margin-left:6px;padding:1px 6px;border-radius:9999px;background:#F5F3FF;color:#7C3AED;font-size:10px;font-weight:700;">VIP top ${p.vipBand}%</span>` : ""}
+                ${p.t || "(unknown city)"}${countryName ? `, ${countryName}` : ""}
+                ${isVip ? `<span style="margin-left:6px;padding:1px 6px;border-radius:9999px;background:#F5F3FF;color:#7C3AED;font-size:10px;font-weight:700;">VIP top ${p.v}%</span>` : ""}
               </div>
-              <div style="color:#6B7280;text-transform:uppercase;font-size:10px;letter-spacing:0.5px;">${p.seg === "metaNew" ? "Meta acquired" : p.seg === "metaRetargeted" ? "Meta retargeted" : "Organic"}</div>
+              <div style="color:#6B7280;text-transform:uppercase;font-size:10px;letter-spacing:0.5px;">${segLabel}</div>
               ${ageGenderLine}
-              <div style="margin-top:4px;">Net: <strong>${cs}${Math.round(p.net).toLocaleString()}</strong> · Orders: ${p.orders}</div>
+              <div style="margin-top:4px;">Net: <strong>${cs}${Math.round(net).toLocaleString()}</strong> · Orders: ${p.n}</div>
               ${refundLine}
-              ${p.discountEver ? '<div style="color:#92400E;">Bought on discount</div>' : ""}
-              ${p.approx ? '<div style="color:#9CA3AF;font-style:italic;margin-top:2px;">Country centroid (no city detail)</div>' : ""}
+              ${p.p === 1 ? '<div style="color:#92400E;">Bought on discount</div>' : ""}
+              ${p.x === 1 ? '<div style="color:#9CA3AF;font-style:italic;margin-top:2px;">Country centroid (no city detail)</div>' : ""}
             </div>`;
           m.bindPopup(popup);
           group.addLayer(m);
