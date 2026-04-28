@@ -118,7 +118,15 @@ export default function CustomerMapExplorer({ blob, cs, protomapsKey = null }: P
   const [product, setProduct] = useState<string>("All");
   const [productSearch, setProductSearch] = useState<string>("");
 
-  const points = blob?.points || [];
+  // Normalise pr (product indices) on read so older blobs persisted before
+  // the productList rollout don't crash the filter passes. We mutate in
+  // place rather than .map+spread because a 30k-customer merchant would
+  // pay 30k allocations otherwise.
+  const points = useMemo(() => {
+    const raw: MapPoint[] = blob?.points || [];
+    for (const p of raw) { if (!p.pr) p.pr = []; }
+    return raw;
+  }, [blob]);
   const productList = blob?.productList || [];
   const gems = blob?.gems || [];
 
