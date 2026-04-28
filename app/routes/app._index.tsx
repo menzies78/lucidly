@@ -24,6 +24,12 @@ export const loader = async ({ request }) => {
   const { fromDate, toDate, fromKey, toKey } = parseDateRange(request, tz);
   const dateFilter = { gte: fromDate, lte: toDate };
 
+  // 30 days ago for health charts (always, independent of date picker)
+  const now = new Date();
+  const thirtyDaysAgo = new Date(now.getTime() - 30 * 86400000);
+  const sevenDaysAgo = new Date(now.getTime() - 7 * 86400000);
+  const oneDayAgo = new Date(now.getTime() - 24 * 3600000);
+
   // Parallel batch 1: all independent DB queries
   const [
     orderCount,
@@ -35,6 +41,10 @@ export const loader = async ({ request }) => {
     orderIdsInRange,
     allAttrs,
     utmOnlyOrders,
+    // Health-specific queries
+    dailyRollups30d,
+    recentlyStoppedCampaigns,
+    activeCampaignCount,
   ] = await Promise.all([
     db.order.count({ where: { shopDomain, createdAt: dateFilter } }),
     db.order.findMany({
@@ -44,7 +54,6 @@ export const loader = async ({ request }) => {
     }),
     db.order.count({ where: { shopDomain, isNewCustomerOrder: true, createdAt: dateFilter } }),
     db.order.count({ where: { shopDomain, isNewCustomerOrder: false, createdAt: dateFilter } }),
-    // Use DailyAdRollup (~1k rows) instead of MetaInsight (~28k+ hourly rows)
     db.dailyAdRollup.aggregate({ where: { shopDomain, date: dateFilter }, _sum: { spend: true } }),
     db.order.aggregate({
       where: { shopDomain, createdAt: dateFilter },
@@ -54,8 +63,6 @@ export const loader = async ({ request }) => {
       where: { shopDomain, createdAt: dateFilter },
       select: { shopifyOrderId: true },
     }),
-    // Date-scoped: matchedAt with 7-day buffer (catches late-matched orders)
-    // + placeholders (confidence=0) filtered later by date in shopifyOrderId
     (async () => {
       const bufferStart = new Date(fromDate.getTime() - 7 * 86400000);
       const bufferEnd = new Date(toDate.getTime() + 7 * 86400000);
@@ -74,6 +81,29 @@ export const loader = async ({ request }) => {
       where: { shopDomain, utmConfirmedMeta: true, isOnlineStore: true, createdAt: dateFilter },
       select: { shopifyOrderId: true, frozenTotalPrice: true, totalRefunded: true },
     }),
+    // Daily match accuracy for last 30 days — group DailyAdRollup by date
+    db.dailyAdRollup.groupBy({
+      by: ["date"],
+      where: { shopDomain, date: { gte: thirtyDaysAgo } },
+      _sum: { attributedOrders: true, metaConversions: true, spend: true },
+      orderBy: { date: "asc" },
+    }),
+    // Campaigns that stopped delivering in last 7 days
+    db.metaEntity.findMany({
+      where: {
+        shopDomain,
+        entityType: "campaign",
+        currentStatus: { in: ["PAUSED", "ARCHIVED", "DELETED"] },
+        effectiveEndAt: { gte: sevenDaysAgo },
+      },
+      select: { entityName: true, currentStatus: true, effectiveEndAt: true },
+      orderBy: { effectiveEndAt: "desc" },
+      take: 10,
+    }),
+    // Active campaign count
+    db.metaEntity.count({
+      where: { shopDomain, entityType: "campaign", currentStatus: "ACTIVE" },
+    }),
   ]);
 
   // Count distinct customers who placed orders in this date range
@@ -88,7 +118,6 @@ export const loader = async ({ request }) => {
   const toStr = toKey;
   const attrsInRange = allAttrs.filter(a => {
     if (a.confidence > 0) return orderIdSet.has(a.shopifyOrderId);
-    // Unmatched: parse date from shopifyOrderId (format: unmatched_adId_YYYY-MM-DD_hour)
     const match = a.shopifyOrderId.match(/(\d{4}-\d{2}-\d{2})/);
     if (!match) return false;
     return match[1] >= fromStr && match[1] <= toStr;
@@ -102,7 +131,7 @@ export const loader = async ({ request }) => {
   const avgConfidence = matched.length > 0
     ? Math.round(matched.reduce((s, a) => s + a.confidence, 0) / matched.length) : 0;
 
-  // Net Meta revenue: sum frozenTotalPrice for matched attributed orders
+  // Net Meta revenue
   const matchedOrderIds = matched.map(a => a.shopifyOrderId);
   const matchedOrders = matchedOrderIds.length > 0
     ? await db.order.findMany({
@@ -113,22 +142,53 @@ export const loader = async ({ request }) => {
   const matchedMetaRevenue = matchedOrders.reduce((s, o) =>
     s + (o.frozenTotalPrice || 0) - (o.totalRefunded || 0), 0);
 
-  // UTM-only Meta orders: utmConfirmedMeta=true but not matched by Layer 2
   const matchedOrderIdSet = new Set(matchedOrderIds);
   const utmOnlyNotMatched = utmOnlyOrders.filter(o => !matchedOrderIdSet.has(o.shopifyOrderId));
   const utmOnlyCount = utmOnlyNotMatched.length;
   const utmOnlyRevenue = utmOnlyNotMatched.reduce((s, o) =>
     s + (o.frozenTotalPrice || 0) - (o.totalRefunded || 0), 0);
   const utmAndLucidlyCount = utmOnlyOrders.length - utmOnlyCount;
-
-  // Combined Net Meta Revenue = matched attribution + UTM-only orders.
-  // Both represent Meta-attributed revenue; UTM-only lacks Layer 2 ad-level
-  // granularity but is still Meta traffic per the UTM / Elevar signal.
-  // Matches the treatment used across Campaigns, Customers, Products, Weekly.
   const netMetaRevenue = matchedMetaRevenue + utmOnlyRevenue;
   const currencySymbol = currencySymbolFromCode(shop?.shopifyCurrency);
 
   const isNewInstall = !shop?.lastOrderSync && orderCount === 0;
+
+  // Build 30-day match accuracy chart data
+  const matchAccuracyChart = dailyRollups30d.map(d => {
+    const attributed = d._sum.attributedOrders || 0;
+    const metaConv = d._sum.metaConversions || 0;
+    const rate = metaConv > 0 ? Math.round((attributed / metaConv) * 100) : null;
+    return {
+      date: d.date.toISOString().slice(0, 10),
+      matchRate: rate,
+      attributedOrders: attributed,
+      metaConversions: metaConv,
+      spend: d._sum.spend || 0,
+    };
+  });
+
+  // Last 24h match accuracy
+  const oneDayAgoStr = oneDayAgo.toISOString().slice(0, 10);
+  const recent = matchAccuracyChart.filter(d => d.date >= oneDayAgoStr);
+  const recentAttributed = recent.reduce((s, d) => s + d.attributedOrders, 0);
+  const recentMetaConv = recent.reduce((s, d) => s + d.metaConversions, 0);
+  const matchRate24h = recentMetaConv > 0 ? Math.round((recentAttributed / recentMetaConv) * 100) : null;
+
+  // UTM health from shop record
+  const utmHealth = {
+    total: shop?.utmAdsTotal || 0,
+    withTags: shop?.utmAdsWithTags || 0,
+    missing: shop?.utmAdsMissing || 0,
+    lastAudit: shop?.utmLastAudit || null,
+    coveragePct: (shop?.utmAdsTotal || 0) > 0
+      ? Math.round(((shop?.utmAdsWithTags || 0) / (shop?.utmAdsTotal || 1)) * 100) : null,
+  };
+
+  // Sync freshness
+  const syncFreshness = {
+    orderSyncAgo: shop?.lastOrderSync ? Math.round((now.getTime() - new Date(shop.lastOrderSync).getTime()) / 60000) : null,
+    metaSyncAgo: shop?.lastMetaSync ? Math.round((now.getTime() - new Date(shop.lastMetaSync).getTime()) / 60000) : null,
+  };
 
   // Check if any background task is currently running for this shop
   const taskNames = ["syncOrders", "syncMeta", "syncMetaHistorical", "runAttribution", "dateRangeRematch", "fillGaps", "incrementalSync", "startOngoingSync", "calibratePixel", "inferGender", "backfillFirstNames"];
@@ -157,6 +217,17 @@ export const loader = async ({ request }) => {
       samples: shop?.metaValueCalibrationSamples || 0,
       results: shop?.metaValueCalibrationResults ? (() => { try { return JSON.parse(shop.metaValueCalibrationResults); } catch { return null; } })() : null,
     },
+    // Health-specific data
+    matchAccuracyChart,
+    matchRate24h,
+    utmHealth,
+    syncFreshness,
+    recentlyStoppedCampaigns: recentlyStoppedCampaigns.map(c => ({
+      name: c.entityName,
+      status: c.currentStatus,
+      stoppedAt: c.effectiveEndAt?.toISOString() || null,
+    })),
+    activeCampaignCount,
   });
 };
 
@@ -183,14 +254,12 @@ export const action = async ({ request }) => {
   }
   if (actionType === "syncMeta") {
     runInBackground(async () => {
-      // syncMetaAll handles all 3 steps: insights + breakdowns + entity sync
       await syncMetaAll(shopDomain);
     });
     return json({ started: true, task: "syncMeta" });
   }
   if (actionType === "syncMetaHistorical") {
     runInBackground(async () => {
-      // syncMetaAll handles all 3 steps: insights + breakdowns + entity sync
       await syncMetaAll(shopDomain, 730, taskId);
       const { linkUtmToCampaigns } = await import("../services/utmLinkage.server");
       await linkUtmToCampaigns(shopDomain);
@@ -200,7 +269,6 @@ export const action = async ({ request }) => {
   if (actionType === "runAttribution") {
     runInBackground(async () => {
       await runAttribution(shopDomain);
-      // Also link UTMs to campaigns after matching
       const { linkUtmToCampaigns } = await import("../services/utmLinkage.server");
       await linkUtmToCampaigns(shopDomain);
     });
@@ -218,7 +286,6 @@ export const action = async ({ request }) => {
     return json({ started: true, task: "fillGaps" });
   }
   if (actionType === "startOngoingSync") {
-    // Mark onboarding complete, calibrate the pixel, then trigger first incremental sync
     await db.shop.update({ where: { shopDomain }, data: { onboardingCompleted: true } });
     runInBackground(async () => {
       try {
@@ -262,12 +329,195 @@ export const action = async ({ request }) => {
     runInBackground(async () => {
       const { backfillCustomerFirstNames } = await import("../services/orderSync.server.js");
       await backfillCustomerFirstNames(admin, shopDomain);
-      // backfillCustomerFirstNames calls completeProgress itself
     });
     return json({ started: true, task: "backfillFirstNames" });
   }
   return json({ success: false });
 };
+
+// ═══════════════════════════════════════════════════════════════
+// Match Accuracy Line Chart — hand-rolled SVG, 30 days
+// ═══════════════════════════════════════════════════════════════
+
+function MatchAccuracyChart({ data, accent }: { data: { date: string; matchRate: number | null; attributedOrders: number; metaConversions: number }[]; accent: string }) {
+  const [hoverIdx, setHoverIdx] = useState<number | null>(null);
+
+  // Filter to days with data
+  const points = data.filter(d => d.matchRate !== null);
+  if (points.length < 2) {
+    return (
+      <div style={{ padding: "20px", textAlign: "center", color: "#6B7280" }}>
+        Not enough data for chart (need at least 2 days)
+      </div>
+    );
+  }
+
+  const W = 600;
+  const H = 180;
+  const padL = 40;
+  const padR = 16;
+  const padT = 16;
+  const padB = 32;
+  const chartW = W - padL - padR;
+  const chartH = H - padT - padB;
+
+  // Y-axis: 0-100%
+  const yMin = 0;
+  const yMax = 100;
+  const xStep = chartW / (points.length - 1);
+
+  const toX = (i: number) => padL + i * xStep;
+  const toY = (v: number) => padT + chartH - ((v - yMin) / (yMax - yMin)) * chartH;
+
+  // Build line path
+  const linePath = points.map((p, i) => `${i === 0 ? "M" : "L"} ${toX(i).toFixed(1)} ${toY(p.matchRate!).toFixed(1)}`).join(" ");
+  // Area fill
+  const areaPath = `${linePath} L ${toX(points.length - 1).toFixed(1)} ${toY(0).toFixed(1)} L ${toX(0).toFixed(1)} ${toY(0).toFixed(1)} Z`;
+
+  // 90% reference line
+  const refY = toY(90);
+
+  // X-axis labels: show ~5 evenly spaced dates
+  const labelCount = Math.min(5, points.length);
+  const labelStep = Math.max(1, Math.floor((points.length - 1) / (labelCount - 1)));
+  const xLabels: { i: number; label: string }[] = [];
+  for (let i = 0; i < points.length; i += labelStep) {
+    const d = points[i].date;
+    xLabels.push({ i, label: d.slice(5) }); // MM-DD
+  }
+  // Always include last point
+  if (xLabels[xLabels.length - 1]?.i !== points.length - 1) {
+    xLabels.push({ i: points.length - 1, label: points[points.length - 1].date.slice(5) });
+  }
+
+  return (
+    <div style={{ position: "relative" }}>
+      <svg
+        width="100%"
+        height={H}
+        viewBox={`0 0 ${W} ${H}`}
+        preserveAspectRatio="xMidYMid meet"
+        style={{ display: "block" }}
+      >
+        {/* Grid lines */}
+        {[0, 25, 50, 75, 100].map(v => (
+          <g key={v}>
+            <line x1={padL} y1={toY(v)} x2={W - padR} y2={toY(v)} stroke="#E5E7EB" strokeWidth={v === 0 ? 1 : 0.5} />
+            <text x={padL - 6} y={toY(v) + 4} textAnchor="end" fontSize="10" fill="#9CA3AF">{v}%</text>
+          </g>
+        ))}
+
+        {/* 90% target reference line */}
+        <line x1={padL} y1={refY} x2={W - padR} y2={refY} stroke="#10B981" strokeWidth={1} strokeDasharray="4 3" opacity={0.6} />
+        <text x={W - padR + 2} y={refY + 3} fontSize="9" fill="#10B981" fontWeight="600">target</text>
+
+        {/* Area fill */}
+        <path d={areaPath} fill={accent} opacity={0.08} />
+
+        {/* Line */}
+        <path d={linePath} fill="none" stroke={accent} strokeWidth={2} strokeLinejoin="round" />
+
+        {/* Data points */}
+        {points.map((p, i) => (
+          <circle
+            key={i}
+            cx={toX(i)}
+            cy={toY(p.matchRate!)}
+            r={hoverIdx === i ? 5 : 3}
+            fill={p.matchRate! >= 90 ? "#10B981" : p.matchRate! >= 70 ? "#F59E0B" : "#EF4444"}
+            stroke="#fff"
+            strokeWidth={1.5}
+            style={{ cursor: "pointer", transition: "r 0.1s" }}
+            onMouseEnter={() => setHoverIdx(i)}
+            onMouseLeave={() => setHoverIdx(null)}
+          />
+        ))}
+
+        {/* X-axis labels */}
+        {xLabels.map(({ i, label }) => (
+          <text key={i} x={toX(i)} y={H - 4} textAnchor="middle" fontSize="10" fill="#9CA3AF">{label}</text>
+        ))}
+      </svg>
+
+      {/* Hover tooltip */}
+      {hoverIdx !== null && points[hoverIdx] && (
+        <div
+          style={{
+            position: "absolute",
+            left: `${(toX(hoverIdx) / W) * 100}%`,
+            top: `${toY(points[hoverIdx].matchRate!) - 8}px`,
+            transform: "translate(-50%, -100%)",
+            background: "#1F2937",
+            color: "#fff",
+            padding: "6px 10px",
+            borderRadius: "6px",
+            fontSize: "12px",
+            lineHeight: "1.4",
+            whiteSpace: "nowrap",
+            pointerEvents: "none",
+            zIndex: 10,
+          }}
+        >
+          <div style={{ fontWeight: 700 }}>{points[hoverIdx].date}</div>
+          <div>Match rate: {points[hoverIdx].matchRate}%</div>
+          <div>{points[hoverIdx].attributedOrders} matched / {points[hoverIdx].metaConversions} conversions</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Status Pill
+// ═══════════════════════════════════════════════════════════════
+
+function StatusPill({ label, ok, warning, detail }: { label: string; ok: boolean; warning?: boolean; detail?: string }) {
+  const bg = ok ? "#ECFDF5" : warning ? "#FFFBEB" : "#FEF2F2";
+  const border = ok ? "#10B981" : warning ? "#F59E0B" : "#EF4444";
+  const color = ok ? "#065F46" : warning ? "#92400E" : "#991B1B";
+  const icon = ok ? "\u2713" : warning ? "!" : "\u2717";
+
+  return (
+    <div style={{
+      display: "inline-flex", alignItems: "center", gap: "6px",
+      padding: "6px 14px", borderRadius: "20px",
+      background: bg, border: `1px solid ${border}33`,
+      fontSize: "13px", fontWeight: 600, color,
+    }}>
+      <span style={{
+        display: "inline-flex", alignItems: "center", justifyContent: "center",
+        width: "18px", height: "18px", borderRadius: "50%",
+        background: border, color: "#fff", fontSize: "11px", fontWeight: 700,
+      }}>{icon}</span>
+      {label}
+      {detail && <span style={{ fontWeight: 400, fontSize: "12px", opacity: 0.8 }}>{detail}</span>}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Format minutes to human-readable string
+// ═══════════════════════════════════════════════════════════════
+
+function formatMinutes(mins: number | null): string {
+  if (mins === null) return "never";
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  if (mins < 1440) return `${Math.round(mins / 60)}h ago`;
+  return `${Math.round(mins / 1440)}d ago`;
+}
+
+function daysAgo(isoDate: string | null): string {
+  if (!isoDate) return "";
+  const diff = Math.round((Date.now() - new Date(isoDate).getTime()) / 86400000);
+  if (diff === 0) return "today";
+  if (diff === 1) return "yesterday";
+  return `${diff}d ago`;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Page Component
+// ═══════════════════════════════════════════════════════════════
 
 export default function Index() {
   const {
@@ -277,6 +527,8 @@ export default function Index() {
     currencySymbol, isNewInstall, activeTaskFromServer,
     utmOnlyCount, utmOnlyRevenue, utmAndLucidlyCount, onboardingCompleted,
     webhooksRegisteredAt, webhooksFirstFiredAt, pixelCalibration,
+    matchAccuracyChart, matchRate24h, utmHealth, syncFreshness,
+    recentlyStoppedCampaigns, activeCampaignCount,
   } = useLoaderData();
   const submit = useSubmit();
   const navigate = useNavigate();
@@ -305,7 +557,6 @@ export default function Index() {
     }
   }, []);
 
-  // When Remix finishes the form submission (action returned), start polling
   const pendingTaskRef = useRef(null);
 
   const startTask = useCallback((actionName, extraData = {}) => {
@@ -315,7 +566,6 @@ export default function Index() {
     submit({ action: actionName, ...extraData }, { method: "post" });
   }, [submit]);
 
-  // Watch for navigation to complete (action returned) → start polling
   useEffect(() => {
     if (navigation.state === "idle" && pendingTaskRef.current) {
       const taskName = pendingTaskRef.current;
@@ -339,9 +589,6 @@ export default function Index() {
               setTimeout(() => setProgressState(null), 8000);
             }
           } else {
-            // Server returned no progress — the task either finished (its
-            // "complete" row was cleared) or the process restarted. Either
-            // way, stop polling so the UI doesn't hammer the endpoint forever.
             stopPolling();
             setActiveTask(null);
             setProgressState(null);
@@ -356,7 +603,6 @@ export default function Index() {
     }
   }, [navigation.state, stopPolling, revalidate]);
 
-  // Resume polling if a task was already running when we loaded the page
   const resumedRef = useRef(false);
   useEffect(() => {
     if (activeTaskFromServer && !resumedRef.current && !activeTask) {
@@ -383,9 +629,6 @@ export default function Index() {
               setTimeout(() => setProgressState(null), 8000);
             }
           } else {
-            // Server has no record of this task — most likely the process
-            // restarted while we were resuming. Stop polling instead of
-            // hammering the endpoint every 2s forever.
             stopPolling();
             setActiveTask(null);
             setProgressState(null);
@@ -398,7 +641,6 @@ export default function Index() {
     }
   }, [activeTaskFromServer]);
 
-  // Cleanup on unmount
   useEffect(() => stopPolling, [stopPolling]);
 
   const isRunning = !!activeTask;
@@ -409,64 +651,216 @@ export default function Index() {
   const progressPct = progress?.total
     ? Math.round((progress.current / progress.total) * 100) : null;
 
+  // Sync freshness status
+  const syncOk = syncFreshness.metaSyncAgo !== null && syncFreshness.metaSyncAgo < 180; // < 3 hours
+  const syncWarning = syncFreshness.metaSyncAgo !== null && syncFreshness.metaSyncAgo < 1440; // < 24 hours
+
   return (
-    <Page title="Dashboard" fullWidth>
+    <Page title="Health" fullWidth>
       <ReportTabs>
       <BlockStack gap="500">
-        <Banner tone="info"><p>Connected to <strong>{shopDomain}</strong></p></Banner>
 
+        {/* ═══ Status Pills ═══ */}
+        <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
+          <StatusPill label="Shopify" ok={orderCount > 0} detail={orderCount > 0 ? `${orderCount.toLocaleString()} orders` : "no orders"} />
+          <StatusPill label="Meta" ok={metaConnected} warning={!metaConnected} detail={metaConnected ? metaAdAccountId : "not connected"} />
+          <StatusPill
+            label="Webhooks"
+            ok={!!webhooksFirstFiredAt}
+            warning={!!webhooksRegisteredAt && !webhooksFirstFiredAt}
+            detail={webhooksFirstFiredAt ? "active" : webhooksRegisteredAt ? "pending" : "not registered"}
+          />
+          <StatusPill
+            label="Last Sync"
+            ok={syncOk}
+            warning={!syncOk && syncWarning}
+            detail={formatMinutes(syncFreshness.metaSyncAgo)}
+          />
+          <StatusPill
+            label="Pixel"
+            ok={!!pixelCalibration?.results?.winner}
+            warning={!!pixelCalibration?.calibratedAt && !pixelCalibration?.results?.winner}
+            detail={
+              pixelCalibration?.results?.winner
+                ? `${pixelCalibration.results.winner} (\u00B1${(pixelCalibration.results.winnerDeviation * 100).toFixed(1)}%)`
+                : pixelCalibration?.calibratedAt ? "insufficient data" : "not calibrated"
+            }
+          />
+        </div>
+
+        {/* ═══ Match Accuracy + UTM Health ═══ */}
         <Layout>
           <Layout.Section variant="oneHalf">
-            <Card><BlockStack gap="200">
-              <Text as="h2" variant="headingLg">Shopify</Text>
-              <Banner tone="success">
-                <p>Connected — {orderCount.toLocaleString()} orders</p>
-              </Banner>
-              {webhooksFirstFiredAt ? (
-                <Banner tone="success"><p>Webhooks — active</p></Banner>
-              ) : webhooksRegisteredAt ? (
-                <Banner tone="warning"><p>Webhooks — pending (awaiting first order)</p></Banner>
-              ) : (
-                <Banner tone="critical"><p>Webhooks — not registered</p></Banner>
-              )}
-              {pixelCalibration?.results?.winner ? (
-                <Banner tone="success">
-                  <p>
-                    Pixel — calibrated, reports <strong>{pixelCalibration.results.winner}</strong>
-                    {" (±"}{(pixelCalibration.results.winnerDeviation * 100).toFixed(2)}{"%, "}
-                    {pixelCalibration.results.sampleSize} samples, {pixelCalibration.results.quality})
-                  </p>
-                </Banner>
-              ) : pixelCalibration?.calibratedAt ? (
-                <Banner tone="warning"><p>Pixel — insufficient data ({pixelCalibration.samples} pairs)</p></Banner>
-              ) : (
-                <Banner tone="warning"><p>Pixel — not yet calibrated</p></Banner>
-              )}
-            </BlockStack></Card>
+            <Card>
+              <BlockStack gap="300">
+                <InlineStack align="space-between" blockAlign="center">
+                  <Text as="h2" variant="headingLg">Match Accuracy</Text>
+                  {matchRate24h !== null && (
+                    <div style={{
+                      fontSize: "28px", fontWeight: 800, letterSpacing: "-0.02em",
+                      color: matchRate24h >= 90 ? "#059669" : matchRate24h >= 70 ? "#D97706" : "#DC2626",
+                    }}>
+                      {matchRate24h}%
+                      <span style={{ fontSize: "13px", fontWeight: 500, color: "#6B7280", marginLeft: "6px" }}>last 24h</span>
+                    </div>
+                  )}
+                </InlineStack>
+                {matchRate24h === null && (
+                  <Text as="p" variant="bodySm" tone="subdued">No conversion data in the last 24 hours</Text>
+                )}
+                <MatchAccuracyChart data={matchAccuracyChart} accent="#5C6AC4" />
+                <Text as="p" variant="bodySm" tone="subdued">
+                  Matched Shopify orders / Meta-reported conversions. Green dashed line = 90% target.
+                </Text>
+              </BlockStack>
+            </Card>
           </Layout.Section>
           <Layout.Section variant="oneHalf">
-            <Card><BlockStack gap="200">
-              <Text as="h2" variant="headingLg">Meta Ads</Text>
-              {metaConnected ? (
-                <>
-                  <Banner tone="success"><p>Connected — {metaAdAccountId}</p></Banner>
-                  <Banner tone="success">
-                    <p>
-                      Last sync — {lastMetaSync ? new Date(lastMetaSync).toLocaleString() : "never"}
-                    </p>
-                  </Banner>
-                  <Banner tone="success">
-                    <p>Attribution — {attribution.total.toLocaleString()} matches ({attribution.avgConfidence}% avg confidence)</p>
-                  </Banner>
-                </>
-              ) : (
-                <Banner tone="warning"><p>Not connected</p></Banner>
-              )}
-            </BlockStack></Card>
+            <Card>
+              <BlockStack gap="300">
+                <InlineStack align="space-between" blockAlign="center">
+                  <Text as="h2" variant="headingLg">UTM Health</Text>
+                  {utmHealth.coveragePct !== null && (
+                    <div style={{
+                      fontSize: "28px", fontWeight: 800, letterSpacing: "-0.02em",
+                      color: utmHealth.coveragePct >= 90 ? "#059669" : utmHealth.coveragePct >= 70 ? "#D97706" : "#DC2626",
+                    }}>
+                      {utmHealth.coveragePct}%
+                      <span style={{ fontSize: "13px", fontWeight: 500, color: "#6B7280", marginLeft: "6px" }}>coverage</span>
+                    </div>
+                  )}
+                </InlineStack>
+
+                {utmHealth.total > 0 ? (
+                  <BlockStack gap="200">
+                    <div style={{ display: "flex", gap: "16px", flexWrap: "wrap" }}>
+                      <div style={{ flex: 1, minWidth: "120px", padding: "12px 16px", borderRadius: "8px", background: "#ECFDF5", textAlign: "center" }}>
+                        <div style={{ fontSize: "22px", fontWeight: 700, color: "#065F46" }}>{utmHealth.withTags}</div>
+                        <div style={{ fontSize: "12px", color: "#6B7280" }}>with UTMs</div>
+                      </div>
+                      <div style={{ flex: 1, minWidth: "120px", padding: "12px 16px", borderRadius: "8px", background: utmHealth.missing > 0 ? "#FEF2F2" : "#F9FAFB", textAlign: "center" }}>
+                        <div style={{ fontSize: "22px", fontWeight: 700, color: utmHealth.missing > 0 ? "#991B1B" : "#374151" }}>{utmHealth.missing}</div>
+                        <div style={{ fontSize: "12px", color: "#6B7280" }}>missing UTMs</div>
+                      </div>
+                    </div>
+                    {utmHealth.lastAudit && (
+                      <Text as="p" variant="bodySm" tone="subdued">
+                        Last audit: {new Date(utmHealth.lastAudit).toLocaleDateString()} ({utmHealth.total} ads scanned)
+                      </Text>
+                    )}
+                  </BlockStack>
+                ) : (
+                  <Text as="p" variant="bodySm" tone="subdued">No UTM audit run yet</Text>
+                )}
+
+                <Button onClick={() => navigate(`/app/utm${dateQuery()}`)}>
+                  Open UTM Manager
+                </Button>
+              </BlockStack>
+            </Card>
           </Layout.Section>
         </Layout>
 
-        {/* Onboarding steps 3-5 */}
+        {/* ═══ Campaign Alerts + Data Quality ═══ */}
+        <Layout>
+          <Layout.Section variant="oneHalf">
+            <Card>
+              <BlockStack gap="300">
+                <InlineStack align="space-between" blockAlign="center">
+                  <Text as="h2" variant="headingLg">Campaign Alerts</Text>
+                  <div style={{
+                    fontSize: "13px", fontWeight: 600, padding: "4px 12px",
+                    borderRadius: "12px", background: "#EFF6FF", color: "#1D4ED8",
+                  }}>
+                    {activeCampaignCount} active
+                  </div>
+                </InlineStack>
+
+                {recentlyStoppedCampaigns.length > 0 ? (
+                  <BlockStack gap="100">
+                    <Text as="p" variant="bodySm" tone="subdued">
+                      Campaigns that stopped delivering in the last 7 days:
+                    </Text>
+                    {recentlyStoppedCampaigns.map((c, i) => (
+                      <div key={i} style={{
+                        display: "flex", justifyContent: "space-between", alignItems: "center",
+                        padding: "8px 12px", borderRadius: "6px", background: "#FEF2F2",
+                        fontSize: "13px",
+                      }}>
+                        <span style={{ fontWeight: 600, color: "#374151" }}>
+                          {c.name || "Unnamed campaign"}
+                        </span>
+                        <span style={{ color: "#6B7280", fontSize: "12px" }}>
+                          {c.status.toLowerCase()} {daysAgo(c.stoppedAt)}
+                        </span>
+                      </div>
+                    ))}
+                  </BlockStack>
+                ) : (
+                  <div style={{
+                    padding: "20px", textAlign: "center", borderRadius: "8px",
+                    background: "#ECFDF5", color: "#065F46", fontSize: "14px", fontWeight: 500,
+                  }}>
+                    No campaigns stopped in the last 7 days
+                  </div>
+                )}
+
+                <Button onClick={() => navigate(`/app/campaigns${dateQuery()}`)}>
+                  View All Campaigns
+                </Button>
+              </BlockStack>
+            </Card>
+          </Layout.Section>
+          <Layout.Section variant="oneHalf">
+            <Card>
+              <BlockStack gap="300">
+                <Text as="h2" variant="headingLg">Data Quality</Text>
+                <div style={{ display: "flex", gap: "12px", flexWrap: "wrap" }}>
+                  <div style={{ flex: 1, minWidth: "120px", padding: "12px 16px", borderRadius: "8px", background: "#F0F1FF", textAlign: "center" }}>
+                    <div style={{ fontSize: "22px", fontWeight: 700, color: "#4650A8" }}>
+                      {attribution.avgConfidence}%
+                    </div>
+                    <div style={{ fontSize: "12px", color: "#6B7280" }}>avg confidence</div>
+                  </div>
+                  <div style={{ flex: 1, minWidth: "120px", padding: "12px 16px", borderRadius: "8px", background: "#F0F1FF", textAlign: "center" }}>
+                    <div style={{ fontSize: "22px", fontWeight: 700, color: "#4650A8" }}>
+                      {matchedPct}%
+                    </div>
+                    <div style={{ fontSize: "12px", color: "#6B7280" }}>matched</div>
+                  </div>
+                  <div style={{ flex: 1, minWidth: "120px", padding: "12px 16px", borderRadius: "8px", background: attribution.unmatched > 0 ? "#FFFBEB" : "#F9FAFB", textAlign: "center" }}>
+                    <div style={{ fontSize: "22px", fontWeight: 700, color: attribution.unmatched > 0 ? "#92400E" : "#374151" }}>
+                      {currencySymbol}{Math.round(attribution.unmatchedRevenue).toLocaleString()}
+                    </div>
+                    <div style={{ fontSize: "12px", color: "#6B7280" }}>unmatched revenue</div>
+                  </div>
+                </div>
+
+                <div style={{ display: "flex", gap: "12px", flexWrap: "wrap" }}>
+                  <div style={{ flex: 1, minWidth: "140px", padding: "12px 16px", borderRadius: "8px", background: "#F9FAFB", textAlign: "center" }}>
+                    <div style={{ fontSize: "18px", fontWeight: 700, color: "#374151" }}>
+                      {attribution.matched.toLocaleString()}
+                    </div>
+                    <div style={{ fontSize: "12px", color: "#6B7280" }}>matched attributions</div>
+                  </div>
+                  <div style={{ flex: 1, minWidth: "140px", padding: "12px 16px", borderRadius: "8px", background: "#F9FAFB", textAlign: "center" }}>
+                    <div style={{ fontSize: "18px", fontWeight: 700, color: "#374151" }}>
+                      {attribution.unmatched.toLocaleString()}
+                    </div>
+                    <div style={{ fontSize: "12px", color: "#6B7280" }}>unmatched</div>
+                  </div>
+                </div>
+
+                <Text as="p" variant="bodySm" tone="subdued">
+                  Unmatched revenue = Meta-reported conversions we couldn't verify against a Shopify order
+                  (typically caused by order edits, refunds, or currency adjustments after purchase).
+                </Text>
+              </BlockStack>
+            </Card>
+          </Layout.Section>
+        </Layout>
+
+        {/* ═══ Onboarding steps (only if not completed) ═══ */}
         {!onboardingCompleted && (
           <Card>
             <BlockStack gap="300">
@@ -477,7 +871,7 @@ export default function Index() {
                     1. Sync Shopify Orders
                   </Button>
                   <Text as="p" variant="bodySm" tone="subdued">
-                    {lastSync ? `✓ ${orderCount.toLocaleString()} orders imported` : "Import 2 years of order history"}
+                    {lastSync ? `\u2713 ${orderCount.toLocaleString()} orders imported` : "Import 2 years of order history"}
                   </Text>
                 </BlockStack>
 
@@ -487,7 +881,7 @@ export default function Index() {
                     onClick={() => navigate("/app/meta-connect")}
                     disabled={isRunning}
                   >
-                    {metaConnected ? "2. Connect Meta Ads ✓" : "2. Connect Meta Ads"}
+                    {metaConnected ? "2. Connect Meta Ads \u2713" : "2. Connect Meta Ads"}
                   </Button>
                   <Text as="p" variant="bodySm" tone="subdued">
                     {metaConnected ? `Connected: ${metaAdAccountId}` : "Link your Meta ad account"}
@@ -501,7 +895,7 @@ export default function Index() {
                     disabled={isRunning || !metaConnected}
                     loading={activeTask === "syncMetaHistorical"}
                   >
-                    {lastMetaSync ? "3. Sync Meta Ads Data ✓" : "3. Sync Meta Ads Data"}
+                    {lastMetaSync ? "3. Sync Meta Ads Data \u2713" : "3. Sync Meta Ads Data"}
                   </Button>
                   <Text as="p" variant="bodySm" tone="subdued">
                     {lastMetaSync ? `Last: ${new Date(lastMetaSync).toLocaleString()}` : "2 years of ad performance data"}
@@ -515,7 +909,7 @@ export default function Index() {
                     disabled={isRunning || !metaConnected || orderCount === 0 || !lastMetaSync}
                     loading={activeTask === "runAttribution"}
                   >
-                    {attribution.total > 0 ? "4. Run Customer Matcher ✓" : "4. Run Customer Matcher"}
+                    {attribution.total > 0 ? "4. Run Customer Matcher \u2713" : "4. Run Customer Matcher"}
                   </Button>
                   <Text as="p" variant="bodySm" tone="subdued">
                     {attribution.total > 0 ? `${attribution.matched} matched, ${attribution.unmatched} unmatched` : "Match orders to Meta conversions"}
@@ -554,6 +948,7 @@ export default function Index() {
           </Card>
         )}
 
+        {/* ═══ Data Pipeline ═══ */}
         <Card>
           <BlockStack gap="300">
             <Text as="h2" variant="headingLg">Data Pipeline</Text>
@@ -613,7 +1008,7 @@ export default function Index() {
                     loading={activeTask === "dateRangeRematch"}>
                     {activeTask === "dateRangeRematch" ? "Running..." : "Re-match Oct-Jan"}
                   </Button>
-                  <Text as="p" variant="bodySm" tone="subdued">Re-matches Oct 18 – Jan 30 only</Text>
+                  <Text as="p" variant="bodySm" tone="subdued">Re-matches Oct 18 - Jan 30 only</Text>
                 </BlockStack>
               )}
               {orderCount > 0 && (

@@ -16,7 +16,7 @@ export function usePageTheme() {
 
 // Tab definitions with colours
 export const PAGE_TABS = [
-  { label: "Dashboard",      path: "/app",           accent: "#5C6AC4", accentLight: "#F0F1FF", accentDark: "#4650A8" },
+  { label: "Health",          path: "/app",           accent: "#5C6AC4", accentLight: "#F0F1FF", accentDark: "#4650A8" },
   { label: "Customers",      path: "/app/customers",  accent: "#0E7490", accentLight: "#ECFEFF", accentDark: "#0B5E73" },
   { label: "Products",       path: "/app/products",   accent: "#7C3AED", accentLight: "#F5F3FF", accentDark: "#6429C9" },
   { label: "Ad Campaigns",   path: "/app/campaigns",  accent: "#2563EB", accentLight: "#EFF6FF", accentDark: "#1D4ED8" },

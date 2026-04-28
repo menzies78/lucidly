@@ -49,6 +49,7 @@ export default function ReportTabs({ children }: { children?: ReactNode }) {
                 style={{
                   padding: "9px 16px",
                   fontSize: "13px",
+                  minWidth: ["Customers", "Products", "Ad Campaigns", "Countries"].includes(tab.label) ? "130px" : undefined,
                   fontWeight: active ? 700 : 500,
                   color: active ? tab.accentDark : "#6d7175",
                   background: active ? tab.accentLight : "#f6f6f7",
