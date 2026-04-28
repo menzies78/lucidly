@@ -1188,6 +1188,7 @@ export async function runIncrementalSync(shopDomain) {
         warmAllShops().catch(err => console.error("[IncrementalSync] post-sync warm failed:", err.message));
       }).catch(err => console.error("[IncrementalSync] warmer import failed:", err.message));
     }
+    await db.shop.update({ where: { shopDomain }, data: { lastMetaSync: new Date() } });
     completeProgress(`incrementalSync:${shopDomain}`, { newConversions: 0, matched: 0, unmatched: 0, breakdownRows });
     return { newConversions: 0, matched: 0, unmatched: 0, breakdownRows };
   }
@@ -1331,6 +1332,7 @@ export async function runIncrementalSync(shopDomain) {
     warmAllShops().catch(err => console.error("[IncrementalSync] post-sync warm failed:", err.message));
   }).catch(err => console.error("[IncrementalSync] warmer import failed:", err.message));
 
+  await db.shop.update({ where: { shopDomain }, data: { lastMetaSync: new Date() } });
   completeProgress(`incrementalSync:${shopDomain}`, { newConversions: newConversions.length, layer1: layer1.layer1Written, matched: totalMatched, unmatched: totalUnmatched, breakdownRows, ...enrichResult });
   console.log(`[IncrementalSync] Complete: ${layer1.layer1Written} UTM layer1, ${totalMatched} matched, ${totalUnmatched} unmatched, ${breakdownRows} breakdowns, ${enrichResult.enriched} demographics enriched`);
   return { newConversions: newConversions.length, layer1: layer1.layer1Written, matched: totalMatched, unmatched: totalUnmatched, breakdownRows, ...enrichResult };
