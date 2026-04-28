@@ -344,7 +344,7 @@ export default function CustomerMapExplorer({ blob, cs, protomapsKey = null }: P
         {/* Filter bar + Gems list. Two-column grid below the map: filters on
             the left, gems on the right. The grid collapses to a single
             column under 900px. */}
-        <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) 320px", gap: 16, marginTop: 4 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)", gap: 16, marginTop: 4 }}>
         <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
           {/* Active filter chips — country + product. Both can only be set
               by clicking a Gem (no UI control for country); chip is the
@@ -494,7 +494,7 @@ export default function CustomerMapExplorer({ blob, cs, protomapsKey = null }: P
             </button>
           </div>
 
-          {/* Order count + Recency */}
+          {/* Orders */}
           <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
             <span style={labelStyle}>Orders</span>
             {([
@@ -505,7 +505,12 @@ export default function CustomerMapExplorer({ blob, cs, protomapsKey = null }: P
             ] as const).map(([v, l]) => (
               <button key={v} onClick={() => setOrderBand(v)} style={pillStyle(orderBand === v)}>{l}</button>
             ))}
-            <span style={{ ...labelStyle, marginLeft: 8 }}>Recency</span>
+          </div>
+
+          {/* Recency — stacked below Orders so the right-hand Gems column
+              has room to breathe at 50% width. */}
+          <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+            <span style={labelStyle}>Recency</span>
             {([
               ["any", "All"],
               ["active", "Active 90d"],
