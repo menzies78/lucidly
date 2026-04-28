@@ -692,6 +692,25 @@ export async function backfillCustomerFirstNames(admin, shopDomain) {
   const gender = await backfillShopInferredGender(db, shopDomain);
   console.log(`[backfillFirstNames] Gender inference: scanned=${gender.scanned} inferred=${gender.inferred} ambiguous=${gender.ambiguous} noName=${gender.noName}`);
 
+  // Rollups bake inferredGender into DailyCustomerRollup at write time, so
+  // newly inferred customers won't show up in Customer Demographics / LTV
+  // until segments + rollups are rebuilt. The hourly scheduler skips the
+  // rebuild when there are no new conversions, so without an explicit
+  // rebuild here the merchant sees stale demographic counts after a
+  // backfill. Wrap in try/catch — failure to rebuild shouldn't lose the
+  // fact that we successfully wrote firstName + gender.
+  setProgress(taskId, { status: "running", message: "Rebuilding customer demographics..." });
+  let rollups = { skipped: false };
+  try {
+    const { rebuildCustomerSegments, rebuildCustomerRollups } = await import("./customerRollups.server.js");
+    await rebuildCustomerSegments(shopDomain);
+    rollups = await rebuildCustomerRollups(shopDomain);
+    console.log(`[backfillFirstNames] Rollups rebuilt: ${rollups.rollupRows || 0} daily rows`);
+  } catch (err) {
+    console.error(`[backfillFirstNames] Rollup rebuild failed (non-fatal): ${err?.message || err}`);
+    rollups = { error: err?.message || String(err) };
+  }
+
   const result = {
     ordersScanned: scanned,
     ordersUpdated: updated,
@@ -699,6 +718,7 @@ export async function backfillCustomerFirstNames(admin, shopDomain) {
     emptyFirstName,
     notInDb,
     gender,
+    rollups,
   };
   completeProgress(taskId, result);
   return result;
