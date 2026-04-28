@@ -85,7 +85,6 @@ export default function CustomerMapExplorer({ blob, cs, protomapsKey = null }: P
   const [scope, setScope] = useState<Scope>("metaAcquired");
   const [gender, setGender] = useState<"All" | "Female" | "Male">("All");
   const [ages, setAges] = useState<string[]>([]);
-  const [country, setCountry] = useState<string>("All");
   const [vip, setVip] = useState<"any" | "top5" | "top10" | "top20">("any");
   const [pricing, setPricing] = useState<"any" | "discount" | "fullPrice">("any");
   const [refundsTop, setRefundsTop] = useState<boolean>(false);
@@ -115,7 +114,6 @@ export default function CustomerMapExplorer({ blob, cs, protomapsKey = null }: P
         if (gender === "Male" && p.g !== "m") return false;
         if (ages.length > 0 && (!p.a || !ages.includes(p.a))) return false;
       }
-      if (country !== "All" && p.c !== country) return false;
       if (vip === "top5" && p.v !== 5) return false;
       if (vip === "top10" && (p.v !== 5 && p.v !== 10)) return false;
       if (vip === "top20" && p.v === 0) return false;
@@ -134,20 +132,7 @@ export default function CustomerMapExplorer({ blob, cs, protomapsKey = null }: P
       }
       return true;
     });
-  }, [points, segmentSet, isMetaAcquired, gender, ages, country, vip, pricing, refundsTop, orderBand, recency]);
-
-  // Country dropdown options + age availability come from the active
-  // segmentSet so the user can't pick a value with zero customers. Stored
-  // as ISO codes; we render the human-readable name via Intl.DisplayNames.
-  const countryOptions = useMemo(() => {
-    const counts: Record<string, number> = {};
-    for (const p of points) {
-      if (!segmentSet.has(p.s)) continue;
-      if (!p.c) continue;
-      counts[p.c] = (counts[p.c] || 0) + 1;
-    }
-    return Object.entries(counts).sort((a, b) => b[1] - a[1]).map(([c]) => c);
-  }, [points, segmentSet]);
+  }, [points, segmentSet, isMetaAcquired, gender, ages, vip, pricing, refundsTop, orderBand, recency]);
 
   const availableAges = useMemo(() => {
     const set = new Set<string>();
@@ -183,7 +168,6 @@ export default function CustomerMapExplorer({ blob, cs, protomapsKey = null }: P
     (scope !== "metaAcquired" ? 0 : 0) // scope itself is not counted
     + (gender !== "All" ? 1 : 0)
     + (ages.length > 0 ? 1 : 0)
-    + (country !== "All" ? 1 : 0)
     + (vip !== "any" ? 1 : 0)
     + (pricing !== "any" ? 1 : 0)
     + (refundsTop ? 1 : 0)
@@ -191,7 +175,7 @@ export default function CustomerMapExplorer({ blob, cs, protomapsKey = null }: P
     + (recency !== "any" ? 1 : 0);
 
   const clearAll = () => {
-    setGender("All"); setAges([]); setCountry("All");
+    setGender("All"); setAges([]);
     setVip("any"); setPricing("any"); setRefundsTop(false);
     setOrderBand("any"); setRecency("any");
   };
@@ -229,10 +213,10 @@ export default function CustomerMapExplorer({ blob, cs, protomapsKey = null }: P
             <Text as="h2" variant="headingLg">Customer Map Explorer</Text>
             <Text as="p" variant="bodySm" tone="subdued">{subtitle}</Text>
           </BlockStack>
-          <div className="segment-toggle" style={{ flexShrink: 0 }}>
-            <button className={scope === "metaAcquired" ? "active" : ""} onClick={() => setScope("metaAcquired")}>Meta Acquired</button>
-            <button className={scope === "allMeta" ? "active" : ""} onClick={() => setScope("allMeta")}>All Meta</button>
-            <button className={scope === "all" ? "active" : ""} onClick={() => setScope("all")}>All Customers</button>
+          <div className="toggle-group" style={{ flexShrink: 0 }}>
+            <button className={`toggle-btn ${scope === "metaAcquired" ? "active" : ""}`} onClick={() => setScope("metaAcquired")}>Meta Acquired</button>
+            <button className={`toggle-btn ${scope === "allMeta" ? "active" : ""}`} onClick={() => setScope("allMeta")}>All Meta</button>
+            <button className={`toggle-btn ${scope === "all" ? "active" : ""}`} onClick={() => setScope("all")}>All Customers</button>
           </div>
         </div>
 
@@ -299,24 +283,6 @@ export default function CustomerMapExplorer({ blob, cs, protomapsKey = null }: P
                 Available for Meta Acquired only
               </span>
             )}
-          </div>
-
-          {/* Country */}
-          <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
-            <span style={labelStyle}>Country</span>
-            <select
-              value={country}
-              onChange={(e) => setCountry(e.target.value)}
-              style={{
-                padding: "6px 10px", fontSize: "12px", fontWeight: 600,
-                borderRadius: "6px", border: "1px solid #E5E7EB",
-                background: country !== "All" ? "#F5F3FF" : "#fff",
-                color: "#4B5563", cursor: "pointer", minWidth: "200px",
-              }}
-            >
-              <option value="All">All countries</option>
-              {countryOptions.map((c) => <option key={c} value={c}>{countryDisplay(c)}</option>)}
-            </select>
           </div>
 
           {/* VIPs */}
@@ -666,7 +632,7 @@ function TopCitiesPanel({ cities, cs }: { cities: TopCity[]; cs: string }) {
   }, [cities, sort]);
 
   return (
-    <div style={{ border: "1px solid #E5E7EB", borderRadius: "8px", padding: "12px 14px", display: "flex", flexDirection: "column", minHeight: 0 }}>
+    <div style={{ border: "1px solid #E5E7EB", borderRadius: "8px", padding: "12px 14px", display: "flex", flexDirection: "column", height: 540, minHeight: 0 }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
         <Text as="h3" variant="headingSm">Top cities</Text>
         <div style={{ display: "inline-flex", borderRadius: "6px", border: "1px solid #E5E7EB", overflow: "hidden" }}>
@@ -710,7 +676,9 @@ function TopCitiesPanel({ cities, cs }: { cities: TopCity[]; cs: string }) {
                 {sort === "customers" ? c.customers.toLocaleString() : `${cs}${Math.round(c.revenue).toLocaleString()}`}
               </div>
               <div style={{ color: "#9CA3AF", fontSize: "11px" }}>
-                {sort === "customers" ? `${cs}${Math.round(c.revenue).toLocaleString()}` : `${c.customers.toLocaleString()} cust`}
+                {sort === "customers"
+                  ? `${cs}${Math.round(c.revenue).toLocaleString()}`
+                  : `AOV ${cs}${(c.customers > 0 ? Math.round(c.revenue / c.customers) : 0).toLocaleString()}`}
               </div>
             </div>
           </div>
