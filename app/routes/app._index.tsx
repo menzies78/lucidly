@@ -42,7 +42,7 @@ export const loader = async ({ request }) => {
     allAttrs,
     utmOnlyOrders,
     // Health-specific queries
-    dailyRollups30d,
+    liveAttrs30d,
     recentlyStoppedCampaigns,
     activeCampaignCount,
   ] = await Promise.all([
@@ -81,12 +81,10 @@ export const loader = async ({ request }) => {
       where: { shopDomain, utmConfirmedMeta: true, isOnlineStore: true, createdAt: dateFilter },
       select: { shopifyOrderId: true, frozenTotalPrice: true, totalRefunded: true },
     }),
-    // Daily match accuracy for last 30 days — group DailyAdRollup by date
-    db.dailyAdRollup.groupBy({
-      by: ["date"],
-      where: { shopDomain, date: { gte: thirtyDaysAgo } },
-      _sum: { attributedOrders: true, metaConversions: true, spend: true },
-      orderBy: { date: "asc" },
+    // Live attributions for last 30 days (same source as Order Explorer)
+    db.attribution.findMany({
+      where: { shopDomain, matchedAt: { gte: thirtyDaysAgo } },
+      select: { confidence: true, matchedAt: true, shopifyOrderId: true },
     }),
     // Campaigns that stopped delivering in last 7 days
     db.metaEntity.findMany({
@@ -153,26 +151,32 @@ export const loader = async ({ request }) => {
 
   const isNewInstall = !shop?.lastOrderSync && orderCount === 0;
 
-  // Build 30-day match accuracy chart data
-  const matchAccuracyChart = dailyRollups30d.map(d => {
-    const attributed = d._sum.attributedOrders || 0;
-    const metaConv = d._sum.metaConversions || 0;
-    const rate = metaConv > 0 ? Math.round((attributed / metaConv) * 100) : null;
-    return {
-      date: d.date.toISOString().slice(0, 10),
-      matchRate: rate,
-      attributedOrders: attributed,
-      metaConversions: metaConv,
-      spend: d._sum.spend || 0,
-    };
-  });
+  // Build 30-day match accuracy chart from live Attribution data
+  // Group attributions by day: matched (confidence > 0) vs total
+  const attrsByDay = new Map();
+  for (const a of liveAttrs30d) {
+    const day = a.matchedAt ? new Date(a.matchedAt).toISOString().slice(0, 10) : null;
+    if (!day) continue;
+    if (!attrsByDay.has(day)) attrsByDay.set(day, { matched: 0, total: 0 });
+    const bucket = attrsByDay.get(day);
+    bucket.total++;
+    if (a.confidence > 0) bucket.matched++;
+  }
+  const matchAccuracyChart = Array.from(attrsByDay.entries())
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([date, { matched: m, total: t }]) => ({
+      date,
+      matchRate: t > 0 ? Math.round((m / t) * 100) : null,
+      matched: m,
+      total: t,
+    }));
 
   // Last 24h match accuracy
   const oneDayAgoStr = oneDayAgo.toISOString().slice(0, 10);
   const recent = matchAccuracyChart.filter(d => d.date >= oneDayAgoStr);
-  const recentAttributed = recent.reduce((s, d) => s + d.attributedOrders, 0);
-  const recentMetaConv = recent.reduce((s, d) => s + d.metaConversions, 0);
-  const matchRate24h = recentMetaConv > 0 ? Math.round((recentAttributed / recentMetaConv) * 100) : null;
+  const recentMatched = recent.reduce((s, d) => s + d.matched, 0);
+  const recentTotal = recent.reduce((s, d) => s + d.total, 0);
+  const matchRate24h = recentTotal > 0 ? Math.round((recentMatched / recentTotal) * 100) : null;
 
   // UTM health from shop record
   const utmHealth = {
@@ -220,6 +224,7 @@ export const loader = async ({ request }) => {
     // Health-specific data
     matchAccuracyChart,
     matchRate24h,
+    matchRate24hDetail: { matched: recentMatched, total: recentTotal },
     utmHealth,
     syncFreshness,
     recentlyStoppedCampaigns: recentlyStoppedCampaigns.map(c => ({
@@ -339,7 +344,7 @@ export const action = async ({ request }) => {
 // Match Accuracy Line Chart — hand-rolled SVG, 30 days
 // ═══════════════════════════════════════════════════════════════
 
-function MatchAccuracyChart({ data, accent }: { data: { date: string; matchRate: number | null; attributedOrders: number; metaConversions: number }[]; accent: string }) {
+function MatchAccuracyChart({ data, accent }: { data: { date: string; matchRate: number | null; matched: number; total: number }[]; accent: string }) {
   const [hoverIdx, setHoverIdx] = useState<number | null>(null);
 
   // Filter to days with data
@@ -460,7 +465,7 @@ function MatchAccuracyChart({ data, accent }: { data: { date: string; matchRate:
         >
           <div style={{ fontWeight: 700 }}>{points[hoverIdx].date}</div>
           <div>Match rate: {points[hoverIdx].matchRate}%</div>
-          <div>{points[hoverIdx].attributedOrders} matched / {points[hoverIdx].metaConversions} conversions</div>
+          <div>{points[hoverIdx].matched} matched / {points[hoverIdx].total} total</div>
         </div>
       )}
     </div>
@@ -527,7 +532,7 @@ export default function Index() {
     currencySymbol, isNewInstall, activeTaskFromServer,
     utmOnlyCount, utmOnlyRevenue, utmAndLucidlyCount, onboardingCompleted,
     webhooksRegisteredAt, webhooksFirstFiredAt, pixelCalibration,
-    matchAccuracyChart, matchRate24h, utmHealth, syncFreshness,
+    matchAccuracyChart, matchRate24h, matchRate24hDetail, utmHealth, syncFreshness,
     recentlyStoppedCampaigns, activeCampaignCount,
   } = useLoaderData();
   const submit = useSubmit();
@@ -671,7 +676,13 @@ export default function Index() {
             detail={webhooksFirstFiredAt ? "active" : webhooksRegisteredAt ? "pending" : "not registered"}
           />
           <StatusPill
-            label="Last Sync"
+            label="Orders Sync"
+            ok={syncFreshness.orderSyncAgo !== null && syncFreshness.orderSyncAgo < 180}
+            warning={syncFreshness.orderSyncAgo !== null && syncFreshness.orderSyncAgo < 1440}
+            detail={formatMinutes(syncFreshness.orderSyncAgo)}
+          />
+          <StatusPill
+            label="Meta Sync"
             ok={syncOk}
             warning={!syncOk && syncWarning}
             detail={formatMinutes(syncFreshness.metaSyncAgo)}
@@ -701,7 +712,9 @@ export default function Index() {
                       color: matchRate24h >= 90 ? "#059669" : matchRate24h >= 70 ? "#D97706" : "#DC2626",
                     }}>
                       {matchRate24h}%
-                      <span style={{ fontSize: "13px", fontWeight: 500, color: "#6B7280", marginLeft: "6px" }}>last 24h</span>
+                      <span style={{ fontSize: "13px", fontWeight: 500, color: "#6B7280", marginLeft: "6px" }}>
+                        last 24h ({matchRate24hDetail.matched}/{matchRate24hDetail.total})
+                      </span>
                     </div>
                   )}
                 </InlineStack>
@@ -710,7 +723,7 @@ export default function Index() {
                 )}
                 <MatchAccuracyChart data={matchAccuracyChart} accent="#5C6AC4" />
                 <Text as="p" variant="bodySm" tone="subdued">
-                  Matched Shopify orders / Meta-reported conversions. Green dashed line = 90% target.
+                  Matched attributions / total attributions per day (live data). Green dashed line = 90% target.
                 </Text>
               </BlockStack>
             </Card>
@@ -824,36 +837,36 @@ export default function Index() {
                   </div>
                   <div style={{ flex: 1, minWidth: "120px", padding: "12px 16px", borderRadius: "8px", background: "#F0F1FF", textAlign: "center" }}>
                     <div style={{ fontSize: "22px", fontWeight: 700, color: "#4650A8" }}>
-                      {matchedPct}%
-                    </div>
-                    <div style={{ fontSize: "12px", color: "#6B7280" }}>matched</div>
-                  </div>
-                  <div style={{ flex: 1, minWidth: "120px", padding: "12px 16px", borderRadius: "8px", background: attribution.unmatched > 0 ? "#FFFBEB" : "#F9FAFB", textAlign: "center" }}>
-                    <div style={{ fontSize: "22px", fontWeight: 700, color: attribution.unmatched > 0 ? "#92400E" : "#374151" }}>
-                      {currencySymbol}{Math.round(attribution.unmatchedRevenue).toLocaleString()}
-                    </div>
-                    <div style={{ fontSize: "12px", color: "#6B7280" }}>unmatched revenue</div>
-                  </div>
-                </div>
-
-                <div style={{ display: "flex", gap: "12px", flexWrap: "wrap" }}>
-                  <div style={{ flex: 1, minWidth: "140px", padding: "12px 16px", borderRadius: "8px", background: "#F9FAFB", textAlign: "center" }}>
-                    <div style={{ fontSize: "18px", fontWeight: 700, color: "#374151" }}>
                       {attribution.matched.toLocaleString()}
                     </div>
                     <div style={{ fontSize: "12px", color: "#6B7280" }}>matched attributions</div>
                   </div>
-                  <div style={{ flex: 1, minWidth: "140px", padding: "12px 16px", borderRadius: "8px", background: "#F9FAFB", textAlign: "center" }}>
-                    <div style={{ fontSize: "18px", fontWeight: 700, color: "#374151" }}>
+                  <div style={{ flex: 1, minWidth: "120px", padding: "12px 16px", borderRadius: "8px", background: attribution.unmatched > 0 ? "#FFFBEB" : "#F9FAFB", textAlign: "center" }}>
+                    <div style={{ fontSize: "22px", fontWeight: 700, color: attribution.unmatched > 0 ? "#92400E" : "#374151" }}>
                       {attribution.unmatched.toLocaleString()}
                     </div>
                     <div style={{ fontSize: "12px", color: "#6B7280" }}>unmatched</div>
                   </div>
                 </div>
 
+                <div style={{ display: "flex", gap: "12px", flexWrap: "wrap" }}>
+                  <div style={{ flex: 1, minWidth: "140px", padding: "12px 16px", borderRadius: "8px", background: attribution.unmatchedRevenue > 0 ? "#FFFBEB" : "#F9FAFB", textAlign: "center" }}>
+                    <div style={{ fontSize: "18px", fontWeight: 700, color: attribution.unmatchedRevenue > 0 ? "#92400E" : "#374151" }}>
+                      {currencySymbol}{Math.round(attribution.unmatchedRevenue).toLocaleString()}
+                    </div>
+                    <div style={{ fontSize: "12px", color: "#6B7280" }}>unmatched revenue</div>
+                  </div>
+                  <div style={{ flex: 1, minWidth: "140px", padding: "12px 16px", borderRadius: "8px", background: "#ECFDF5", textAlign: "center" }}>
+                    <div style={{ fontSize: "18px", fontWeight: 700, color: "#065F46" }}>
+                      {matchedPct}%
+                    </div>
+                    <div style={{ fontSize: "12px", color: "#6B7280" }}>match rate (selected period)</div>
+                  </div>
+                </div>
+
                 <Text as="p" variant="bodySm" tone="subdued">
-                  Unmatched revenue = Meta-reported conversions we couldn't verify against a Shopify order
-                  (typically caused by order edits, refunds, or currency adjustments after purchase).
+                  Match rate and Data Quality use live attribution data — always in sync with Order Explorer.
+                  Unmatched = Meta conversions we couldn't verify against a Shopify order.
                 </Text>
               </BlockStack>
             </Card>
