@@ -45,12 +45,33 @@ export interface MapPoint {
   p: 0 | 1;                        // bought on discount ever
   v: 0 | 5 | 10 | 20;              // VIP band (0 = none)
   h: 0 | 1;                        // highest-refunds flag
+  pr: number[];                    // distinct product indices into MapBlob.productList
+}
+
+export interface MapGem {
+  kind: "vip" | "discount" | "refund" | "repeat" | "lapsed" | "product";
+  country: string;
+  count: number;
+  expected: number;
+  lift: number;
+  label: string;
+  filters: {
+    country?: string;
+    vip?: "any" | "top5" | "top10" | "top20";
+    pricing?: "any" | "discount" | "fullPrice";
+    refundsTop?: boolean;
+    orderBand?: OrderBand;
+    recency?: RecencyBand;
+    product?: string;
+  };
 }
 
 export interface MapBlob {
   points: MapPoint[];
   thresholds: { top5: number; top10: number; top20: number };
   highestRefundThreshold: number;
+  productList: string[];
+  gems: MapGem[];
   computedAt: string;
 }
 
@@ -90,8 +111,16 @@ export default function CustomerMapExplorer({ blob, cs, protomapsKey = null }: P
   const [refundsTop, setRefundsTop] = useState<boolean>(false);
   const [orderBand, setOrderBand] = useState<OrderBand>("any");
   const [recency, setRecency] = useState<RecencyBand>("any");
+  // Country/product filters have no permanent UI controls — they're set
+  // by clicking a Gem and surfaced as removable chips. Country picker was
+  // intentionally removed; product picker is below.
+  const [country, setCountry] = useState<string>("All");
+  const [product, setProduct] = useState<string>("All");
+  const [productSearch, setProductSearch] = useState<string>("");
 
   const points = blob?.points || [];
+  const productList = blob?.productList || [];
+  const gems = blob?.gems || [];
 
   // Demographic filters apply to Meta Acquired only — Meta hasn't given
   // us age/gender for retargeted or organic shoppers. When the user
@@ -106,6 +135,26 @@ export default function CustomerMapExplorer({ blob, cs, protomapsKey = null }: P
     return new Set(["m", "r", "o"]);
   }, [scope]);
 
+  // Resolve product filter to an index into productList. The dropdown stores
+  // the raw product name; we look up the index once per change so the inner
+  // loop can do a fast Array.includes on numbers.
+  const productIdx = useMemo(() => {
+    if (product === "All") return -1;
+    return productList.indexOf(product);
+  }, [product, productList]);
+
+  // Open-text product search → indices that match. Computed once per
+  // search-string change. Trim + lowercase substring match.
+  const productSearchIndices = useMemo(() => {
+    const q = productSearch.trim().toLowerCase();
+    if (!q) return null;
+    const set = new Set<number>();
+    productList.forEach((name, i) => {
+      if (name.toLowerCase().includes(q)) set.add(i);
+    });
+    return set;
+  }, [productSearch, productList]);
+
   const filtered = useMemo(() => {
     return points.filter((p) => {
       if (!segmentSet.has(p.s)) return false;
@@ -113,6 +162,13 @@ export default function CustomerMapExplorer({ blob, cs, protomapsKey = null }: P
         if (gender === "Female" && p.g !== "f") return false;
         if (gender === "Male" && p.g !== "m") return false;
         if (ages.length > 0 && (!p.a || !ages.includes(p.a))) return false;
+      }
+      if (country !== "All" && p.c !== country) return false;
+      if (productIdx >= 0 && !p.pr.includes(productIdx)) return false;
+      if (productSearchIndices) {
+        let any = false;
+        for (const i of p.pr) { if (productSearchIndices.has(i)) { any = true; break; } }
+        if (!any) return false;
       }
       if (vip === "top5" && p.v !== 5) return false;
       if (vip === "top10" && (p.v !== 5 && p.v !== 10)) return false;
@@ -132,7 +188,7 @@ export default function CustomerMapExplorer({ blob, cs, protomapsKey = null }: P
       }
       return true;
     });
-  }, [points, segmentSet, isMetaAcquired, gender, ages, vip, pricing, refundsTop, orderBand, recency]);
+  }, [points, segmentSet, isMetaAcquired, gender, ages, country, productIdx, productSearchIndices, vip, pricing, refundsTop, orderBand, recency]);
 
   const availableAges = useMemo(() => {
     const set = new Set<string>();
@@ -168,6 +224,9 @@ export default function CustomerMapExplorer({ blob, cs, protomapsKey = null }: P
     (scope !== "metaAcquired" ? 0 : 0) // scope itself is not counted
     + (gender !== "All" ? 1 : 0)
     + (ages.length > 0 ? 1 : 0)
+    + (country !== "All" ? 1 : 0)
+    + (product !== "All" ? 1 : 0)
+    + (productSearch.trim() !== "" ? 1 : 0)
     + (vip !== "any" ? 1 : 0)
     + (pricing !== "any" ? 1 : 0)
     + (refundsTop ? 1 : 0)
@@ -175,10 +234,38 @@ export default function CustomerMapExplorer({ blob, cs, protomapsKey = null }: P
     + (recency !== "any" ? 1 : 0);
 
   const clearAll = () => {
-    setGender("All"); setAges([]);
+    setGender("All"); setAges([]); setCountry("All");
+    setProduct("All"); setProductSearch("");
     setVip("any"); setPricing("any"); setRefundsTop(false);
     setOrderBand("any"); setRecency("any");
   };
+
+  // Apply a Gem's filter set in one pass. Resets fields the gem doesn't
+  // touch so the user sees a clean slice — chasing one anomaly at a time.
+  const applyGem = (g: MapGem) => {
+    const f = g.filters;
+    setGender("All"); setAges([]);
+    setCountry(f.country || "All");
+    setProduct(f.product || "All");
+    setProductSearch("");
+    setVip(f.vip || "any");
+    setPricing(f.pricing || "any");
+    setRefundsTop(f.refundsTop === true);
+    setOrderBand(f.orderBand || "any");
+    setRecency(f.recency || "any");
+  };
+
+  // Product picker options — show the full product list once we have one,
+  // sorted alphabetically. Cap at the products that actually have any
+  // customers in the active scope, so the list shrinks for All Meta etc.
+  const productOptions = useMemo(() => {
+    const set = new Set<number>();
+    for (const p of points) {
+      if (!segmentSet.has(p.s)) continue;
+      for (const idx of p.pr) set.add(idx);
+    }
+    return Array.from(set).map((i) => productList[i]).filter(Boolean).sort();
+  }, [points, segmentSet, productList]);
 
   const toggleAge = (b: string) => {
     setAges((curr) => (curr.includes(b) ? curr.filter((a) => a !== b) : [...curr, b]));
@@ -207,16 +294,27 @@ export default function CustomerMapExplorer({ blob, cs, protomapsKey = null }: P
 
   return (
     <Card>
+      {/* Component-scoped CSS for the scope toggle. Mirrors the
+          .toggle-group / .toggle-btn pattern used on app.customers.tsx
+          (Customer Geography tile) but uses the Countries-page green
+          (#059669) for the active state to match the page palette. */}
+      <style dangerouslySetInnerHTML={{ __html: `
+        .cme-toggle-group { display: inline-flex; border: 1px solid #D1D5DB; border-radius: 5px; overflow: hidden; }
+        .cme-toggle-btn { padding: 4px 10px; font-size: 11px; font-weight: 500; border: none; cursor: pointer; transition: all 0.15s; white-space: nowrap; }
+        .cme-toggle-btn.active { background: #059669; color: #fff; }
+        .cme-toggle-btn:not(.active) { background: #fff; color: #374151; }
+        .cme-toggle-btn:not(.active):hover { background: #F3F4F6; }
+      `}} />
       <BlockStack gap="400">
         <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 16 }}>
           <BlockStack gap="100">
             <Text as="h2" variant="headingLg">Customer Map Explorer</Text>
             <Text as="p" variant="bodySm" tone="subdued">{subtitle}</Text>
           </BlockStack>
-          <div className="toggle-group" style={{ flexShrink: 0 }}>
-            <button className={`toggle-btn ${scope === "metaAcquired" ? "active" : ""}`} onClick={() => setScope("metaAcquired")}>Meta Acquired</button>
-            <button className={`toggle-btn ${scope === "allMeta" ? "active" : ""}`} onClick={() => setScope("allMeta")}>All Meta</button>
-            <button className={`toggle-btn ${scope === "all" ? "active" : ""}`} onClick={() => setScope("all")}>All Customers</button>
+          <div className="cme-toggle-group" style={{ flexShrink: 0 }}>
+            <button className={`cme-toggle-btn ${scope === "metaAcquired" ? "active" : ""}`} onClick={() => setScope("metaAcquired")}>Meta Acquired</button>
+            <button className={`cme-toggle-btn ${scope === "allMeta" ? "active" : ""}`} onClick={() => setScope("allMeta")}>All Meta</button>
+            <button className={`cme-toggle-btn ${scope === "all" ? "active" : ""}`} onClick={() => setScope("all")}>All Customers</button>
           </div>
         </div>
 
@@ -236,8 +334,75 @@ export default function CustomerMapExplorer({ blob, cs, protomapsKey = null }: P
           )}
         </div>
 
-        {/* Filter bar */}
-        <div style={{ display: "flex", flexDirection: "column", gap: "10px", marginTop: 4 }}>
+        {/* Filter bar + Gems list. Two-column grid below the map: filters on
+            the left, gems on the right. The grid collapses to a single
+            column under 900px. */}
+        <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) 320px", gap: 16, marginTop: 4 }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+          {/* Active filter chips — country + product. Both can only be set
+              by clicking a Gem (no UI control for country); chip is the
+              way to clear. */}
+          {(country !== "All" || product !== "All") && (
+            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+              {country !== "All" && (
+                <span style={{
+                  display: "inline-flex", alignItems: "center", gap: 6,
+                  padding: "4px 10px", borderRadius: 9999,
+                  background: "#ECFDF5", color: "#065F46",
+                  fontSize: 12, fontWeight: 600,
+                }}>
+                  Country: {countryDisplay(country)}
+                  <button onClick={() => setCountry("All")} style={{ border: "none", background: "transparent", color: "#065F46", cursor: "pointer", fontSize: 14, lineHeight: 1, padding: 0 }}>×</button>
+                </span>
+              )}
+              {product !== "All" && (
+                <span style={{
+                  display: "inline-flex", alignItems: "center", gap: 6,
+                  padding: "4px 10px", borderRadius: 9999,
+                  background: "#EEF2FF", color: "#3730A3",
+                  fontSize: 12, fontWeight: 600,
+                }}>
+                  Product: {product}
+                  <button onClick={() => setProduct("All")} style={{ border: "none", background: "transparent", color: "#3730A3", cursor: "pointer", fontSize: 14, lineHeight: 1, padding: 0 }}>×</button>
+                </span>
+              )}
+            </div>
+          )}
+
+          {/* Product picker — dropdown + open-text search. Lets the user
+              ask "where do buyers of X live?" without having to memorise
+              exact product titles. Both inputs filter independently;
+              search trumps dropdown when both are set. */}
+          <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+            <span style={labelStyle}>Product</span>
+            <select
+              value={product}
+              onChange={(e) => setProduct(e.target.value)}
+              style={{
+                padding: "6px 10px", fontSize: "12px", fontWeight: 600,
+                borderRadius: "6px", border: "1px solid #E5E7EB",
+                background: product !== "All" ? "#EEF2FF" : "#fff",
+                color: "#4B5563", cursor: "pointer", minWidth: "220px",
+                maxWidth: "320px",
+              }}
+            >
+              <option value="All">All products</option>
+              {productOptions.map((p) => <option key={p} value={p}>{p}</option>)}
+            </select>
+            <input
+              type="text"
+              value={productSearch}
+              onChange={(e) => setProductSearch(e.target.value)}
+              placeholder="Search product…"
+              style={{
+                padding: "6px 10px", fontSize: "12px",
+                borderRadius: "6px", border: "1px solid #E5E7EB",
+                background: productSearch.trim() !== "" ? "#EEF2FF" : "#fff",
+                color: "#374151", minWidth: "180px",
+              }}
+            />
+          </div>
+
           {/* Gender (Meta Acquired only) */}
           <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
             <span style={labelStyle}>Gender</span>
@@ -360,8 +525,72 @@ export default function CustomerMapExplorer({ blob, cs, protomapsKey = null }: P
             </div>
           )}
         </div>
+
+        {/* Gems — auto-surfaced statistical anomalies. Click to populate
+            the filters with the exact slice the gem describes. Same shape
+            as the gems below the Product Demographics Explorer. */}
+        <GemsList gems={gems} onApply={applyGem} />
+        </div>
       </BlockStack>
     </Card>
+  );
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// GemsList — right-hand "Gems spotted in this period" panel
+// ───────────────────────────────────────────────────────────────────────────
+
+function GemsList({ gems, onApply }: { gems: MapGem[]; onApply: (g: MapGem) => void }) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      <Text as="h3" variant="headingSm">Gems spotted in this period</Text>
+      {gems.length === 0 && (
+        <div style={{ color: "#9CA3AF", fontSize: 12, padding: "10px 0" }}>
+          Nothing statistically unusual yet — gems appear once you have
+          enough customers in multiple countries.
+        </div>
+      )}
+      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        {gems.map((g, i) => {
+          const cn = countryDisplay(g.country) || g.country;
+          // Sentence varies by gem kind — each one frames the lift in the
+          // language of the filter it'll apply.
+          let text = "";
+          if (g.kind === "vip") text = `${cn} has ${g.lift}× the share of Top 5% VIP customers (${g.count} vs ~${g.expected} expected)`;
+          else if (g.kind === "discount") text = `${cn} buyers are ${g.lift}× more likely to be discount buyers (${g.count} vs ~${g.expected} expected)`;
+          else if (g.kind === "refund") text = `${cn} customers refund ${g.lift}× more often than average (${g.count} vs ~${g.expected} expected)`;
+          else if (g.kind === "repeat") text = `${cn} customers are ${g.lift}× more likely to be repeat buyers (${g.count} vs ~${g.expected} expected)`;
+          else if (g.kind === "lapsed") text = `${cn} has ${g.lift}× the share of lapsed customers (${g.count} vs ~${g.expected} expected)`;
+          else if (g.kind === "product" && g.filters.product) text = `${g.filters.product} is ${g.lift}× more popular in ${cn} (${g.count} buyers vs ~${g.expected} expected)`;
+          else text = g.label;
+          return (
+            <button
+              key={i}
+              onClick={() => onApply(g)}
+              style={{
+                textAlign: "left", background: "#fff",
+                border: "1px solid #E5E7EB", borderRadius: 6,
+                padding: "8px 12px", fontSize: 13, color: "#1F2937",
+                cursor: "pointer", display: "flex", alignItems: "flex-start", gap: 8,
+                lineHeight: 1.45, transition: "border-color 0.15s, background 0.15s",
+              }}
+              onMouseEnter={(e) => {
+                (e.currentTarget as HTMLElement).style.borderColor = "#10B981";
+                (e.currentTarget as HTMLElement).style.background = "#ECFDF5";
+              }}
+              onMouseLeave={(e) => {
+                (e.currentTarget as HTMLElement).style.borderColor = "#E5E7EB";
+                (e.currentTarget as HTMLElement).style.background = "#fff";
+              }}
+            >
+              <span style={{ flexShrink: 0 }}>💎</span>
+              <span style={{ flex: 1 }}>{text}</span>
+              <span style={{ flexShrink: 0, color: "#10B981", fontWeight: 600, fontSize: 12 }}>Click Me</span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 

@@ -247,6 +247,18 @@ export async function rebuildCustomerSegments(shopDomain) {
   // Typical 30k-customer merchant = ~3 MB JSON / ~250 KB gzipped.
   const customerMapPoints = [];
 
+  // Global product index for the map blob — strings deduped once, points
+  // reference them by integer index. Lets the map filter by "buyers of X"
+  // without bloating each point with full product names. Per customer we
+  // include only DISTINCT products (not quantity), which is what the filter
+  // needs.
+  const productIndex = new Map(); // productName -> int index
+  const getProductIdx = (name) => {
+    let i = productIndex.get(name);
+    if (i == null) { i = productIndex.size; productIndex.set(name, i); }
+    return i;
+  };
+
   // Per-customer update batches
   const CHUNK = 500;
   let customerUpdates = [];
@@ -347,6 +359,8 @@ export async function rebuildCustomerSegments(shopDomain) {
       //   p  discountEver (1=ever bought a discounted line item)
       //   v  vipBand (5/10/20, set in second pass)
       //   h  highestRefunds (1, set in second pass)
+      //   pr distinct product indices into productList
+      const distinctProductIdx = Object.keys(productCounts).map(getProductIdx);
       customerMapPoints.push({
         i: custId,
         la: Math.round(lat * 10000) / 10000,   // 4dp ≈ 11m precision
@@ -362,6 +376,7 @@ export async function rebuildCustomerSegments(shopDomain) {
         d: lastOrder ? Math.floor((now - lastOrder.createdAt.getTime()) / DAY_MS) : null,
         x: !firstOrder?.city ? 1 : 0,
         p: lineDiscountOrdersCount > 0 ? 1 : 0,
+        pr: distinctProductIdx,
       });
     }
 
@@ -762,6 +777,116 @@ export async function rebuildCustomerSegments(shopDomain) {
     p.h = highestRefundThreshold > 0 && rate >= highestRefundThreshold ? 1 : 0;
   }
 
+  // ── Gem detection ──
+  // Statistical anomalies in the geo distribution. We surface 5 high-signal
+  // "did you notice" cards on the Map Explorer. Each gem is a country (or
+  // country+product) where some feature over-indexes vs the global average,
+  // with both a lift floor (1.5×) and a z-score floor (1.96 ≈ 95% CI) so we
+  // don't fire on noise from tiny markets. Score = lift × sqrt(count) so
+  // we prefer high-lift gems in countries with real volume.
+  const productList = Array.from(productIndex.keys());
+  const gems = (() => {
+    const N = customerMapPoints.length;
+    if (N < 50) return [];
+
+    // Country totals + per-feature counts.
+    const byCountry = new Map();
+    for (const p of customerMapPoints) {
+      if (!p.c) continue;
+      let agg = byCountry.get(p.c);
+      if (!agg) {
+        agg = {
+          country: p.c, total: 0, vipTop5: 0, discount: 0,
+          highRefund: 0, repeat: 0, lapsed: 0, products: new Map(),
+        };
+        byCountry.set(p.c, agg);
+      }
+      agg.total++;
+      if (p.v === 5) agg.vipTop5++;
+      if (p.p === 1) agg.discount++;
+      if (p.h === 1) agg.highRefund++;
+      if (p.n >= 2) agg.repeat++;
+      if (p.d != null && p.d > 365) agg.lapsed++;
+      for (const idx of p.pr) {
+        agg.products.set(idx, (agg.products.get(idx) || 0) + 1);
+      }
+    }
+
+    // Global rates.
+    let gVip = 0, gDisc = 0, gRefund = 0, gRepeat = 0, gLapsed = 0;
+    const gProduct = new Map(); // idx -> global count
+    for (const p of customerMapPoints) {
+      if (p.v === 5) gVip++;
+      if (p.p === 1) gDisc++;
+      if (p.h === 1) gRefund++;
+      if (p.n >= 2) gRepeat++;
+      if (p.d != null && p.d > 365) gLapsed++;
+      for (const idx of p.pr) gProduct.set(idx, (gProduct.get(idx) || 0) + 1);
+    }
+    const gVipShare = gVip / N, gDiscShare = gDisc / N, gRefundShare = gRefund / N;
+    const gRepeatShare = gRepeat / N, gLapsedShare = gLapsed / N;
+
+    const candidates = [];
+    const testAnomaly = (kind, country, count, total, globalShare, label, filters) => {
+      if (count < 5 || total < 20) return;
+      const expected = total * globalShare;
+      if (expected <= 0) return;
+      const lift = count / expected;
+      if (lift < 1.5) return;
+      const std = Math.sqrt(globalShare * (1 - globalShare) * total);
+      const z = std > 0 ? (count - expected) / std : 0;
+      if (z < 1.96) return;
+      candidates.push({
+        kind, country, count, expected: Math.round(expected),
+        lift: Math.round(lift * 10) / 10, z, label, filters,
+        score: lift * Math.sqrt(count),
+      });
+    };
+
+    for (const agg of byCountry.values()) {
+      testAnomaly("vip", agg.country, agg.vipTop5, agg.total, gVipShare,
+        "VIP cluster", { country: agg.country, vip: "top5" });
+      testAnomaly("discount", agg.country, agg.discount, agg.total, gDiscShare,
+        "Discount-buyer hotspot", { country: agg.country, pricing: "discount" });
+      testAnomaly("refund", agg.country, agg.highRefund, agg.total, gRefundShare,
+        "Refund concentration", { country: agg.country, refundsTop: true });
+      testAnomaly("repeat", agg.country, agg.repeat, agg.total, gRepeatShare,
+        "Repeat-buyer hotspot", { country: agg.country, orderBand: "2-3" });
+      testAnomaly("lapsed", agg.country, agg.lapsed, agg.total, gLapsedShare,
+        "Lapsed-customer cluster", { country: agg.country, recency: "lapsed" });
+    }
+
+    // Product × country anomalies — top 15 products by global volume only,
+    // to keep the candidate set bounded for big merchants.
+    const topProducts = Array.from(gProduct.entries())
+      .sort((a, b) => b[1] - a[1]).slice(0, 15);
+    for (const [pIdx, pCount] of topProducts) {
+      const productShare = pCount / N;
+      for (const agg of byCountry.values()) {
+        const cInCountry = agg.products.get(pIdx) || 0;
+        testAnomaly("product", agg.country, cInCountry, agg.total, productShare,
+          `Product cluster: ${productList[pIdx]}`,
+          { country: agg.country, product: productList[pIdx] });
+      }
+    }
+
+    // Sort by score desc, dedupe so each country appears at most once
+    // (we want geographic spread, not 5 gems all in the UK).
+    candidates.sort((a, b) => b.score - a.score);
+    const seenCountry = new Set();
+    const out = [];
+    for (const g of candidates) {
+      if (seenCountry.has(g.country)) continue;
+      seenCountry.add(g.country);
+      out.push({
+        kind: g.kind, country: g.country, count: g.count,
+        expected: g.expected, lift: g.lift, label: g.label, filters: g.filters,
+      });
+      if (out.length >= 5) break;
+    }
+    return out;
+  })();
+
   // ── Persist blobs to ShopAnalysisCache ──
   // Map blob FIRST so we can free the points array before stringify-ing
   // the LTV/journey/geo blobs. For Vollebak (~30k customers) this saved
@@ -772,6 +897,8 @@ export async function rebuildCustomerSegments(shopDomain) {
     points: customerMapPoints,
     thresholds: vipThresholds,
     highestRefundThreshold,
+    productList,
+    gems,
     computedAt: new Date().toISOString(),
   };
   await db.shopAnalysisCache.upsert({
