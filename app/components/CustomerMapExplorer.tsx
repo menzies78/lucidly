@@ -686,6 +686,12 @@ function MapCanvas({ points, cs, protomapsKey }: MapCanvasProps) {
         style={{ width: "100%", height: "100%" }}
         worldCopyJump={true}
         scrollWheelZoom={true}
+        // Clamp the viewport to the world so users can't pan into the
+        // grey void above/below the map. Lat is bounded ±85 (web-mercator
+        // limit); lng is left unbounded — combined with worldCopyJump,
+        // horizontal panning still wraps cleanly across the antimeridian.
+        maxBounds={[[-85, -180], [85, 180]] as any}
+        maxBoundsViscosity={1.0}
       >
         {protomapsKey ? (
           <ProtomapsBaseLayer apiKey={protomapsKey} protomapsL={mods.protomapsL} useMap={mods.useMap} />

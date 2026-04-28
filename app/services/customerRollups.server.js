@@ -39,6 +39,20 @@ function median(arr) {
   return sorted.length % 2 ? sorted[m] : (sorted[m - 1] + sorted[m]) / 2;
 }
 
+// Some merchants (e.g. Vollebak) maintain near-duplicate product listings
+// for technical reasons — "Sashiko Chore Jacket. Blue edition." and
+// "Sashiko Chore Jacket. Blue edition" share a SKU but are two listings.
+// We don't have SKU-level analytics yet (the `productSkus` field on Order
+// is captured but unused downstream), so for now we normalize titles by
+// stripping trailing periods + whitespace. Universally safe — there's no
+// merchant where "Foo." and "Foo" should be different products. If we
+// ever see non-trailing-period dup patterns we'll graduate to a real
+// SKU → canonical-name mapping.
+function normalizeProductName(s) {
+  if (!s) return s;
+  return s.replace(/[.\s]+$/u, "");
+}
+
 function r2(v) { return Math.round(v * 100) / 100; }
 
 // ═══════════════════════════════════════════════════════════════
@@ -292,7 +306,11 @@ export async function rebuildCustomerSegments(shopDomain) {
       if (o.discountCodes) discountOrdersCount++;
       if (discountedOrderIds.has(o.shopifyOrderId)) lineDiscountOrdersCount++;
       const items = (o.lineItems || "").split(", ").filter(Boolean);
-      for (const item of items) productCounts[item] = (productCounts[item] || 0) + 1;
+      for (const item of items) {
+        const name = normalizeProductName(item);
+        if (!name) continue;
+        productCounts[name] = (productCounts[name] || 0) + 1;
+      }
       const attr = attrByOrderId.get(o.shopifyOrderId);
       if (attr?.confidence != null) confidences.push(attr.confidence);
     }

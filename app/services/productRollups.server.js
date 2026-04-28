@@ -29,8 +29,13 @@ const COLORS = new Set([
 ]);
 
 export function toParentProduct(name) {
-  const parts = (name || "").trim().split(" ");
-  if (parts.length <= 1) return (name || "").trim();
+  // Some merchants (e.g. Vollebak) maintain near-duplicate listings that
+  // differ only by a trailing period (same SKU, two listings). Strip it
+  // here so "Foo." and "Foo" collapse to one parent everywhere — Products
+  // rollup, journey analysis, etc.
+  const cleaned = (name || "").replace(/[.\s]+$/u, "").trim();
+  const parts = cleaned.split(" ");
+  if (parts.length <= 1) return cleaned;
   if (parts.length >= 3 && parts[parts.length - 3]?.toLowerCase() === "acid" && parts[parts.length - 2]?.toLowerCase() === "wash") {
     if (COLORS.has(parts[parts.length - 1].toLowerCase())) return parts.slice(0, -3).join(" ");
     return parts.slice(0, -2).join(" ");
@@ -39,7 +44,7 @@ export function toParentProduct(name) {
     return parts.slice(0, -2).join(" ");
   }
   if (COLORS.has(parts[parts.length - 1].toLowerCase())) return parts.slice(0, -1).join(" ");
-  return name.trim();
+  return cleaned;
 }
 
 /**
