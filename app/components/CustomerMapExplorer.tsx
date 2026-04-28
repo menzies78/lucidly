@@ -54,7 +54,6 @@ export interface MapGem {
   count: number;
   expected: number;
   lift: number;
-  label: string;
   filters: {
     country?: string;
     vip?: "any" | "top5" | "top10" | "top20";
@@ -570,7 +569,6 @@ function GemsList({ gems, onApply }: { gems: MapGem[]; onApply: (g: MapGem) => v
           else if (g.kind === "repeat") text = `${cn} customers are ${g.lift}× more likely to be repeat buyers (${g.count} vs ~${g.expected} expected)`;
           else if (g.kind === "lapsed") text = `${cn} has ${g.lift}× the share of lapsed customers (${g.count} vs ~${g.expected} expected)`;
           else if (g.kind === "product" && g.filters.product) text = `${g.filters.product} is ${g.lift}× more popular in ${cn} (${g.count} buyers vs ~${g.expected} expected)`;
-          else text = g.label;
           return (
             <button
               key={i}

@@ -784,50 +784,54 @@ export async function rebuildCustomerSegments(shopDomain) {
   // with both a lift floor (1.5×) and a z-score floor (1.96 ≈ 95% CI) so we
   // don't fire on noise from tiny markets. Score = lift × sqrt(count) so
   // we prefer high-lift gems in countries with real volume.
+  //
+  // MEMORY: this runs at the peak of customerRollups — ltv/journey/geo
+  // blobs are still in memory alongside customerMapPoints. We deliberately
+  // avoid per-country product Maps (would be O(C × P) ≈ 500k entries) and
+  // instead bound the product×country grid to top 5 products × top 10
+  // countries. The Apr 28 OOM was traced to that O(C × P) Map.
   const productList = Array.from(productIndex.keys());
+  productIndex.clear();   // release the Map — productList carries forward
   const gems = (() => {
     const N = customerMapPoints.length;
     if (N < 50) return [];
 
-    // Country totals + per-feature counts.
-    const byCountry = new Map();
-    for (const p of customerMapPoints) {
-      if (!p.c) continue;
-      let agg = byCountry.get(p.c);
-      if (!agg) {
-        agg = {
-          country: p.c, total: 0, vipTop5: 0, discount: 0,
-          highRefund: 0, repeat: 0, lapsed: 0, products: new Map(),
-        };
-        byCountry.set(p.c, agg);
-      }
-      agg.total++;
-      if (p.v === 5) agg.vipTop5++;
-      if (p.p === 1) agg.discount++;
-      if (p.h === 1) agg.highRefund++;
-      if (p.n >= 2) agg.repeat++;
-      if (p.d != null && p.d > 365) agg.lapsed++;
-      for (const idx of p.pr) {
-        agg.products.set(idx, (agg.products.get(idx) || 0) + 1);
-      }
-    }
-
-    // Global rates.
+    // Single-pass: country aggregates + global counters + product totals.
+    // Plain objects (Object.create(null)) instead of Maps trim per-entry
+    // overhead; this matters when we have ~50 country buckets all alive
+    // at the same time as the LTV/journey/geo blobs.
+    const byCountry = Object.create(null);
     let gVip = 0, gDisc = 0, gRefund = 0, gRepeat = 0, gLapsed = 0;
-    const gProduct = new Map(); // idx -> global count
+    const gProduct = Object.create(null); // pIdx (string) -> count
+
     for (const p of customerMapPoints) {
       if (p.v === 5) gVip++;
       if (p.p === 1) gDisc++;
       if (p.h === 1) gRefund++;
       if (p.n >= 2) gRepeat++;
       if (p.d != null && p.d > 365) gLapsed++;
-      for (const idx of p.pr) gProduct.set(idx, (gProduct.get(idx) || 0) + 1);
+      for (let k = 0; k < p.pr.length; k++) {
+        const idx = p.pr[k];
+        gProduct[idx] = (gProduct[idx] || 0) + 1;
+      }
+      if (!p.c) continue;
+      let ag = byCountry[p.c];
+      if (!ag) {
+        ag = byCountry[p.c] = { total: 0, vip: 0, disc: 0, refund: 0, repeat: 0, lapsed: 0 };
+      }
+      ag.total++;
+      if (p.v === 5) ag.vip++;
+      if (p.p === 1) ag.disc++;
+      if (p.h === 1) ag.refund++;
+      if (p.n >= 2) ag.repeat++;
+      if (p.d != null && p.d > 365) ag.lapsed++;
     }
+
     const gVipShare = gVip / N, gDiscShare = gDisc / N, gRefundShare = gRefund / N;
     const gRepeatShare = gRepeat / N, gLapsedShare = gLapsed / N;
 
     const candidates = [];
-    const testAnomaly = (kind, country, count, total, globalShare, label, filters) => {
+    const testAnomaly = (kind, country, count, total, globalShare, filters) => {
       if (count < 5 || total < 20) return;
       const expected = total * globalShare;
       if (expected <= 0) return;
@@ -838,35 +842,54 @@ export async function rebuildCustomerSegments(shopDomain) {
       if (z < 1.96) return;
       candidates.push({
         kind, country, count, expected: Math.round(expected),
-        lift: Math.round(lift * 10) / 10, z, label, filters,
+        lift: Math.round(lift * 10) / 10, filters,
         score: lift * Math.sqrt(count),
       });
     };
 
-    for (const agg of byCountry.values()) {
-      testAnomaly("vip", agg.country, agg.vipTop5, agg.total, gVipShare,
-        "VIP cluster", { country: agg.country, vip: "top5" });
-      testAnomaly("discount", agg.country, agg.discount, agg.total, gDiscShare,
-        "Discount-buyer hotspot", { country: agg.country, pricing: "discount" });
-      testAnomaly("refund", agg.country, agg.highRefund, agg.total, gRefundShare,
-        "Refund concentration", { country: agg.country, refundsTop: true });
-      testAnomaly("repeat", agg.country, agg.repeat, agg.total, gRepeatShare,
-        "Repeat-buyer hotspot", { country: agg.country, orderBand: "2-3" });
-      testAnomaly("lapsed", agg.country, agg.lapsed, agg.total, gLapsedShare,
-        "Lapsed-customer cluster", { country: agg.country, recency: "lapsed" });
+    for (const cc in byCountry) {
+      const ag = byCountry[cc];
+      testAnomaly("vip", cc, ag.vip, ag.total, gVipShare, { country: cc, vip: "top5" });
+      testAnomaly("discount", cc, ag.disc, ag.total, gDiscShare, { country: cc, pricing: "discount" });
+      testAnomaly("refund", cc, ag.refund, ag.total, gRefundShare, { country: cc, refundsTop: true });
+      testAnomaly("repeat", cc, ag.repeat, ag.total, gRepeatShare, { country: cc, orderBand: "2-3" });
+      testAnomaly("lapsed", cc, ag.lapsed, ag.total, gLapsedShare, { country: cc, recency: "lapsed" });
     }
 
-    // Product × country anomalies — top 15 products by global volume only,
-    // to keep the candidate set bounded for big merchants.
-    const topProducts = Array.from(gProduct.entries())
-      .sort((a, b) => b[1] - a[1]).slice(0, 15);
-    for (const [pIdx, pCount] of topProducts) {
-      const productShare = pCount / N;
-      for (const agg of byCountry.values()) {
-        const cInCountry = agg.products.get(pIdx) || 0;
-        testAnomaly("product", agg.country, cInCountry, agg.total, productShare,
-          `Product cluster: ${productList[pIdx]}`,
-          { country: agg.country, product: productList[pIdx] });
+    // Product × country anomalies — bounded grid so we never blow up on
+    // catalogues with thousands of SKUs. Top 5 products globally × top 10
+    // countries by total = max 50 cells, regardless of merchant size.
+    const topProductIdx = Object.keys(gProduct)
+      .map(Number)
+      .sort((a, b) => gProduct[b] - gProduct[a])
+      .slice(0, 5);
+    const topCountries = Object.keys(byCountry)
+      .filter((cc) => byCountry[cc].total >= 20)
+      .sort((a, b) => byCountry[b].total - byCountry[a].total)
+      .slice(0, 10);
+
+    if (topProductIdx.length > 0 && topCountries.length > 0) {
+      const topProdSet = new Set(topProductIdx);
+      const topCountrySet = new Set(topCountries);
+      // grid[cc][pIdx] = count. Allocated lazily, max 10 × 5 = 50 entries.
+      const grid = Object.create(null);
+      for (const cc of topCountries) grid[cc] = Object.create(null);
+
+      for (const p of customerMapPoints) {
+        if (!p.c || !topCountrySet.has(p.c)) continue;
+        const row = grid[p.c];
+        for (let k = 0; k < p.pr.length; k++) {
+          const idx = p.pr[k];
+          if (topProdSet.has(idx)) row[idx] = (row[idx] || 0) + 1;
+        }
+      }
+      for (const pIdx of topProductIdx) {
+        const productShare = gProduct[pIdx] / N;
+        for (const cc of topCountries) {
+          const cnt = grid[cc][pIdx] || 0;
+          testAnomaly("product", cc, cnt, byCountry[cc].total, productShare,
+            { country: cc, product: productList[pIdx] });
+        }
       }
     }
 
@@ -880,7 +903,7 @@ export async function rebuildCustomerSegments(shopDomain) {
       seenCountry.add(g.country);
       out.push({
         kind: g.kind, country: g.country, count: g.count,
-        expected: g.expected, lift: g.lift, label: g.label, filters: g.filters,
+        expected: g.expected, lift: g.lift, filters: g.filters,
       });
       if (out.length >= 5) break;
     }
