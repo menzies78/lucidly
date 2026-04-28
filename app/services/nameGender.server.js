@@ -15,6 +15,7 @@
 // Returns: { gender: "male" | "female" | null, confidence: number | null }
 
 import { getGender } from "gender-detection-from-name";
+import { TITLES, PLAIN, COUNTRY, COUNTRY_ALIASES } from "./nameGenderOverrides.js";
 
 // Country code → BCP-47-ish language hint accepted by the package.
 // Add codes as we encounter merchants in new markets. Unknown/missing
@@ -38,17 +39,52 @@ const COUNTRY_TO_LANG = {
 // threshold; we record 0.95 as a flat probability marker.
 const DEFAULT_CONFIDENCE = 0.95;
 
-// Strip whitespace, hyphens, apostrophes — try first token first (most
-// people enter "Mary-Anne" or "John Paul" as a multi-part first name; the
-// first token is usually the conventional gendered part).
-function normalizeFirstName(raw) {
+// Confidence when the only signal is a leading title token (Mr/Mrs/…) and
+// the name itself was unidentifiable. Lower than DEFAULT_CONFIDENCE because
+// title fields are noisy — people copy-paste "Mr Smith" or just "Mr."
+const TITLE_FALLBACK_CONFIDENCE = 0.85;
+
+// Parse a raw firstName field into:
+//   { name: <first non-title token>, titleGender: <"male"|"female"|null> }
+// Strips punctuation, splits on whitespace/hyphen/apostrophe, keeps tokens
+// of length ≥2. If the *first* token is a salutation ("Mr", "Mrs", …) we
+// strip it from the name AND record its implied gender so callers can use
+// it as a fallback when the name itself doesn't resolve.
+function parseFirstName(raw) {
   if (!raw || typeof raw !== "string") return null;
   const cleaned = raw.trim().replace(/[^\p{L}\s\-']/gu, "");
   if (!cleaned) return null;
-  // Split on whitespace, hyphen, apostrophe; keep tokens of length ≥2
   const tokens = cleaned.split(/[\s\-']/).map((t) => t.trim()).filter((t) => t.length >= 2);
   if (tokens.length === 0) return null;
-  return tokens[0];
+
+  let titleGender = null;
+  let nameTokens = tokens;
+  const firstLower = tokens[0].toLowerCase();
+  if (TITLES[firstLower]) {
+    titleGender = TITLES[firstLower];
+    nameTokens = tokens.slice(1);
+  }
+  return { name: nameTokens[0] || null, titleGender };
+}
+
+// Walk the override tables for a given (name, country). Honours
+// COUNTRY_ALIASES so e.g. a Belgian customer also picks up NL entries.
+function checkOverrides(nameLower, countryCode) {
+  if (!nameLower) return null;
+  const cc = countryCode ? countryCode.toUpperCase() : null;
+  if (cc) {
+    const direct = COUNTRY[`${nameLower}|${cc}`];
+    if (direct) return direct;
+    const aliases = COUNTRY_ALIASES[cc];
+    if (aliases) {
+      for (const alias of aliases) {
+        const aliased = COUNTRY[`${nameLower}|${alias}`];
+        if (aliased) return aliased;
+      }
+    }
+  }
+  if (PLAIN[nameLower]) return PLAIN[nameLower];
+  return null;
 }
 
 /**
@@ -59,42 +95,50 @@ function normalizeFirstName(raw) {
  * @returns {{ gender: "male"|"female"|null, confidence: number|null }}
  */
 export function inferGender(firstName, countryCode) {
-  const name = normalizeFirstName(firstName);
-  if (!name) return { gender: null, confidence: null };
+  const parsed = parseFirstName(firstName);
+  if (!parsed) return { gender: null, confidence: null };
+  const { name, titleGender } = parsed;
 
-  const lang = countryCode ? COUNTRY_TO_LANG[countryCode.toUpperCase()] : null;
+  // 1. Manual overrides — country-qualified first, then plain. These take
+  //    precedence over the package because they exist precisely to correct
+  //    its over-cautious "unknown" calls (e.g. "chris", "ryan") and to
+  //    cover markets it doesn't ship lists for (JP, KR, NL).
+  if (name) {
+    const override = checkOverrides(name.toLowerCase(), countryCode);
+    if (override) return { gender: override, confidence: DEFAULT_CONFIDENCE };
 
-  // Country-language lookup (or undefined → global) and global lookup.
-  // We call both so we can detect cross-cultural disagreement.
-  let countryAnswer;
-  try {
-    countryAnswer = lang ? getGender(name, lang) : null;
-  } catch {
-    countryAnswer = null;
+    // 2. Package lookup — country-language vs. global, with the
+    //    cross-cultural disagreement guard from the original logic.
+    const lang = countryCode ? COUNTRY_TO_LANG[countryCode.toUpperCase()] : null;
+    let countryAnswer;
+    try {
+      countryAnswer = lang ? getGender(name, lang) : null;
+    } catch {
+      countryAnswer = null;
+    }
+    let globalAnswer;
+    try {
+      globalAnswer = getGender(name);
+    } catch {
+      globalAnswer = "unknown";
+    }
+    const c = countryAnswer === "male" || countryAnswer === "female" ? countryAnswer : null;
+    const g = globalAnswer === "male" || globalAnswer === "female" ? globalAnswer : null;
+    if (c && g) {
+      if (c === g) return { gender: c, confidence: DEFAULT_CONFIDENCE };
+      // Cross-cultural disagreement — fall through to the title fallback
+      // below if there's a Mr/Mrs prefix to lean on, otherwise null.
+    } else if (c && !g) return { gender: c, confidence: DEFAULT_CONFIDENCE };
+    else if (!c && g) return { gender: g, confidence: DEFAULT_CONFIDENCE };
   }
-  let globalAnswer;
-  try {
-    globalAnswer = getGender(name);
-  } catch {
-    globalAnswer = "unknown";
+
+  // 3. Title fallback — when the name itself was missing or unresolved
+  //    but the firstName field started with "Mr"/"Mrs"/etc., trust the
+  //    salutation at lower confidence.
+  if (titleGender) {
+    return { gender: titleGender, confidence: TITLE_FALLBACK_CONFIDENCE };
   }
 
-  // Normalize "unknown" → null for our purposes.
-  const c = countryAnswer === "male" || countryAnswer === "female" ? countryAnswer : null;
-  const g = globalAnswer === "male" || globalAnswer === "female" ? globalAnswer : null;
-
-  // Decision matrix:
-  // - country known + matches global → confident, return it
-  // - country known + global unknown → trust country
-  // - country known + disagrees with global → ambiguous, null
-  // - country unknown + global known → return global (single source)
-  // - both unknown → null
-  if (c && g) {
-    if (c === g) return { gender: c, confidence: DEFAULT_CONFIDENCE };
-    return { gender: null, confidence: null }; // cross-cultural ambiguity
-  }
-  if (c && !g) return { gender: c, confidence: DEFAULT_CONFIDENCE };
-  if (!c && g) return { gender: g, confidence: DEFAULT_CONFIDENCE };
   return { gender: null, confidence: null };
 }
 
