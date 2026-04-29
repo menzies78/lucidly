@@ -24,7 +24,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.80.0",
-    "@prisma/client": "^6.2.1",
+    "@prisma/client": "^7.7.0",
     "@remix-run/dev": "^2.16.1",
     "@remix-run/fs-routes": "^2.16.1",
     "@remix-run/node": "^2.16.1",
@@ -40,7 +40,7 @@
     "gender-detection-from-name": "^1.11.4",
     "isbot": "^5.1.0",
     "leaflet": "^1.9.4",
-    "prisma": "^6.2.1",
+    "prisma": "^7.7.0",
     "protomaps-leaflet": "^5.1.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
