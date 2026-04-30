@@ -105,6 +105,7 @@ export const loader = async ({ request }) => {
     customers, dailyRollups, prevDailyRollups,
     insights, prevInsights, allTimeSpendResult,
     ageRaw, genderRaw,
+    allMetaCombinedGenderRaw, newMetaCombinedGenderRaw, allCustomerGenderRaw,
     blobs,
     aiCached,
     unmatchedAttrs,
@@ -150,6 +151,77 @@ export const loader = async ({ request }) => {
         where: { shopDomain, breakdownType: "gender", date: { gte: fromDate, lte: toDate } },
         _sum: { conversions: true, conversionValue: true, spend: true, impressions: true },
       }),
+    )),
+    // All-Meta gender bars — per-attribution rather than Meta's audience-level
+    // breakdown, so we can COALESCE in the name-inferred gender. Meta's
+    // breakdown API only returns rows when audience size clears its privacy
+    // threshold, so historical / small date ranges look empty. Per-attribution
+    // covers every matched order; the inferredGender fallback fills the long
+    // tail. Pivot on Order.createdAt (NOT Attribution.matchedAt — the latter
+    // is when the matcher ran, not when the order happened — see
+    // memory: attribution_matchedat_gotcha.md).
+    time("allMetaCombinedGender", queryCached(
+      `${shopDomain}:attrAllGender:${dateFromStr}:${dateToStr}`, DEFAULT_TTL,
+      () => db.$queryRaw<Array<{ gender: string | null; conversions: bigint | number; revenue: number | null }>>`
+        SELECT COALESCE(a.metaGender, c.inferredGender) AS gender,
+               COUNT(*) AS conversions,
+               SUM(a.metaConversionValue) AS revenue
+        FROM Attribution a
+        JOIN "Order" o
+          ON o.shopDomain = a.shopDomain AND o.shopifyOrderId = a.shopifyOrderId
+        JOIN Customer c
+          ON c.shopDomain = o.shopDomain AND c.shopifyCustomerId = o.shopifyCustomerId
+        WHERE a.shopDomain = ${shopDomain}
+          AND a.confidence > 0
+          AND o.createdAt >= ${fromDate}
+          AND o.createdAt <= ${toDate}
+          AND COALESCE(a.metaGender, c.inferredGender) IS NOT NULL
+        GROUP BY COALESCE(a.metaGender, c.inferredGender)
+      `,
+    )),
+    // New-Meta gender bars — same combined approach scoped to first-order
+    // attributions. Replaces the old findMany() that required metaAge NOT
+    // NULL (which silently dropped most rows on date ranges where Meta's
+    // breakdown enrichment hadn't covered the audience).
+    time("newMetaCombinedGender", queryCached(
+      `${shopDomain}:attrNewGender:${dateFromStr}:${dateToStr}`, DEFAULT_TTL,
+      () => db.$queryRaw<Array<{ gender: string | null; conversions: bigint | number; revenue: number | null }>>`
+        SELECT COALESCE(a.metaGender, c.inferredGender) AS gender,
+               COUNT(*) AS conversions,
+               SUM(a.metaConversionValue) AS revenue
+        FROM Attribution a
+        JOIN "Order" o
+          ON o.shopDomain = a.shopDomain AND o.shopifyOrderId = a.shopifyOrderId
+        JOIN Customer c
+          ON c.shopDomain = o.shopDomain AND c.shopifyCustomerId = o.shopifyCustomerId
+        WHERE a.shopDomain = ${shopDomain}
+          AND a.confidence > 0
+          AND a.isNewCustomer = 1
+          AND o.createdAt >= ${fromDate}
+          AND o.createdAt <= ${toDate}
+          AND COALESCE(a.metaGender, c.inferredGender) IS NOT NULL
+        GROUP BY COALESCE(a.metaGender, c.inferredGender)
+      `,
+    )),
+    // All-Customers gender — every order in range joined to Customer.inferredGender.
+    // Surfaces gender for organic customers, where neither Meta breakdown nor
+    // Attribution has a row. £0 orders excluded to match rollup conventions.
+    time("allCustomerGender", queryCached(
+      `${shopDomain}:allCustGender:${dateFromStr}:${dateToStr}`, DEFAULT_TTL,
+      () => db.$queryRaw<Array<{ gender: string | null; orders: bigint | number; revenue: number | null }>>`
+        SELECT c.inferredGender AS gender,
+               COUNT(*) AS orders,
+               SUM(o.frozenTotalPrice - COALESCE(o.totalRefunded, 0)) AS revenue
+        FROM "Order" o
+        JOIN Customer c
+          ON c.shopDomain = o.shopDomain AND c.shopifyCustomerId = o.shopifyCustomerId
+        WHERE o.shopDomain = ${shopDomain}
+          AND o.createdAt >= ${fromDate}
+          AND o.createdAt <= ${toDate}
+          AND o.frozenTotalPrice > 0
+          AND c.inferredGender IS NOT NULL
+        GROUP BY c.inferredGender
+      `,
     )),
     time("blobs", queryCached(`${shopDomain}:customersBlobs`, DEFAULT_TTL, loadAnalysisBlobs)),
     time("aiCache", getCachedInsights(shopDomain, "customers", dateFromStr, dateToStr)),
@@ -441,16 +513,51 @@ export const loader = async ({ request }) => {
       return { label: age, conversions: row?._sum?.conversions || 0, spend: row?._sum?.spend || 0, revenue: row?._sum?.conversionValue || 0 };
     })
     .filter(a => a.conversions > 0 || a.spend > 0);
-  const genderBreakdown = genderRaw
-    .map(r => ({
-      label: r.breakdownValue === "male" ? "Male" : r.breakdownValue === "female" ? "Female" : "Unknown",
-      conversions: r._sum?.conversions || 0,
-      spend: r._sum?.spend || 0,
-      revenue: r._sum?.conversionValue || 0,
-    }))
-    .filter(g => g.conversions > 0)
+  // Per-gender ad-spend lookup, sourced from MetaBreakdown (the only place
+  // where Meta gives us a spend split by gender). When a gender bucket
+  // exists here we use it for the CPA chip; when it doesn't we fall back
+  // to proportional period spend (avgCpa × conversions) so the chip stays
+  // populated for date ranges where Meta's breakdown is empty.
+  const metaBreakdownGenderSpend: Record<string, number> = {};
+  let metaBreakdownGenderConversions = 0;
+  for (const r of genderRaw) {
+    const label = r.breakdownValue === "male" ? "Male" : r.breakdownValue === "female" ? "Female" : "Unknown";
+    metaBreakdownGenderSpend[label] = (metaBreakdownGenderSpend[label] || 0) + (r._sum?.spend || 0);
+    metaBreakdownGenderConversions += (r._sum?.conversions || 0);
+  }
+
+  // genderBreakdown (All Meta) — now per-attribution + COALESCE so it
+  // populates whenever there are matched orders, not just when Meta's
+  // audience-level breakdown happens to cover the range.
+  const allMetaConversionsTotal = (allMetaCombinedGenderRaw as Array<{ conversions: bigint | number }>)
+    .reduce((s, r) => s + Number(r.conversions || 0), 0);
+  const genderBreakdown = (allMetaCombinedGenderRaw as Array<{ gender: string | null; conversions: bigint | number; revenue: number | null }>)
+    .map(r => {
+      const label = r.gender === "male" ? "Male" : r.gender === "female" ? "Female" : "Unknown";
+      const conversions = Number(r.conversions) || 0;
+      // Prefer Meta's per-gender spend if present; otherwise proportional.
+      let spend = metaBreakdownGenderSpend[label] || 0;
+      if (spend === 0 && allMetaConversionsTotal > 0 && totalMetaSpend > 0) {
+        spend = totalMetaSpend * (conversions / allMetaConversionsTotal);
+      }
+      return { label, conversions, spend, revenue: Number(r.revenue) || 0 };
+    })
+    .filter(g => g.conversions > 0 && g.label !== "Unknown")
     .sort((a, b) => b.conversions - a.conversions);
   const totalDemoConversions = ageBreakdown.reduce((s, a) => s + a.conversions, 0);
+
+  // All-Customers gender breakdown — name-inferred only, every order in range.
+  // No spend column (no per-order ad-spend signal); chip switches to AOV at
+  // render time.
+  const allCustomerGenderBreakdown = (allCustomerGenderRaw as Array<{ gender: string | null; orders: bigint | number; revenue: number | null }>)
+    .map(r => ({
+      label: r.gender === "male" ? "Male" : r.gender === "female" ? "Female" : "Unknown",
+      conversions: Number(r.orders) || 0,
+      spend: 0,
+      revenue: Number(r.revenue) || 0,
+    }))
+    .filter(g => g.conversions > 0 && g.label !== "Unknown")
+    .sort((a, b) => b.conversions - a.conversions);
 
   // New-Meta demographics — pulled from Attribution rows (which carry
   // per-order metaAge/metaGender from the breakdown enrichment step),
@@ -471,17 +578,14 @@ export const loader = async ({ request }) => {
     }),
   );
   const newAgeAgg: Record<string, { conversions: number; value: number; spend: number; impressions: number }> = {};
-  const newGenderAgg: Record<string, { conversions: number; value: number; spend: number; impressions: number }> = {};
+  // Gender no longer aggregated here — moved to newMetaCombinedGenderRaw
+  // (per-attribution + COALESCE with Customer.inferredGender). Age stays
+  // here since there's no name-based age inference.
   for (const a of newMetaAttrsWithDemo) {
     if (a.metaAge) {
       if (!newAgeAgg[a.metaAge]) newAgeAgg[a.metaAge] = { conversions: 0, value: 0, spend: 0, impressions: 0 };
       newAgeAgg[a.metaAge].conversions++;
       newAgeAgg[a.metaAge].value += a.metaConversionValue || 0;
-    }
-    if (a.metaGender) {
-      if (!newGenderAgg[a.metaGender]) newGenderAgg[a.metaGender] = { conversions: 0, value: 0, spend: 0, impressions: 0 };
-      newGenderAgg[a.metaGender].conversions++;
-      newGenderAgg[a.metaGender].value += a.metaConversionValue || 0;
     }
   }
   // Approximate new-customer spend per age/gender via the all-Meta aggregate
@@ -497,21 +601,28 @@ export const loader = async ({ request }) => {
       return { label: age, conversions, spend: avgCpa * conversions, revenue: s?.value || 0 };
     })
     .filter(a => a.conversions > 0);
-  const newGenderBreakdown = Object.entries(newGenderAgg)
-    .map(([raw, s]) => {
-      const label = raw === "male" ? "Male" : raw === "female" ? "Female" : "Unknown";
+  // newGenderBreakdown — uses the per-attribution + COALESCE query so the
+  // gender bars populate even when Meta's breakdown enrichment hadn't run
+  // for these orders. Spend per gender uses Meta's per-gender CPA when
+  // available (genderBreakdown), falling back to proportional period spend.
+  const newMetaCombinedConversionsTotal = (newMetaCombinedGenderRaw as Array<{ conversions: bigint | number }>)
+    .reduce((s, r) => s + Number(r.conversions || 0), 0);
+  const newGenderBreakdown = (newMetaCombinedGenderRaw as Array<{ gender: string | null; conversions: bigint | number; revenue: number | null }>)
+    .map(r => {
+      const label = r.gender === "male" ? "Male" : r.gender === "female" ? "Female" : "Unknown";
+      const conversions = Number(r.conversions) || 0;
       const allMetaG = genderBreakdown.find(g => g.label === label);
-      const avgCpa = allMetaG && allMetaG.conversions > 0 ? allMetaG.spend / allMetaG.conversions : 0;
-      return {
-        label,
-        conversions: s.conversions,
-        spend: avgCpa * s.conversions,
-        revenue: s.value,
-      };
+      let spend = 0;
+      if (allMetaG && allMetaG.conversions > 0) {
+        spend = (allMetaG.spend / allMetaG.conversions) * conversions;
+      } else if (newMetaCombinedConversionsTotal > 0 && totalMetaSpend > 0) {
+        spend = totalMetaSpend * (conversions / newMetaCombinedConversionsTotal);
+      }
+      return { label, conversions, spend, revenue: Number(r.revenue) || 0 };
     })
-    .filter(g => g.conversions > 0)
+    .filter(g => g.conversions > 0 && g.label !== "Unknown")
     .sort((a, b) => b.conversions - a.conversions);
-  const newDemoConversions = newMetaAttrsWithDemo.length;
+  const newDemoConversions = newMetaCombinedConversionsTotal;
   const newDemoExactCount = 0;
 
   // Date-scoped geography — computed at loader time from orders placed in
@@ -1736,7 +1847,7 @@ export default function Customers() {
   const [searchParams, setSearchParams] = useSearchParams();
   const [acqMode, setAcqMode] = useState<"customers" | "revenue">("customers");
   const [donutHover, setDonutHover] = useState<number | null>(null);
-  const [demoScope, setDemoScope] = useState<"new" | "allMeta">("new");
+  const [demoScope, setDemoScope] = useState<"new" | "allMeta" | "all">("new");
   const [demoMetric, setDemoMetric] = useState<"cpa" | "roas" | "aov">("cpa");
   const [geoScope, setGeoScope] = useState<"new" | "allMeta" | "all">("new");
   const [geoMetric, setGeoMetric] = useState<"rev" | "cpa" | "roas" | "aov">("rev");
@@ -2081,10 +2192,22 @@ export default function Customers() {
     </div>
   );
 
-  // Demographics: active data based on toggle
-  const activeAgeBreakdown = demoScope === "new" ? newAgeBreakdown : ageBreakdown;
-  const activeGenderBreakdown = demoScope === "new" ? newGenderBreakdown : genderBreakdown;
-  const activeDemoConversions = demoScope === "new" ? newDemoConversions : totalDemoConversions;
+  // Demographics: active data based on toggle. Three scopes:
+  //   • "new"     — Meta-acquired new customers (per-Attribution metaGender)
+  //   • "allMeta" — Meta's audience-level breakdown (MetaBreakdown rows)
+  //   • "all"     — every customer who ordered in range, gender from
+  //                 Customer.inferredGender (name-based). Only this scope
+  //                 surfaces organic customers + historical ranges where
+  //                 Meta has no data.
+  const activeAgeBreakdown = demoScope === "new" ? newAgeBreakdown
+    : demoScope === "all" ? [] // age has no name-based equivalent
+    : ageBreakdown;
+  const activeGenderBreakdown = demoScope === "new" ? newGenderBreakdown
+    : demoScope === "all" ? allCustomerGenderBreakdown
+    : genderBreakdown;
+  const activeDemoConversions = demoScope === "new" ? newDemoConversions
+    : demoScope === "all" ? allCustomerGenderBreakdown.reduce((s, g) => s + g.conversions, 0)
+    : totalDemoConversions;
   const genderTotal = activeGenderBreakdown.reduce((s: number, g: any) => s + g.conversions, 0);
 
   // Geography: active data based on 3-way toggle
@@ -2459,12 +2582,15 @@ export default function Customers() {
                   <Text as="p" variant="bodySm" tone="subdued">
                     {demoScope === "new"
                       ? "All New customer Meta-reported conversions by age & gender"
-                      : "All Meta-reported conversions by age & gender"}
+                      : demoScope === "allMeta"
+                        ? "All Meta-reported conversions by age & gender"
+                        : "All customers (Meta + organic) by gender — name-based inference, age unavailable"}
                   </Text>
                 </div>
                 <div className="toggle-group">
                   <button className={`toggle-btn ${demoScope === "new" ? "active" : ""}`} onClick={() => setDemoScope("new")}>New Meta</button>
                   <button className={`toggle-btn ${demoScope === "allMeta" ? "active" : ""}`} onClick={() => setDemoScope("allMeta")}>All Meta</button>
+                  <button className={`toggle-btn ${demoScope === "all" ? "active" : ""}`} onClick={() => setDemoScope("all")}>All Customers</button>
                 </div>
               </div>
               <div className="demo-grid">
@@ -2545,15 +2671,21 @@ export default function Customers() {
                           );
                         })}
                       </div>
-                      {/* Spend comparison */}
+                      {/* Spend comparison — CPA only meaningful when we have
+                          spend, which the "all" (name-inferred) scope does not.
+                          For "all" we show AOV instead so the chip stays useful. */}
                       <div style={{ display: "flex", gap: "12px", justifyContent: "center", marginTop: "4px" }}>
                         {activeGenderBreakdown.map((g: any) => {
                           const color = g.label === "Female" ? "#EC4899" : g.label === "Male" ? "#3B82F6" : "#9CA3AF";
-                          const cpa = g.conversions > 0 ? g.spend / g.conversions : 0;
+                          const isAllScope = demoScope === "all";
+                          const value = isAllScope
+                            ? (g.conversions > 0 ? g.revenue / g.conversions : 0)
+                            : (g.conversions > 0 ? g.spend / g.conversions : 0);
+                          const chipLabel = isAllScope ? "AOV" : "CPA";
                           return (
                             <div key={g.label} style={{ textAlign: "center" }}>
-                              <div style={{ fontSize: "18px", fontWeight: 700, color }}>{cs}{Math.round(cpa)}</div>
-                              <div style={{ fontSize: "10px", color: "#9CA3AF" }}>CPA ({g.label})</div>
+                              <div style={{ fontSize: "18px", fontWeight: 700, color }}>{cs}{Math.round(value)}</div>
+                              <div style={{ fontSize: "10px", color: "#9CA3AF" }}>{chipLabel} ({g.label})</div>
                             </div>
                           );
                         })}

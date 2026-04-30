@@ -379,12 +379,19 @@ export async function rebuildCustomerSegments(shopDomain) {
       //   h  highestRefunds (1, set in second pass)
       //   pr distinct product indices into productList
       const distinctProductIdx = Object.keys(productCounts).map(getProductIdx);
+      // Gender resolution mirrors ltvCustomers: prefer attribution gender
+      // (Meta breakdown — only ~30% of orders carry it), fall back to the
+      // name-based inferredGender on the Customer row. Without this fallback
+      // the map filter only covered Meta-acquired customers; with it, every
+      // segment (organic, retargeted, Meta-new) gets a M/F tag wherever the
+      // first name is unambiguous.
+      const mapGenderRaw = firstAttr?.gender || customerInferredGenderMap.get(custId) || null;
       customerMapPoints.push({
         i: custId,
         la: Math.round(lat * 10000) / 10000,   // 4dp ≈ 11m precision
         lo: Math.round(lng * 10000) / 10000,
         s: segment === "metaNew" ? "m" : segment === "metaRetargeted" ? "r" : "o",
-        g: firstAttr?.gender ? (firstAttr.gender[0] === "f" ? "f" : "m") : null,
+        g: mapGenderRaw ? (mapGenderRaw[0] === "f" ? "f" : "m") : null,
         a: firstAttr?.age || null,
         c: firstOrder?.countryCode || null,
         t: firstOrder?.city || null,

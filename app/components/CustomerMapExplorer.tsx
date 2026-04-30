@@ -101,6 +101,22 @@ interface Props {
   protomapsKey?: string | null;
 }
 
+const DAY_MS = 86400000;
+
+// In-tile time-window control. Defaults to "all" so the map paints with full
+// historic depth on first view — that's the moment the visualisation has
+// the most impact. Narrower windows are user-driven, not page-driven, because
+// most pages default to a 30d range and that would make this tile look empty
+// the moment it loaded. Values are days; "all" disables filtering.
+type TimeWindow = "all" | 30 | 90 | 180 | 365;
+const TIME_WINDOWS: { key: TimeWindow; label: string }[] = [
+  { key: "all", label: "All time" },
+  { key: 365, label: "365d" },
+  { key: 180, label: "180d" },
+  { key: 90, label: "90d" },
+  { key: 30, label: "30d" },
+];
+
 export default function CustomerMapExplorer({ blob, cs, protomapsKey = null }: Props) {
   const [scope, setScope] = useState<Scope>("metaAcquired");
   const [gender, setGender] = useState<"All" | "Female" | "Male">("All");
@@ -117,6 +133,11 @@ export default function CustomerMapExplorer({ blob, cs, protomapsKey = null }: P
   const [product, setProduct] = useState<string>("All");
   const [productSearch, setProductSearch] = useState<string>("");
 
+  // In-tile time-window. "all" = no filtering (default — preserves the
+  // first-paint impact of seeing every customer). Numeric values mean
+  // "customers with an order in the last N days".
+  const [timeWindow, setTimeWindow] = useState<TimeWindow>("all");
+
   // Normalise pr (product indices) on read so older blobs persisted before
   // the productList rollout don't crash the filter passes. We mutate in
   // place rather than .map+spread because a 30k-customer merchant would
@@ -124,16 +145,20 @@ export default function CustomerMapExplorer({ blob, cs, protomapsKey = null }: P
   const points = useMemo(() => {
     const raw: MapPoint[] = blob?.points || [];
     for (const p of raw) { if (!p.pr) p.pr = []; }
-    return raw;
-  }, [blob]);
+    if (timeWindow === "all") return raw;
+    // Filter on `d` (days-since-last-order) — present on every blob version,
+    // so the window control works without waiting for fd/ld to populate.
+    const cutoff = timeWindow as number;
+    return raw.filter((p) => p.d != null && p.d <= cutoff);
+  }, [blob, timeWindow]);
   const productList = blob?.productList || [];
   const gems = blob?.gems || [];
 
-  // Demographic filters apply to Meta Acquired only — Meta hasn't given
-  // us age/gender for retargeted or organic shoppers. When the user
-  // changes scope away from metaAcquired we leave the filter values
-  // untouched but the UI greys them out and they no-op in the filter
-  // pass. This keeps state stable across scope toggles.
+  // Gender filter is available across every scope — even on All Customers,
+  // because customerRollups.server.js falls back to Customer.inferredGender
+  // (name-based) when Meta's per-attribution metaGender is missing. Age,
+  // however, still requires a Meta breakdown row, so it remains gated to
+  // the Meta Acquired scope.
   const isMetaAcquired = scope === "metaAcquired";
 
   const segmentSet = useMemo<Set<SegCode>>(() => {
@@ -165,9 +190,12 @@ export default function CustomerMapExplorer({ blob, cs, protomapsKey = null }: P
   const filtered = useMemo(() => {
     return points.filter((p) => {
       if (!segmentSet.has(p.s)) return false;
+      // Gender filter applies across every scope (see comment on isMetaAcquired
+      // above). Age stays gated to Meta Acquired because we don't have a
+      // name-based age inference equivalent.
+      if (gender === "Female" && p.g !== "f") return false;
+      if (gender === "Male" && p.g !== "m") return false;
       if (isMetaAcquired) {
-        if (gender === "Female" && p.g !== "f") return false;
-        if (gender === "Male" && p.g !== "m") return false;
         if (ages.length > 0 && (!p.a || !ages.includes(p.a))) return false;
       }
       if (country !== "All" && p.c !== country) return false;
@@ -293,11 +321,15 @@ export default function CustomerMapExplorer({ blob, cs, protomapsKey = null }: P
     transition: "all 0.15s",
   });
 
-  const subtitle = scope === "metaAcquired"
+  const baseSubtitle = scope === "metaAcquired"
     ? "Where your Meta-acquired customers live. Drill into cities, filter by demographics, spotlight VIPs and discount-only buyers."
     : scope === "allMeta"
-    ? "All Meta customers — acquired + retargeted. Demographic filters are unavailable here because Meta only reports age/gender for acquired customers."
-    : "Every customer in your Shopify, regardless of source. Demographic filters are unavailable for non-Meta customers.";
+    ? "All Meta customers — acquired + retargeted. Gender filter uses Meta's reported demographics where available, otherwise name-based inference."
+    : "Every customer in your Shopify, regardless of source. Gender filter uses name-based inference for non-Meta customers; age remains Meta-only.";
+  // Always remind people the dots are city-grain, not address-grain — the
+  // map happily zooms to street level but the underlying signal is the
+  // city centroid from geonames cities5000.
+  const subtitle = `${baseSubtitle} Locations are approximate — each pin is the city centroid (or the country centroid where the customer's city is unknown), not the customer's exact address.`;
 
   return (
     <Card>
@@ -318,10 +350,26 @@ export default function CustomerMapExplorer({ blob, cs, protomapsKey = null }: P
             <Text as="h2" variant="headingLg">Customer Map Explorer</Text>
             <Text as="p" variant="bodySm" tone="subdued">{subtitle}</Text>
           </BlockStack>
-          <div className="cme-toggle-group" style={{ flexShrink: 0 }}>
-            <button className={`cme-toggle-btn ${scope === "metaAcquired" ? "active" : ""}`} onClick={() => setScope("metaAcquired")}>Meta Acquired</button>
-            <button className={`cme-toggle-btn ${scope === "allMeta" ? "active" : ""}`} onClick={() => setScope("allMeta")}>All Meta</button>
-            <button className={`cme-toggle-btn ${scope === "all" ? "active" : ""}`} onClick={() => setScope("all")}>All Customers</button>
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 8, flexShrink: 0 }}>
+            <div className="cme-toggle-group">
+              <button className={`cme-toggle-btn ${scope === "metaAcquired" ? "active" : ""}`} onClick={() => setScope("metaAcquired")}>Meta Acquired</button>
+              <button className={`cme-toggle-btn ${scope === "allMeta" ? "active" : ""}`} onClick={() => setScope("allMeta")}>All Meta</button>
+              <button className={`cme-toggle-btn ${scope === "all" ? "active" : ""}`} onClick={() => setScope("all")}>All Customers</button>
+            </div>
+            <div
+              className="cme-toggle-group"
+              title="Filter by recency of last order. All time is the default — narrower windows highlight customers who've ordered recently."
+            >
+              {TIME_WINDOWS.map((w) => (
+                <button
+                  key={String(w.key)}
+                  className={`cme-toggle-btn ${timeWindow === w.key ? "active" : ""}`}
+                  onClick={() => setTimeWindow(w.key)}
+                >
+                  {w.label}
+                </button>
+              ))}
+            </div>
           </div>
         </div>
 
@@ -410,24 +458,20 @@ export default function CustomerMapExplorer({ blob, cs, protomapsKey = null }: P
             />
           </div>
 
-          {/* Gender (Meta Acquired only) */}
+          {/* Gender — available on every scope. Coverage is roughly:
+              ~30% from Meta breakdown + ~50% extra from name-based
+              inference, so most points carry a tag regardless of segment. */}
           <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
             <span style={labelStyle}>Gender</span>
             {(["All", "Female", "Male"] as const).map((g) => (
               <button
                 key={g}
-                onClick={() => isMetaAcquired && setGender(g)}
-                disabled={!isMetaAcquired}
-                style={pillStyle(gender === g && isMetaAcquired, !isMetaAcquired)}
+                onClick={() => setGender(g)}
+                style={pillStyle(gender === g)}
               >
                 {g}
               </button>
             ))}
-            {!isMetaAcquired && (
-              <span style={{ fontSize: "11px", fontStyle: "italic", color: "#9CA3AF" }}>
-                Available for Meta Acquired only
-              </span>
-            )}
           </div>
 
           {/* Age (Meta Acquired only) */}
@@ -686,11 +730,17 @@ function MapCanvas({ points, cs, protomapsKey }: MapCanvasProps) {
         style={{ width: "100%", height: "100%" }}
         worldCopyJump={true}
         scrollWheelZoom={true}
+        inertia={false}
         // Clamp the viewport to the world so users can't pan into the
-        // grey void above/below the map. Lat is bounded ±85 (web-mercator
-        // limit); lng is left unbounded — combined with worldCopyJump,
-        // horizontal panning still wraps cleanly across the antimeridian.
-        maxBounds={[[-85, -180], [85, 180]] as any}
+        // grey void above/below the map. Leaflet's maxBounds clamps the
+        // *center* of the map, not the viewport edges — so at minZoom=2
+        // the bound has to be tightened well inside the web-mercator
+        // ±85 limit to keep half a viewport's worth of latitude inside
+        // the world tile. ±60 lat covers every populated area we care
+        // about and never lets the grey edge appear on a 540px-tall
+        // container. Lng is fully bounded but worldCopyJump keeps
+        // horizontal panning wrapping cleanly across the antimeridian.
+        maxBounds={[[-60, -180], [60, 180]] as any}
         maxBoundsViscosity={1.0}
       >
         {protomapsKey ? (
@@ -757,10 +807,20 @@ function ClusterLayer({ points, L, useMap, Supercluster, cs }: ClusterLayerProps
   useEffect(() => {
     const features = points.map((p) => ({
       type: "Feature" as const,
-      properties: { id: p.i, point: p },
+      properties: { id: p.i, point: p, approx: p.x === 1 ? 1 : 0 },
       geometry: { type: "Point" as const, coordinates: [p.lo, p.la] },
     }));
-    const idx = new Supercluster({ radius: 60, maxZoom: 16, minPoints: 2 });
+    // map/reduce roll the per-leaf `approx` flag into a per-cluster count so
+    // we can flag clusters that are entirely (or mostly) country-centroid
+    // fallbacks — those never decompose at zoom because every leaf shares
+    // the same lat/lng, so we explain that in the cluster's tooltip.
+    const idx = new Supercluster({
+      radius: 60,
+      maxZoom: 16,
+      minPoints: 2,
+      map: (props: any) => ({ approx: props.approx }),
+      reduce: (acc: any, props: any) => { acc.approx += props.approx; },
+    });
     idx.load(features);
     indexRef.current = idx;
     setRender((r) => r + 1);
@@ -788,17 +848,35 @@ function ClusterLayer({ points, L, useMap, Supercluster, cs }: ClusterLayerProps
         const [lng, lat] = c.geometry.coordinates;
         if (c.properties.cluster) {
           const count = c.properties.point_count;
+          const approx = c.properties.approx || 0;
+          // "Approx-heavy" = the bulk of leaves are country-centroid fallbacks.
+          // Such clusters can't be broken down by zooming because every leaf
+          // sits on the exact same lat/lng (the country centroid), so we
+          // mark them visually (orange) and surface an explanation popup
+          // instead of a fly-to-expand interaction.
+          const isApprox = approx >= count * 0.8;
           const size = count >= 500 ? 56 : count >= 100 ? 46 : count >= 25 ? 38 : 30;
+          const bg = isApprox ? "rgba(245,158,11,0.85)" : "rgba(124,58,237,0.85)";
           const el = L.divIcon({
-            html: `<div style="width:${size}px;height:${size}px;line-height:${size}px;border-radius:50%;background:rgba(124,58,237,0.85);color:#fff;text-align:center;font-weight:700;font-size:${size >= 46 ? 14 : 12}px;border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,0.25);">${c.properties.point_count_abbreviated}</div>`,
+            html: `<div style="width:${size}px;height:${size}px;line-height:${size}px;border-radius:50%;background:${bg};color:#fff;text-align:center;font-weight:700;font-size:${size >= 46 ? 14 : 12}px;border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,0.25);">${c.properties.point_count_abbreviated}</div>`,
             iconSize: [size, size] as any,
             className: "lucidly-cluster",
           });
           const m = L.marker([lat, lng], { icon: el });
-          m.on("click", () => {
-            const expansion = indexRef.current.getClusterExpansionZoom(c.id);
-            map.flyTo([lat, lng], Math.min(expansion, 16), { duration: 0.6 });
-          });
+          if (isApprox) {
+            const popup = `
+              <div style="font-size:12px;line-height:1.4;max-width:240px;">
+                <div style="font-weight:700;font-size:13px;margin-bottom:4px;color:#92400E;">Approximate location</div>
+                <div style="color:#374151;">${count.toLocaleString()} customer${count === 1 ? "" : "s"} plotted at this country's centroid because Shopify didn't capture (or matched) their city.</div>
+                <div style="color:#6B7280;margin-top:6px;">Zooming won't split this cluster — they all share the same fallback coordinates.</div>
+              </div>`;
+            m.bindPopup(popup);
+          } else {
+            m.on("click", () => {
+              const expansion = indexRef.current.getClusterExpansionZoom(c.id);
+              map.flyTo([lat, lng], Math.min(expansion, 16), { duration: 0.6 });
+            });
+          }
           group.addLayer(m);
         } else {
           const p = c.properties.point as MapPoint;

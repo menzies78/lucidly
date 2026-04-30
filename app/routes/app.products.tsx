@@ -630,11 +630,18 @@ export const loader = async ({ request }) => {
     DEFAULT_TTL,
     async () => {
       try {
+        // Gender resolution: prefer Attribution.metaGender (Meta breakdown
+        // — accurate but sparse: only ~30% of matched orders carry it),
+        // fall back to Customer.inferredGender (name-based — fills the gap
+        // for older orders + organic-tail customers). Age has no name-based
+        // equivalent, so we still require metaAge to be present.
         const rows = await db.$queryRaw<Array<{
           metaAge: string; metaGender: string; metaSegment: string;
           country: string | null; lineItems: string | null; frozenTotalPrice: number;
         }>>`
-          SELECT a.metaAge, a.metaGender, c.metaSegment, o.country, o.lineItems, o.frozenTotalPrice
+          SELECT a.metaAge,
+                 COALESCE(a.metaGender, c.inferredGender) AS metaGender,
+                 c.metaSegment, o.country, o.lineItems, o.frozenTotalPrice
           FROM Attribution a
           JOIN "Order" o
             ON a.shopDomain = o.shopDomain AND a.shopifyOrderId = o.shopifyOrderId
@@ -643,7 +650,7 @@ export const loader = async ({ request }) => {
           WHERE a.shopDomain = ${shopDomain}
             AND a.confidence > 0
             AND a.metaAge IS NOT NULL
-            AND a.metaGender IS NOT NULL
+            AND COALESCE(a.metaGender, c.inferredGender) IS NOT NULL
             AND o.isOnlineStore = 1
             AND o.frozenTotalPrice > 0
             AND o.createdAt >= ${fromDate}
@@ -687,6 +694,71 @@ export const loader = async ({ request }) => {
   const demoRecords = demoData.records;
   const demoCountries = demoData.countries;
   console.log(`[products] demo ${Date.now() - _demoT0}ms (records=${demoRecords.length}, countries=${demoCountries.length})`);
+
+  // ── Non-Meta (organic) demographics records ──
+  // Mirror of the Meta demo dataset for organic customers. They have no
+  // Attribution row (and no metaAge / metaGender), so we lean entirely on
+  // Customer.inferredGender. Age stays unknown — we record it as "Unknown"
+  // so the explorer can still render the gender split without dropping rows.
+  // Same top-100 product cap to keep the payload bounded.
+  const _nonMetaDemoT0 = Date.now();
+  const nonMetaDemoData = await queryCached(
+    `${shopDomain}:demoNonMetaProductRecords:${fromKey}:${toKey}`,
+    DEFAULT_TTL,
+    async () => {
+      try {
+        const rows = await db.$queryRaw<Array<{
+          inferredGender: string | null; country: string | null;
+          lineItems: string | null; frozenTotalPrice: number;
+        }>>`
+          SELECT c.inferredGender, o.country, o.lineItems, o.frozenTotalPrice
+          FROM "Order" o
+          JOIN Customer c
+            ON c.shopDomain = o.shopDomain AND c.shopifyCustomerId = o.shopifyCustomerId
+          LEFT JOIN Attribution a
+            ON a.shopDomain = o.shopDomain AND a.shopifyOrderId = o.shopifyOrderId AND a.confidence > 0
+          WHERE o.shopDomain = ${shopDomain}
+            AND a.shopifyOrderId IS NULL
+            AND c.inferredGender IS NOT NULL
+            AND o.isOnlineStore = 1
+            AND o.frozenTotalPrice > 0
+            AND o.createdAt >= ${fromDate}
+            AND o.createdAt <= ${toDate}
+        `;
+
+        if (rows.length === 0) return { records: [], countries: [] as string[] };
+
+        type Rec = { product: string; age: string; gender: string; country: string; segment: string; revenue: number };
+        const rawRecords: Rec[] = [];
+        const countrySet = new Set<string>();
+        const productVolume = new Map<string, number>();
+        for (const o of rows) {
+          const items = (o.lineItems || "").split(", ").map((s) => toParentProduct(s.trim())).filter(Boolean);
+          if (items.length === 0) continue;
+          const perItem = (o.frozenTotalPrice || 0) / items.length;
+          const country = (o.country || "Unknown").trim() || "Unknown";
+          countrySet.add(country);
+          const gender = o.inferredGender === "male" ? "Male" : o.inferredGender === "female" ? "Female" : "Unknown";
+          for (const product of items) {
+            rawRecords.push({ product, age: "Unknown", gender, country, segment: "nonMeta", revenue: perItem });
+            productVolume.set(product, (productVolume.get(product) || 0) + 1);
+          }
+        }
+
+        const topProducts = new Set(
+          [...productVolume.entries()].sort((a, b) => b[1] - a[1]).slice(0, 100).map(([p]) => p),
+        );
+        const records = rawRecords.filter((r) => topProducts.has(r.product));
+        return { records, countries: [...countrySet].sort() };
+      } catch (err) {
+        console.error("[products] demoNonMetaProductRecords failed:", err);
+        return { records: [], countries: [] as string[] };
+      }
+    },
+  );
+  const nonMetaDemoRecords = nonMetaDemoData.records;
+  const nonMetaDemoCountries = nonMetaDemoData.countries;
+  console.log(`[products] nonMetaDemo ${Date.now() - _nonMetaDemoT0}ms (records=${nonMetaDemoRecords.length}, countries=${nonMetaDemoCountries.length})`);
 
   // ── Gem detection ──
   // For each top product × demographic slice, compare the slice's share of
@@ -817,6 +889,7 @@ export const loader = async ({ request }) => {
     topAddonsAll, topAddonsMeta,
     unmatchedConversions, unmatchedRevenue,
     demoRecords, demoCountries, demoGems,
+    nonMetaDemoRecords, nonMetaDemoCountries,
     entryToLtv, entryToLtvCohortAvg,
     fromKey, toKey, preset,
   });
@@ -1287,10 +1360,12 @@ const BAR_COLOURS: Array<[string, string]> = [
   ["#4F46E5", "#C7D2FE"], // deeper indigo
 ];
 
-function ProductDemographicsExplorer({ records, countries, gems, currencySymbol, imageMap }: {
+function ProductDemographicsExplorer({ records, countries, gems, nonMetaRecords, nonMetaCountries, currencySymbol, imageMap }: {
   records: DemoRecord[];
   countries: string[];
   gems: DemoGem[];
+  nonMetaRecords: DemoRecord[];
+  nonMetaCountries: string[];
   currencySymbol: string;
   imageMap: Record<string, string>;
 }) {
@@ -1298,13 +1373,19 @@ function ProductDemographicsExplorer({ records, countries, gems, currencySymbol,
   const [ages, setAges] = useState<string[]>([]); // empty = all
   const [country, setCountry] = useState<string>("All");
   const [sortBy, setSortBy] = useState<"units" | "revenue">("units");
-  const [segment, setSegment] = useState<"acquired" | "retargeted" | "all">("acquired");
+  const [segment, setSegment] = useState<"acquired" | "retargeted" | "all" | "nonMeta">("acquired");
 
   // Segment-scoped base pool — filter all other dimensions against this.
-  const segmentRecords = useMemo(
-    () => segment === "all" ? records : records.filter((r) => r.segment === segment),
-    [records, segment],
-  );
+  // Non-Meta is sourced from a separate dataset (organic customers — name-
+  // inferred gender only, no Attribution row, no metaAge).
+  const segmentRecords = useMemo(() => {
+    if (segment === "nonMeta") return nonMetaRecords;
+    if (segment === "all") return records;
+    return records.filter((r) => r.segment === segment);
+  }, [records, nonMetaRecords, segment]);
+
+  // Country list mirrors the active segment's pool.
+  const segmentCountries = segment === "nonMeta" ? nonMetaCountries : countries;
 
   // Available age brackets & countries — respect every *other* active filter
   // so tabs/options hide when that combination has zero results.
@@ -1342,11 +1423,13 @@ function ProductDemographicsExplorer({ records, countries, gems, currencySymbol,
   const filtered = useMemo(() => {
     return segmentRecords.filter((r) => {
       if (gender !== "All" && r.gender !== gender) return false;
-      if (ages.length > 0 && !ages.includes(r.age)) return false;
+      // Non-Meta records have no age signal — skip the age filter so prior
+      // selections don't zero out the result when switching tabs.
+      if (segment !== "nonMeta" && ages.length > 0 && !ages.includes(r.age)) return false;
       if (country !== "All" && r.country !== country) return false;
       return true;
     });
-  }, [segmentRecords, gender, ages, country]);
+  }, [segmentRecords, gender, ages, country, segment]);
 
   const topProducts = useMemo(() => {
     const agg = new Map<string, { units: number; revenue: number }>();
@@ -1379,11 +1462,14 @@ function ProductDemographicsExplorer({ records, countries, gems, currencySymbol,
     const [topCountry, topCountryN] = Object.entries(countryCount).sort((a, b) => b[1] - a[1])[0] || [null, 0];
     const bits: string[] = [];
     if (topGen && topGenN / total >= 0.55) bits.push(`${Math.round(topGenN / total * 100)}% ${topGen === "Male" ? "men" : topGen === "Female" ? "women" : "unknown-gender"}`);
-    if (topAge && topAgeN / total >= 0.25) bits.push(`${Math.round(topAgeN / total * 100)}% aged ${topAge}`);
+    if (segment !== "nonMeta" && topAge && topAgeN / total >= 0.25) bits.push(`${Math.round(topAgeN / total * 100)}% aged ${topAge}`);
     if (topCountry && topCountryN / total >= 0.25) bits.push(`${Math.round(topCountryN / total * 100)}% in ${topCountry}`);
-    if (bits.length === 0) return `${total.toLocaleString()} purchases across ${Object.keys(ageCount).length} age brackets and ${Object.keys(countryCount).length} countries.`;
+    if (bits.length === 0) {
+      if (segment === "nonMeta") return `${total.toLocaleString()} purchases across ${Object.keys(countryCount).length} countries.`;
+      return `${total.toLocaleString()} purchases across ${Object.keys(ageCount).length} age brackets and ${Object.keys(countryCount).length} countries.`;
+    }
     return `${bits.join(" · ")} — out of ${total.toLocaleString()} purchases.`;
-  }, [filtered]);
+  }, [filtered, segment]);
 
   const maxValue = topProducts.length > 0
     ? (sortBy === "units" ? topProducts[0].units : topProducts[0].revenue)
@@ -1402,13 +1488,16 @@ function ProductDemographicsExplorer({ records, countries, gems, currencySymbol,
                 ? "Top products among Meta acquired customers, including first and any subsequent orders. Filter by gender, age, and country to see what each segment buys."
                 : segment === "retargeted"
                 ? "Top products among Meta retargeted customers. Filter by gender, age, and country to see what each segment buys."
-                : "Top products among all Meta customers (acquired and retargeted). Filter by gender, age, and country to see what each segment buys."}
+                : segment === "all"
+                ? "Top products among all Meta customers (acquired and retargeted). Filter by gender, age, and country to see what each segment buys."
+                : "Top products among non-Meta (organic) customers. Gender is name-inferred — age isn't available without Meta breakdown data."}
             </Text>
           </BlockStack>
           <div className="segment-toggle" style={{ flexShrink: 0 }}>
             <button className={segment === "acquired" ? "active" : ""} onClick={() => setSegment("acquired")}>Meta Acquired</button>
             <button className={segment === "retargeted" ? "active" : ""} onClick={() => setSegment("retargeted")}>Meta Retargeted</button>
             <button className={segment === "all" ? "active" : ""} onClick={() => setSegment("all")}>All Meta</button>
+            <button className={segment === "nonMeta" ? "active" : ""} onClick={() => setSegment("nonMeta")}>Non Meta</button>
           </div>
         </div>
 
@@ -1435,7 +1524,8 @@ function ProductDemographicsExplorer({ records, countries, gems, currencySymbol,
             ))}
           </div>
 
-          {/* Age */}
+          {/* Age — hidden for Non Meta scope (no age signal without Meta breakdown). */}
+          {segment !== "nonMeta" && (
           <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
             <span style={{ fontSize: "12px", fontWeight: 600, color: "#6B7280", width: "70px", textTransform: "uppercase", letterSpacing: "0.5px" }}>Age</span>
             <button
@@ -1469,6 +1559,7 @@ function ProductDemographicsExplorer({ records, countries, gems, currencySymbol,
               );
             })}
           </div>
+          )}
 
           {/* Country */}
           <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
@@ -1484,7 +1575,7 @@ function ProductDemographicsExplorer({ records, countries, gems, currencySymbol,
               }}
             >
               <option value="All">All countries</option>
-              {countries.filter((c) => availableCountries.includes(c) || c === country).map((c) => <option key={c} value={c}>{c}</option>)}
+              {segmentCountries.filter((c) => availableCountries.includes(c) || c === country).map((c) => <option key={c} value={c}>{c}</option>)}
             </select>
             {activeFilterCount > 0 && (
               <button
@@ -1580,7 +1671,7 @@ function ProductDemographicsExplorer({ records, countries, gems, currencySymbol,
         {/* Gems — auto-surfaced statistical anomalies. Placed at the bottom
             so the chart is the primary interaction; gems are a light,
             colourful "did you notice" footer, no heavy framing. */}
-        {gems.length > 0 && (
+        {gems.length > 0 && segment !== "nonMeta" && (
           <div style={{ marginTop: 16 }}>
           <BlockStack gap="200">
             <Text as="h3" variant="headingSm">Gems spotted in this period</Text>
@@ -1640,6 +1731,7 @@ export default function Products() {
     topAddonsAll, topAddonsMeta,
     unmatchedConversions, unmatchedRevenue,
     demoRecords, demoCountries, demoGems,
+    nonMetaDemoRecords, nonMetaDemoCountries,
     entryToLtv, entryToLtvCohortAvg,
     fromKey, toKey, preset,
   } = useLoaderData<typeof loader>();
@@ -2005,6 +2097,8 @@ export default function Products() {
               records={demoRecords || []}
               countries={demoCountries || []}
               gems={demoGems || []}
+              nonMetaRecords={nonMetaDemoRecords || []}
+              nonMetaCountries={nonMetaDemoCountries || []}
               currencySymbol={cs}
               imageMap={imageMap}
             />

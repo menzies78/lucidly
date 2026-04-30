@@ -486,10 +486,10 @@ export const loader = async ({ request }) => {
   }
 
   // ── Customer Map Explorer blob (computed at rollup time) ──
-  // Independent of the date range — the explorer is an all-time geographic
-  // view of every geocoded customer, with cohort filters that apply across
-  // the customer's entire history. If the rollup hasn't run yet, the
-  // component renders an empty state.
+  // The blob is all-time. The tile has its own time-window control (default
+  // All time — page-level date filter intentionally NOT applied here so the
+  // first paint shows full historic depth). If the rollup hasn't run yet,
+  // the component renders an empty state.
   const customerMapRow = await db.shopAnalysisCache.findUnique({
     where: { shopDomain_cacheKey: { shopDomain, cacheKey: "customers:map" } },
     select: { payload: true },
