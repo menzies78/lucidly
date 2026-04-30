@@ -11,6 +11,7 @@ import { runAttribution, runDateRangeRematch, runFillGaps } from "../services/ma
 import { runIncrementalSync, clearTodayForRematch } from "../services/incrementalSync.server";
 import { setProgress, failProgress, getProgress, completeProgress } from "../services/progress.server";
 import { parseDateRange } from "../utils/dateRange.server";
+import { shopLocalDayKey } from "../utils/shopTime.server";
 import { currencySymbolFromCode } from "../utils/currency";
 import { cached as queryCached } from "../services/queryCache.server";
 
@@ -42,7 +43,8 @@ export const loader = async ({ request }) => {
     allAttrs,
     utmOnlyOrders,
     // Health-specific queries
-    liveAttrs30d,
+    liveMetaInsights30d,
+    liveMatchedOrders30d,
     recentlyStoppedCampaigns,
     activeCampaignCount,
   ] = await Promise.all([
@@ -81,10 +83,33 @@ export const loader = async ({ request }) => {
       where: { shopDomain, utmConfirmedMeta: true, isOnlineStore: true, createdAt: dateFilter },
       select: { shopifyOrderId: true, frozenTotalPrice: true, totalRefunded: true },
     }),
-    // Live attributions for last 30 days (same source as Order Explorer)
-    db.attribution.findMany({
-      where: { shopDomain, matchedAt: { gte: thirtyDaysAgo } },
-      select: { confidence: true, matchedAt: true, shopifyOrderId: true },
+    // Match Accuracy chart sources — last 30 days, bucketed by the *day
+    // the conversion / order actually happened*, not by `matchedAt`.
+    //
+    // Why we don't use Attribution.matchedAt:
+    //   matchedAt is "the moment the matcher created/recreated this row".
+    //   Full Re-matches stamp every row with `now`, and unmatched
+    //   placeholders for old conversions get re-emitted on every cycle.
+    //   Bucketing the chart by matchedAt therefore tells you "how busy
+    //   the matcher was on that day", not the actual match rate. We hit
+    //   this on 22/04 (chart said 50%, truth was 100%) and 05/04 (chart
+    //   showed 4,025 rows from a Full Re-match; truth was 4 conversions).
+    //
+    // Authoritative shape:
+    //   denominator = SUM(MetaInsight.conversions) on day D
+    //   numerator   = COUNT(Attribution rows with confidence>0 whose
+    //                       Order.createdAt falls on day D, shop-local)
+    db.metaInsight.findMany({
+      where: { shopDomain, date: { gte: thirtyDaysAgo } },
+      select: { date: true, conversions: true },
+    }),
+    db.order.findMany({
+      where: {
+        shopDomain,
+        createdAt: { gte: thirtyDaysAgo },
+        attributions: { some: { confidence: { gt: 0 } } },
+      },
+      select: { shopifyOrderId: true, createdAt: true },
     }),
     // Campaigns that stopped delivering in last 7 days
     db.metaEntity.findMany({
@@ -151,32 +176,42 @@ export const loader = async ({ request }) => {
 
   const isNewInstall = !shop?.lastOrderSync && orderCount === 0;
 
-  // Build 30-day match accuracy chart from live Attribution data
-  // Group attributions by day: matched (confidence > 0) vs total
-  const attrsByDay = new Map();
-  for (const a of liveAttrs30d) {
-    const day = a.matchedAt ? new Date(a.matchedAt).toISOString().slice(0, 10) : null;
+  // Build 30-day match accuracy chart from authoritative sources.
+  // Denominator = SUM(MetaInsight.conversions) for day D
+  // Numerator   = COUNT(matched orders whose Order.createdAt falls on D, shop-local)
+  // We deliberately DO NOT bucket Attribution rows by matchedAt — that field
+  // tracks "when the matcher created the row", not the conversion day.
+  const metaConvByDay = new Map();
+  for (const r of liveMetaInsights30d) {
+    const day = r.date ? new Date(r.date).toISOString().slice(0, 10) : null;
     if (!day) continue;
-    if (!attrsByDay.has(day)) attrsByDay.set(day, { matched: 0, total: 0 });
-    const bucket = attrsByDay.get(day);
-    bucket.total++;
-    if (a.confidence > 0) bucket.matched++;
+    metaConvByDay.set(day, (metaConvByDay.get(day) || 0) + (r.conversions || 0));
   }
-  const matchAccuracyChart = Array.from(attrsByDay.entries())
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([date, { matched: m, total: t }]) => ({
-      date,
-      matchRate: t > 0 ? Math.round((m / t) * 100) : null,
-      matched: m,
-      total: t,
-    }));
+  const matchedByDay = new Map();
+  for (const o of liveMatchedOrders30d) {
+    if (!o.createdAt) continue;
+    const day = shopLocalDayKey(tz, o.createdAt);
+    if (!day) continue;
+    matchedByDay.set(day, (matchedByDay.get(day) || 0) + 1);
+  }
+  const allDays = new Set([...metaConvByDay.keys(), ...matchedByDay.keys()]);
+  const matchAccuracyChart = Array.from(allDays)
+    .sort((a, b) => a.localeCompare(b))
+    .map(day => {
+      const total = Math.round(metaConvByDay.get(day) || 0);
+      const matched = matchedByDay.get(day) || 0;
+      const matchRate = total > 0
+        ? Math.min(100, Math.round((matched / total) * 100))
+        : null;
+      return { date: day, matchRate, matched, total };
+    });
 
   // Last 24h match accuracy
   const oneDayAgoStr = oneDayAgo.toISOString().slice(0, 10);
   const recent = matchAccuracyChart.filter(d => d.date >= oneDayAgoStr);
   const recentMatched = recent.reduce((s, d) => s + d.matched, 0);
   const recentTotal = recent.reduce((s, d) => s + d.total, 0);
-  const matchRate24h = recentTotal > 0 ? Math.round((recentMatched / recentTotal) * 100) : null;
+  const matchRate24h = recentTotal > 0 ? Math.min(100, Math.round((recentMatched / recentTotal) * 100)) : null;
 
   // UTM health from shop record
   const utmHealth = {
