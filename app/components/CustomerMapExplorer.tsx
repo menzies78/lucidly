@@ -854,13 +854,15 @@ function ClusterLayer({ points, L, useMap, Supercluster, cs }: ClusterLayerProps
           // Two signals, either is sufficient:
           //   1. ≥80% of leaves carry the per-point `x` flag (the rollup-time
           //      detection — coordinate-matched against COUNTRY_CENTROIDS).
-          //   2. supercluster reports the cluster expands at ≥ maxZoom, i.e.
-          //      every leaf shares the same lat/lng — by definition only
-          //      possible when they're all on a centroid. This is the
-          //      live-blob fallback for points predating the coordinate-based
-          //      `x`, where the old "no-city" definition undercounts.
+          //   2. supercluster reports the cluster expands at > maxZoom, i.e.
+          //      every leaf shares the exact same lat/lng — only possible
+          //      when they're all on a centroid. This is the live-blob
+          //      fallback for points predating the coordinate-based `x`.
+          //      Note: > maxZoom (not >=) — clusters that split AT maxZoom
+          //      are genuinely close-but-distinct cities (e.g. dense US
+          //      metros) and must NOT be flagged as approximate.
           const expansionZoom = indexRef.current.getClusterExpansionZoom(c.id);
-          const colocated = expansionZoom >= 16; // matches Supercluster maxZoom config
+          const colocated = expansionZoom > 16; // Supercluster maxZoom = 16
           const isApprox = approx >= count * 0.8 || colocated;
           const size = count >= 500 ? 56 : count >= 100 ? 46 : count >= 25 ? 38 : 30;
           const bg = isApprox ? "rgba(245,158,11,0.85)" : "rgba(124,58,237,0.85)";
