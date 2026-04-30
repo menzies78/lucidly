@@ -103,14 +103,27 @@ export const loader = async ({ request }) => {
       where: { shopDomain, date: { gte: thirtyDaysAgo } },
       select: { date: true, conversions: true },
     }),
-    db.order.findMany({
-      where: {
-        shopDomain,
-        createdAt: { gte: thirtyDaysAgo },
-        attributions: { some: { confidence: { gt: 0 } } },
-      },
-      select: { shopifyOrderId: true, createdAt: true },
-    }),
+    (async () => {
+      // Order <-> Attribution have no Prisma relation, only a shopifyOrderId
+      // string link. Two-step: pull recent order IDs first, then check which
+      // ones have a confidence>0 Attribution row.
+      const recentOrders = await db.order.findMany({
+        where: { shopDomain, createdAt: { gte: thirtyDaysAgo } },
+        select: { shopifyOrderId: true, createdAt: true },
+      });
+      if (recentOrders.length === 0) return [];
+      const ids = recentOrders.map(o => o.shopifyOrderId);
+      const matched = await db.attribution.findMany({
+        where: {
+          shopDomain,
+          shopifyOrderId: { in: ids },
+          confidence: { gt: 0 },
+        },
+        select: { shopifyOrderId: true },
+      });
+      const matchedSet = new Set(matched.map(a => a.shopifyOrderId));
+      return recentOrders.filter(o => matchedSet.has(o.shopifyOrderId));
+    })(),
     // Campaigns that stopped delivering in last 7 days
     db.metaEntity.findMany({
       where: {
