@@ -413,7 +413,7 @@ export const loader = async ({ request }) => {
     time("metaEntities", queryCached(`${shopDomain}:metaEntities`, DEFAULT_TTL, () =>
       db.metaEntity.findMany({
         where: { shopDomain },
-        select: { entityType: true, entityId: true, createdTime: true },
+        select: { entityType: true, entityId: true, createdTime: true, funnelStage: true, entityName: true },
       }),
     )),
     time("ltvSnapshot", queryCached(`${shopDomain}:ltvSnapshot`, DEFAULT_TTL, () => loadLtvSnapshot(shopDomain))),
@@ -1046,6 +1046,38 @@ export const loader = async ({ request }) => {
     changeCountsByObjectId[c.objectId] = (changeCountsByObjectId[c.objectId] || 0) + 1;
   }
 
+  // Ad Funnel: aggregate ad set performance by funnel stage (cold/warm/hot)
+  const adsetFunnelMap = new Map();
+  for (const e of metaEntities) {
+    if (e.entityType === "adset" && e.funnelStage) {
+      adsetFunnelMap.set(e.entityId, { stage: e.funnelStage, name: e.entityName });
+    }
+  }
+  const funnelData = { cold: { spend: 0, newCustomers: 0, revenue: 0, orders: 0, adsets: [] as any[] },
+                       warm: { spend: 0, newCustomers: 0, revenue: 0, orders: 0, adsets: [] as any[] },
+                       hot:  { spend: 0, newCustomers: 0, revenue: 0, orders: 0, adsets: [] as any[] } };
+  for (const row of adsetRows) {
+    const entity = adsetFunnelMap.get(row.id);
+    const stage = (entity?.stage || "cold") as keyof typeof funnelData;
+    if (!funnelData[stage]) continue;
+    funnelData[stage].spend += row.spend || 0;
+    funnelData[stage].newCustomers += row.newCustomerOrders || 0;
+    funnelData[stage].revenue += row.attributedRevenue || 0;
+    funnelData[stage].orders += row.attributedOrders || 0;
+    if ((row.spend || 0) > 0) {
+      funnelData[stage].adsets.push({
+        id: row.id, name: row.name || entity?.name || row.id,
+        spend: row.spend || 0, newCustomers: row.newCustomerOrders || 0,
+        revenue: row.attributedRevenue || 0,
+      });
+    }
+  }
+  // Sort ad sets within each stage by spend descending, keep top 5
+  for (const stage of Object.values(funnelData)) {
+    stage.adsets.sort((a: any, b: any) => b.spend - a.spend);
+    stage.adsets = stage.adsets.slice(0, 5);
+  }
+
   console.log(`[campaigns] total ${Date.now() - _t0}ms`);
 
   return json({
@@ -1061,6 +1093,7 @@ export const loader = async ({ request }) => {
     fromKey, toKey, preset,
     changeEvents: changeEventsForStrip,
     changeCountsByObjectId,
+    funnelData,
   });
 };
 
@@ -2192,6 +2225,317 @@ function RoasHoverPopover({ x, y, state }: {
 }
 
 
+// ═══════════════════════════════════════════════════════════════
+// Ad Explorer — full-width table with filters, replacing Best to Worst
+// ═══════════════════════════════════════════════════════════════
+
+function AdExplorerTable({ rows, cs, entityType, onEntityClick }: {
+  rows: any[]; cs: string;
+  entityType: "campaign" | "adset" | "ad";
+  onEntityClick?: (id: string, name: string) => void;
+}) {
+  const [sortCol, setSortCol] = useState("spend");
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
+  const [customerFilter, setCustomerFilter] = useState<"all" | "new" | "repeat">("all");
+
+  // Persist filter to localStorage
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem("lucidly.campaigns.explorer");
+      if (raw) {
+        const p = JSON.parse(raw);
+        if (p.customerFilter) setCustomerFilter(p.customerFilter);
+      }
+    } catch {}
+  }, []);
+  useEffect(() => {
+    try {
+      localStorage.setItem("lucidly.campaigns.explorer", JSON.stringify({ customerFilter }));
+    } catch {}
+  }, [customerFilter]);
+
+  const toggleSort = (col: string) => {
+    if (sortCol === col) setSortDir(d => d === "desc" ? "asc" : "desc");
+    else {
+      setSortCol(col);
+      setSortDir(["cpa", "newCustomerCPA", "blendedCPA"].includes(col) ? "asc" : "desc");
+    }
+  };
+
+  const sorted = useMemo(() => {
+    return [...rows].filter(r => (r.spend || 0) > 0 || (r.attributedOrders || 0) > 0).sort((a, b) => {
+      const aVal = a[sortCol] || 0, bVal = b[sortCol] || 0;
+      if (aVal === 0 && bVal === 0) return (b.spend || 0) - (a.spend || 0);
+      if (aVal === 0) return 1;
+      if (bVal === 0) return -1;
+      return sortDir === "desc" ? bVal - aVal : aVal - bVal;
+    });
+  }, [rows, sortCol, sortDir]);
+
+  type ColDef = { key: string; label: string; width: string; format: (row: any) => string; lowerBetter?: boolean };
+  const COLS: ColDef[] = useMemo(() => {
+    if (customerFilter === "new") {
+      return [
+        { key: "newCustomerOrders", label: "New Orders", width: "75px", format: (r) => (r.newCustomerOrders || 0).toLocaleString() },
+        { key: "newCustomerRevenue", label: "New Revenue", width: "90px", format: (r) => `${cs}${Math.round(r.newCustomerRevenue || 0).toLocaleString()}` },
+        { key: "spend", label: "Spend", width: "80px", format: (r) => `${cs}${Math.round(r.spend || 0).toLocaleString()}` },
+        { key: "newCustomerCPA", label: "CPA", width: "65px", format: (r) => r.newCustomerCPA > 0 ? `${cs}${Math.round(r.newCustomerCPA).toLocaleString()}` : "\u2014", lowerBetter: true },
+        { key: "newCustomerROAS", label: "ROAS", width: "60px", format: (r) => {
+          const v = (r.newCustomerRevenue || 0) > 0 && (r.spend || 0) > 0 ? ((r.newCustomerRevenue) / r.spend) : 0;
+          return v > 0 ? `${v.toFixed(2)}x` : "\u2014";
+        }},
+      ];
+    }
+    if (customerFilter === "repeat") {
+      return [
+        { key: "existingCustomerOrders", label: "Repeat Orders", width: "90px", format: (r) => (r.existingCustomerOrders || 0).toLocaleString() },
+        { key: "existingCustomerRevenue", label: "Repeat Revenue", width: "100px", format: (r) => `${cs}${Math.round(r.existingCustomerRevenue || 0).toLocaleString()}` },
+        { key: "spend", label: "Spend", width: "80px", format: (r) => `${cs}${Math.round(r.spend || 0).toLocaleString()}` },
+        { key: "cpa", label: "CPA", width: "65px", format: (r) => {
+          const ex = r.existingCustomerOrders || 0;
+          return ex > 0 ? `${cs}${Math.round(r.spend / ex).toLocaleString()}` : "\u2014";
+        }, lowerBetter: true },
+        { key: "blendedROAS", label: "ROAS", width: "60px", format: (r) => {
+          const v = (r.existingCustomerRevenue || 0) > 0 && (r.spend || 0) > 0 ? (r.existingCustomerRevenue / r.spend) : 0;
+          return v > 0 ? `${v.toFixed(2)}x` : "\u2014";
+        }},
+      ];
+    }
+    // "all" view
+    return [
+      { key: "attributedOrders", label: "Orders", width: "60px", format: (r) => (r.attributedOrders || 0).toLocaleString() },
+      { key: "newCustomerOrders", label: "New", width: "45px", format: (r) => (r.newCustomerOrders || 0).toLocaleString() },
+      { key: "attributedRevenue", label: "Revenue", width: "85px", format: (r) => `${cs}${Math.round(r.attributedRevenue || 0).toLocaleString()}` },
+      { key: "spend", label: "Spend", width: "80px", format: (r) => `${cs}${Math.round(r.spend || 0).toLocaleString()}` },
+      { key: "blendedCPA", label: "CPA", width: "65px", format: (r) => r.blendedCPA > 0 ? `${cs}${Math.round(r.blendedCPA).toLocaleString()}` : "\u2014", lowerBetter: true },
+      { key: "newCustomerCPA", label: "NC CPA", width: "70px", format: (r) => r.newCustomerCPA > 0 ? `${cs}${Math.round(r.newCustomerCPA).toLocaleString()}` : "\u2014", lowerBetter: true },
+      { key: "blendedROAS", label: "ROAS", width: "60px", format: (r) => (r.blendedROAS || 0) > 0 ? `${r.blendedROAS}x` : "\u2014" },
+    ];
+  }, [customerFilter, cs]);
+
+  if (sorted.length === 0) return <div style={{ color: "#999", fontSize: "13px", padding: "8px 0" }}>No data for selected period</div>;
+
+  const LOWER_IS_BETTER = new Set(["cpa", "blendedCPA", "newCustomerCPA"]);
+  const higherIsBetter = !LOWER_IS_BETTER.has(sortCol);
+
+  return (
+    <div>
+      {/* Filter bar */}
+      <div style={{ display: "flex", gap: "6px", marginBottom: "12px", alignItems: "center" }}>
+        <span style={{ fontSize: "12px", color: "#6B7280", fontWeight: 500, marginRight: "4px" }}>Show:</span>
+        {(["all", "new", "repeat"] as const).map(f => (
+          <button
+            key={f}
+            onClick={() => setCustomerFilter(f)}
+            style={{
+              fontSize: "12px", padding: "4px 12px", borderRadius: "14px",
+              border: `1px solid ${customerFilter === f ? "#5C6AC4" : "#D1D5DB"}`,
+              background: customerFilter === f ? "#F0F1FF" : "#fff",
+              color: customerFilter === f ? "#4650A8" : "#6B7280",
+              fontWeight: customerFilter === f ? 600 : 400,
+              cursor: "pointer",
+            }}
+          >
+            {f === "all" ? "All Customers" : f === "new" ? "New Customers" : "Repeat Customers"}
+          </button>
+        ))}
+      </div>
+
+      {/* Table header */}
+      <div style={{ display: "flex", gap: "10px", alignItems: "center", padding: "0 0 8px 0", borderBottom: "1px solid #e4e5e7", marginBottom: "4px" }}>
+        <span style={{ width: "28px", flexShrink: 0 }} />
+        <span style={{ flex: 1, fontSize: "11px", color: "#8c9196", fontWeight: 600, textTransform: "uppercase" }}>Name</span>
+        {COLS.map(c => (
+          <SortableHeader key={c.key} col={c.key} label={c.label} width={c.width} sortCol={sortCol} sortDir={sortDir} onSort={toggleSort} />
+        ))}
+      </div>
+
+      {/* Table body */}
+      <div style={{ maxHeight: "480px", overflowY: "auto", display: "flex", flexDirection: "column", gap: "2px", paddingRight: "4px" }}>
+        {sorted.map((item, i) => {
+          const interactive = !!item.id && !!entityType;
+          return (
+            <div
+              key={item.id || i}
+              onClick={() => interactive && onEntityClick?.(item.id, item.name)}
+              title={interactive ? "Click for full timeline" : undefined}
+              style={{
+                display: "flex", alignItems: "center", gap: "10px",
+                cursor: interactive ? "pointer" : "default",
+                padding: "6px 4px", borderRadius: 4,
+                background: i % 2 === 0 ? "#fff" : "#f9fafb",
+                transition: "background 0.12s ease",
+              }}
+              onMouseOver={(e) => { if (interactive) (e.currentTarget as HTMLDivElement).style.background = "#f1f5f9"; }}
+              onMouseOut={(e) => { (e.currentTarget as HTMLDivElement).style.background = i % 2 === 0 ? "#fff" : "#f9fafb"; }}
+            >
+              <span style={{ fontSize: "11px", color: "#9CA3AF", width: "28px", textAlign: "right", flexShrink: 0 }}>{i + 1}</span>
+              <span style={{
+                flex: 1, fontSize: "13px", fontWeight: 500, overflow: "hidden",
+                textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0,
+              }} title={item.name}>
+                {item.name}
+              </span>
+              {COLS.map(c => {
+                const val = c.format(item);
+                const numVal = item[c.key] || 0;
+                return (
+                  <span key={c.key} style={{
+                    fontSize: "12.5px", textAlign: "right", flexShrink: 0,
+                    width: c.width, color: numVal > 0 ? "#374151" : "#bbb",
+                    fontWeight: c.key === "blendedROAS" || c.key === "attributedRevenue" || c.key === "newCustomerRevenue" || c.key === "existingCustomerRevenue" ? 600 : 400,
+                  }}>
+                    {val}
+                  </span>
+                );
+              })}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Footer summary */}
+      <div style={{
+        display: "flex", gap: "10px", alignItems: "center", padding: "8px 4px 0",
+        borderTop: "1px solid #e4e5e7", marginTop: "4px", fontWeight: 600, fontSize: "12.5px",
+      }}>
+        <span style={{ width: "28px", flexShrink: 0 }} />
+        <span style={{ flex: 1, color: "#374151" }}>{sorted.length} {entityType === "campaign" ? "campaigns" : entityType === "adset" ? "ad sets" : "ads"}</span>
+        {COLS.map(c => {
+          const total = sorted.reduce((s, r) => s + (r[c.key] || 0), 0);
+          let display: string;
+          if (c.key === "blendedROAS" || c.key === "newCustomerROAS") {
+            const totalRev = sorted.reduce((s, r) => s + (r.attributedRevenue || 0), 0);
+            const totalSpend = sorted.reduce((s, r) => s + (r.spend || 0), 0);
+            display = totalSpend > 0 ? `${(totalRev / totalSpend).toFixed(2)}x` : "\u2014";
+          } else if (c.key === "blendedCPA" || c.key === "cpa" || c.key === "newCustomerCPA") {
+            const totalSpend = sorted.reduce((s, r) => s + (r.spend || 0), 0);
+            const totalOrders = c.key === "newCustomerCPA"
+              ? sorted.reduce((s, r) => s + (r.newCustomerOrders || 0), 0)
+              : sorted.reduce((s, r) => s + (r.attributedOrders || 0), 0);
+            display = totalOrders > 0 ? `${cs}${Math.round(totalSpend / totalOrders).toLocaleString()}` : "\u2014";
+          } else {
+            display = c.key.includes("Revenue") || c.key === "spend"
+              ? `${cs}${Math.round(total).toLocaleString()}`
+              : total.toLocaleString();
+          }
+          return <span key={c.key} style={{ width: c.width, textAlign: "right", flexShrink: 0, color: "#374151" }}>{display}</span>;
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Ad Funnel — SVG visual showing cold→warm→hot audience stages
+// ═══════════════════════════════════════════════════════════════
+
+const FUNNEL_STAGES = [
+  { key: "cold", label: "Cold", sublabel: "Prospecting: lookalikes, interests, broad", color: "#3B82F6", bg: "#EFF6FF", border: "#93C5FD" },
+  { key: "warm", label: "Warm", sublabel: "Retargeting: site visitors, engagers", color: "#D97706", bg: "#FFFBEB", border: "#FCD34D" },
+  { key: "hot",  label: "Hot",  sublabel: "High intent: ATC, purchasers, VIPs",     color: "#DC2626", bg: "#FEF2F2", border: "#FCA5A5" },
+] as const;
+
+function AdFunnelTile({ funnelData, cs, onAdSetClick }: {
+  funnelData: { cold: any; warm: any; hot: any };
+  cs: string;
+  onAdSetClick?: (id: string, name: string) => void;
+}) {
+  const totalSpend = (funnelData.cold?.spend || 0) + (funnelData.warm?.spend || 0) + (funnelData.hot?.spend || 0);
+  const hasData = totalSpend > 0;
+
+  if (!hasData) {
+    return (
+      <div style={{ padding: "24px", textAlign: "center", color: "#6B7280" }}>
+        <div style={{ fontSize: "14px", fontWeight: 500 }}>No funnel data yet</div>
+        <div style={{ fontSize: "12px", marginTop: "4px" }}>
+          Targeting data is synced nightly. Run a sync from the Health tab to populate.
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "2px", padding: "12px 0" }}>
+      {FUNNEL_STAGES.map((stage, i) => {
+        const data = funnelData[stage.key] || { spend: 0, newCustomers: 0, revenue: 0, orders: 0, adsets: [] };
+        const widthPct = 100 - (i * 18); // 100%, 82%, 64% — narrowing funnel
+        const spendPct = totalSpend > 0 ? Math.round((data.spend / totalSpend) * 100) : 0;
+        const roas = data.spend > 0 ? (data.revenue / data.spend).toFixed(2) : "—";
+
+        return (
+          <div
+            key={stage.key}
+            style={{
+              width: `${widthPct}%`,
+              background: stage.bg,
+              border: `1px solid ${stage.border}`,
+              borderRadius: "10px",
+              padding: "14px 20px",
+              position: "relative",
+            }}
+          >
+            {/* Header row */}
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: "6px" }}>
+              <div>
+                <span style={{ fontSize: "15px", fontWeight: 700, color: stage.color }}>{stage.label}</span>
+                <span style={{ fontSize: "12px", color: "#6B7280", marginLeft: "8px" }}>{stage.sublabel}</span>
+              </div>
+              <span style={{ fontSize: "12px", color: "#6B7280", fontWeight: 500 }}>{spendPct}% of spend</span>
+            </div>
+
+            {/* Metrics row */}
+            <div style={{ display: "flex", gap: "24px", flexWrap: "wrap", marginBottom: data.adsets.length > 0 ? "8px" : 0 }}>
+              <div>
+                <span style={{ fontSize: "18px", fontWeight: 700, color: "#374151" }}>{cs}{Math.round(data.spend).toLocaleString()}</span>
+                <span style={{ fontSize: "11px", color: "#6B7280", marginLeft: "4px" }}>spend</span>
+              </div>
+              <div>
+                <span style={{ fontSize: "18px", fontWeight: 700, color: "#374151" }}>{data.newCustomers.toLocaleString()}</span>
+                <span style={{ fontSize: "11px", color: "#6B7280", marginLeft: "4px" }}>new customers</span>
+              </div>
+              <div>
+                <span style={{ fontSize: "18px", fontWeight: 700, color: "#374151" }}>{cs}{Math.round(data.revenue).toLocaleString()}</span>
+                <span style={{ fontSize: "11px", color: "#6B7280", marginLeft: "4px" }}>revenue</span>
+              </div>
+              <div>
+                <span style={{ fontSize: "18px", fontWeight: 700, color: "#374151" }}>{roas}{typeof roas === "string" && roas !== "—" ? "x" : ""}</span>
+                <span style={{ fontSize: "11px", color: "#6B7280", marginLeft: "4px" }}>ROAS</span>
+              </div>
+              <div>
+                <span style={{ fontSize: "14px", fontWeight: 600, color: "#6B7280" }}>{data.adsets.length}</span>
+                <span style={{ fontSize: "11px", color: "#6B7280", marginLeft: "4px" }}>ad sets</span>
+              </div>
+            </div>
+
+            {/* Top ad sets */}
+            {data.adsets.length > 0 && (
+              <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
+                {data.adsets.map((as: any) => (
+                  <button
+                    key={as.id}
+                    onClick={() => onAdSetClick?.(as.id, as.name)}
+                    style={{
+                      fontSize: "11px", padding: "3px 8px", borderRadius: "12px",
+                      background: "#fff", border: `1px solid ${stage.border}`,
+                      color: stage.color, cursor: "pointer", fontWeight: 500,
+                      maxWidth: "200px", overflow: "hidden", textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                    }}
+                    title={`${as.name} — ${cs}${Math.round(as.spend).toLocaleString()} spend, ${as.newCustomers} new customers`}
+                  >
+                    {as.name}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 const TAB_LEVELS = ["campaign", "adset", "ad"];
 const TAB_LABELS = ["Campaigns", "Ad Sets", "Ads"];
 const NAME_HEADERS: Record<string, string> = { campaign: "Campaign", adset: "Ad Set", ad: "Ad" };
@@ -2208,6 +2552,7 @@ export default function Campaigns() {
     uniqueNewMetaCustomers, prevUniqueNewMetaCustomers, totalNewCustomersInPeriod,
     shopDomain, fromKey, toKey, preset,
     changeEvents, changeCountsByObjectId,
+    funnelData,
   } = useLoaderData();
   const cs = currencySymbol || currencySymbolFromCode(null);
   const [searchParams, setSearchParams] = useSearchParams();
@@ -3097,14 +3442,26 @@ export default function Campaigns() {
                   chartData={dailyData} prevChartData={prevDailyData} chartKey={(d) => d.newCustomerOrders > 0 ? d.spend / d.newCustomerOrders : 0}
                   chartColor="#B45309" chartFormat={fmtPrice} />
               )},
-              { id: "bestToWorst", label: "Best to Worst Performing", span: 2, render: () => (
+              { id: "adExplorer", label: "Ad Explorer", span: 4, render: () => (
                 <Card>
                   <BlockStack gap="300">
                     <InlineStack align="space-between" blockAlign="center">
-                      <Text as="h3" variant="headingSm">Best to Worst Performing</Text>
+                      <Text as="h2" variant="headingLg">Ad Explorer</Text>
                       <SmallToggle options={LEVEL_OPTIONS} selected={rankLevel} onChange={setRankLevel} />
                     </InlineStack>
-                    <BestToWorstList rows={rankRows} cs={cs} entityType={rankLevel as "campaign" | "adset" | "ad"} onEntityClick={(id, name) => setDrawerEntity({ objectType: rankLevel as any, objectId: id, objectName: name })} />
+                    <AdExplorerTable rows={rankRows} cs={cs} entityType={rankLevel as "campaign" | "adset" | "ad"} onEntityClick={(id, name) => setDrawerEntity({ objectType: rankLevel as any, objectId: id, objectName: name })} />
+                  </BlockStack>
+                </Card>
+              )},
+              { id: "adFunnel", label: "Ad Funnel", span: 4, render: () => (
+                <Card>
+                  <BlockStack gap="300">
+                    <Text as="h2" variant="headingLg">Ad Funnel</Text>
+                    <Text as="p" variant="bodySm" tone="subdued">
+                      How your ad spend flows from cold prospecting through to hot purchase-intent audiences.
+                      Based on Meta targeting data — synced nightly.
+                    </Text>
+                    <AdFunnelTile funnelData={funnelData} cs={cs} onAdSetClick={(id, name) => setDrawerEntity({ objectType: "adset", objectId: id, objectName: name })} />
                   </BlockStack>
                 </Card>
               )},

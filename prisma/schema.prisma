@@ -334,6 +334,9 @@ model MetaEntity {
   effectiveStartAt DateTime?
   effectiveEndAt   DateTime?
   fetchedAt        DateTime  @default(now())
+  // Ad set targeting: raw JSON from Meta API targeting_spec + derived funnel stage
+  targetingSpec    String?   // JSON blob from Meta targeting field (ad sets only)
+  funnelStage      String?   // cold | warm | hot — derived from targetingSpec at sync time
 
   @@unique([shopDomain, entityType, entityId])
   @@index([shopDomain, entityType])
