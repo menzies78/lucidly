@@ -26,6 +26,7 @@
 import db from "../db.server.js";
 import { shopLocalDayKey } from "../utils/shopTime.server";
 import { geocodeCity } from "./geo/geocoder.server.js";
+import { COUNTRY_CENTROIDS } from "./geo/countryCentroids.js";
 
 const DAY_MS = 86400000;
 const MONTH_MS = 30 * DAY_MS;
@@ -399,7 +400,21 @@ export async function rebuildCustomerSegments(shopDomain) {
         r: r2(totalRefunded),
         n: custOrders.length,
         d: lastOrder ? Math.floor((now - lastOrder.createdAt.getTime()) / DAY_MS) : null,
-        x: !firstOrder?.city ? 1 : 0,
+        // x = 1 when the customer plotted at the country centroid rather
+        // than a real city. Detect by *coordinate match* against the
+        // centroid table — covers both "no city captured" and "city
+        // present but not in the geonames cities5000 dump". Coords are
+        // compared post-rounding (4dp) so floating-point match is safe.
+        x: (() => {
+          const cc = firstOrder?.countryCode ? firstOrder.countryCode.toUpperCase() : null;
+          const c = cc ? COUNTRY_CENTROIDS[cc] : null;
+          if (!c) return !firstOrder?.city ? 1 : 0;
+          const clat = Math.round(c[0] * 10000) / 10000;
+          const clng = Math.round(c[1] * 10000) / 10000;
+          const plat = Math.round(lat * 10000) / 10000;
+          const plng = Math.round(lng * 10000) / 10000;
+          return plat === clat && plng === clng ? 1 : 0;
+        })(),
         p: lineDiscountOrdersCount > 0 ? 1 : 0,
         pr: distinctProductIdx,
       });

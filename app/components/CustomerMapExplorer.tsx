@@ -345,31 +345,32 @@ export default function CustomerMapExplorer({ blob, cs, protomapsKey = null }: P
         .cme-toggle-btn:not(.active):hover { background: #F3F4F6; }
       `}} />
       <BlockStack gap="400">
-        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 16 }}>
-          <BlockStack gap="100">
-            <Text as="h2" variant="headingLg">Customer Map Explorer</Text>
-            <Text as="p" variant="bodySm" tone="subdued">{subtitle}</Text>
-          </BlockStack>
-          <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 8, flexShrink: 0 }}>
-            <div className="cme-toggle-group">
-              <button className={`cme-toggle-btn ${scope === "metaAcquired" ? "active" : ""}`} onClick={() => setScope("metaAcquired")}>Meta Acquired</button>
-              <button className={`cme-toggle-btn ${scope === "allMeta" ? "active" : ""}`} onClick={() => setScope("allMeta")}>All Meta</button>
-              <button className={`cme-toggle-btn ${scope === "all" ? "active" : ""}`} onClick={() => setScope("all")}>All Customers</button>
-            </div>
-            <div
-              className="cme-toggle-group"
-              title="Filter by recency of last order. All time is the default — narrower windows highlight customers who've ordered recently."
-            >
-              {TIME_WINDOWS.map((w) => (
-                <button
-                  key={String(w.key)}
-                  className={`cme-toggle-btn ${timeWindow === w.key ? "active" : ""}`}
-                  onClick={() => setTimeWindow(w.key)}
-                >
-                  {w.label}
-                </button>
-              ))}
-            </div>
+        <BlockStack gap="100">
+          <Text as="h2" variant="headingLg">Customer Map Explorer</Text>
+          <Text as="p" variant="bodySm" tone="subdued">{subtitle}</Text>
+        </BlockStack>
+        {/* Both toggles share one row, left-aligned beneath the subtitle.
+            Time window first (it's the dominant filter), scope toggle next
+            to it. */}
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-start", gap: 12, flexWrap: "wrap" }}>
+          <div
+            className="cme-toggle-group"
+            title="Filter by recency of last order. All time is the default — narrower windows highlight customers who've ordered recently."
+          >
+            {TIME_WINDOWS.map((w) => (
+              <button
+                key={String(w.key)}
+                className={`cme-toggle-btn ${timeWindow === w.key ? "active" : ""}`}
+                onClick={() => setTimeWindow(w.key)}
+              >
+                {w.label}
+              </button>
+            ))}
+          </div>
+          <div className="cme-toggle-group">
+            <button className={`cme-toggle-btn ${scope === "metaAcquired" ? "active" : ""}`} onClick={() => setScope("metaAcquired")}>Meta Acquired</button>
+            <button className={`cme-toggle-btn ${scope === "allMeta" ? "active" : ""}`} onClick={() => setScope("allMeta")}>All Meta</button>
+            <button className={`cme-toggle-btn ${scope === "all" ? "active" : ""}`} onClick={() => setScope("all")}>All Customers</button>
           </div>
         </div>
 
@@ -850,11 +851,17 @@ function ClusterLayer({ points, L, useMap, Supercluster, cs }: ClusterLayerProps
           const count = c.properties.point_count;
           const approx = c.properties.approx || 0;
           // "Approx-heavy" = the bulk of leaves are country-centroid fallbacks.
-          // Such clusters can't be broken down by zooming because every leaf
-          // sits on the exact same lat/lng (the country centroid), so we
-          // mark them visually (orange) and surface an explanation popup
-          // instead of a fly-to-expand interaction.
-          const isApprox = approx >= count * 0.8;
+          // Two signals, either is sufficient:
+          //   1. ≥80% of leaves carry the per-point `x` flag (the rollup-time
+          //      detection — coordinate-matched against COUNTRY_CENTROIDS).
+          //   2. supercluster reports the cluster expands at ≥ maxZoom, i.e.
+          //      every leaf shares the same lat/lng — by definition only
+          //      possible when they're all on a centroid. This is the
+          //      live-blob fallback for points predating the coordinate-based
+          //      `x`, where the old "no-city" definition undercounts.
+          const expansionZoom = indexRef.current.getClusterExpansionZoom(c.id);
+          const colocated = expansionZoom >= 16; // matches Supercluster maxZoom config
+          const isApprox = approx >= count * 0.8 || colocated;
           const size = count >= 500 ? 56 : count >= 100 ? 46 : count >= 25 ? 38 : 30;
           const bg = isApprox ? "rgba(245,158,11,0.85)" : "rgba(124,58,237,0.85)";
           const el = L.divIcon({
