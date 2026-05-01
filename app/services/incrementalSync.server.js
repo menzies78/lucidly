@@ -16,6 +16,12 @@ const lastRollupRebuildAt = /** @type {Map<string, number>} */ (
   globalThis.__lucidlyLastRollupRebuildAt || (globalThis.__lucidlyLastRollupRebuildAt = new Map())
 );
 
+// Track which yesterday dates we've already lookback-checked this process,
+// so we don't re-fetch on every hourly cycle (saves memory + API calls).
+const previousDayChecked = /** @type {Set<string>} */ (
+  globalThis.__lucidlyPrevDayChecked || (globalThis.__lucidlyPrevDayChecked = new Set())
+);
+
 /**
  * Rebuild all three rollup tables for a shop, unless the previous rebuild was
  * less than 24 hours ago AND the caller has no new data to justify another
@@ -1171,25 +1177,30 @@ export async function runIncrementalSync(shopDomain) {
   // we successfully match or sync breakdowns.
   await saveSnapshot(shopDomain, today, currentData);
 
-  // ── Previous-day lookback ──
+  // ── Previous-day lookback (once per day per process) ──
   // Meta is inconsistent about which day it assigns late-night conversions to.
   // Sometimes h23 conversions roll into the next day's h0, sometimes they stay
   // in h23. The incremental sync only processes "today", so if Meta kept them
   // in yesterday's h23, we never see them. On the first sync of each new day,
   // fetch yesterday's data and pick up any uncaptured conversions.
   const yesterday = new Date(new Date(today + "T12:00:00Z").getTime() - 86400000).toISOString().slice(0, 10);
+  const prevDayKey = `${shopDomain}:${yesterday}`;
   let yesterdayNewConversions = [];
-  try {
-    const yesterdayData = await fetchTodayMeta(shop.metaAccessToken, shop.metaAdAccountId, yesterday);
-    for (const row of yesterdayData) convertMetaFields(row, rate);
-    await saveInsights(shopDomain, yesterday, yesterdayData);
-    yesterdayNewConversions = await findNewConversions(shopDomain, yesterday, yesterdayData);
-    if (yesterdayNewConversions.length > 0) {
-      console.log(`[IncrementalSync] Previous-day lookback: ${yesterdayNewConversions.length} uncaptured conversions on ${yesterday}`);
-      await saveSnapshot(shopDomain, yesterday, yesterdayData);
+  if (!previousDayChecked.has(prevDayKey)) {
+    previousDayChecked.add(prevDayKey);
+    try {
+      const yesterdayData = await fetchTodayMeta(shop.metaAccessToken, shop.metaAdAccountId, yesterday);
+      for (const row of yesterdayData) convertMetaFields(row, rate);
+      await saveInsights(shopDomain, yesterday, yesterdayData);
+      yesterdayNewConversions = await findNewConversions(shopDomain, yesterday, yesterdayData);
+      if (yesterdayNewConversions.length > 0) {
+        console.log(`[IncrementalSync] Previous-day lookback: ${yesterdayNewConversions.length} uncaptured conversions on ${yesterday}`);
+        await saveSnapshot(shopDomain, yesterday, yesterdayData);
+      }
+    } catch (err) {
+      console.error(`[IncrementalSync] Previous-day lookback failed (non-fatal): ${err.message}`);
+      previousDayChecked.delete(prevDayKey); // retry next cycle
     }
-  } catch (err) {
-    console.error(`[IncrementalSync] Previous-day lookback failed (non-fatal): ${err.message}`);
   }
 
   // Country-delta detection: fetch today's country breakdown, diff against the
