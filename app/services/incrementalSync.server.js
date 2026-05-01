@@ -368,7 +368,7 @@ const RIVAL_VALUE_TOLERANCE = 0.02;
  */
 async function runUtmLayer1Pass(shopDomain, dayStr, dayOrders, newConversions, metaOffsetMinutes) {
   const utmOrders = dayOrders.filter(o =>
-    o.utmConfirmedMeta === true && o.metaAdId && o.metaAdId.length > 0
+    o.utmConfirmedMeta === true && ((o.metaAdId && o.metaAdId.length > 0) || (o.metaAdIdFromUtm && o.metaAdIdFromUtm.length > 0))
   );
   if (utmOrders.length === 0) return { layer1Written: 0, slotCreditsConsumed: 0 };
 
@@ -403,10 +403,13 @@ async function runUtmLayer1Pass(shopDomain, dayStr, dayOrders, newConversions, m
 
     const orderTotal = order.frozenTotalPrice || 0;
     const orderMinute = dateToMinute(order.createdAt);
+    // Effective ad ID: prefer metaAdId (set by UTM linkage), fall back to
+    // metaAdIdFromUtm (parsed from utm_id at order import time).
+    const effectiveAdId = order.metaAdId || order.metaAdIdFromUtm || null;
 
     // Try to find a Meta conversion slot this cycle for the same ad whose
     // time window contains this order. Prefer slots with remaining capacity.
-    const adConvs = convsByAd[order.metaAdId] || [];
+    const adConvs = effectiveAdId ? (convsByAd[effectiveAdId] || []) : [];
     let claimedSlot = null;
     for (const entry of adConvs) {
       if (entry.conv.deltaConversions <= 0) continue;
@@ -431,18 +434,24 @@ async function runUtmLayer1Pass(shopDomain, dayStr, dayOrders, newConversions, m
       create: {
         shopDomain, shopifyOrderId: order.shopifyOrderId,
         layer: 1, confidence: 100, rivalCount: 0,
-        metaCampaignId: order.metaCampaignId, metaCampaignName: order.metaCampaignName,
-        metaAdSetId: order.metaAdSetId, metaAdSetName: order.metaAdSetName,
-        metaAdId: order.metaAdId, metaAdName: order.metaAdName,
+        metaCampaignId: order.metaCampaignId || claimedSlot?.campaignId || null,
+        metaCampaignName: order.metaCampaignName || claimedSlot?.campaignName || null,
+        metaAdSetId: order.metaAdSetId || claimedSlot?.adSetId || null,
+        metaAdSetName: order.metaAdSetName || claimedSlot?.adSetName || null,
+        metaAdId: effectiveAdId || claimedSlot?.adId || null,
+        metaAdName: order.metaAdName || claimedSlot?.adName || null,
         isNewCustomer: order.customerOrderCountAtPurchase === 1, isNewToMeta: order.customerOrderCountAtPurchase === 1,
         matchMethod: "utm",
         metaConversionValue: metaPerConv,
       },
       update: {
         layer: 1, confidence: 100, rivalCount: 0,
-        metaCampaignId: order.metaCampaignId, metaCampaignName: order.metaCampaignName,
-        metaAdSetId: order.metaAdSetId, metaAdSetName: order.metaAdSetName,
-        metaAdId: order.metaAdId, metaAdName: order.metaAdName,
+        metaCampaignId: order.metaCampaignId || claimedSlot?.campaignId || null,
+        metaCampaignName: order.metaCampaignName || claimedSlot?.campaignName || null,
+        metaAdSetId: order.metaAdSetId || claimedSlot?.adSetId || null,
+        metaAdSetName: order.metaAdSetName || claimedSlot?.adSetName || null,
+        metaAdId: effectiveAdId || claimedSlot?.adId || null,
+        metaAdName: order.metaAdName || claimedSlot?.adName || null,
         isNewCustomer: order.customerOrderCountAtPurchase === 1, isNewToMeta: order.customerOrderCountAtPurchase === 1,
         matchMethod: "utm",
         metaConversionValue: metaPerConv,
@@ -931,19 +940,32 @@ export async function matchDayDeltas(shopDomain, dayStr) {
   const dayOrderIds = new Set(dayOrders.map(o => o.shopifyOrderId));
 
   // Find incremental attributions linked to orders on this day — these are PROTECTED.
-  // Count per-ad how many conversions are already covered by incremental matches.
+  // Count per ad+hour so h23 deltas aren't consumed by earlier-hour matches.
+  // We derive the Meta hour slot from the order's createdAt + timezone offset.
   const existingIncrementals = await db.attribution.findMany({
     where: {
       shopDomain,
-      matchMethod: "incremental",
+      matchMethod: { in: ["incremental", "utm + incremental"] },
       confidence: { gt: 0 },
       shopifyOrderId: { in: [...dayOrderIds] },
     },
-    select: { metaAdId: true },
+    select: { metaAdId: true, shopifyOrderId: true },
   });
-  const incrementalCountByAd = {};
+  // Build a map of orderId → createdAt for hour derivation
+  const orderCreatedAtMap = {};
+  for (const o of dayOrders) orderCreatedAtMap[o.shopifyOrderId] = o.createdAt;
+
+  const incrementalCountByAdHour = {};
   for (const a of existingIncrementals) {
-    incrementalCountByAd[a.metaAdId] = (incrementalCountByAd[a.metaAdId] || 0) + 1;
+    const orderTime = orderCreatedAtMap[a.shopifyOrderId];
+    if (!orderTime) continue;
+    // Derive the Meta hour slot this order falls in (applying timezone offset)
+    const orderDate = new Date(orderTime);
+    // Add Meta offset to get Meta-local hour (Meta reports in ad account tz)
+    const metaLocalMs = orderDate.getTime() + metaOffsetMinutes * 60000;
+    const metaHour = new Date(metaLocalMs).getUTCHours();
+    const key = `${a.metaAdId}|${metaHour}`;
+    incrementalCountByAdHour[key] = (incrementalCountByAdHour[key] || 0) + 1;
   }
 
   // Also count existing unmatched records per ad+hour so we don't double-create
@@ -961,17 +983,14 @@ export async function matchDayDeltas(shopDomain, dayStr) {
 
   for (const conv of remainingNewConversions) {
     // PRIORITY RULE: skip conversions already covered by incremental matches.
-    // Incremental matches captured the original order value before Shopify edits —
-    // they are more accurate. Only process the EXTRA conversions the incremental sync missed.
-    const incrementalCount = incrementalCountByAd[conv.adId] || 0;
+    // Now tracked per ad+hour — h23 deltas are only consumed by h23 incrementals.
+    const adHourKey = `${conv.adId}|${conv.hourSlot}`;
+    const incrementalCount = incrementalCountByAdHour[adHourKey] || 0;
     if (incrementalCount > 0) {
-      // Reduce delta by the number already handled incrementally
-      // The snapshot tracks cumulative conversions, so the delta includes ones already matched
       const alreadyCovered = Math.min(conv.deltaConversions, incrementalCount);
-      incrementalCountByAd[conv.adId] -= alreadyCovered;
+      incrementalCountByAdHour[adHourKey] -= alreadyCovered;
       conv.deltaConversions -= alreadyCovered;
       if (conv.deltaConversions > 0) {
-        // Adjust delta value proportionally
         const originalPerConv = conv.deltaValue / (conv.deltaConversions + alreadyCovered);
         conv.deltaValue = Math.round(originalPerConv * conv.deltaConversions * 100) / 100;
         console.log(`[DeltaMatch] ${conv.adId} hour ${conv.hourSlot}: ${alreadyCovered} covered by incremental, ${conv.deltaConversions} remaining`);
@@ -1152,6 +1171,27 @@ export async function runIncrementalSync(shopDomain) {
   // we successfully match or sync breakdowns.
   await saveSnapshot(shopDomain, today, currentData);
 
+  // ── Previous-day lookback ──
+  // Meta is inconsistent about which day it assigns late-night conversions to.
+  // Sometimes h23 conversions roll into the next day's h0, sometimes they stay
+  // in h23. The incremental sync only processes "today", so if Meta kept them
+  // in yesterday's h23, we never see them. On the first sync of each new day,
+  // fetch yesterday's data and pick up any uncaptured conversions.
+  const yesterday = new Date(new Date(today + "T12:00:00Z").getTime() - 86400000).toISOString().slice(0, 10);
+  let yesterdayNewConversions = [];
+  try {
+    const yesterdayData = await fetchTodayMeta(shop.metaAccessToken, shop.metaAdAccountId, yesterday);
+    for (const row of yesterdayData) convertMetaFields(row, rate);
+    await saveInsights(shopDomain, yesterday, yesterdayData);
+    yesterdayNewConversions = await findNewConversions(shopDomain, yesterday, yesterdayData);
+    if (yesterdayNewConversions.length > 0) {
+      console.log(`[IncrementalSync] Previous-day lookback: ${yesterdayNewConversions.length} uncaptured conversions on ${yesterday}`);
+      await saveSnapshot(shopDomain, yesterday, yesterdayData);
+    }
+  } catch (err) {
+    console.error(`[IncrementalSync] Previous-day lookback failed (non-fatal): ${err.message}`);
+  }
+
   // Country-delta detection: fetch today's country breakdown, diff against the
   // previous MetaCountrySnapshot to learn which country each new conversion came
   // from. Fed into the matcher as a strong (but not hard) tiebreaker signal.
@@ -1293,6 +1333,76 @@ export async function runIncrementalSync(shopDomain) {
     } else {
       await upsertUnmatchedPlaceholders(shopDomain, conv, today);
       totalUnmatched += Math.max(conv.deltaConversions, 1);
+    }
+  }
+
+  // ── Match yesterday's uncaptured conversions ──
+  if (yesterdayNewConversions.length > 0) {
+    setProgress(`incrementalSync:${shopDomain}`, {
+      status: "running",
+      message: `Matching ${yesterdayNewConversions.length} previous-day conversions...`,
+    });
+
+    const yesterdayMetaOffset = getTimezoneOffsetMinutes(shop.metaAccountTimezone, yesterday);
+    const yBounds = shopDayBounds(shop.shopifyTimezone || "UTC", yesterday);
+    const yPaddedStart = new Date(yBounds.gte.getTime() - (PADDING_MINUTES + Math.max(0, yesterdayMetaOffset)) * 60 * 1000);
+    const yesterdayOrders = await db.order.findMany({
+      where: { shopDomain, isOnlineStore: true, createdAt: { gte: yPaddedStart, lte: yBounds.lte } },
+      orderBy: { createdAt: "asc" },
+    });
+
+    // UTM Layer 1 for yesterday's uncaptured
+    const yLayer1 = await runUtmLayer1Pass(shopDomain, yesterday, yesterdayOrders, yesterdayNewConversions, yesterdayMetaOffset);
+    const yRemaining = yesterdayNewConversions.filter(c => c.deltaConversions > 0);
+
+    const yCountryRows = await db.metaBreakdown.findMany({
+      where: { shopDomain, breakdownType: "country", spend: { gt: 0 }, date: new Date(yesterday + "T00:00:00.000Z") },
+      select: { breakdownValue: true },
+    });
+    const yMetaSpendCountries = new Set(yCountryRows.map(r => r.breakdownValue.toUpperCase()));
+
+    for (const conv of yRemaining) {
+      const matched = await matchSingleConversion(shopDomain, conv, yesterdayOrders, revenueField, yesterdayMetaOffset, yMetaSpendCountries, null);
+      if (matched.length > 0) {
+        const metaPerConv = conv.deltaConversions > 0
+          ? Math.round((conv.deltaValue / conv.deltaConversions) * 100) / 100 : 0;
+        for (const pick of matched) {
+          const existing = existingAttrByOrderId.get(pick.orderId);
+          if (existing && existing.matchMethod === "utm" && (pick.rivalCount || 0) > 0) continue;
+          const finalMethod = (existing && existing.matchMethod === "utm" && existing.metaAdId === conv.adId)
+            ? "utm + incremental" : "incremental";
+          matchedOrderIds.push(pick.orderId);
+          await db.attribution.upsert({
+            where: { shopDomain_shopifyOrderId: { shopDomain, shopifyOrderId: pick.orderId } },
+            create: {
+              shopDomain, shopifyOrderId: pick.orderId, layer: 2,
+              confidence: pick.confidence, rivalCount: pick.rivalCount || 0,
+              metaCampaignId: conv.campaignId, metaCampaignName: conv.campaignName,
+              metaAdSetId: conv.adSetId, metaAdSetName: conv.adSetName,
+              metaAdId: conv.adId, metaAdName: conv.adName,
+              isNewCustomer: pick.isNew, isNewToMeta: pick.isNew, matchMethod: finalMethod,
+              metaConversionValue: metaPerConv,
+            },
+            update: {
+              confidence: pick.confidence, rivalCount: pick.rivalCount || 0,
+              metaCampaignId: conv.campaignId, metaCampaignName: conv.campaignName,
+              metaAdSetId: conv.adSetId, metaAdSetName: conv.adSetName,
+              metaAdId: conv.adId, metaAdName: conv.adName,
+              isNewCustomer: pick.isNew, isNewToMeta: pick.isNew, matchMethod: finalMethod,
+              metaConversionValue: metaPerConv,
+            },
+          });
+          existingAttrByOrderId.set(pick.orderId, { shopifyOrderId: pick.orderId, matchMethod: finalMethod, metaAdId: conv.adId });
+          totalMatched++;
+        }
+        await deleteUnmatchedPlaceholders(shopDomain, conv.adId, yesterday, conv.hourSlot);
+      } else {
+        await upsertUnmatchedPlaceholders(shopDomain, conv, yesterday);
+        totalUnmatched += Math.max(conv.deltaConversions, 1);
+      }
+    }
+    if (yLayer1.layer1Written > 0 || yRemaining.length > 0) {
+      console.log(`[IncrementalSync] Previous-day: ${yLayer1.layer1Written} UTM, ${yRemaining.length} statistical matches attempted`);
     }
   }
 
