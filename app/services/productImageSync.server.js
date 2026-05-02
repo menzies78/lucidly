@@ -14,28 +14,10 @@
 
 import db from "../db.server";
 import { unauthenticated } from "../shopify.server";
-
-const COLORS = new Set([
-  "black", "cream", "grey", "blue", "white", "red", "oyster", "pink",
-  "chartreuse", "multi", "rose", "camel", "navy", "lilac", "magenta",
-  "natural", "ecru", "green", "brown", "khaki", "orange", "yellow",
-  "teal", "coral", "ivory", "taupe", "beige", "stone", "tan", "nude",
-  "gold", "silver", "burgundy", "terracotta", "olive",
-]);
-
-function toParentProduct(name) {
-  const parts = name.trim().split(" ");
-  if (parts.length <= 1) return name.trim();
-  if (parts.length >= 3 && parts[parts.length - 3]?.toLowerCase() === "acid" && parts[parts.length - 2]?.toLowerCase() === "wash") {
-    if (COLORS.has(parts[parts.length - 1].toLowerCase())) return parts.slice(0, -3).join(" ");
-    return parts.slice(0, -2).join(" ");
-  }
-  if (parts.length >= 2 && parts[parts.length - 2]?.toLowerCase() === "acid" && parts[parts.length - 1]?.toLowerCase() === "wash") {
-    return parts.slice(0, -2).join(" ");
-  }
-  if (COLORS.has(parts[parts.length - 1].toLowerCase())) return parts.slice(0, -1).join(" ");
-  return name.trim();
-}
+// Use the rollup's canonicaliser so image-map keys match rollup keys —
+// otherwise Vollebak-style trailing-period titles ("Planet Earth Suit Jacket.")
+// produce keys that diverge from the period-stripped rollup product names.
+import { toParentProduct } from "./productRollups.server";
 
 /**
  * Refresh the product image map for a shop from Shopify GraphQL.

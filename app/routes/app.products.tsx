@@ -18,30 +18,12 @@ import { getCachedInsights, computeDataHash, generateInsights } from "../service
 import { setProgress, failProgress, completeProgress } from "../services/progress.server";
 import AiInsightsPanel from "../components/AiInsightsPanel";
 import PageSummary, { type SummaryBullet } from "../components/PageSummary";
-
-// ── Variant stripping ──
-
-const COLORS = new Set([
-  "black", "cream", "grey", "blue", "white", "red", "oyster", "pink",
-  "chartreuse", "multi", "rose", "camel", "navy", "lilac", "magenta",
-  "natural", "ecru", "green", "brown", "khaki", "orange", "yellow",
-  "teal", "coral", "ivory", "taupe", "beige", "stone", "tan", "nude",
-  "gold", "silver", "burgundy", "terracotta", "olive",
-]);
-
-function toParentProduct(name: string): string {
-  const parts = name.trim().split(" ");
-  if (parts.length <= 1) return name.trim();
-  if (parts.length >= 3 && parts[parts.length - 3]?.toLowerCase() === "acid" && parts[parts.length - 2]?.toLowerCase() === "wash") {
-    if (COLORS.has(parts[parts.length - 1].toLowerCase())) return parts.slice(0, -3).join(" ");
-    return parts.slice(0, -2).join(" ");
-  }
-  if (parts.length >= 2 && parts[parts.length - 2]?.toLowerCase() === "acid" && parts[parts.length - 1]?.toLowerCase() === "wash") {
-    return parts.slice(0, -2).join(" ");
-  }
-  if (COLORS.has(parts[parts.length - 1].toLowerCase())) return parts.slice(0, -1).join(" ");
-  return name.trim();
-}
+// Single source of truth for parent-product name canonicalisation. Imported
+// (rather than duplicated) so rollup keys and image-map keys stay aligned —
+// previously the route's local copy didn't strip trailing periods, which
+// hid thumbnails for Vollebak-style listings (e.g. "Planet Earth Suit Jacket.",
+// "Indestructible T-shirt.") whose rollup keys are period-stripped.
+import { toParentProduct } from "../services/productRollups.server";
 
 // ── Loader ──
 
@@ -90,7 +72,18 @@ export const loader = async ({ request }) => {
       const DB_CACHE_TTL = 24 * 60 * 60 * 1000; // 24 hours
       if (cachedShop?.productImagesJson && dbCacheAgeMs < DB_CACHE_TTL) {
         try {
-          const parsed = JSON.parse(cachedShop.productImagesJson);
+          const parsed = JSON.parse(cachedShop.productImagesJson) as Record<string, string>;
+          // Defensive re-canonicalisation. Older cache writes used a stricter
+          // toParentProduct that didn't strip trailing periods, so rollup
+          // keys like "Planet Earth Suit Jacket" miss the cached entry
+          // "Planet Earth Suit Jacket." until the 24h TTL expires. Add the
+          // canonical-parent alias on read so lookups hit immediately after
+          // deploy without needing a one-time cache wipe.
+          for (const title of Object.keys(parsed)) {
+            const url = parsed[title];
+            const parent = toParentProduct(title);
+            if (parent && !parsed[parent]) parsed[parent] = url;
+          }
           console.log(`[Products] Loaded ${Object.keys(parsed).length} product images for ${shopDomain} from DB cache (age ${Math.round(dbCacheAgeMs / 60000)}min)`);
           return parsed;
         } catch {}
