@@ -716,7 +716,10 @@ async function matchSingleConversion(shopDomain, conv, todayOrders, revenueField
   // in one hour slot → we look for the single Shopify order whose total is closest
   // to the Meta value within tolerance. No combinatorial search, no averaging.
   const target = conv.deltaValue;
-  const tolerance = 0.05;
+  // Tighter tolerance for R=1: 2% default (was 5%). Currency conversion drift
+  // between Meta and Shopify is typically 0.3-0.8%; 2% gives comfortable room
+  // without allowing false positives.
+  const tolerance = 0.02;
   if (conv.deltaConversions === 1) {
     let best = null, bestDiff = Infinity, bestCountryRank = -1, bestIsNew = -1;
     for (const cand of allCandidates) {
@@ -761,29 +764,33 @@ async function matchSingleConversion(shopDomain, conv, todayOrders, revenueField
   }
 
   // R>1 path — multiple conversions in the same ad-hour slot. Backtracking finds
-  // the combination of orders whose totals sum to Meta's deltaValue within tolerance.
-  // Each matched order is then stored with its ACTUAL frozenTotalPrice as the Meta
-  // value (not an average of deltaValue/R — that was the bug).
+  // the combination of R orders whose totals sum to Meta's deltaValue within a
+  // DYNAMIC tolerance derived from observed per-conversion drift on the same day.
   const R = Math.min(conv.deltaConversions, allCandidates.length);
 
+  // Dynamic tolerance: use per-conversion baseline × R × padding.
+  // perConvTolerance is passed in from the caller (computed from today's R=1 matches).
+  // Default: 0.5% per conversion if no baseline available.
+  const baseTolerancePerConv = conv._perConvTolerance || 0.005;
+  const groupTolerance = Math.min(baseTolerancePerConv * R * 1.5, 0.03); // cap at 3%
+
   let bestPicks = null, bestDiff = Infinity, bestCountryScore = -1, bestNewCount = -1;
+  let validComboCount = 0; // Count ALL valid combos for group confidence
   let iterations = 0;
   const deadline = Date.now() + 5000; // 5s budget per conversion event
 
   function countNew(picks) { let n = 0; for (const p of picks) if (p.isNew) n++; return n; }
-  // Sum of countryRank across picks — higher is better.
-  // Rank 2 = deterministic per-cycle country match; Rank 1 = day-level soft match.
   function scoreCountry(picks) { let n = 0; for (const p of picks) n += (p.countryRank || 0); return n; }
 
   function backtrack(i, start, sum, picks) {
     if (iterations++ % 5000 === 0 && Date.now() >= deadline) return;
     if (i === R) {
       const diff = Math.abs(sum - target);
-      if (diff <= target * tolerance) {
+      if (diff <= target * groupTolerance) {
+        validComboCount++;
         const cScore = scoreCountry(picks);
         const newCount = countNew(picks);
         const EPS = 1e-9;
-        // Priority: 1) closer to target, 2) higher country score, 3) more new customers
         if (diff < bestDiff - EPS ||
             (Math.abs(diff - bestDiff) <= EPS && cScore > bestCountryScore) ||
             (Math.abs(diff - bestDiff) <= EPS && cScore === bestCountryScore && newCount > bestNewCount)) {
@@ -810,28 +817,20 @@ async function matchSingleConversion(shopDomain, conv, todayOrders, revenueField
   const matchedSum = matched.reduce((s, p) => s + p.total, 0);
   const diffPct = Math.abs(matchedSum - target) / (target || 1);
 
-  // Calculate rival-based confidence for each pick
-  const pickedIds = new Set(matched.map(p => p.id));
-  return matched.map(pick => {
-    const pickRank = pick.countryRank || 0;
-    let rivalCount = 0;
-    for (const cand of allCandidates) {
-      if (pickedIds.has(cand.id)) continue;
-      if (pick.total > 0) {
-        const valueDiff = Math.abs(cand.total - pick.total) / pick.total;
-        if (valueDiff > RIVAL_VALUE_TOLERANCE) continue;
-      }
-      // Country disqualification — see R=1 comment above.
-      if (pickRank > 0 && (cand.countryRank || 0) < pickRank) continue;
-      rivalCount++;
-    }
-    return {
-      ...pick,
-      confidence: Math.max(1, Math.round(100 / (1 + rivalCount))),
-      rivalCount,
-      diffPct,
-    };
-  });
+  // Group confidence: based on how many alternative valid combos exist.
+  // If only 1 combo qualifies → 100%. If 6 combos → ~17%. If 31 → ~3%.
+  const groupConfidence = Math.max(1, Math.round(100 / validComboCount));
+
+  if (validComboCount > 1) {
+    console.log(`[DeltaMatch] R=${R} group: ${validComboCount} valid combos within ${(groupTolerance * 100).toFixed(1)}% tolerance, confidence=${groupConfidence}%`);
+  }
+
+  return matched.map(pick => ({
+    ...pick,
+    confidence: groupConfidence,
+    rivalCount: validComboCount - 1,
+    diffPct,
+  }));
 }
 
 async function syncTodayBreakdowns(shopDomain, metaAccessToken, metaAdAccountId, today, rate = 1.0) {
@@ -1287,6 +1286,42 @@ export async function runIncrementalSync(shopDomain) {
 
   let totalMatched = 0, totalUnmatched = 0;
   const matchedOrderIds = []; // Track for post-match confidence recalculation
+
+  // Compute dynamic per-conversion tolerance from today's existing R=1 matches.
+  // These are high-confidence 1:1 matches where we know the real drift between
+  // Meta's reported value and the actual Shopify order. Use the median as baseline.
+  const existingR1Attrs = await db.attribution.findMany({
+    where: { shopDomain, confidence: 100, rivalCount: 0, matchMethod: "incremental", metaConversionValue: { gt: 0 } },
+    select: { shopifyOrderId: true, metaConversionValue: true },
+    take: 50, orderBy: { matchedAt: "desc" },
+  });
+  let perConvTolerance = 0.005; // default 0.5% if no data
+  if (existingR1Attrs.length >= 3) {
+    const orderMap = new Map();
+    const r1OrderIds = existingR1Attrs.map(a => a.shopifyOrderId);
+    const r1Orders = await db.order.findMany({
+      where: { shopifyOrderId: { in: r1OrderIds } },
+      select: { shopifyOrderId: true, frozenTotalPrice: true },
+    });
+    for (const o of r1Orders) orderMap.set(o.shopifyOrderId, o.frozenTotalPrice);
+    const drifts = [];
+    for (const a of existingR1Attrs) {
+      const orderVal = orderMap.get(a.shopifyOrderId);
+      if (orderVal && orderVal > 0 && a.metaConversionValue > 0) {
+        drifts.push(Math.abs(orderVal - a.metaConversionValue) / a.metaConversionValue);
+      }
+    }
+    if (drifts.length >= 3) {
+      drifts.sort((a, b) => a - b);
+      const median = drifts[Math.floor(drifts.length / 2)];
+      perConvTolerance = Math.max(0.003, Math.min(median * 1.5, 0.01)); // clamp 0.3% - 1%
+      console.log(`[IncrementalSync] Per-conv tolerance from ${drifts.length} R=1 matches: median drift ${(median * 100).toFixed(3)}%, using ${(perConvTolerance * 100).toFixed(3)}%`);
+    }
+  }
+  // Annotate R>1 conversions with the dynamic tolerance
+  for (const conv of remainingConversions) {
+    if (conv.deltaConversions > 1) conv._perConvTolerance = perConvTolerance;
+  }
 
   setProgress(`incrementalSync:${shopDomain}`, {
     status: "running",
