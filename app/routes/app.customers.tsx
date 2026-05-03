@@ -1159,7 +1159,7 @@ export const loader = async ({ request }) => {
     mnCPA, mnLtvCac, mnPaybackOrders, mnMedianTimeTo2nd, mnReorderWithin90,
     allCount, allAvgLtv, allAvgOrders, allRepeatRate, allAvgAov,
     allMedianTimeTo2nd, allReorderWithin90,
-    metaAvgAov, totalMetaSpend,
+    metaAvgAov, totalMetaSpend, ltvAllMetaSpend,
     unmatchedConversions, unmatchedRevenue,
     ltvBenchmark, ltvTile, ltvRecent, ltvMonthly, ltvCustomers,
     weeklyCohortSeries,
@@ -1827,7 +1827,7 @@ export default function Customers() {
     mnCPA, mnLtvCac, mnPaybackOrders, mnMedianTimeTo2nd, mnReorderWithin90,
     allCount, allAvgLtv, allAvgOrders, allRepeatRate, allAvgAov,
     allMedianTimeTo2nd, allReorderWithin90,
-    metaAvgAov, totalMetaSpend,
+    metaAvgAov, totalMetaSpend, ltvAllMetaSpend,
     unmatchedConversions, unmatchedRevenue,
     ltvBenchmark, ltvTile, ltvRecent, ltvMonthly, ltvCustomers,
     weeklyCohortSeries,
@@ -1863,7 +1863,7 @@ export default function Customers() {
   const [ltvFilterGender, setLtvFilterGender] = useState<"All" | "male" | "female">("All");
   const [ltvFilterAges, setLtvFilterAges] = useState<string[]>([]); // empty = all
   const [ltvFilterCountry, setLtvFilterCountry] = useState<string>("All");
-  const [ltvWindowPreset, setLtvWindowPreset] = useState<"lifetime" | 30 | 60 | 90 | 180 | 365>("lifetime");
+  const [ltvWindowPreset, setLtvWindowPreset] = useState<"lifetime" | 30 | 60 | 90 | 180 | 365>(365);
   // Gross margin % for the profit-payback calc. Default 60 — reasonable
   // midpoint for DTC/fashion. Revenue-based payback was misleading
   // ("1 order = payback" sounds great but ROAS=1 doesn't cover product
@@ -2925,6 +2925,9 @@ export default function Customers() {
                 <div style={{ flex: 1 }} />
                 <div style={{ flex: 1, textAlign: "center" }}>
                   <Text as="h2" variant="headingLg">{ltvTab === "meta" ? "Meta Customer Lifetime Value Explorer" : "All Customer Lifetime Value Explorer"}</Text>
+                  <Text as="p" variant="bodySm" tone="subdued">
+                    Cohort analysis across all matured customers — independent of the date range selector at the top of the page.
+                  </Text>
                 </div>
                 <div style={{ flex: 1, display: "flex", justifyContent: "flex-end" }}>
                   <div className="toggle-group">
@@ -2933,74 +2936,6 @@ export default function Customers() {
                   </div>
                 </div>
               </div>
-              {/* LTV explorer controls — only shown on the Meta tab. Filters
-                  cut the per-customer dataset by gender/age/country and
-                  recompute the three headline stats + the maturation chart.
-                  Window tabs affect which benchmark window drives the "LTV by
-                  X" hero. Margin slider flips Payback from revenue-based to
-                  profit-based (CAC ÷ first-order gross profit). */}
-              {ltvTab === "meta" && (
-                <div style={{ display: "flex", flexDirection: "column", gap: "10px", marginTop: 12 }}>
-                  <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: "10px" }}>
-                    <span style={{ fontSize: "12px", fontWeight: 600, color: "#6B7280", width: "70px", textTransform: "uppercase", letterSpacing: 0.5 }}>Window</span>
-                    <div className="toggle-group">
-                      {(["lifetime", 365, 180, 90, 60, 30] as const).map((w) => (
-                        <button key={String(w)} className={`toggle-btn ${ltvWindowPreset === w ? "active" : ""}`} onClick={() => setLtvWindowPreset(w)}>
-                          {w === "lifetime" ? "Lifetime" : w === 365 ? "1yr" : `${w}d`}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                  <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: "10px" }}>
-                    <span style={{ fontSize: "12px", fontWeight: 600, color: "#6B7280", width: "70px", textTransform: "uppercase", letterSpacing: 0.5 }}>Gender</span>
-                    <div className="toggle-group">
-                      {(["All", "female", "male"] as const).map((g) => (
-                        <button key={g} className={`toggle-btn ${ltvFilterGender === g ? "active" : ""}`} onClick={() => setLtvFilterGender(g)}>
-                          {g === "All" ? "All" : g === "female" ? "Women" : "Men"}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                  {ltvAgeOptions.length > 0 && (
-                    <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: "10px" }}>
-                      <span style={{ fontSize: "12px", fontWeight: 600, color: "#6B7280", width: "70px", textTransform: "uppercase", letterSpacing: 0.5 }}>Age</span>
-                      <div className="toggle-group">
-                        <button className={`toggle-btn ${ltvFilterAges.length === 0 ? "active" : ""}`} onClick={() => setLtvFilterAges([])}>All</button>
-                        {ltvAgeOptions.map((a) => (
-                          <button key={a} className={`toggle-btn ${ltvFilterAges.includes(a) ? "active" : ""}`} onClick={() => setLtvFilterAges((prev) => prev.includes(a) ? prev.filter((x) => x !== a) : [...prev, a])}>
-                            {a}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                  {ltvCountryOptions.length > 0 && (
-                    <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: "10px" }}>
-                      <span style={{ fontSize: "12px", fontWeight: 600, color: "#6B7280", width: "70px", textTransform: "uppercase", letterSpacing: 0.5 }}>Country</span>
-                      <select value={ltvFilterCountry} onChange={(e) => setLtvFilterCountry(e.target.value)} style={{ fontSize: 12, padding: "6px 12px", border: "1px solid #D1D5DB", borderRadius: 6, background: "#fff" }}>
-                        <option value="All">All</option>
-                        {ltvCountryOptions.slice(0, 30).map((c) => <option key={c} value={c}>{c}</option>)}
-                      </select>
-                    </div>
-                  )}
-                  <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: "10px" }}>
-                    <span style={{ fontSize: "12px", fontWeight: 600, color: "#6B7280", width: "70px", textTransform: "uppercase", letterSpacing: 0.5 }}>Margin</span>
-                    <input type="range" min={0} max={90} step={5} value={marginPct} onChange={(e) => setMarginPct(parseInt(e.target.value, 10))} style={{ width: 160 }} />
-                    <span style={{ fontSize: 13, fontWeight: 600, color: "#1F2937", minWidth: 36 }}>{marginPct}%</span>
-                    <span style={{ fontSize: 12, color: "#9CA3AF", fontStyle: "italic" }}>
-                      Gross margin on first order — only affects Payback. Set to 0% to see revenue-based payback.
-                    </span>
-                  </div>
-                  {ltvFiltered.filterActive && (
-                    <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-                      <span style={{ width: "70px" }} />
-                      <button onClick={() => { setLtvFilterGender("All"); setLtvFilterAges([]); setLtvFilterCountry("All"); }} style={{ fontSize: 11, padding: "4px 10px", border: "1px solid #D1D5DB", borderRadius: 6, background: "#fff", cursor: "pointer", color: "#6B7280" }}>
-                        Clear filters
-                      </button>
-                    </div>
-                  )}
-                </div>
-              )}
               {(() => {
                 const isMeta = ltvTab === "meta";
                 const tile = isMeta ? ltvTile?.meta : ltvTile?.all;
@@ -3027,21 +2962,41 @@ export default function Customers() {
                 const avgOrds = useFiltered ? ltvFiltered.avgOrders : baseAvgOrds;
                 const repeatRate = useFiltered ? ltvFiltered.repeatRate : baseRepeatRate;
                 const medT2 = useFiltered ? ltvFiltered.medianTimeTo2nd : baseMedT2;
-                const benchmarkWindows = useFiltered ? ltvFiltered.benchmarkWindows : baseBenchmarkWindows;
+                // Always use ltvFiltered.benchmarkWindows — it computes a
+                // FIXED COHORT (same customers at every window) so the curve
+                // is monotonic and the 30d/180d/365d points are directly
+                // comparable. The legacy baseBenchmarkWindows used a
+                // different cohort per window (newer customers in 30d, only
+                // the oldest in 365d), which produced misleading jumps like
+                // 180d→365d going £895→£1,348. Fall back to base if the
+                // fixed cohort is too small (<5 mature).
+                const benchmarkWindows = ltvFiltered.benchmarkWindows.length > 0
+                  ? ltvFiltered.benchmarkWindows
+                  : baseBenchmarkWindows;
                 const benchmarkMaxWindow = benchmarkWindows.length > 0 ? benchmarkWindows[benchmarkWindows.length - 1].window : 0;
 
-                // Hero LTV respects the window preset. "Lifetime" uses the
-                // longest matured window (same as before); any other preset
-                // picks that specific window if present.
+                // Hero LTV respects the window preset. "Lifetime" = true
+                // realised cumulative spend per customer (sum of c.ltv over
+                // the cohort) — uncapped by any maturity window. Numeric
+                // presets pick that specific window from benchmarkWindows.
                 const preset = ltvWindowPreset;
-                const heroEntry = benchmarkWindows.length > 0
-                  ? (preset === "lifetime"
-                      ? benchmarkWindows[benchmarkWindows.length - 1]
-                      : benchmarkWindows.find((w: any) => w.window === preset) || benchmarkWindows[benchmarkWindows.length - 1])
-                  : null;
-                const heroLtv = heroEntry ? heroEntry.avgLtv : (useFiltered ? ltvFiltered.avgLtv : (tile?.avgLtv || 0));
-                const heroLabel = heroEntry ? `${heroEntry.window >= 365 ? "1yr" : heroEntry.window + "d"} LTV` : "Avg LTV";
-                const heroCount = heroEntry ? heroEntry.count : count;
+                const isLifetime = preset === "lifetime";
+                const heroEntry = isLifetime
+                  ? null
+                  : (benchmarkWindows.length > 0
+                      ? (benchmarkWindows.find((w: any) => w.window === preset) || benchmarkWindows[benchmarkWindows.length - 1])
+                      : null);
+                const lifetimeAvg = useFiltered ? ltvFiltered.avgLtv : (tile?.avgLtv || 0);
+                const lifetimeCount = useFiltered ? ltvFiltered.count : (tile?.count || 0);
+                const heroLtv = isLifetime
+                  ? lifetimeAvg
+                  : (heroEntry ? heroEntry.avgLtv : lifetimeAvg);
+                const heroLabel = isLifetime
+                  ? "Lifetime"
+                  : (heroEntry ? `${heroEntry.window >= 365 ? "1yr" : heroEntry.window + "d"} LTV` : "Avg LTV");
+                const heroCount = isLifetime
+                  ? lifetimeCount
+                  : (heroEntry ? heroEntry.count : count);
                 const ltvCacRatio = cac > 0 ? Math.round(heroLtv / cac * 100) / 100 : 0;
                 const windowLabel = (d: number) => d >= 365 ? `${Math.round(d / 365)}yr` : `${d}d`;
 
@@ -3074,7 +3029,9 @@ export default function Customers() {
                           {heroLtv > 0 ? `${cs}${Math.round(heroLtv).toLocaleString()}` : "—"}
                         </div>
                         <div style={{ fontSize: "12px", color: "#4B5563", marginTop: "6px" }}>
-                          per customer by {heroLabel.replace(" LTV", "")}
+                          {isLifetime
+                            ? "all-time spend per customer"
+                            : `per customer by ${heroLabel.replace(" LTV", "")}`}
                         </div>
                         <div style={{ fontSize: "11px", color: "#9CA3AF", marginTop: "2px" }}>
                           {heroCount.toLocaleString()} mature customer{heroCount !== 1 ? "s" : ""}
@@ -3090,6 +3047,11 @@ export default function Customers() {
                           {cac > 0 && heroLtv > 0 && (
                             <div style={{ fontSize: "11px", color: "#9CA3AF", marginTop: "2px" }}>
                               {cs}{Math.round(heroLtv).toLocaleString()} LTV vs {cs}{Math.round(cac).toLocaleString()} CAC
+                            </div>
+                          )}
+                          {!useFiltered && cac > 0 && ltvAllMetaSpend > 0 && lifetimeCount > 0 && (
+                            <div style={{ fontSize: "10px", color: "#9CA3AF", marginTop: "4px", fontStyle: "italic" }}>
+                              CAC = {cs}{Math.round(ltvAllMetaSpend).toLocaleString()} all-time Meta spend ÷ {lifetimeCount.toLocaleString()} Meta-acquired customers
                             </div>
                           )}
                         </div>
@@ -3136,6 +3098,67 @@ export default function Customers() {
                         <div style={{ fontSize: "11px", color: "#9CA3AF" }}>{count.toLocaleString()} customer{count !== 1 ? "s" : ""}</div>
                       </div>
                     </div>
+                    {/* Filters — sit between the headline tiles and the LTV
+                        progression chart. Window/Gender/Age/Country/Margin
+                        re-shape the cohort and re-derive the three hero stats
+                        + chart. Only relevant on the Meta tab. */}
+                    {isMeta && (
+                      <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: "16px 22px", padding: "12px 16px", marginBottom: "16px", background: "#FAFAFA", border: "1px solid #F3F4F6", borderRadius: "8px" }}>
+                        <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: "8px" }}>
+                          <span style={{ fontSize: "11px", fontWeight: 700, color: "#6B7280", textTransform: "uppercase", letterSpacing: 0.5 }}>Window</span>
+                          <div className="toggle-group">
+                            {(["lifetime", 365, 180, 90, 60, 30] as const).map((w) => (
+                              <button key={String(w)} className={`toggle-btn ${ltvWindowPreset === w ? "active" : ""}`} onClick={() => setLtvWindowPreset(w)}>
+                                {w === "lifetime" ? "Lifetime" : w === 365 ? "1yr" : `${w}d`}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                        <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: "8px" }}>
+                          <span style={{ fontSize: "11px", fontWeight: 700, color: "#6B7280", textTransform: "uppercase", letterSpacing: 0.5 }}>Gender</span>
+                          <div className="toggle-group">
+                            {(["All", "female", "male"] as const).map((g) => (
+                              <button key={g} className={`toggle-btn ${ltvFilterGender === g ? "active" : ""}`} onClick={() => setLtvFilterGender(g)}>
+                                {g === "All" ? "All" : g === "female" ? "Women" : "Men"}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                        {ltvAgeOptions.length > 0 && (
+                          <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: "8px" }}>
+                            <span style={{ fontSize: "11px", fontWeight: 700, color: "#6B7280", textTransform: "uppercase", letterSpacing: 0.5 }}>Age</span>
+                            <div className="toggle-group">
+                              <button className={`toggle-btn ${ltvFilterAges.length === 0 ? "active" : ""}`} onClick={() => setLtvFilterAges([])}>All</button>
+                              {ltvAgeOptions.map((a) => (
+                                <button key={a} className={`toggle-btn ${ltvFilterAges.includes(a) ? "active" : ""}`} onClick={() => setLtvFilterAges((prev) => prev.includes(a) ? prev.filter((x) => x !== a) : [...prev, a])}>
+                                  {a}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                        {ltvCountryOptions.length > 0 && (
+                          <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: "8px" }}>
+                            <span style={{ fontSize: "11px", fontWeight: 700, color: "#6B7280", textTransform: "uppercase", letterSpacing: 0.5 }}>Country</span>
+                            <select value={ltvFilterCountry} onChange={(e) => setLtvFilterCountry(e.target.value)} style={{ fontSize: 12, padding: "6px 10px", border: "1px solid #D1D5DB", borderRadius: 6, background: "#fff" }}>
+                              <option value="All">All</option>
+                              {ltvCountryOptions.slice(0, 30).map((c) => <option key={c} value={c}>{c}</option>)}
+                            </select>
+                          </div>
+                        )}
+                        <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: "8px" }}>
+                          <span style={{ fontSize: "11px", fontWeight: 700, color: "#6B7280", textTransform: "uppercase", letterSpacing: 0.5 }}>Margin</span>
+                          <input type="range" min={0} max={90} step={5} value={marginPct} onChange={(e) => setMarginPct(parseInt(e.target.value, 10))} style={{ width: 120 }} />
+                          <span style={{ fontSize: 12, fontWeight: 600, color: "#1F2937", minWidth: 32 }}>{marginPct}%</span>
+                          <span style={{ fontSize: 11, color: "#9CA3AF", fontStyle: "italic" }}>affects Payback only</span>
+                        </div>
+                        {ltvFiltered.filterActive && (
+                          <button onClick={() => { setLtvFilterGender("All"); setLtvFilterAges([]); setLtvFilterCountry("All"); }} style={{ fontSize: 11, padding: "4px 10px", border: "1px solid #D1D5DB", borderRadius: 6, background: "#fff", cursor: "pointer", color: "#6B7280" }}>
+                            Clear filters
+                          </button>
+                        )}
+                      </div>
+                    )}
                     {(benchmarkWindows.length > 0 || (isMeta ? ltvMonthly?.meta : ltvMonthly?.all)?.rows?.length > 0) && (() => {
                       const recentData = useFiltered ? [] : (isMeta ? ltvRecent?.meta : ltvRecent?.all);
                       const recentByWindow: Record<number, any> = {};
