@@ -27,7 +27,7 @@ export const loader = async ({ request }) => {
         accountCurrency = current.currency;
       }
     } catch {
-      // Token may be expired — show what we have from DB
+      // Token may be expired - show what we have from DB
       accountCurrency = shop.metaCurrency;
     }
   }
@@ -63,8 +63,8 @@ export default function MetaConnect() {
                 Account: <strong>{accountName || metaAdAccountId}</strong> ({metaAdAccountId})
               </Text>
               <Text as="p" variant="bodySm">
-                Ad account currency: <strong>{metaCurrency}</strong> — Shopify currency: <strong>{shopifyCurrency}</strong>
-                {currencyMismatch && ` — Meta figures will be converted to ${shopifyCurrency}`}
+                Ad account currency: <strong>{metaCurrency}</strong> - Shopify currency: <strong>{shopifyCurrency}</strong>
+                {currencyMismatch && ` - Meta figures will be converted to ${shopifyCurrency}`}
               </Text>
             </BlockStack>
           </Banner>

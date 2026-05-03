@@ -17,7 +17,7 @@ interface TileGridProps {
 
 // ── Component ──
 // Simple CSS-grid layout. Tiles render in the order supplied. No drag/drop,
-// no show/hide, no persistence — the source-code order is the source of truth.
+// no show/hide, no persistence - the source-code order is the source of truth.
 
 export default function TileGrid({ pageId, tiles, columns = 4 }: TileGridProps) {
   const gridClass = `tile-grid-${pageId}`;

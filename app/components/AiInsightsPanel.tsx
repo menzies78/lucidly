@@ -51,10 +51,10 @@ Rules:
 - Every observation must reference actual data points.
 - Every action must be concrete enough to execute TODAY.
 - Think about two things: how to MAKE more money, and how to SAVE money.
-- Consider new vs existing customers separately — they have very different economics.
+- Consider new vs existing customers separately - they have very different economics.
 - Flag anomalies, trends, and opportunities others would miss.
 - If comparing periods, quantify the change.
-- Currency symbol is provided — use it.
+- Currency symbol is provided - use it.
 
 Respond with valid JSON only, no markdown, no code fences:
 {
@@ -85,32 +85,32 @@ const DEFAULT_PAGE_PROMPTS: Record<string, string> = {
 3. Funnel drop-offs (ATC → checkout → purchase rates)
 4. Period-over-period trends (if comparison data available)
 5. Platform/placement efficiency
-6. LTV:CAC ratios — are acquired customers profitable long-term?
+6. LTV:CAC ratios - are acquired customers profitable long-term?
 7. Which campaigns should be scaled vs paused?`,
   customers: `Focus on:
-1. Meta customer quality — is LTV:CAC > 3x? If not, what's the path?
-2. New customer economics — CPA vs what they're worth (LTV)
+1. Meta customer quality - is LTV:CAC > 3x? If not, what's the path?
+2. New customer economics - CPA vs what they're worth (LTV)
 3. Repeat rate comparison: Meta-acquired vs organic. Are Meta customers coming back?
-4. Payback period — how many orders to recoup acquisition cost?
-5. Customer journey — first vs second purchase AOV, gap between purchases
-6. Demographic performance — which age/gender segments are most valuable?
-7. Retention opportunities — reorder within 90 days rate, median time to 2nd purchase`,
+4. Payback period - how many orders to recoup acquisition cost?
+5. Customer journey - first vs second purchase AOV, gap between purchases
+6. Demographic performance - which age/gender segments are most valuable?
+7. Retention opportunities - reorder within 90 days rate, median time to 2nd purchase`,
   products: `Focus on:
-1. Gateway products — which products acquire new customers? Are they the right ones to advertise?
-2. Meta vs organic product mix — is Meta driving the right products?
-3. Refund risk — which products have high refund rates when acquired via Meta?
-4. Basket analysis — items per basket, cross-sell opportunities
-5. Product purchase flows — what do customers buy first, then second?
-6. Revenue concentration — is revenue too dependent on a few products?
-7. Cost-effectiveness — which products generate Meta revenue efficiently?`,
+1. Gateway products - which products acquire new customers? Are they the right ones to advertise?
+2. Meta vs organic product mix - is Meta driving the right products?
+3. Refund risk - which products have high refund rates when acquired via Meta?
+4. Basket analysis - items per basket, cross-sell opportunities
+5. Product purchase flows - what do customers buy first, then second?
+6. Revenue concentration - is revenue too dependent on a few products?
+7. Cost-effectiveness - which products generate Meta revenue efficiently?`,
   geo: `Focus on:
-1. Country efficiency — which countries have best/worst ROAS and CPA?
-2. Spend allocation — is spend proportional to return? Where are the mismatches?
-3. New customer acquisition by country — where are new customers cheapest?
-4. Untapped markets — countries with Shopify orders but zero Meta spend
-5. Concentration risk — is spend too concentrated in one country?
-6. Geo-specific campaign performance — any campaigns underperforming in specific countries?
-7. Expansion opportunities — data-backed recommendation for which country to expand into`,
+1. Country efficiency - which countries have best/worst ROAS and CPA?
+2. Spend allocation - is spend proportional to return? Where are the mismatches?
+3. New customer acquisition by country - where are new customers cheapest?
+4. Untapped markets - countries with Shopify orders but zero Meta spend
+5. Concentration risk - is spend too concentrated in one country?
+6. Geo-specific campaign performance - any campaigns underperforming in specific countries?
+7. Expansion opportunities - data-backed recommendation for which country to expand into`,
 };
 
 // ── SessionStorage helpers for cross-navigation persistence ──
@@ -151,7 +151,7 @@ function getStoredTask(pageKey: string): string | null {
   return entry.taskId;
 }
 
-// Prompt persistence (localStorage — survives sessions)
+// Prompt persistence (localStorage - survives sessions)
 function getSavedPrompts(pageKey: string): { system: string; page: string } | null {
   try {
     const raw = localStorage.getItem(PROMPT_STORAGE_PREFIX + pageKey);
@@ -324,7 +324,7 @@ export default function AiInsightsPanel({
                   <span style={{ fontSize: "11px", color: "#9CA3AF" }}>Updated {timeAgo}</span>
                 )}
                 {isStale && hasInsights && !generating && (
-                  <span style={{ fontSize: "11px", color: "#F59E0B" }}>Data changed — refresh for latest</span>
+                  <span style={{ fontSize: "11px", color: "#F59E0B" }}>Data changed - refresh for latest</span>
                 )}
               </div>
             </div>
@@ -480,7 +480,7 @@ export default function AiInsightsPanel({
                   <span style={{ fontSize: "11px", fontWeight: 600, color: "#6B7280", textTransform: "uppercase", letterSpacing: "0.5px" }}>
                     System Prompt
                   </span>
-                  <span style={{ fontSize: "10px", color: "#9CA3AF" }}>Shared across all pages — personality, rules, output format</span>
+                  <span style={{ fontSize: "10px", color: "#9CA3AF" }}>Shared across all pages - personality, rules, output format</span>
                 </div>
                 <textarea
                   value={systemPrompt}
@@ -493,7 +493,7 @@ export default function AiInsightsPanel({
               <div>
                 <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "6px" }}>
                   <span style={{ fontSize: "11px", fontWeight: 600, color: "#6B7280", textTransform: "uppercase", letterSpacing: "0.5px" }}>
-                    Page Prompt — {pageKey}
+                    Page Prompt - {pageKey}
                   </span>
                   <span style={{ fontSize: "10px", color: "#9CA3AF" }}>Focus areas for this specific page</span>
                 </div>
@@ -506,7 +506,7 @@ export default function AiInsightsPanel({
 
               <div style={{ fontSize: "11px", color: "#9CA3AF", lineHeight: "1.5" }}>
                 Changes are sent with the next "Generate Insights" click. Save persists to browser storage.
-                The data payload is appended automatically — you only control the instructions above.
+                The data payload is appended automatically - you only control the instructions above.
               </div>
             </div>
           )}

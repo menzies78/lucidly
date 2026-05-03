@@ -43,7 +43,7 @@ export async function getExchangeRate(dateStr, fromCurrency, toCurrency) {
       memoryCache[key] = rates[dateStr];
       return rates[dateStr];
     }
-    // Date might be weekend/holiday — ECB returns nothing. Use nearest previous.
+    // Date might be weekend/holiday - ECB returns nothing. Use nearest previous.
     return await fallbackToLatest(dateStr, fromCurrency, toCurrency);
   } catch (err) {
     console.error(`[ExchangeRate] ECB fetch failed for ${dateStr}: ${err.message}`);
@@ -124,7 +124,7 @@ export async function prefetchExchangeRates(dates, fromCurrency, toCurrency, onP
     try {
       const ecbRates = await fetchEcbRates(fromCurrency, toCurrency, chunkStart, chunkEnd);
 
-      // ECB only returns business days — fill calendar gaps with previous rate
+      // ECB only returns business days - fill calendar gaps with previous rate
       let lastRate = null;
       const allChunkDates = generateDateRange(chunkStart, chunkEnd);
 
@@ -149,7 +149,7 @@ export async function prefetchExchangeRates(dates, fromCurrency, toCurrency, onP
       if (onProgress) onProgress(`Exchange rates: chunk ${chunkNum}/${totalChunks} done (${Object.keys(ecbRates).length} business days)`);
     } catch (err) {
       console.error(`[ExchangeRate] ECB chunk ${chunkStart}..${chunkEnd} failed: ${err.message}`);
-      if (onProgress) onProgress(`Exchange rate API error — using cached fallback rates`);
+      if (onProgress) onProgress(`Exchange rate API error - using cached fallback rates`);
 
       // Fill gaps with nearest available rate
       for (const d of chunk) {
@@ -302,7 +302,7 @@ async function saveRatesToDb(entries, fromCurrency, toCurrency) {
 
 /**
  * Fallback: use the most recent cached rate from DB. No API call.
- * For incremental sync this is typically yesterday's rate — close enough.
+ * For incremental sync this is typically yesterday's rate - close enough.
  */
 async function fallbackToLatest(dateStr, fromCurrency, toCurrency) {
   const latest = await db.exchangeRate.findFirst({

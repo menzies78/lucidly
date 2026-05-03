@@ -20,7 +20,7 @@ import { usePageTheme } from "./PageTheme";
 
 // Column meta: { align?: "right", maxWidth?: string, filterType?: "multi-select", description?: string }
 
-// Tooltip styles removed — now using portal-based FixedTooltip
+// Tooltip styles removed - now using portal-based FixedTooltip
 
 interface TooltipData {
   title?: string;
@@ -239,7 +239,7 @@ export default function InteractiveTable({
   }, [tableId, defaultColumnWidths]);
   const [columnWidths, setColumnWidths] = useState<Record<string, number>>(initialWidths);
 
-  // Column visibility — check for saved user defaults
+  // Column visibility - check for saved user defaults
   const defaultVisibility = useMemo(() => {
     if (!defaultVisibleColumns) return {};
     const vis: VisibilityState = {};

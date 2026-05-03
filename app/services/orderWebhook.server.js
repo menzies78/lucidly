@@ -10,7 +10,7 @@ import { updateCustomerInferredGenderIfMissing } from "./nameGender.server.js";
  *
  * On create: stores the order with its original total (frozenTotalPrice) for attribution matching.
  * On update: updates mutable fields (refunds, financial status, discounts) but preserves
- * frozenTotalPrice/frozenSubtotalPrice — the original values at time of purchase.
+ * frozenTotalPrice/frozenSubtotalPrice - the original values at time of purchase.
  * This ensures the matcher can always compare against the price Meta saw at conversion time.
  *
  * Future: once Web Pixel (Layer 1) is live, real-time order ingestion enables immediate
@@ -39,7 +39,7 @@ function hashEmail(email) {
 }
 
 // Build structured OrderLineItem rows from a REST webhook payload.
-// Mirrors `buildLineItemRowsFromGraphQL` in orderSync.server.js — see that
+// Mirrors `buildLineItemRowsFromGraphQL` in orderSync.server.js - see that
 // helper's header for the precision / refund-matching contract.
 function buildLineItemRowsFromWebhook(shopDomain, shopifyOrderId, lineItems, refunds) {
   const refundByTitle = {};
@@ -135,7 +135,7 @@ export async function processOrderWebhook(shopDomain, payload, isCreate) {
     : sourceName === "pos" ? "pos"
     : sourceName || "unknown";
 
-  // Address fields — billing takes priority (better indicator of where customer lives)
+  // Address fields - billing takes priority (better indicator of where customer lives)
   const shipping = payload.shipping_address || {};
   const billing = payload.billing_address || {};
   const country = billing.country || shipping.country || "";
@@ -146,11 +146,11 @@ export async function processOrderWebhook(shopDomain, payload, isCreate) {
   // Line items
   const lineItems = (payload.line_items || []).map(li => li.title).join(", ");
   const productSkus = [...new Set((payload.line_items || []).map(li => li.sku).filter(Boolean))].join(", ");
-  // Collections not available in webhook payload — populated by full sync
+  // Collections not available in webhook payload - populated by full sync
 
   // Landing page & UTMs.
   // Prefer Elevar's captured values (order.note_attributes._elevar_visitor_info)
-  // over Shopify's landing_site parse — Elevar's first-party cookie survives
+  // over Shopify's landing_site parse - Elevar's first-party cookie survives
   // consent banners that block Shopify's own session tracking, so it's the more
   // reliable source when both are present. Fall back to landing_site for shops
   // without Elevar installed.
@@ -170,7 +170,7 @@ export async function processOrderWebhook(shopDomain, payload, isCreate) {
       }
     : { ...parseUtms(landingSite), fbclid: "", metaAdIdFromUtm: "" };
 
-  // UTM classification — is this a paid Meta ad click?
+  // UTM classification - is this a paid Meta ad click?
   const utmConfirmedMeta = isPaidMetaUtm(utmParams.utmSource, utmParams.utmMedium);
 
   // Discount codes
@@ -208,7 +208,7 @@ export async function processOrderWebhook(shopDomain, payload, isCreate) {
   // Preserve collections from full sync (not available in webhooks)
   const productCollections = existingOrder?.productCollections || "";
 
-  // Determine if new customer — check if this is their first order in our DB
+  // Determine if new customer - check if this is their first order in our DB
   let isNewCustomerOrder = null;
   if (customerId) {
     const priorOrders = await db.order.count({
@@ -237,7 +237,7 @@ export async function processOrderWebhook(shopDomain, payload, isCreate) {
     update: {
       totalPrice, subtotalPrice,
       financialStatus,
-      // Do NOT update frozenTotalPrice/frozenSubtotalPrice — preserve original values
+      // Do NOT update frozenTotalPrice/frozenSubtotalPrice - preserve original values
       discountCodes, refundStatus, totalRefunded, refundLineItems,
       // Update address if it was previously empty
       ...(country ? { country, countryCode, city, regionCode } : {}),
@@ -245,7 +245,7 @@ export async function processOrderWebhook(shopDomain, payload, isCreate) {
       lineItems, productSkus,
       // Landing/UTM data: landingSite only overwrites when the update payload
       // actually carries one (avoids wiping a good value from create). UTM
-      // fields overwrite whenever this payload gave us anything — which
+      // fields overwrite whenever this payload gave us anything - which
       // includes the Elevar-only path where landing_site is empty.
       ...(landingSite ? { landingSite, referringSite } : {}),
       // Only touch UTM fields when this payload actually carries UTM data
@@ -256,7 +256,7 @@ export async function processOrderWebhook(shopDomain, payload, isCreate) {
     },
   });
 
-  // Replace OrderLineItem rows. Same strategy as orderSync — delete + create
+  // Replace OrderLineItem rows. Same strategy as orderSync - delete + create
   // rather than diff, because Shopify can reassign line-item IDs after order
   // edits and we always have the authoritative list in the payload.
   const lineItemRows = buildLineItemRowsFromWebhook(
@@ -285,7 +285,7 @@ export async function processOrderWebhook(shopDomain, payload, isCreate) {
       },
     });
 
-    // Name-based gender inference. Fire-and-forget — only sets a value
+    // Name-based gender inference. Fire-and-forget - only sets a value
     // when missing, never overwrites. Failure is non-fatal (logged).
     if (finalFirstName) {
       updateCustomerInferredGenderIfMissing(db, shopDomain, customerId, finalFirstName, countryCode)

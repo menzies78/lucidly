@@ -4,7 +4,7 @@
 // Key principles:
 // 1. Read x-app-usage header to know current rate limit consumption
 // 2. Proactively slow down when usage is high (don't wait for the wall)
-// 3. NEVER silently drop data — rate limits retry indefinitely, only real errors bail
+// 3. NEVER silently drop data - rate limits retry indefinitely, only real errors bail
 // 4. Error code 1 ("reduce data") throws ReduceDataError so callers can split ranges
 
 // Tracks current API usage across all callers (singleton in-process)
@@ -14,7 +14,7 @@ export function getMetaApiUsage() {
   return currentUsage;
 }
 
-// Special error class for "reduce the amount of data" — callers can catch and retry with smaller range
+// Special error class for "reduce the amount of data" - callers can catch and retry with smaller range
 export class ReduceDataError extends Error {
   constructor(message) {
     super(message);
@@ -40,18 +40,18 @@ function updateUsageFromHeaders(res) {
 // This prevents us from slamming into the wall.
 async function throttleIfNeeded(label) {
   if (currentUsage >= 90) {
-    // Very close to limit — pause 30s to let window roll
+    // Very close to limit - pause 30s to let window roll
     console.warn(`[${label}] API usage at ${currentUsage}%, pausing 30s to let window roll...`);
     await new Promise(r => setTimeout(r, 30000));
   } else if (currentUsage >= 75) {
-    // Getting warm — slow down with 10s pause
+    // Getting warm - slow down with 10s pause
     console.warn(`[${label}] API usage at ${currentUsage}%, slowing down (10s)...`);
     await new Promise(r => setTimeout(r, 10000));
   } else if (currentUsage >= 50) {
-    // Moderate — small pause
+    // Moderate - small pause
     await new Promise(r => setTimeout(r, 2000));
   }
-  // Under 50% — full speed
+  // Under 50% - full speed
 }
 
 // Resilient fetch that NEVER silently drops data on rate limits.
@@ -99,7 +99,7 @@ export async function fetchWithRetry(url, label = "MetaAPI") {
       const isReduceData = errCode === 1 && errMsg.includes("reduce the amount of data");
 
       if (isReduceData) {
-        // Don't retry — throw immediately so caller can split the range
+        // Don't retry - throw immediately so caller can split the range
         throw new ReduceDataError(`${label}: ${errMsg}`);
       }
 

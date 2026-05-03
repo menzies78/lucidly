@@ -1,6 +1,6 @@
 // Country centroids [lat, lng]. Used as a fallback for the geocoder when a
 // city lookup fails, and by the legacy globe component while it still exists.
-// Values are approximate population-weighted centroids — good enough for a
+// Values are approximate population-weighted centroids - good enough for a
 // "drop a marker on this country" use case.
 export const COUNTRY_CENTROIDS: Record<string, [number, number]> = {
   GB: [54, -2], IE: [53.4, -7.6], US: [39, -98], CA: [56, -106],

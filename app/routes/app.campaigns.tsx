@@ -388,7 +388,7 @@ export const loader = async ({ request }) => {
     ? `${compareFromKey}:${compareToKey}`
     : "none";
 
-  // Loader helpers — fetch rollup then pre-aggregate at all 3 levels in a single pass.
+  // Loader helpers - fetch rollup then pre-aggregate at all 3 levels in a single pass.
   // The output (thousands of aggregated rows) is much smaller than the raw 31k+ rollup rows,
   // so caching the aggregate skips both the DB query AND the JS aggregation on repeat hits.
   const fetchAndAggregate = (from: Date, to: Date) => async () => {
@@ -434,7 +434,7 @@ export const loader = async ({ request }) => {
   // insights is now a per-day aggregation (groupBy result); rename for downstream clarity
   const insights = dailyChart as any[];
 
-  // Alias kept to minimise diff in the rest of the loader — all downstream code
+  // Alias kept to minimise diff in the rest of the loader - all downstream code
   // that references `allOrders` now operates on the window slice.
   const allOrders = windowOrdersRaw;
   const windowOrderIds = allOrders.map(o => o.shopifyOrderId);
@@ -498,7 +498,7 @@ export const loader = async ({ request }) => {
   const r2g = (v) => Math.round(v * 100) / 100;
 
   // `orderMap` is used downstream for the breakdown and daily-chart blocks.
-  // It's scoped to the window (was: all-time) — every downstream consumer
+  // It's scoped to the window (was: all-time) - every downstream consumer
   // already filters to window sub-slices so this is safe.
   const orderMap = {};
   for (const o of allOrders) orderMap[o.shopifyOrderId] = o;
@@ -553,7 +553,7 @@ export const loader = async ({ request }) => {
     };
   });
 
-  // currentAgg is now pre-computed and cached — just compute rows on the small aggregated output.
+  // currentAgg is now pre-computed and cached - just compute rows on the small aggregated output.
   const campaignRows = addAdAge(computeRows(currentAgg.campaign), "campaign");
   const adsetRows = addAdAge(computeRows(currentAgg.adset), "adset");
   const adRows = addAdAge(computeRows(currentAgg.ad), "ad");
@@ -575,7 +575,7 @@ export const loader = async ({ request }) => {
   );
 
   // Comparison period. compareAgg is already fetched at the top of the loader
-  // when hasComparison is true — use it directly rather than re-deriving.
+  // when hasComparison is true - use it directly rather than re-deriving.
   let compareTotals = null;
   if (hasComparison && compareFrom && compareTo && compareAgg) {
     const compAggregated = compareAgg.campaign || {};
@@ -592,7 +592,7 @@ export const loader = async ({ request }) => {
     if (!match) return false;
     return match[1] >= prevFromKey && match[1] <= prevToKey;
   });
-  // prevAgg is cached (same pattern as currentAgg) — just compute rows on the small aggregated output.
+  // prevAgg is cached (same pattern as currentAgg) - just compute rows on the small aggregated output.
   const prevCampaignRows = computeRows(prevAgg.campaign);
   const prevAdsetRows = computeRows(prevAgg.adset);
   const prevAdRows = computeRows(prevAgg.ad);
@@ -604,7 +604,7 @@ export const loader = async ({ request }) => {
     }
   }
 
-  // Breakdown maps — keyed by entity ID, value is array of computed sub-rows
+  // Breakdown maps - keyed by entity ID, value is array of computed sub-rows
   const breakdownMaps = { campaign: {}, adset: {}, ad: {} };
   let hasBreakdownData = false;
   if (breakdown !== "none") {
@@ -772,7 +772,7 @@ export const loader = async ({ request }) => {
             revenuePerNewCustomer: newCustOrders > 0 ? r2(newCustRev / newCustOrders) : null,
             newCustomerROAS: spend > 0 && newCustRev > 0 ? r2(newCustRev / spend) : null,
             spendPerDay: null, newCustomersPerDay: null, newCustomerRevenuePerDay: null, adAgeDays: null,
-            // LTV doesn't apply at breakdown level — it's per-customer, not per-country/platform
+            // LTV doesn't apply at breakdown level - it's per-customer, not per-country/platform
             ltvAcquiredCustomers: null, avgLtv30: null, avgLtv90: null, avgLtv365: null,
             avgLtvAll: null, totalLtvAll: null, ltvCac: null, repeatRate: null, avgOrders: null,
           });
@@ -943,7 +943,7 @@ export const loader = async ({ request }) => {
 
   // Build exact new customer counts per platform/placement from attribution data.
   // Each attribution has metaPlatform (e.g. "facebook") and metaPlacement (e.g. "instagram|feed")
-  // stored directly, so we can get precise counts — no proportional allocation needed.
+  // stored directly, so we can get precise counts - no proportional allocation needed.
   const matchedAttrsInRange = attrsInRange.filter(a => a.confidence > 0 && a.isNewCustomer);
   const orderMapForEnrich: Record<string, any> = {};
   for (const o of ordersInRange) orderMapForEnrich[o.shopifyOrderId] = o;
@@ -1014,7 +1014,7 @@ export const loader = async ({ request }) => {
   const aiGeneratedAt = cached?.generatedAt?.toISOString() || null;
   const aiIsStale = cached ? cached.dataHash !== currentHash : false;
 
-  // Meta change log events in the period — cheap query (tight index), cached
+  // Meta change log events in the period - cheap query (tight index), cached
   // by date range. Rendered above the tile grid as a per-day activity strip
   // and surfaced per-entity via the timeline drawer.
   const metaChanges = await queryCached(
@@ -1040,7 +1040,7 @@ export const loader = async ({ request }) => {
     rawEventType: c.rawEventType,
     actor: c.actorName || c.actorId || "",
   }));
-  // Per-entity change counts keyed by objectId — used for Campaigns table badges.
+  // Per-entity change counts keyed by objectId - used for Campaigns table badges.
   const changeCountsByObjectId: Record<string, number> = {};
   for (const c of metaChanges) {
     changeCountsByObjectId[c.objectId] = (changeCountsByObjectId[c.objectId] || 0) + 1;
@@ -1112,7 +1112,7 @@ export const action = async ({ request }) => {
 
     setProgress(taskId, { status: "running", message: "Generating AI insights..." });
 
-    // Fire and forget — build data and generate in background
+    // Fire and forget - build data and generate in background
     (async () => {
       try {
         const shop = await db.shop.findUnique({ where: { shopDomain } });
@@ -1205,7 +1205,7 @@ export const action = async ({ request }) => {
         }
         const dailyData = Object.values(dailyMap).sort((a, b) => a.date.localeCompare(b.date));
 
-        // Total store revenue — net of refunds so it's comparable to
+        // Total store revenue - net of refunds so it's comparable to
         // attributed revenue on the same page.
         const ordersInRange = orders.filter(o => o.createdAt >= fromDate && o.createdAt <= toDate);
         const totalStoreRevenue = ordersInRange.reduce(
@@ -1330,15 +1330,15 @@ function SmallLinks({ options, selected, onChange }: {
 }
 
 const RANKING_METRICS = [
-  { id: "blendedROAS", label: "ROAS", higherIsBetter: true, description: "Return on ad spend — total confirmed revenue (matched + unmatched) divided by spend. Higher is better." },
-  { id: "newCustomerCPA", label: "New Customer CPA", higherIsBetter: false, description: "Cost to acquire each new customer — total spend divided by number of first-time buyers. Lower is better." },
+  { id: "blendedROAS", label: "ROAS", higherIsBetter: true, description: "Return on ad spend - total confirmed revenue (matched + unmatched) divided by spend. Higher is better." },
+  { id: "newCustomerCPA", label: "New Customer CPA", higherIsBetter: false, description: "Cost to acquire each new customer - total spend divided by number of first-time buyers. Lower is better." },
   { id: "avgLtvAll", label: "LTV", higherIsBetter: true, description: "Average all-time revenue per customer acquired by this ad, across every order they've ever placed. Higher means more valuable customers." },
-  { id: "ltvCac", label: "LTV:CAC", higherIsBetter: true, description: "Lifetime value vs acquisition cost — how much lifetime revenue each acquired customer generates relative to what it cost to acquire them. Above 3x is strong." },
-  { id: "ctr", label: "CTR", higherIsBetter: true, description: "Click-through rate — percentage of people who clicked after seeing the ad. Higher means more engaging creative." },
+  { id: "ltvCac", label: "LTV:CAC", higherIsBetter: true, description: "Lifetime value vs acquisition cost - how much lifetime revenue each acquired customer generates relative to what it cost to acquire them. Above 3x is strong." },
+  { id: "ctr", label: "CTR", higherIsBetter: true, description: "Click-through rate - percentage of people who clicked after seeing the ad. Higher means more engaging creative." },
 ];
 
 function formatMetricValue(metricId: string, value: number, cs: string): string {
-  if (value == null) return "—";
+  if (value == null) return "-";
   switch (metricId) {
     case "newCustomerOrders": case "attributedOrders": return value.toLocaleString();
     case "blendedROAS": case "ltvCac": case "newCustomerROAS": return `${value}x`;
@@ -1352,7 +1352,7 @@ function formatMetricValue(metricId: string, value: number, cs: string): string 
 function metricGradientColor(metricId: string, value: number, allValues: number[], higherIsBetter: boolean): string {
   if (value <= 0) return "#9E9E9E"; // grey for no data
 
-  // ROAS / LTV:CAC — absolute thresholds with smooth gradient
+  // ROAS / LTV:CAC - absolute thresholds with smooth gradient
   if (metricId === "blendedROAS" || metricId === "newCustomerROAS" || metricId === "ltvCac") {
     // 0→2 = red zone, 2→3 = orange zone, 3→5+ = green zone
     // Map to 0-1 score then to hue 0°(red) → 120°(green)
@@ -1365,7 +1365,7 @@ function metricGradientColor(metricId: string, value: number, allValues: number[
     return `hsl(${Math.round(hue)}, 72%, ${33 + Math.round(score * 12)}%)`;
   }
 
-  // CPA — absolute thresholds, lower is better
+  // CPA - absolute thresholds, lower is better
   if (metricId === "cpa" || metricId === "newCustomerCPA") {
     // <£30 = green, £30-80 = orange, >£80 = red
     const clamped = Math.min(Math.max(value, 0), 150);
@@ -1378,7 +1378,7 @@ function metricGradientColor(metricId: string, value: number, allValues: number[
     return `hsl(${Math.round(hue)}, 72%, ${33 + Math.round(score * 12)}%)`;
   }
 
-  // Relative metrics — use data range for gradient
+  // Relative metrics - use data range for gradient
   const valid = allValues.filter(v => v > 0);
   if (valid.length < 2) return "#E65100";
   const min = Math.min(...valid);
@@ -1418,7 +1418,7 @@ function BestToWorstList({ rows, cs, entityType, onEntityClick }: {
     else { setSortCol(col); setSortDir(col === "blendedCPA" || col === "newCustomerCPA" ? "asc" : "desc"); }
   };
 
-  // Hover sparkline state — same lazy-fetch pattern as the Ad Age tile.
+  // Hover sparkline state - same lazy-fetch pattern as the Ad Age tile.
   // Cache is keyed by entity id (refetches if entityType changes via the
   // SmallToggle since the underlying tile remounts the list).
   const [hoverId, setHoverId] = useState<string | null>(null);
@@ -1527,9 +1527,9 @@ function BestToWorstList({ rows, cs, entityType, onEntityClick }: {
               <span style={{ ...colStyle, width: "52px", color: orders > 0 ? "#444" : "#bbb" }}>{orders}</span>
               <span style={{ ...colStyle, width: "40px", color: newCusts > 0 ? "#444" : "#bbb" }}>{newCusts}</span>
               <span style={{ ...colStyle, width: "68px", color: spend > 0 ? "#444" : "#bbb" }}>{cs}{Math.round(spend).toLocaleString()}</span>
-              <span style={{ ...colStyle, width: "60px", color: item.blendedCPA > 0 ? "#444" : "#bbb" }}>{item.blendedCPA > 0 ? `${cs}${Math.round(item.blendedCPA).toLocaleString()}` : "—"}</span>
-              <span style={{ ...colStyle, width: "64px", color: item.newCustomerCPA > 0 ? "#444" : "#bbb" }}>{item.newCustomerCPA > 0 ? `${cs}${Math.round(item.newCustomerCPA).toLocaleString()}` : "—"}</span>
-              <span style={{ ...colStyle, width: "56px", fontWeight: 600, color: metricGradientColor("blendedROAS", roas, sorted.map(r => r.blendedROAS || 0), true) }}>{roas > 0 ? `${roas}x` : "—"}</span>
+              <span style={{ ...colStyle, width: "60px", color: item.blendedCPA > 0 ? "#444" : "#bbb" }}>{item.blendedCPA > 0 ? `${cs}${Math.round(item.blendedCPA).toLocaleString()}` : "-"}</span>
+              <span style={{ ...colStyle, width: "64px", color: item.newCustomerCPA > 0 ? "#444" : "#bbb" }}>{item.newCustomerCPA > 0 ? `${cs}${Math.round(item.newCustomerCPA).toLocaleString()}` : "-"}</span>
+              <span style={{ ...colStyle, width: "56px", fontWeight: 600, color: metricGradientColor("blendedROAS", roas, sorted.map(r => r.blendedROAS || 0), true) }}>{roas > 0 ? `${roas}x` : "-"}</span>
             </div>
           );
         })}
@@ -1671,8 +1671,8 @@ function NewCustomerList({ rows, cs }: { rows: any[]; cs: string }) {
               <span style={{ ...colStyle, width: "36px", fontWeight: 600, color: "#7c3aed" }}>{newCusts}</span>
               <span style={{ ...colStyle, width: "44px", color: "#444" }}>{orders}</span>
               <span style={{ ...colStyle, width: "36px", color: "#444" }}>{newPct}%</span>
-              <span style={{ ...colStyle, width: "56px", color: ncCpa > 0 ? "#444" : "#bbb" }}>{ncCpa > 0 ? `${cs}${Math.round(ncCpa).toLocaleString()}` : "—"}</span>
-              <span style={{ ...colStyle, width: "56px", color: ncRev > 0 ? "#444" : "#bbb" }}>{ncRev > 0 ? `${cs}${Math.round(ncRev).toLocaleString()}` : "—"}</span>
+              <span style={{ ...colStyle, width: "56px", color: ncCpa > 0 ? "#444" : "#bbb" }}>{ncCpa > 0 ? `${cs}${Math.round(ncCpa).toLocaleString()}` : "-"}</span>
+              <span style={{ ...colStyle, width: "56px", color: ncRev > 0 ? "#444" : "#bbb" }}>{ncRev > 0 ? `${cs}${Math.round(ncRev).toLocaleString()}` : "-"}</span>
             </div>
           );
         })}
@@ -1783,7 +1783,7 @@ function inferPlatform(breakdownValue: string): string {
   if (v.includes("messenger")) return "messenger";
   if (v.includes("audience") || v === "anclassic" || v === "rewardedvideo") return "audience_network";
   if (v.includes("threads")) return "threads";
-  // Generic placements: feed/story/reels/search could be either — show as generic
+  // Generic placements: feed/story/reels/search could be either - show as generic
   return breakdownValue;
 }
 
@@ -1877,7 +1877,7 @@ function BreakdownPerfTile({ title, data, cs, defaultLevel = "overall", defaultS
                 const platform = inferPlatform(r.breakdownValue);
                 const placementLabel = type === "placement" ? stripChannelPrefix(r.breakdownValue) : "";
                 const displayName = hasEntity
-                  ? (type === "placement" ? `${placementLabel} — ${r.entityName}` : r.entityName)
+                  ? (type === "placement" ? `${placementLabel} - ${r.entityName}` : r.entityName)
                   : (type === "placement" ? placementLabel : r.breakdownValue);
                 const spend = r.spend || 0;
                 const conversions = r.conversions || 0;
@@ -1888,7 +1888,7 @@ function BreakdownPerfTile({ title, data, cs, defaultLevel = "overall", defaultS
                     <span style={{ fontSize: "12px", color: "#999", width: "22px", textAlign: "right", flexShrink: 0 }}>{i + 1}</span>
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "4px" }}>
-                        <span style={{ fontSize: "13px", fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1, minWidth: 0, display: "inline-flex", alignItems: "center", gap: "5px" }} title={hasEntity ? `${r.breakdownValue} — ${r.entityName}` : r.breakdownValue}>
+                        <span style={{ fontSize: "13px", fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1, minWidth: 0, display: "inline-flex", alignItems: "center", gap: "5px" }} title={hasEntity ? `${r.breakdownValue} - ${r.entityName}` : r.breakdownValue}>
                           <PlatformLogo platform={type === "placement" ? platform : r.breakdownValue} size={14} />
                           {displayName}
                         </span>
@@ -1900,9 +1900,9 @@ function BreakdownPerfTile({ title, data, cs, defaultLevel = "overall", defaultS
                     <span style={{ ...colStyle, width: "52px", color: conversions > 0 ? "#444" : "#bbb" }}>{conversions}</span>
                     <span style={{ ...colStyle, width: "40px", color: newCusts > 0 ? "#444" : "#bbb" }}>{newCusts}</span>
                     <span style={{ ...colStyle, width: "68px", color: spend > 0 ? "#444" : "#bbb" }}>{cs}{Math.round(spend).toLocaleString()}</span>
-                    <span style={{ ...colStyle, width: "60px", color: r.cpa > 0 ? "#444" : "#bbb" }}>{r.cpa > 0 ? `${cs}${Math.round(r.cpa).toLocaleString()}` : "—"}</span>
-                    <span style={{ ...colStyle, width: "64px", color: r.newCustomerCPA > 0 ? "#444" : "#bbb" }}>{r.newCustomerCPA > 0 ? `${cs}${Math.round(r.newCustomerCPA).toLocaleString()}` : "—"}</span>
-                    <span style={{ ...colStyle, width: "56px", fontWeight: 600, color: metricGradientColor("blendedROAS", roas, items.map(x => x.roas || 0), true) }}>{roas > 0 ? `${roas}x` : "—"}</span>
+                    <span style={{ ...colStyle, width: "60px", color: r.cpa > 0 ? "#444" : "#bbb" }}>{r.cpa > 0 ? `${cs}${Math.round(r.cpa).toLocaleString()}` : "-"}</span>
+                    <span style={{ ...colStyle, width: "64px", color: r.newCustomerCPA > 0 ? "#444" : "#bbb" }}>{r.newCustomerCPA > 0 ? `${cs}${Math.round(r.newCustomerCPA).toLocaleString()}` : "-"}</span>
+                    <span style={{ ...colStyle, width: "56px", fontWeight: 600, color: metricGradientColor("blendedROAS", roas, items.map(x => x.roas || 0), true) }}>{roas > 0 ? `${roas}x` : "-"}</span>
                   </div>
                 );
               })}
@@ -1949,7 +1949,7 @@ function FunnelFlow({ totals, mode }: { totals: Record<string, number>; mode: "c
           </div>
         )}
       </div>
-      {/* Funnel steps — widths proportional via sqrt scaling */}
+      {/* Funnel steps - widths proportional via sqrt scaling */}
       {funnelSteps.map((step, i) => {
         const ratio = funnelMax > 0 ? step.value / funnelMax : 0;
         // sqrt compresses the range so small values still get reasonable width
@@ -2008,10 +2008,10 @@ function WastedSpendList({ items, cs }: { items: { name: string; spend: number; 
 
 // Scrollable list of every ad with its age, spend, ROAS, and creative-fatigue
 // flag. Header shows a colour-coded "X days since last new ad launched"
-// callout — green if recent, amber if drifting, red if it's been a while.
+// callout - green if recent, amber if drifting, red if it's been a while.
 //
 // Per-row signals:
-//   • Frequency badge (avg in-period frequency) — highlighted ≥ 3 since
+//   • Frequency badge (avg in-period frequency) - highlighted ≥ 3 since
 //     that's the textbook fatigue threshold.
 //   • Hover → small popover with a 90-day ROAS sparkline pulled from
 //     /app/api/entity-timeline. Cached so re-hover doesn't refetch.
@@ -2084,7 +2084,7 @@ function AdAgeTile({ adRows, cs, onAdClick }: { adRows: any[]; cs: string; onAdC
           {rows.map((r, idx) => {
             const days = r.adAgeDays;
             const colour = ageColor(days);
-            const ageLabel = days == null ? "—" : days === 0 ? "Today" : `${days}d`;
+            const ageLabel = days == null ? "-" : days === 0 ? "Today" : `${days}d`;
             const roas = r.spend > 0 ? ((r.attributedRevenue + (r.unverifiedRevenue || 0)) / r.spend) : 0;
             const newCust = r.newCustomerOrders || 0;
             const freq = r.avgFrequency || 0;
@@ -2130,7 +2130,7 @@ function AdAgeTile({ adRows, cs, onAdClick }: { adRows: any[]; cs: string; onAdC
                 }}>{ageLabel}</div>
                 {/* Title takes whatever room the metrics don't claim */}
                 <div style={{ flex: 1, minWidth: 0, fontSize: 12, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={r.name}>{r.name}</div>
-                {/* All metrics inline-right of the title — no second line. */}
+                {/* All metrics inline-right of the title - no second line. */}
                 <div style={{ display: "flex", gap: 12, alignItems: "center", flexShrink: 0, fontVariantNumeric: "tabular-nums" }}>
                   <span style={{ fontSize: 11, color: "#6B7280" }}>{cs}{Math.round(r.spend || 0).toLocaleString()}</span>
                   <span style={{ fontSize: 11, color: roas >= 2 ? "#059669" : roas > 0 ? "#6B7280" : "#9CA3AF", fontWeight: 600 }}>{roas > 0 ? `${roas.toFixed(2)}x` : "0x"}</span>
@@ -2141,11 +2141,11 @@ function AdAgeTile({ adRows, cs, onAdClick }: { adRows: any[]; cs: string; onAdC
                       padding: "1px 6px", borderRadius: 8,
                       background: freqHigh ? "#FEE2E2" : "#E5E7EB",
                       color: freqHigh ? "#B91C1C" : "#374151",
-                    }} title={freqHigh ? "Average frequency ≥ 3 — fatigue likely" : "Average impressions per unique reach in period"}>
+                    }} title={freqHigh ? "Average frequency ≥ 3 - fatigue likely" : "Average impressions per unique reach in period"}>
                       ƒ {freq.toFixed(1)}{freqHigh ? "⚠" : ""}
                     </span>
                   )}
-                  {/* Click affordance — chevron, brightens on row hover */}
+                  {/* Click affordance - chevron, brightens on row hover */}
                   {interactive && (
                     <span aria-hidden="true" style={{
                       fontSize: 14, color: "#94A3B8",
@@ -2226,7 +2226,7 @@ function RoasHoverPopover({ x, y, state }: {
 
 
 // ═══════════════════════════════════════════════════════════════
-// Ad Explorer — full-width table with filters, replacing Best to Worst
+// Ad Explorer - full-width table with filters, replacing Best to Worst
 // ═══════════════════════════════════════════════════════════════
 
 function AdExplorerTable({ rows, cs, entityType, onEntityClick }: {
@@ -2427,7 +2427,7 @@ function AdExplorerTable({ rows, cs, entityType, onEntityClick }: {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// Ad Funnel — SVG visual showing cold→warm→hot audience stages
+// Ad Funnel - SVG visual showing cold→warm→hot audience stages
 // ═══════════════════════════════════════════════════════════════
 
 const FUNNEL_STAGES = [
@@ -2459,9 +2459,9 @@ function AdFunnelTile({ funnelData, cs, onAdSetClick }: {
     <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "2px", padding: "12px 0" }}>
       {FUNNEL_STAGES.map((stage, i) => {
         const data = funnelData[stage.key] || { spend: 0, newCustomers: 0, revenue: 0, orders: 0, adsets: [] };
-        const widthPct = 100 - (i * 18); // 100%, 82%, 64% — narrowing funnel
+        const widthPct = 100 - (i * 18); // 100%, 82%, 64% - narrowing funnel
         const spendPct = totalSpend > 0 ? Math.round((data.spend / totalSpend) * 100) : 0;
-        const roas = data.spend > 0 ? (data.revenue / data.spend).toFixed(2) : "—";
+        const roas = data.spend > 0 ? (data.revenue / data.spend).toFixed(2) : "-";
 
         return (
           <div
@@ -2499,7 +2499,7 @@ function AdFunnelTile({ funnelData, cs, onAdSetClick }: {
                 <span style={{ fontSize: "11px", color: "#6B7280", marginLeft: "4px" }}>revenue</span>
               </div>
               <div>
-                <span style={{ fontSize: "18px", fontWeight: 700, color: "#374151" }}>{roas}{typeof roas === "string" && roas !== "—" ? "x" : ""}</span>
+                <span style={{ fontSize: "18px", fontWeight: 700, color: "#374151" }}>{roas}{typeof roas === "string" && roas !== "-" ? "x" : ""}</span>
                 <span style={{ fontSize: "11px", color: "#6B7280", marginLeft: "4px" }}>ROAS</span>
               </div>
               <div>
@@ -2522,7 +2522,7 @@ function AdFunnelTile({ funnelData, cs, onAdSetClick }: {
                       maxWidth: "200px", overflow: "hidden", textOverflow: "ellipsis",
                       whiteSpace: "nowrap",
                     }}
-                    title={`${as.name} — ${cs}${Math.round(as.spend).toLocaleString()} spend, ${as.newCustomers} new customers`}
+                    title={`${as.name} - ${cs}${Math.round(as.spend).toLocaleString()} spend, ${as.newCustomers} new customers`}
                   >
                     {as.name}
                   </button>
@@ -2557,7 +2557,7 @@ export default function Campaigns() {
   const cs = currencySymbol || currencySymbolFromCode(null);
   const [searchParams, setSearchParams] = useSearchParams();
 
-  // Change log integration — strip above the tiles + drawer triggered from
+  // Change log integration - strip above the tiles + drawer triggered from
   // entity names in the Campaigns table.
   const [drawerEntity, setDrawerEntity] = useState<EntityRef | null>(null);
   const [showChanges, setShowChanges] = useState(() => {
@@ -2594,7 +2594,7 @@ export default function Campaigns() {
   const [filterAdSetId, setFilterAdSetId] = useState<string | null>(null);
   const [filterAdSetName, setFilterAdSetName] = useState<string | null>(null);
 
-  // Checkbox selection — persists across tab changes for filtering
+  // Checkbox selection - persists across tab changes for filtering
   const [selectedCampaignIds, setSelectedCampaignIds] = useState<Set<string>>(new Set());
   const [selectedAdSetIds, setSelectedAdSetIds] = useState<Set<string>>(new Set());
 
@@ -2729,21 +2729,21 @@ export default function Campaigns() {
     const footer: Record<string, any> = {
       select: "",
       name: `Results from ${footerSourceRows.length} ${levelLabel}`,
-      adAgeDays: "—",
+      adAgeDays: "-",
       spend: `${cs}${r2(spend).toLocaleString()}`,
       impressions: impressions.toLocaleString(),
       clicks: clicks.toLocaleString(),
       ctr: `${ctr}%`,
-      avgFrequency: "—",
+      avgFrequency: "-",
       linkClicks: linkClicks.toLocaleString(),
       landingPageViews: landingPageViews.toLocaleString(),
       viewContent: viewContent.toLocaleString(),
       addToCart: addToCart.toLocaleString(),
-      atcRate: viewContent > 0 ? `${atcRate}%` : "—",
+      atcRate: viewContent > 0 ? `${atcRate}%` : "-",
       initiateCheckout: initiateCheckout.toLocaleString(),
-      checkoutRate: addToCart > 0 ? `${checkoutRate}%` : "—",
+      checkoutRate: addToCart > 0 ? `${checkoutRate}%` : "-",
       metaConversions: metaConversions.toLocaleString(),
-      purchaseRate: initiateCheckout > 0 ? `${purchaseRate}%` : "—",
+      purchaseRate: initiateCheckout > 0 ? `${purchaseRate}%` : "-",
       attributedRevenue: `${cs}${r2(attributedRevenue).toLocaleString()}`,
       unverifiedRevenue: `${cs}${r2(unverifiedRevenue).toLocaleString()}`,
       blendedROAS: `${blendedROAS}x`,
@@ -2752,13 +2752,13 @@ export default function Campaigns() {
       newCustomerRevenue: <>{cs}{r2(newCustomerRevenue).toLocaleString()} <span style={{ color: "#999", fontWeight: 400 }}>({newRevPct}%)</span></>,
       existingCustomerOrders: <>{existingCustomerOrders.toLocaleString()} <span style={{ color: "#999", fontWeight: 400 }}>({existPct}%)</span></>,
       existingCustomerRevenue: <>{cs}{r2(existingCustomerRevenue).toLocaleString()} <span style={{ color: "#999", fontWeight: 400 }}>({existRevPct}%)</span></>,
-      cpa: attributedOrders > 0 ? `${cs}${cpa.toLocaleString()}` : "—",
-      newCustomerCPA: newCustomerOrders > 0 ? `${cs}${r2(spend / newCustomerOrders).toLocaleString()}` : "—",
-      revenuePerNewCustomer: newCustomerOrders > 0 ? `${cs}${r2(newCustomerRevenue / newCustomerOrders).toLocaleString()}` : "—",
-      spendPerDay: reportingPeriodDays > 0 ? `${cs}${r2(spend / reportingPeriodDays).toLocaleString()}` : "—",
-      newCustomersPerDay: reportingPeriodDays > 0 && newCustomerOrders > 0 ? r2(newCustomerOrders / reportingPeriodDays).toLocaleString() : "—",
-      newCustomerRevenuePerDay: reportingPeriodDays > 0 && newCustomerRevenue > 0 ? `${cs}${r2(newCustomerRevenue / reportingPeriodDays).toLocaleString()}` : "—",
-      newCustomerROAS: spend > 0 && newCustomerRevenue > 0 ? `${r2(newCustomerRevenue / spend)}x` : "—",
+      cpa: attributedOrders > 0 ? `${cs}${cpa.toLocaleString()}` : "-",
+      newCustomerCPA: newCustomerOrders > 0 ? `${cs}${r2(spend / newCustomerOrders).toLocaleString()}` : "-",
+      revenuePerNewCustomer: newCustomerOrders > 0 ? `${cs}${r2(newCustomerRevenue / newCustomerOrders).toLocaleString()}` : "-",
+      spendPerDay: reportingPeriodDays > 0 ? `${cs}${r2(spend / reportingPeriodDays).toLocaleString()}` : "-",
+      newCustomersPerDay: reportingPeriodDays > 0 && newCustomerOrders > 0 ? r2(newCustomerOrders / reportingPeriodDays).toLocaleString() : "-",
+      newCustomerRevenuePerDay: reportingPeriodDays > 0 && newCustomerRevenue > 0 ? `${cs}${r2(newCustomerRevenue / reportingPeriodDays).toLocaleString()}` : "-",
+      newCustomerROAS: spend > 0 && newCustomerRevenue > 0 ? `${r2(newCustomerRevenue / spend)}x` : "-",
       videoP25: videoP25.toLocaleString(),
       videoP50: videoP50.toLocaleString(),
       videoP75: videoP75.toLocaleString(),
@@ -2768,8 +2768,8 @@ export default function Campaigns() {
       ...((() => {
         const totalLtvCusts = footerSourceRows.reduce((s, r) => s + (r.ltvAcquiredCustomers || 0), 0);
         if (totalLtvCusts === 0) return {
-          avgLtv30: "—", avgLtv90: "—", avgLtv365: "—", avgLtvAll: "—",
-          totalLtvAll: "—", ltvCac: "—", repeatRate: "—", avgOrders: "—", ltvAcquiredCustomers: "—",
+          avgLtv30: "-", avgLtv90: "-", avgLtv365: "-", avgLtvAll: "-",
+          totalLtvAll: "-", ltvCac: "-", repeatRate: "-", avgOrders: "-", ltvAcquiredCustomers: "-",
         };
         const wAvg = (key: string) => r2(footerSourceRows.reduce((s, r) => s + (r[key] || 0) * (r.ltvAcquiredCustomers || 0), 0) / totalLtvCusts);
         const totalLtv = r2(footerSourceRows.reduce((s, r) => s + (r.totalLtvAll || 0), 0));
@@ -2783,7 +2783,7 @@ export default function Campaigns() {
           avgLtv365: `${cs}${wAvg("avgLtv365").toLocaleString()}`,
           avgLtvAll: `${cs}${wAvg("avgLtvAll").toLocaleString()}`,
           totalLtvAll: `${cs}${totalLtv.toLocaleString()}`,
-          ltvCac: overallCac > 0 ? `${r2(ltv90Overall / overallCac)}x` : "—",
+          ltvCac: overallCac > 0 ? `${r2(ltv90Overall / overallCac)}x` : "-",
           repeatRate: `${wRepeat}%`,
           avgOrders: `${wOrders}`,
           ltvAcquiredCustomers: totalLtvCusts.toLocaleString(),
@@ -2840,7 +2840,7 @@ export default function Campaigns() {
     meta: { align: "right", ...(tip ? { description: tip.desc, calc: tip.calc } : {}) },
     cell: ({ getValue, row }: any) => {
       const v = getValue();
-      if (v == null) return "—";
+      if (v == null) return "-";
       if (fmt) return fmt(v, row.original);
       return v.toLocaleString();
     },
@@ -2907,7 +2907,7 @@ export default function Campaigns() {
                   objectName: name,
                 });
               }}
-              title={`${changeCount} change${changeCount === 1 ? "" : "s"} in period — click for full timeline`}
+              title={`${changeCount} change${changeCount === 1 ? "" : "s"} in period - click for full timeline`}
               style={{
                 marginLeft: 6, padding: "1px 6px",
                 fontSize: 10, fontWeight: 600, lineHeight: "14px",
@@ -2962,7 +2962,7 @@ export default function Campaigns() {
         meta: { align: "right", description: `Number of days since this ${level === "campaign" ? "campaign" : level === "adset" ? "ad set" : "ad"} was created on Meta` },
         cell: ({ getValue }: any) => {
           const v = getValue();
-          if (v == null) return "—";
+          if (v == null) return "-";
           return `${v} days`;
         },
       } as ColumnDef<any, any>);
@@ -2971,17 +2971,17 @@ export default function Campaigns() {
       num("spend", "Spend", (v) => `${cs}${v.toLocaleString()}`, { desc: "Total amount spent on Meta ads in the selected period" }),
       num("impressions", "Impressions", undefined, { desc: "Total number of times your ads were shown on screen" }),
       num("clicks", "Clicks", undefined, { desc: "Total clicks on your ads, including all click types (link clicks, likes, comments, shares)" }),
-      num("ctr", "CTR", (v) => `${v}%`, { desc: "Click-through rate — how often people clicked after seeing your ad", calc: "Clicks ÷ Impressions × 100" }),
-      num("avgFrequency", "Frequency", (v) => v > 0 ? `${v}x` : "—", { desc: "Average number of times each person saw your ad. Higher frequency can mean ad fatigue" }),
+      num("ctr", "CTR", (v) => `${v}%`, { desc: "Click-through rate - how often people clicked after seeing your ad", calc: "Clicks ÷ Impressions × 100" }),
+      num("avgFrequency", "Frequency", (v) => v > 0 ? `${v}x` : "-", { desc: "Average number of times each person saw your ad. Higher frequency can mean ad fatigue" }),
       num("linkClicks", "Link Clicks", undefined, { desc: "Clicks that directed people to your website or app" }),
       num("landingPageViews", "Landing Page Views", undefined, { desc: "Number of times your landing page fully loaded after someone clicked your ad" }),
       num("viewContent", "View Content", undefined, { desc: "Number of times someone viewed a product page on your site after seeing your ad" }),
       num("addToCart", "Add to Cart", undefined, { desc: "Number of times someone added a product to their cart after seeing your ad" }),
-      num("atcRate", "ATC Rate", (v, r) => r.viewContent > 0 ? `${v}%` : "—", { desc: "Add-to-cart rate — of people who viewed a product, how many added to cart", calc: "Add to Cart ÷ View Content × 100" }),
+      num("atcRate", "ATC Rate", (v, r) => r.viewContent > 0 ? `${v}%` : "-", { desc: "Add-to-cart rate - of people who viewed a product, how many added to cart", calc: "Add to Cart ÷ View Content × 100" }),
       num("initiateCheckout", "Initiate Checkout", undefined, { desc: "Number of times someone started the checkout process after seeing your ad" }),
-      num("checkoutRate", "Checkout Rate", (v, r) => r.addToCart > 0 ? `${v}%` : "—", { desc: "Checkout rate — of people who added to cart, how many started checkout", calc: "Initiate Checkout ÷ Add to Cart × 100" }),
+      num("checkoutRate", "Checkout Rate", (v, r) => r.addToCart > 0 ? `${v}%` : "-", { desc: "Checkout rate - of people who added to cart, how many started checkout", calc: "Initiate Checkout ÷ Add to Cart × 100" }),
       num("metaConversions", "Purchases", undefined, { desc: "Total purchases reported by Meta, including both matched and unmatched orders" }),
-      num("purchaseRate", "Purchase Rate", (v, r) => r.initiateCheckout > 0 ? `${v}%` : "—", { desc: "Purchase rate — of people who started checkout, how many completed a purchase", calc: "Purchases ÷ Initiate Checkout × 100" }),
+      num("purchaseRate", "Purchase Rate", (v, r) => r.initiateCheckout > 0 ? `${v}%` : "-", { desc: "Purchase rate - of people who started checkout, how many completed a purchase", calc: "Purchases ÷ Initiate Checkout × 100" }),
       num("attributedRevenue", "Matched Revenue", (v) => `${cs}${v.toLocaleString()}`, { desc: "Revenue from orders we've verified and matched to specific Meta ads at order level" }),
       num("unverifiedRevenue", "Unmatched Revenue", (v) => `${cs}${v.toLocaleString()}`, { desc: "The gap between what Meta reported and what we could verify. Typically caused by order edits, refunds, or currency differences after purchase" }),
       num("blendedROAS", "Confirmed ROAS", (v) => `${v}x`, { desc: "Return on ad spend from confirmed Meta-attributed revenue (matched + unmatched)", calc: "(Matched Revenue + Unmatched Revenue) ÷ Spend" }),
@@ -2993,7 +2993,7 @@ export default function Campaigns() {
         meta: { align: "right", description: "First-time customers acquired via this ad. Shows count and percentage of total attributed orders" },
         cell: ({ getValue, row }: any) => {
           const v = getValue();
-          if (v == null) return "—";
+          if (v == null) return "-";
           const total = row.original.attributedOrders;
           const pct = total > 0 ? Math.round((v / total) * 100) : 0;
           return <>{v.toLocaleString()} <span style={{ color: "#999" }}>({pct}%)</span></>;
@@ -3005,7 +3005,7 @@ export default function Campaigns() {
         meta: { align: "right", description: "Revenue from first-time customers acquired via this ad. Shows amount and percentage of total matched revenue" },
         cell: ({ getValue, row }: any) => {
           const v = getValue();
-          if (v == null) return "—";
+          if (v == null) return "-";
           const total = row.original.attributedRevenue;
           const pct = total > 0 ? Math.round((v / total) * 100) : 0;
           return <>{cs}{v.toLocaleString()} <span style={{ color: "#999" }}>({pct}%)</span></>;
@@ -3017,7 +3017,7 @@ export default function Campaigns() {
         meta: { align: "right", description: "Returning customers who purchased via this ad. Shows count and percentage of total attributed orders" },
         cell: ({ getValue, row }: any) => {
           const v = getValue();
-          if (v == null) return "—";
+          if (v == null) return "-";
           const total = row.original.attributedOrders;
           const pct = total > 0 ? Math.round((v / total) * 100) : 0;
           return <>{v.toLocaleString()} <span style={{ color: "#999" }}>({pct}%)</span></>;
@@ -3029,33 +3029,33 @@ export default function Campaigns() {
         meta: { align: "right", description: "Revenue from returning customers via this ad. Shows amount and percentage of total matched revenue" },
         cell: ({ getValue, row }: any) => {
           const v = getValue();
-          if (v == null) return "—";
+          if (v == null) return "-";
           const total = row.original.attributedRevenue;
           const pct = total > 0 ? Math.round((v / total) * 100) : 0;
           return <>{cs}{v.toLocaleString()} <span style={{ color: "#999" }}>({pct}%)</span></>;
         },
       } as ColumnDef<any, any>,
-      num("cpa", "CPA", (v, r) => r.attributedOrders > 0 ? `${cs}${v.toLocaleString()}` : "—", { desc: "Cost per acquisition — how much you spent to get each order", calc: "Spend ÷ Attributed Orders" }),
-      num("newCustomerCPA", "New Customer CPA", (v) => v != null ? `${cs}${v.toLocaleString()}` : "—", { desc: "Cost to acquire each new customer", calc: "Spend ÷ New Customers" }),
-      num("revenuePerNewCustomer", "Rev per New Customer", (v) => v != null ? `${cs}${v.toLocaleString()}` : "—", { desc: "Average first-order revenue per new customer", calc: "New Customer Revenue ÷ New Customers" }),
-      num("spendPerDay", "Spend/Day", (v) => v != null ? `${cs}${v.toLocaleString()}` : "—", { desc: "Average daily spend, based on how long the ad has been active within the reporting period", calc: "Spend ÷ active days (shorter of ad age or reporting period)" }),
-      num("newCustomersPerDay", "New Customers/Day", (v) => v != null ? `${v}` : "—", { desc: "Average new customers acquired per day", calc: "New Customers ÷ active days" }),
-      num("newCustomerRevenuePerDay", "New Customer Rev/Day", (v) => v != null ? `${cs}${v.toLocaleString()}` : "—", { desc: "Average daily revenue from new customers", calc: "New Customer Revenue ÷ active days" }),
-      num("newCustomerROAS", "New Customer ROAS", (v) => v != null ? `${v}x` : "—", { desc: "Return on ad spend from new customers only — excludes returning customer revenue", calc: "New Customer Revenue ÷ Spend" }),
+      num("cpa", "CPA", (v, r) => r.attributedOrders > 0 ? `${cs}${v.toLocaleString()}` : "-", { desc: "Cost per acquisition - how much you spent to get each order", calc: "Spend ÷ Attributed Orders" }),
+      num("newCustomerCPA", "New Customer CPA", (v) => v != null ? `${cs}${v.toLocaleString()}` : "-", { desc: "Cost to acquire each new customer", calc: "Spend ÷ New Customers" }),
+      num("revenuePerNewCustomer", "Rev per New Customer", (v) => v != null ? `${cs}${v.toLocaleString()}` : "-", { desc: "Average first-order revenue per new customer", calc: "New Customer Revenue ÷ New Customers" }),
+      num("spendPerDay", "Spend/Day", (v) => v != null ? `${cs}${v.toLocaleString()}` : "-", { desc: "Average daily spend, based on how long the ad has been active within the reporting period", calc: "Spend ÷ active days (shorter of ad age or reporting period)" }),
+      num("newCustomersPerDay", "New Customers/Day", (v) => v != null ? `${v}` : "-", { desc: "Average new customers acquired per day", calc: "New Customers ÷ active days" }),
+      num("newCustomerRevenuePerDay", "New Customer Rev/Day", (v) => v != null ? `${cs}${v.toLocaleString()}` : "-", { desc: "Average daily revenue from new customers", calc: "New Customer Revenue ÷ active days" }),
+      num("newCustomerROAS", "New Customer ROAS", (v) => v != null ? `${v}x` : "-", { desc: "Return on ad spend from new customers only - excludes returning customer revenue", calc: "New Customer Revenue ÷ Spend" }),
       num("videoP25", "Video 25%", undefined, { desc: "Number of times your video was watched to 25% of its length" }),
       num("videoP50", "Video 50%", undefined, { desc: "Number of times your video was watched to 50% of its length" }),
       num("videoP75", "Video 75%", undefined, { desc: "Number of times your video was watched to 75% of its length" }),
       num("videoP100", "Video 100%", undefined, { desc: "Number of times your video was watched all the way through" }),
       // LTV columns (all-time, independent of reporting window)
-      num("avgLtv30", "Avg LTV 30d", (v) => v != null ? `${cs}${v.toLocaleString()}` : "—", { desc: "Average revenue per acquired customer within 30 days of their first purchase. Unaffected by the reporting period — always uses all-time data", calc: "Total 30-day revenue ÷ acquired customers" }),
-      num("avgLtv90", "Avg LTV 90d", (v) => v != null ? `${cs}${v.toLocaleString()}` : "—", { desc: "Average revenue per acquired customer within 90 days of their first purchase. Unaffected by the reporting period — always uses all-time data", calc: "Total 90-day revenue ÷ acquired customers" }),
-      num("avgLtv365", "Avg LTV 1yr", (v) => v != null ? `${cs}${v.toLocaleString()}` : "—", { desc: "Average revenue per acquired customer within 1 year of their first purchase. Unaffected by the reporting period — always uses all-time data", calc: "Total 1-year revenue ÷ acquired customers" }),
-      num("avgLtvAll", "Avg LTV All", (v) => v != null ? `${cs}${v.toLocaleString()}` : "—", { desc: "Average all-time revenue per acquired customer, across every order they've ever placed", calc: "Total all-time revenue ÷ acquired customers" }),
-      num("totalLtvAll", "Total LTV", (v) => v != null ? `${cs}${v.toLocaleString()}` : "—", { desc: "Total lifetime revenue from every customer acquired via this ad, across all their orders" }),
-      num("ltvCac", "LTV:CAC", (v) => v != null ? `${v}x` : "—", { desc: "How much lifetime revenue each acquired customer generates relative to what it cost to acquire them", calc: "Avg LTV All ÷ New Customer CPA" }),
-      num("repeatRate", "Repeat Rate", (v) => v != null ? `${v}%` : "—", { desc: "Percentage of acquired customers who came back and purchased again", calc: "Repeat buyers ÷ total acquired customers × 100" }),
-      num("avgOrders", "Avg Orders", (v) => v != null ? `${v}` : "—", { desc: "Average number of orders placed by each acquired customer", calc: "Total orders ÷ acquired customers" }),
-      num("ltvAcquiredCustomers", "LTV Customers", (v) => v > 0 ? v.toLocaleString() : "—", { desc: "Number of unique customers acquired via this ad that we have lifetime value data for" }),
+      num("avgLtv30", "Avg LTV 30d", (v) => v != null ? `${cs}${v.toLocaleString()}` : "-", { desc: "Average revenue per acquired customer within 30 days of their first purchase. Unaffected by the reporting period - always uses all-time data", calc: "Total 30-day revenue ÷ acquired customers" }),
+      num("avgLtv90", "Avg LTV 90d", (v) => v != null ? `${cs}${v.toLocaleString()}` : "-", { desc: "Average revenue per acquired customer within 90 days of their first purchase. Unaffected by the reporting period - always uses all-time data", calc: "Total 90-day revenue ÷ acquired customers" }),
+      num("avgLtv365", "Avg LTV 1yr", (v) => v != null ? `${cs}${v.toLocaleString()}` : "-", { desc: "Average revenue per acquired customer within 1 year of their first purchase. Unaffected by the reporting period - always uses all-time data", calc: "Total 1-year revenue ÷ acquired customers" }),
+      num("avgLtvAll", "Avg LTV All", (v) => v != null ? `${cs}${v.toLocaleString()}` : "-", { desc: "Average all-time revenue per acquired customer, across every order they've ever placed", calc: "Total all-time revenue ÷ acquired customers" }),
+      num("totalLtvAll", "Total LTV", (v) => v != null ? `${cs}${v.toLocaleString()}` : "-", { desc: "Total lifetime revenue from every customer acquired via this ad, across all their orders" }),
+      num("ltvCac", "LTV:CAC", (v) => v != null ? `${v}x` : "-", { desc: "How much lifetime revenue each acquired customer generates relative to what it cost to acquire them", calc: "Avg LTV All ÷ New Customer CPA" }),
+      num("repeatRate", "Repeat Rate", (v) => v != null ? `${v}%` : "-", { desc: "Percentage of acquired customers who came back and purchased again", calc: "Repeat buyers ÷ total acquired customers × 100" }),
+      num("avgOrders", "Avg Orders", (v) => v != null ? `${v}` : "-", { desc: "Average number of orders placed by each acquired customer", calc: "Total orders ÷ acquired customers" }),
+      num("ltvAcquiredCustomers", "LTV Customers", (v) => v > 0 ? v.toLocaleString() : "-", { desc: "Number of unique customers acquired via this ad that we have lifetime value data for" }),
     );
     return cols;
   }, [cs, showBreakdown, breakdown, level, nameHeader, currentSelectedIds, filteredRows, toggleSelectAll, toggleSelect, handleDrillDown, changeCountsByObjectId]);
@@ -3069,43 +3069,43 @@ export default function Campaigns() {
   const columnProfiles = useMemo(() => [
     {
       id: "overview", label: "Overview", icon: "📊",
-      description: "Top-level performance snapshot — spend, purchases, revenue, and ROAS at a glance",
+      description: "Top-level performance snapshot - spend, purchases, revenue, and ROAS at a glance",
       columns: ["name", "spend", "metaConversions", "attributedRevenue", "blendedROAS", "cpa"],
       fullColumns: ["name", "spend", "impressions", "clicks", "ctr", "metaConversions", "attributedOrders", "attributedRevenue", "unverifiedRevenue", "blendedROAS", "cpa"],
     },
     {
       id: "newCustomers", label: "New Customers", icon: "👤",
-      description: "How effectively each ad acquires new customers — acquisition cost, revenue, and long-term value",
+      description: "How effectively each ad acquires new customers - acquisition cost, revenue, and long-term value",
       columns: ["name", "spend", "newCustomerOrders", "newCustomerCPA", "newCustomerROAS", "ltvCac", "repeatRate"],
       fullColumns: ["name", "spend", "newCustomerOrders", "newCustomerRevenue", "newCustomerCPA", "newCustomerROAS", "revenuePerNewCustomer", "newCustomersPerDay", "newCustomerRevenuePerDay", "avgLtv30", "avgLtv90", "avgLtvAll", "ltvCac", "repeatRate", "avgOrders"],
     },
     {
       id: "efficiency", label: "Efficiency", icon: "⚡",
-      description: "Cost efficiency metrics — are you getting good value for your spend?",
+      description: "Cost efficiency metrics - are you getting good value for your spend?",
       columns: ["name", "spend", "spendPerDay", "cpa", "blendedROAS", "ctr", "ltvCac"],
       fullColumns: ["name", "spend", "spendPerDay", "cpa", "newCustomerCPA", "blendedROAS", "newCustomerROAS", "ctr", "purchaseRate", "ltvCac", "newCustomersPerDay"],
     },
     {
       id: "funnel", label: "Funnel", icon: "🔽",
-      description: "The customer journey from impression to purchase — where are people dropping off?",
+      description: "The customer journey from impression to purchase - where are people dropping off?",
       columns: ["name", "impressions", "linkClicks", "addToCart", "atcRate", "metaConversions", "purchaseRate"],
       fullColumns: ["name", "impressions", "linkClicks", "landingPageViews", "viewContent", "addToCart", "atcRate", "initiateCheckout", "checkoutRate", "metaConversions", "purchaseRate"],
     },
     {
       id: "revenue", label: "Revenue", icon: "💰",
-      description: "Revenue breakdown — matched vs unmatched, new vs existing customer revenue",
+      description: "Revenue breakdown - matched vs unmatched, new vs existing customer revenue",
       columns: ["name", "spend", "attributedRevenue", "blendedROAS", "newCustomerRevenue", "existingCustomerRevenue"],
       fullColumns: ["name", "spend", "attributedRevenue", "unverifiedRevenue", "blendedROAS", "newCustomerROAS", "newCustomerRevenue", "existingCustomerRevenue", "revenuePerNewCustomer", "totalLtvAll", "metaConversionValue"],
     },
     {
       id: "ltv", label: "Lifetime Value", icon: "🔄",
-      description: "Long-term customer value — are the customers you're acquiring worth the investment?",
+      description: "Long-term customer value - are the customers you're acquiring worth the investment?",
       columns: ["name", "newCustomerOrders", "avgLtv90", "avgLtvAll", "ltvCac", "repeatRate"],
       fullColumns: ["name", "newCustomerOrders", "ltvAcquiredCustomers", "avgLtv30", "avgLtv90", "avgLtv365", "avgLtvAll", "totalLtvAll", "ltvCac", "repeatRate", "avgOrders", "newCustomerCPA"],
     },
     {
       id: "creative", label: "Creative", icon: "🎬",
-      description: "Creative performance — engagement, frequency, and video watch-through rates",
+      description: "Creative performance - engagement, frequency, and video watch-through rates",
       columns: ["name", "impressions", "avgFrequency", "ctr", "videoP100"],
       fullColumns: ["name", "impressions", "avgFrequency", "ctr", "linkClicks", "videoP25", "videoP50", "videoP75", "videoP100"],
     },
@@ -3231,7 +3231,7 @@ export default function Campaigns() {
         tone: "neutral",
         text: (
           <>
-            <strong>New customers:</strong> {totals.newCustomerOrders.toLocaleString()} acquired via Meta{cac != null ? ` — ${cs}${cac} CAC` : ""}
+            <strong>New customers:</strong> {totals.newCustomerOrders.toLocaleString()} acquired via Meta{cac != null ? ` - ${cs}${cac} CAC` : ""}
           </>
         ),
       });
@@ -3246,7 +3246,7 @@ export default function Campaigns() {
         tone: "neutral",
         text: (
           <>
-            <strong>Biggest campaign:</strong> {topSpender.name || topSpender.campaignName || "—"} — {cs}{Math.round(topSpender.spend).toLocaleString()} at {roas}x ROAS
+            <strong>Biggest campaign:</strong> {topSpender.name || topSpender.campaignName || "-"} - {cs}{Math.round(topSpender.spend).toLocaleString()} at {roas}x ROAS
           </>
         ),
       });
@@ -3260,7 +3260,7 @@ export default function Campaigns() {
         tone: "positive",
         text: (
           <>
-            <strong>Best ROAS:</strong> {topROAS.name || topROAS.campaignName || "—"} — {topROAS.blendedROAS}x on {cs}{Math.round(topROAS.spend).toLocaleString()}
+            <strong>Best ROAS:</strong> {topROAS.name || topROAS.campaignName || "-"} - {topROAS.blendedROAS}x on {cs}{Math.round(topROAS.spend).toLocaleString()}
           </>
         ),
       });
@@ -3275,7 +3275,7 @@ export default function Campaigns() {
         tone: "negative",
         text: (
           <>
-            <strong>Biggest drain:</strong> {topDrain.name || topDrain.campaignName || "—"} — {cs}{Math.round(topDrain.spend).toLocaleString()} spent at {topDrain.blendedROAS}x ROAS
+            <strong>Biggest drain:</strong> {topDrain.name || topDrain.campaignName || "-"} - {cs}{Math.round(topDrain.spend).toLocaleString()} spent at {topDrain.blendedROAS}x ROAS
           </>
         ),
       });
@@ -3287,7 +3287,7 @@ export default function Campaigns() {
         tone: "neutral",
         text: (
           <>
-            <strong>Attributed orders:</strong> {totals.attributedOrders.toLocaleString()} matched via Meta — {cs}{aov} AOV
+            <strong>Attributed orders:</strong> {totals.attributedOrders.toLocaleString()} matched via Meta - {cs}{aov} AOV
           </>
         ),
       });
@@ -3301,7 +3301,7 @@ export default function Campaigns() {
       <style dangerouslySetInnerHTML={{ __html: tileGridStyles }} />
       <ReportTabs>
       <BlockStack gap="500">
-        {/* Hidden for V1 — bring back in V2. Loader wiring kept intact. */}
+        {/* Hidden for V1 - bring back in V2. Loader wiring kept intact. */}
         {false && (
           <AiInsightsPanel
             pageKey="campaigns"
@@ -3331,7 +3331,7 @@ export default function Campaigns() {
         {currentSelectedIds.size > 0 && (
           <InlineStack gap="200" blockAlign="center">
             <Text as="p" variant="bodySm" tone="subdued">
-              {currentSelectedIds.size} selected — summary cards show selected items only
+              {currentSelectedIds.size} selected - summary cards show selected items only
             </Text>
             <Button size="slim" onClick={() => setCurrentSelectedIds(new Set())}>Clear selection</Button>
           </InlineStack>
@@ -3418,7 +3418,7 @@ export default function Campaigns() {
               { id: "newCustomers", label: "New Meta Customers", render: () => (
                 <SummaryTile label="New Meta Customers" value={(uniqueNewMetaCustomers || 0).toLocaleString()}
                   subtitle={totalNewCustomersInPeriod > 0 ? `${Math.round((uniqueNewMetaCustomers / totalNewCustomersInPeriod) * 100)}% of all new customers` : "No new customers in period"}
-                  tooltip={{ definition: "Unique first-time customers acquired through Meta ads within the selected date range (deduplicated — a customer placing multiple orders on their first day counts once)" }}
+                  tooltip={{ definition: "Unique first-time customers acquired through Meta ads within the selected date range (deduplicated - a customer placing multiple orders on their first day counts once)" }}
                   currentValue={uniqueNewMetaCustomers || 0} previousValue={prevUniqueNewMetaCustomers || 0}
                   chartData={dailyData} prevChartData={prevDailyData} chartKey="newCustomerOrders" chartColor="#6366F1" chartFormat={(v) => v.toLocaleString()} />
               )},
@@ -3459,7 +3459,7 @@ export default function Campaigns() {
                     <Text as="h2" variant="headingLg">Ad Funnel</Text>
                     <Text as="p" variant="bodySm" tone="subdued">
                       How your ad spend flows from cold prospecting through to hot purchase-intent audiences.
-                      Based on Meta targeting data — synced nightly.
+                      Based on Meta targeting data - synced nightly.
                     </Text>
                     <AdFunnelTile funnelData={funnelData} cs={cs} onAdSetClick={(id, name) => setDrawerEntity({ objectType: "adset", objectId: id, objectName: name })} />
                   </BlockStack>
@@ -3495,7 +3495,7 @@ export default function Campaigns() {
                 <Card>
                   <BlockStack gap="300">
                     <Text as="h3" variant="headingSm">Wasted Spend?</Text>
-                    <Text as="p" variant="bodySm" tone="subdued">Ads with ROAS below 2.5x — sorted by spend</Text>
+                    <Text as="p" variant="bodySm" tone="subdued">Ads with ROAS below 2.5x - sorted by spend</Text>
                     <WastedSpendList items={wastedItems} cs={cs} />
                   </BlockStack>
                 </Card>

@@ -19,7 +19,7 @@ import { setProgress, failProgress, completeProgress } from "../services/progres
 import AiInsightsPanel from "../components/AiInsightsPanel";
 import PageSummary, { type SummaryBullet } from "../components/PageSummary";
 // Single source of truth for parent-product name canonicalisation. Imported
-// (rather than duplicated) so rollup keys and image-map keys stay aligned —
+// (rather than duplicated) so rollup keys and image-map keys stay aligned -
 // previously the route's local copy didn't strip trailing periods, which
 // hid thumbnails for Vollebak-style listings (e.g. "Planet Earth Suit Jacket.",
 // "Indestructible T-shirt.") whose rollup keys are period-stripped.
@@ -56,9 +56,9 @@ export const loader = async ({ request }) => {
 
   // ── Fetch product images from Shopify (generic, per-shop via authenticated session) ──
   // 3-tier cache:
-  //   1. In-process queryCache (1h TTL) — instant
-  //   2. DB Shop.productImagesJson (24h refresh) — survives process restarts
-  //   3. Shopify GraphQL fetch — last resort (slow, 4-5s)
+  //   1. In-process queryCache (1h TTL) - instant
+  //   2. DB Shop.productImagesJson (24h refresh) - survives process restarts
+  //   3. Shopify GraphQL fetch - last resort (slow, 4-5s)
   const fetchImages = async (): Promise<Record<string, string>> => {
     return queryCached(`${shopDomain}:productImages`, 60 * 60 * 1000, async () => {
       // Tier 2: try DB cache
@@ -168,7 +168,7 @@ export const loader = async ({ request }) => {
       _sum: { metaConversionValue: true },
     }),
     fetchImages(),
-    // Per-period orders, slim — needed to compute date-scoped add-on
+    // Per-period orders, slim - needed to compute date-scoped add-on
     // appearances (cached blob is all-time and was confusing the user).
     queryCached(`${shopDomain}:periodOrdersForAddons:${fromKey}:${toKey}`, DEFAULT_TTL, () =>
       db.order.findMany({
@@ -202,7 +202,7 @@ export const loader = async ({ request }) => {
     ),
   ]);
 
-  // Period attribution lookup — used to flag Meta orders for the Meta tab.
+  // Period attribution lookup - used to flag Meta orders for the Meta tab.
   const periodOrderIds = periodOrders.map((o) => o.shopifyOrderId);
   const periodMetaAttrs = periodOrderIds.length > 0
     ? await queryCached(
@@ -521,13 +521,13 @@ export const loader = async ({ request }) => {
     return custs > 0 ? Math.round(spent / custs) : 0;
   })();
 
-  // Gateway: sort by metaFirstPurchaseCount (Meta-only) — blends % with volume naturally
+  // Gateway: sort by metaFirstPurchaseCount (Meta-only) - blends % with volume naturally
   // Exclude Gift Card, require 5+ Meta orders
   const topGatewayProduct = rows
     .filter(r => r.metaFirstPurchaseCount > 0 && r.metaOrders >= 5 && r.product.toLowerCase() !== "gift card")
     .sort((a, b) => b.metaFirstPurchaseCount - a.metaFirstPurchaseCount)[0];
   const topMetaProduct = rows.filter(r => r.metaOrders > 0).sort((a, b) => b.metaRevenue - a.metaRevenue)[0];
-  // Headline tile uses the Wilson lower bound on refund rate — the textbook
+  // Headline tile uses the Wilson lower bound on refund rate - the textbook
   // way to surface "statistically concerning" rates that don't get tricked
   // by tiny samples (1 of 1 = 100% but meaningless) or dominated by a single
   // big-ticket refund. Min 5 orders to enter the ranking. The score is the
@@ -567,7 +567,7 @@ export const loader = async ({ request }) => {
     refunds: dailyProductSales[highestRefundProduct.product]?.[date]?.refunds || 0,
   })) : [];
 
-  // Top 20 products by refund rate — separate for meta and all (min 3 orders)
+  // Top 20 products by refund rate - separate for meta and all (min 3 orders)
   const top20RefundRateAll = rows
     .filter(r => r.totalOrders >= 3 && r.refundRate > 0)
     .sort((a, b) => b.refundRate - a.refundRate)
@@ -607,14 +607,14 @@ export const loader = async ({ request }) => {
 
   // ── Product Demographics Explorer data ──
   // Flat per-line-item records for Meta-acquired customers (metaSegment =
-  // "metaNew" — covers both their first purchase and subsequent Meta Repeat
+  // "metaNew" - covers both their first purchase and subsequent Meta Repeat
   // orders; excludes Meta Retargeted). Powers filter-driven product ranking
   // + auto-detected statistically significant "gems" on the client tile.
-  // Uses a single indexed JOIN via $queryRaw — building an IN clause with
+  // Uses a single indexed JOIN via $queryRaw - building an IN clause with
   // tens of thousands of order IDs on large shops (Vollebak: ~30k orders
   // in 90d) overwhelms SQLite and blows up the response. We then cap the
   // flat records to the top 100 products by volume so payload stays
-  // bounded (~10k records max on a big shop) without losing gem signal —
+  // bounded (~10k records max on a big shop) without losing gem signal -
   // a product that never makes top-100 overall is unlikely to be a true
   // "absolute gem" anyway.
   const _demoT0 = Date.now();
@@ -624,8 +624,8 @@ export const loader = async ({ request }) => {
     async () => {
       try {
         // Gender resolution: prefer Attribution.metaGender (Meta breakdown
-        // — accurate but sparse: only ~30% of matched orders carry it),
-        // fall back to Customer.inferredGender (name-based — fills the gap
+        // - accurate but sparse: only ~30% of matched orders carry it),
+        // fall back to Customer.inferredGender (name-based - fills the gap
         // for older orders + organic-tail customers). Age has no name-based
         // equivalent, so we still require metaAge to be present.
         const rows = await db.$queryRaw<Array<{
@@ -691,7 +691,7 @@ export const loader = async ({ request }) => {
   // ── Non-Meta (organic) demographics records ──
   // Mirror of the Meta demo dataset for organic customers. They have no
   // Attribution row (and no metaAge / metaGender), so we lean entirely on
-  // Customer.inferredGender. Age stays unknown — we record it as "Unknown"
+  // Customer.inferredGender. Age stays unknown - we record it as "Unknown"
   // so the explorer can still render the gender split without dropping rows.
   // Same top-100 product cap to keep the payload bounded.
   const _nonMetaDemoT0 = Date.now();
@@ -759,7 +759,7 @@ export const loader = async ({ request }) => {
   // (z >= 1.96, ~95% CI) and a count floor (8) filters noise. Score by
   // lift * sqrt(count) so a 3× lift on 30 purchases beats 1.6× on 8.
   const demoGems = (() => {
-    // Run gem detection against acquired-customer slice only — that's the
+    // Run gem detection against acquired-customer slice only - that's the
     // most actionable "which audience over-indexes on this product" signal.
     // Retargeting records are included in the raw dataset for the segment
     // filter, but gems should not conflate the two.
@@ -917,7 +917,7 @@ export const action = async ({ request }) => {
 
         // Build product data. `order.lineItems` is stored as a comma-separated
         // list of titles (see orderWebhook.server.js), NOT JSON. Revenue is
-        // split equally across items since per-item price isn't persisted —
+        // split equally across items since per-item price isn't persisted -
         // this matches what productRollups.server.js does and is imperfect
         // but non-zero. Net of refunds.
         const productAgg = {};
@@ -1306,7 +1306,7 @@ function HeaderTip({ text }: { text: string }) {
 // ═══════════════════════════════════════════════════════════════
 // One tile, three filters (Gender / Age / Country), one ranked bar
 // chart. Gems auto-surface statistically-significant over-indexed
-// combinations at the top — clicking a gem snaps the filters.
+// combinations at the top - clicking a gem snaps the filters.
 
 const AGE_BRACKETS = ["13-17", "18-24", "25-34", "35-44", "45-54", "55-64", "65+"];
 
@@ -1343,7 +1343,7 @@ function gemSentence(g: DemoGem, currencySymbol: string): { text: string; filter
   };
 }
 
-// Palette for the bar chart rows — a cohesive cool-tone family (indigo →
+// Palette for the bar chart rows - a cohesive cool-tone family (indigo →
 // teal), desaturated slightly so rows vary without feeling like a rainbow.
 const BAR_COLOURS: Array<[string, string]> = [
   ["#6366F1", "#A5B4FC"], // indigo
@@ -1368,8 +1368,8 @@ function ProductDemographicsExplorer({ records, countries, gems, nonMetaRecords,
   const [sortBy, setSortBy] = useState<"units" | "revenue">("units");
   const [segment, setSegment] = useState<"acquired" | "retargeted" | "all" | "nonMeta">("acquired");
 
-  // Segment-scoped base pool — filter all other dimensions against this.
-  // Non-Meta is sourced from a separate dataset (organic customers — name-
+  // Segment-scoped base pool - filter all other dimensions against this.
+  // Non-Meta is sourced from a separate dataset (organic customers - name-
   // inferred gender only, no Attribution row, no metaAge).
   const segmentRecords = useMemo(() => {
     if (segment === "nonMeta") return nonMetaRecords;
@@ -1380,7 +1380,7 @@ function ProductDemographicsExplorer({ records, countries, gems, nonMetaRecords,
   // Country list mirrors the active segment's pool.
   const segmentCountries = segment === "nonMeta" ? nonMetaCountries : countries;
 
-  // Available age brackets & countries — respect every *other* active filter
+  // Available age brackets & countries - respect every *other* active filter
   // so tabs/options hide when that combination has zero results.
   const availableAges = useMemo(() => {
     const set = new Set<string>();
@@ -1416,7 +1416,7 @@ function ProductDemographicsExplorer({ records, countries, gems, nonMetaRecords,
   const filtered = useMemo(() => {
     return segmentRecords.filter((r) => {
       if (gender !== "All" && r.gender !== gender) return false;
-      // Non-Meta records have no age signal — skip the age filter so prior
+      // Non-Meta records have no age signal - skip the age filter so prior
       // selections don't zero out the result when switching tabs.
       if (segment !== "nonMeta" && ages.length > 0 && !ages.includes(r.age)) return false;
       if (country !== "All" && r.country !== country) return false;
@@ -1461,7 +1461,7 @@ function ProductDemographicsExplorer({ records, countries, gems, nonMetaRecords,
       if (segment === "nonMeta") return `${total.toLocaleString()} purchases across ${Object.keys(countryCount).length} countries.`;
       return `${total.toLocaleString()} purchases across ${Object.keys(ageCount).length} age brackets and ${Object.keys(countryCount).length} countries.`;
     }
-    return `${bits.join(" · ")} — out of ${total.toLocaleString()} purchases.`;
+    return `${bits.join(" · ")} - out of ${total.toLocaleString()} purchases.`;
   }, [filtered, segment]);
 
   const maxValue = topProducts.length > 0
@@ -1483,7 +1483,7 @@ function ProductDemographicsExplorer({ records, countries, gems, nonMetaRecords,
                 ? "Top products among Meta retargeted customers. Filter by gender, age, and country to see what each segment buys."
                 : segment === "all"
                 ? "Top products among all Meta customers (acquired and retargeted). Filter by gender, age, and country to see what each segment buys."
-                : "Top products among non-Meta (organic) customers. Gender is name-inferred — age isn't available without Meta breakdown data."}
+                : "Top products among non-Meta (organic) customers. Gender is name-inferred - age isn't available without Meta breakdown data."}
             </Text>
           </BlockStack>
           <div className="segment-toggle" style={{ flexShrink: 0 }}>
@@ -1517,7 +1517,7 @@ function ProductDemographicsExplorer({ records, countries, gems, nonMetaRecords,
             ))}
           </div>
 
-          {/* Age — hidden for Non Meta scope (no age signal without Meta breakdown). */}
+          {/* Age - hidden for Non Meta scope (no age signal without Meta breakdown). */}
           {segment !== "nonMeta" && (
           <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
             <span style={{ fontSize: "12px", fontWeight: 600, color: "#6B7280", width: "70px", textTransform: "uppercase", letterSpacing: "0.5px" }}>Age</span>
@@ -1653,7 +1653,7 @@ function ProductDemographicsExplorer({ records, countries, gems, nonMetaRecords,
           </div>
         )}
 
-        {/* Dynamic insight — sits between the bar chart and the gems,
+        {/* Dynamic insight - sits between the bar chart and the gems,
             summarising the current filter slice in one sentence. */}
         {insight && (
           <div style={{ paddingTop: 16, paddingBottom: 8 }}>
@@ -1661,7 +1661,7 @@ function ProductDemographicsExplorer({ records, countries, gems, nonMetaRecords,
           </div>
         )}
 
-        {/* Gems — auto-surfaced statistical anomalies. Placed at the bottom
+        {/* Gems - auto-surfaced statistical anomalies. Placed at the bottom
             so the chart is the primary interaction; gems are a light,
             colourful "did you notice" footer, no heavy framing. */}
         {gems.length > 0 && segment !== "nonMeta" && (
@@ -1899,7 +1899,7 @@ export default function Products() {
   const summaryBullets: SummaryBullet[] = useMemo(() => {
     const out: SummaryBullet[] = [];
 
-    // Most popular product per gender among Meta-acquired customers —
+    // Most popular product per gender among Meta-acquired customers -
     // instantly actionable for creative/copy decisions.
     if (demoRecords && demoRecords.length > 0) {
       const acquired = demoRecords.filter((r: any) => r.segment === "acquired");
@@ -1930,20 +1930,20 @@ export default function Products() {
       }
     }
 
-    // Most-co-purchased product — surfaces the strongest bundle candidate.
+    // Most-co-purchased product - surfaces the strongest bundle candidate.
     if (topAddonsMeta && topAddonsMeta.length > 0) {
       const top = topAddonsMeta[0];
       out.push({
         tone: "neutral",
         text: (
           <>
-            <strong>Most co-purchased:</strong> {top.product} — appears alongside other items in {top.appearances} Meta baskets{top.addonRate != null ? ` (${top.addonRate}% of multi-item Meta orders)` : ""}
+            <strong>Most co-purchased:</strong> {top.product} - appears alongside other items in {top.appearances} Meta baskets{top.addonRate != null ? ` (${top.addonRate}% of multi-item Meta orders)` : ""}
           </>
         ),
       });
     }
 
-    // Top gateway product by lifetime value — the highest-LTV front door
+    // Top gateway product by lifetime value - the highest-LTV front door
     // for Meta-acquired customers.
     if (entryToLtv && entryToLtv.length > 0) {
       const leader = entryToLtv[0];
@@ -1980,7 +1980,7 @@ export default function Products() {
       });
     }
 
-    // Gems last — statistical anomalies in demographic buying patterns.
+    // Gems last - statistical anomalies in demographic buying patterns.
     // Dedupe by product family (everything before the first fullstop) so
     // e.g. "Graphene T Shirt. Black edition" and "Graphene T Shirt. Blue
     // edition" collapse to a single gem for the family.
@@ -2010,7 +2010,7 @@ export default function Products() {
       <ReportTabs>
       <BlockStack gap="500">
 
-        {/* Hidden for V1 — bring back in V2. Loader wiring kept intact. */}
+        {/* Hidden for V1 - bring back in V2. Loader wiring kept intact. */}
         {false && (
           <AiInsightsPanel
             pageKey="products"
@@ -2022,7 +2022,7 @@ export default function Products() {
         )}
         <PageSummary bullets={summaryBullets} fromKey={fromKey} toKey={toKey} preset={preset} />
 
-        {/* ── All tiles (drag/drop, show/hide) — everything except main table ── */}
+        {/* ── All tiles (drag/drop, show/hide) - everything except main table ── */}
         <TileGrid pageId="products" columns={4} tiles={[
           { id: "metaAdOrders", label: "Meta Product Purchases", render: () => (
             <SummaryTile
@@ -2155,7 +2155,7 @@ export default function Products() {
                 <div className="tile-header-row">
                   <BlockStack gap="100">
                     <Text as="h2" variant="headingLg">New Customer First Purchases</Text>
-                    <Text as="p" variant="bodySm" tone="subdued">What customers buy on their very first order — your gateway products</Text>
+                    <Text as="p" variant="bodySm" tone="subdued">What customers buy on their very first order - your gateway products</Text>
                   </BlockStack>
                   <div className="segment-toggle">
                     <button className={firstPurchaseMode === "meta" ? "active" : ""} onClick={() => setFirstPurchaseMode("meta")}>Meta Customers</button>
@@ -2209,7 +2209,7 @@ export default function Products() {
                 <div className="tile-header-row">
                   <BlockStack gap="100">
                     <Text as="h2" variant="headingLg">Bundle Opportunities</Text>
-                    <Text as="p" variant="bodySm" tone="subdued">Products most frequently purchased together — why not create bundles / packs to increase sales further?</Text>
+                    <Text as="p" variant="bodySm" tone="subdued">Products most frequently purchased together - why not create bundles / packs to increase sales further?</Text>
                   </BlockStack>
                   <div className="segment-toggle">
                     <button className={basketMode === "meta" ? "active" : ""} onClick={() => setBasketMode("meta")}>Meta Customers</button>
@@ -2300,7 +2300,7 @@ export default function Products() {
                               </div>
                             </td>
                             <td className="num">{item.appearances}</td>
-                            <td className="num">{item.addonRate == null ? "—" : `${item.addonRate}%`}</td>
+                            <td className="num">{item.addonRate == null ? "-" : `${item.addonRate}%`}</td>
                           </tr>
                         ))}
                       </tbody>

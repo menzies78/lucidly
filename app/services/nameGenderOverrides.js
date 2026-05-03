@@ -1,7 +1,7 @@
 // Manual overrides for the name-based gender inference layer.
 //
 // The upstream `gender-detection-from-name` package is intentionally
-// conservative — when *any* cross-population exists in its curated lists
+// conservative - when *any* cross-population exists in its curated lists
 // (e.g. Christine vs. Chris) it returns "unknown" rather than guessing.
 // That's the right default, but for downstream analytics it leaves
 // ~20% of customers uncategorised on common names that are >95% one
@@ -11,12 +11,12 @@
 // We layer overrides in three buckets, checked in this order inside
 // `inferGender`:
 //
-//   1. COUNTRY  — country-qualified entries, key = "name|CC".
+//   1. COUNTRY  - country-qualified entries, key = "name|CC".
 //                 Used for markets the package doesn't cover (JP, KR, NL).
-//   2. PLAIN    — country-agnostic entries; common names the package
+//   2. PLAIN    - country-agnostic entries; common names the package
 //                 marks "unknown" but which have a strong gender skew
 //                 in our data.
-//   3. TITLES   — salutations typed into the firstName field.
+//   3. TITLES   - salutations typed into the firstName field.
 //                 Detected as a leading token; used to extract the real
 //                 first name AND as a fallback gender when the rest is
 //                 unidentifiable (e.g. "Mr Smith" → male via title).
@@ -24,7 +24,7 @@
 // All lookups use lowercased ASCII; country codes are uppercased.
 
 // ---------------------------------------------------------------------------
-// Title prefixes — surprisingly common in firstName fields.
+// Title prefixes - surprisingly common in firstName fields.
 // ---------------------------------------------------------------------------
 export const TITLES = {
   mr: "male",
@@ -36,17 +36,17 @@ export const TITLES = {
   miss: "female",
   madam: "female",
   madame: "female",
-  // "dr", "prof", "mx" are deliberately NOT mapped — unisex.
+  // "dr", "prof", "mx" are deliberately NOT mapped - unisex.
 };
 
 // ---------------------------------------------------------------------------
-// PLAIN — names the package returns "unknown" for that have a clear
+// PLAIN - names the package returns "unknown" for that have a clear
 // (>95%) real-world skew in English-speaking markets. Lowercase keys.
 // Add cautiously: anything genuinely unisex (Alex, Sam, Jordan, Jamie)
 // must NOT be added here.
 // ---------------------------------------------------------------------------
 export const PLAIN = {
-  // Male — pulled from the top of the Vollebak ambiguous bucket where the
+  // Male - pulled from the top of the Vollebak ambiguous bucket where the
   // name is overwhelmingly male in EN/US/UK census data.
   chris: "male",
   ryan: "male",
@@ -79,20 +79,20 @@ export const PLAIN = {
   jake: "male",
   ben: "male",
   joe: "male",
-  // Female — rarer in the ambiguous bucket but worth seeding
-  // (kept short — only obvious cases)
+  // Female - rarer in the ambiguous bucket but worth seeding
+  // (kept short - only obvious cases)
   sue: "female",
   liz: "female",
   beth: "female",
 };
 
 // ---------------------------------------------------------------------------
-// COUNTRY — markets the package doesn't ship name lists for.
+// COUNTRY - markets the package doesn't ship name lists for.
 // Key format: "name|CC". Conservative seed lists; extend over time.
 // ---------------------------------------------------------------------------
 export const COUNTRY = {
   // -------------------------------------------------------------------------
-  // Japan (JP) — clearly gendered names only. Avoids known unisex names
+  // Japan (JP) - clearly gendered names only. Avoids known unisex names
   // like Yuki, Akira, Hikaru, Kaoru, Tsubasa, Makoto.
   // -------------------------------------------------------------------------
   // Male
@@ -187,7 +187,7 @@ export const COUNTRY = {
   "yukari|JP": "female",
 
   // -------------------------------------------------------------------------
-  // Netherlands (NL) — overlaps with Belgium (BE-NL); duplicated below.
+  // Netherlands (NL) - overlaps with Belgium (BE-NL); duplicated below.
   // -------------------------------------------------------------------------
   "wouter|NL": "male",
   "bram|NL": "male",
@@ -254,7 +254,7 @@ export const COUNTRY = {
   "willemijn|NL": "female",
 
   // -------------------------------------------------------------------------
-  // Korea (KR) — kept tight. Many Korean names are genuinely unisex
+  // Korea (KR) - kept tight. Many Korean names are genuinely unisex
   // (Min, Sung, Hyun, Joon, Jae) and Romanisation varies across sources,
   // so this list only includes spellings with clear gender skew.
   // -------------------------------------------------------------------------

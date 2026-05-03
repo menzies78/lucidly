@@ -98,10 +98,10 @@ async function enrichAttributions(attributions, shopDomain) {
       if (!buckets || buckets.length === 0) continue;
 
       if (buckets.length === 1) {
-        // Unambiguous — all conversions from this ad/day share this value
+        // Unambiguous - all conversions from this ad/day share this value
         assignments[FIELD_MAP[type]] = buckets[0].value;
       } else {
-        // Multiple buckets — assign by highest conversion count
+        // Multiple buckets - assign by highest conversion count
         buckets.sort((a, b) => b.conversions - a.conversions);
         // If we have fewer matched orders than top bucket conversions, it's likely correct
         // If we have more, we still assign the top bucket but mark as probabilistic

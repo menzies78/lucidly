@@ -1,11 +1,11 @@
 import db from "../db.server";
 
 /**
- * UTM Manager — audits, recommends, and pushes UTM parameters to Meta ads.
+ * UTM Manager - audits, recommends, and pushes UTM parameters to Meta ads.
  *
  * Runs during:
- * 1. Onboarding (after Meta connect) — full audit + optional push
- * 2. Nightly entity sync — scan new ads + auto-fill missing UTMs
+ * 1. Onboarding (after Meta connect) - full audit + optional push
+ * 2. Nightly entity sync - scan new ads + auto-fill missing UTMs
  *
  * UTMs live on AdCreative.url_tags (not on the Ad object).
  * To update: POST to /{creative-id} with url_tags parameter.
@@ -167,7 +167,7 @@ export async function auditUtms(shopDomain) {
     adList,
   };
 
-  // Update shop with audit results — store delivering counts as the headline numbers
+  // Update shop with audit results - store delivering counts as the headline numbers
   await db.shop.update({
     where: { shopDomain },
     data: {
@@ -188,7 +188,7 @@ export async function auditUtms(shopDomain) {
 /**
  * Pushes UTM template to ads that are missing url_tags.
  *
- * Meta creatives are immutable for url_tags — you can't update an existing creative.
+ * Meta creatives are immutable for url_tags - you can't update an existing creative.
  * Instead we: 1) create a NEW creative using the same object_story_id + url_tags,
  *             2) point the ad to the new creative.
  *
@@ -213,7 +213,7 @@ export async function pushUtms(shopDomain, options = {}) {
   console.log(`[UTMManager] Push UTMs for ${shopDomain} (dryRun: ${dryRun}, activeOnly: ${activeOnly})`);
   console.log(`[UTMManager] Template: ${utmTemplate}`);
 
-  // Fetch ads — use effective_status to only target actually-delivering ads
+  // Fetch ads - use effective_status to only target actually-delivering ads
   const statusValues = activeOnly
     ? '["ACTIVE"]'
     : '["ACTIVE","PAUSED","ADSET_PAUSED","CAMPAIGN_PAUSED","WITH_ISSUES","PENDING_REVIEW"]';
@@ -381,7 +381,7 @@ export async function pushUtmsToAds(shopDomain, adUpdates) {
 
 /**
  * Nightly audit: checks active ads for missing/inconsistent UTMs.
- * NEVER auto-pushes — only updates stats so the UI can flag issues.
+ * NEVER auto-pushes - only updates stats so the UI can flag issues.
  * Merchant must explicitly approve and trigger pushes from the UTM Manager page.
  */
 export async function nightlyUtmAudit(shopDomain) {

@@ -57,7 +57,7 @@ const CATEGORY_ICON: Record<string, string> = {
 };
 
 function fmtDate(iso: string | null) {
-  if (!iso) return "—";
+  if (!iso) return "-";
   return new Date(iso).toLocaleString("en-GB", {
     day: "2-digit", month: "short", year: "numeric",
     hour: "2-digit", minute: "2-digit",
@@ -144,7 +144,7 @@ export default function EntityTimelineDrawer({ shopDomain, open, entity, onClose
           <>
             <section style={{ padding: "14px 20px", borderBottom: "1px solid #e5e7eb", display: "grid", gridTemplateColumns: "auto 1fr", rowGap: 6, columnGap: 12, fontSize: 13 }}>
               <span style={{ color: "#6b7280" }}>Status</span>
-              <span style={{ fontWeight: 600 }}>{data.entity.currentStatus || "—"}</span>
+              <span style={{ fontWeight: 600 }}>{data.entity.currentStatus || "-"}</span>
               <span style={{ color: "#6b7280" }}>Created</span>
               <span>{fmtDate(data.entity.createdTime)}</span>
               <span style={{ color: "#6b7280" }}>Scheduled start</span>

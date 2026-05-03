@@ -83,7 +83,7 @@ export const loader = async ({ request }) => {
       where: { shopDomain, utmConfirmedMeta: true, isOnlineStore: true, createdAt: dateFilter },
       select: { shopifyOrderId: true, frozenTotalPrice: true, totalRefunded: true },
     }),
-    // Match Accuracy chart sources — last 30 days, bucketed by the *day
+    // Match Accuracy chart sources - last 30 days, bucketed by the *day
     // the conversion / order actually happened*, not by `matchedAt`.
     //
     // Why we don't use Attribution.matchedAt:
@@ -192,7 +192,7 @@ export const loader = async ({ request }) => {
   // Build 30-day match accuracy chart from authoritative sources.
   // Denominator = SUM(MetaInsight.conversions) for day D
   // Numerator   = COUNT(matched orders whose Order.createdAt falls on D, shop-local)
-  // We deliberately DO NOT bucket Attribution rows by matchedAt — that field
+  // We deliberately DO NOT bucket Attribution rows by matchedAt - that field
   // tracks "when the matcher created the row", not the conversion day.
   const metaConvByDay = new Map();
   for (const r of liveMetaInsights30d) {
@@ -389,7 +389,7 @@ export const action = async ({ request }) => {
 };
 
 // ═══════════════════════════════════════════════════════════════
-// Match Accuracy Line Chart — hand-rolled SVG, 30 days
+// Match Accuracy Line Chart - hand-rolled SVG, 30 days
 // ═══════════════════════════════════════════════════════════════
 
 function MatchAccuracyChart({ data, accent }: { data: { date: string; matchRate: number | null; matched: number; total: number }[]; accent: string }) {
@@ -913,7 +913,7 @@ export default function Index() {
                 </div>
 
                 <Text as="p" variant="bodySm" tone="subdued">
-                  Match rate and Data Quality use live attribution data — always in sync with Order Explorer.
+                  Match rate and Data Quality use live attribution data - always in sync with Order Explorer.
                   Unmatched = Meta conversions we couldn't verify against a Shopify order.
                 </Text>
               </BlockStack>

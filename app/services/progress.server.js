@@ -15,7 +15,7 @@ export function setProgress(taskId, data) {
 export function getProgress(taskId) {
   const v = progress.get(taskId);
   if (!v) return null;
-  // Lazy TTL sweep — drop terminal entries older than TERMINAL_TTL_MS on read.
+  // Lazy TTL sweep - drop terminal entries older than TERMINAL_TTL_MS on read.
   if ((v.status === "complete" || v.status === "error") &&
       Date.now() - v.updatedAt > TERMINAL_TTL_MS) {
     progress.delete(taskId);

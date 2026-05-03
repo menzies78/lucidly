@@ -2,10 +2,10 @@
 // MetaChange table. Two call modes:
 //
 //   syncMetaChanges(shopDomain, { backfillDays: 90 })
-//     Full backfill — used from the "Import Meta change history" button.
+//     Full backfill - used from the "Import Meta change history" button.
 //
 //   syncMetaChanges(shopDomain)
-//     Incremental (last 36h window, upsert) — wired into the hourly cycle.
+//     Incremental (last 36h window, upsert) - wired into the hourly cycle.
 //
 // Upserts are keyed on (shopDomain, eventTime, rawEventType, objectId), so
 // the same run is safe to execute repeatedly without duplicating rows.

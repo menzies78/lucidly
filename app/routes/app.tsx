@@ -25,7 +25,7 @@ function LoadingIndicator() {
   const navigation = useNavigation();
   const isLoading = navigation.state === "loading";
   const [showLoadingPill, setShowLoadingPill] = useState(false);
-  // Sync-status polling — lets the pill say "Hourly sync running…" instead
+  // Sync-status polling - lets the pill say "Hourly sync running…" instead
   // of leaving the merchant wondering why a tab click is sluggish. Polled
   // every 8s while the tab is visible; cheap (single int comparison + JSON
   // response) and pauses when the tab is hidden to avoid wasted load.
@@ -53,7 +53,7 @@ function LoadingIndicator() {
         // Network blips are not interesting here; just keep polling.
       } finally {
         if (!cancelled) {
-          // Slow down when the tab is hidden — no point spamming the server
+          // Slow down when the tab is hidden - no point spamming the server
           // when nobody is looking at the pill.
           const delay = document.visibilityState === "hidden" ? 60_000 : 8_000;
           timer = setTimeout(poll, delay);
@@ -71,7 +71,7 @@ function LoadingIndicator() {
   // message, so it wins when both are true.
   const showPill = syncRunning || showLoadingPill;
   const pillText = syncRunning
-    ? "Hourly sync running — your data may take a moment"
+    ? "Hourly sync running - your data may take a moment"
     : "Loading your data...";
 
   return (
@@ -91,7 +91,7 @@ function LoadingIndicator() {
         }
       `}</style>
 
-      {/* Slim shimmer bar — visible during nav loads or while sync runs */}
+      {/* Slim shimmer bar - visible during nav loads or while sync runs */}
       {(isLoading || syncRunning) && (
         <div style={{
           position: "fixed", top: 0, left: 0, right: 0, height: "3px", zIndex: 99999,
@@ -101,7 +101,7 @@ function LoadingIndicator() {
         }} />
       )}
 
-      {/* Friendly label — fades in after 1.5s for nav, immediately for sync */}
+      {/* Friendly label - fades in after 1.5s for nav, immediately for sync */}
       {showPill && (
         <div style={{
           position: "fixed", top: "8px", left: 0, right: 0,
@@ -136,7 +136,7 @@ export default function App() {
       `}</style>
       <LoadingIndicator />
       <NavMenu>
-        {/* Shopify's NavMenu requires `rel="home"` on the first Link — it
+        {/* Shopify's NavMenu requires `rel="home"` on the first Link - it
             pins that tab to the app-title slot at the left of the embedded
             nav. The remaining Links render in declared order after it.
             This means the "home" tab is always visually first and cannot

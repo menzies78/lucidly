@@ -94,7 +94,7 @@ export async function recomputeEntityDeliveryWindows(shopDomain) {
         });
         results[entityType]++;
       } catch {
-        // Entity might not exist in MetaEntity yet — skip; syncMetaEntities
+        // Entity might not exist in MetaEntity yet - skip; syncMetaEntities
         // will create it on the next daily pass.
       }
     }

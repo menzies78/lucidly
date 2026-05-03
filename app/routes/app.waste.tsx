@@ -20,7 +20,7 @@ export default function WasteDetector() {
               "You wasted £X on ads this week." Breakdown: spend on existing customers (retargeting waste),
               fatigued audiences (frequency decay), low-converting creative.
             </Text>
-            <Text as="p" variant="bodyMd" tone="subdued">Coming soon — powered by the AI layer.</Text>
+            <Text as="p" variant="bodyMd" tone="subdued">Coming soon - powered by the AI layer.</Text>
           </BlockStack>
         </Card>
       </BlockStack>

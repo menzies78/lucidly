@@ -1,7 +1,7 @@
 import db from "../db.server";
 
 /**
- * Pixel Calibration (v2 — UTM ground-truth)
+ * Pixel Calibration (v2 - UTM ground-truth)
  * -----------------------------------------
  * Determines which Shopify price field the merchant's Meta pixel reports as the
  * Purchase `value`. Uses UTM-confirmed orders as ground truth: when an order
@@ -17,7 +17,7 @@ import db from "../db.server";
  *      since purchase). Stop after MAX_SAMPLES.
  *
  * NOTE: We only count Shopify orders that Meta ACTUALLY REPORTED as conversions.
- * Orders with Meta UTMs but no Meta report ("bonus" orders) are ignored — we
+ * Orders with Meta UTMs but no Meta report ("bonus" orders) are ignored - we
  * have nothing to compare against.
  */
 

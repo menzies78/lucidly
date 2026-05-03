@@ -76,10 +76,10 @@ Rules:
 - Every observation must reference actual data points.
 - Every action must be concrete enough to execute TODAY.
 - Think about two things: how to MAKE more money, and how to SAVE money.
-- Consider new vs existing customers separately — they have very different economics.
+- Consider new vs existing customers separately - they have very different economics.
 - Flag anomalies, trends, and opportunities others would miss.
 - If comparing periods, quantify the change.
-- Currency symbol is provided — use it.
+- Currency symbol is provided - use it.
 
 Respond with valid JSON only, no markdown, no code fences:
 {
@@ -143,7 +143,7 @@ Focus on:
 3. Funnel drop-offs (ATC → checkout → purchase rates)
 4. Period-over-period trends (if comparison data available)
 5. Platform/placement efficiency
-6. LTV:CAC ratios — are acquired customers profitable long-term?
+6. LTV:CAC ratios - are acquired customers profitable long-term?
 7. Which campaigns should be scaled vs paused?
 
 DATA:
@@ -180,13 +180,13 @@ function buildCustomersPrompt(data, cs) {
     user: `Analyse this Customer Intelligence data (currency: ${cs}).
 
 Focus on:
-1. Meta customer quality — is LTV:CAC > 3x? If not, what's the path?
-2. New customer economics — CPA vs what they're worth (LTV)
+1. Meta customer quality - is LTV:CAC > 3x? If not, what's the path?
+2. New customer economics - CPA vs what they're worth (LTV)
 3. Repeat rate comparison: Meta-acquired vs organic. Are Meta customers coming back?
-4. Payback period — how many orders to recoup acquisition cost?
-5. Customer journey — first vs second purchase AOV, gap between purchases
-6. Demographic performance — which age/gender segments are most valuable?
-7. Retention opportunities — reorder within 90 days rate, median time to 2nd purchase
+4. Payback period - how many orders to recoup acquisition cost?
+5. Customer journey - first vs second purchase AOV, gap between purchases
+6. Demographic performance - which age/gender segments are most valuable?
+7. Retention opportunities - reorder within 90 days rate, median time to 2nd purchase
 
 DATA:
 ${JSON.stringify(payload, null, 0)}`,
@@ -223,13 +223,13 @@ function buildProductsPrompt(data, cs) {
     user: `Analyse this Product Intelligence data (currency: ${cs}).
 
 Focus on:
-1. Gateway products — which products acquire new customers? Are they the right ones to advertise?
-2. Meta vs organic product mix — is Meta driving the right products?
-3. Refund risk — which products have high refund rates when acquired via Meta?
-4. Basket analysis — items per basket, cross-sell opportunities
-5. Product purchase flows — what do customers buy first, then second?
-6. Revenue concentration — is revenue too dependent on a few products?
-7. Cost-effectiveness — which products generate Meta revenue efficiently?
+1. Gateway products - which products acquire new customers? Are they the right ones to advertise?
+2. Meta vs organic product mix - is Meta driving the right products?
+3. Refund risk - which products have high refund rates when acquired via Meta?
+4. Basket analysis - items per basket, cross-sell opportunities
+5. Product purchase flows - what do customers buy first, then second?
+6. Revenue concentration - is revenue too dependent on a few products?
+7. Cost-effectiveness - which products generate Meta revenue efficiently?
 
 DATA:
 ${JSON.stringify(payload, null, 0)}`,
@@ -259,13 +259,13 @@ function buildGeoPrompt(data, cs) {
     user: `Analyse this Geo Performance data (currency: ${cs}).
 
 Focus on:
-1. Country efficiency — which countries have best/worst ROAS and CPA?
-2. Spend allocation — is spend proportional to return? Where are the mismatches?
-3. New customer acquisition by country — where are new customers cheapest?
-4. Untapped markets — countries with Shopify orders but zero Meta spend
-5. Concentration risk — is spend too concentrated in one country?
-6. Geo-specific campaign performance — any campaigns underperforming in specific countries?
-7. Expansion opportunities — data-backed recommendation for which country to expand into
+1. Country efficiency - which countries have best/worst ROAS and CPA?
+2. Spend allocation - is spend proportional to return? Where are the mismatches?
+3. New customer acquisition by country - where are new customers cheapest?
+4. Untapped markets - countries with Shopify orders but zero Meta spend
+5. Concentration risk - is spend too concentrated in one country?
+6. Geo-specific campaign performance - any campaigns underperforming in specific countries?
+7. Expansion opportunities - data-backed recommendation for which country to expand into
 
 DATA:
 ${JSON.stringify(payload, null, 0)}`,
@@ -300,32 +300,32 @@ export const DEFAULT_PAGE_PROMPTS = {
 3. Funnel drop-offs (ATC → checkout → purchase rates)
 4. Period-over-period trends (if comparison data available)
 5. Platform/placement efficiency
-6. LTV:CAC ratios — are acquired customers profitable long-term?
+6. LTV:CAC ratios - are acquired customers profitable long-term?
 7. Which campaigns should be scaled vs paused?`,
   customers: `Focus on:
-1. Meta customer quality — is LTV:CAC > 3x? If not, what's the path?
-2. New customer economics — CPA vs what they're worth (LTV)
+1. Meta customer quality - is LTV:CAC > 3x? If not, what's the path?
+2. New customer economics - CPA vs what they're worth (LTV)
 3. Repeat rate comparison: Meta-acquired vs organic. Are Meta customers coming back?
-4. Payback period — how many orders to recoup acquisition cost?
-5. Customer journey — first vs second purchase AOV, gap between purchases
-6. Demographic performance — which age/gender segments are most valuable?
-7. Retention opportunities — reorder within 90 days rate, median time to 2nd purchase`,
+4. Payback period - how many orders to recoup acquisition cost?
+5. Customer journey - first vs second purchase AOV, gap between purchases
+6. Demographic performance - which age/gender segments are most valuable?
+7. Retention opportunities - reorder within 90 days rate, median time to 2nd purchase`,
   products: `Focus on:
-1. Gateway products — which products acquire new customers? Are they the right ones to advertise?
-2. Meta vs organic product mix — is Meta driving the right products?
-3. Refund risk — which products have high refund rates when acquired via Meta?
-4. Basket analysis — items per basket, cross-sell opportunities
-5. Product purchase flows — what do customers buy first, then second?
-6. Revenue concentration — is revenue too dependent on a few products?
-7. Cost-effectiveness — which products generate Meta revenue efficiently?`,
+1. Gateway products - which products acquire new customers? Are they the right ones to advertise?
+2. Meta vs organic product mix - is Meta driving the right products?
+3. Refund risk - which products have high refund rates when acquired via Meta?
+4. Basket analysis - items per basket, cross-sell opportunities
+5. Product purchase flows - what do customers buy first, then second?
+6. Revenue concentration - is revenue too dependent on a few products?
+7. Cost-effectiveness - which products generate Meta revenue efficiently?`,
   geo: `Focus on:
-1. Country efficiency — which countries have best/worst ROAS and CPA?
-2. Spend allocation — is spend proportional to return? Where are the mismatches?
-3. New customer acquisition by country — where are new customers cheapest?
-4. Untapped markets — countries with Shopify orders but zero Meta spend
-5. Concentration risk — is spend too concentrated in one country?
-6. Geo-specific campaign performance — any campaigns underperforming in specific countries?
-7. Expansion opportunities — data-backed recommendation for which country to expand into`,
+1. Country efficiency - which countries have best/worst ROAS and CPA?
+2. Spend allocation - is spend proportional to return? Where are the mismatches?
+3. New customer acquisition by country - where are new customers cheapest?
+4. Untapped markets - countries with Shopify orders but zero Meta spend
+5. Concentration risk - is spend too concentrated in one country?
+6. Geo-specific campaign performance - any campaigns underperforming in specific countries?
+7. Expansion opportunities - data-backed recommendation for which country to expand into`,
 };
 
 export async function generateInsights(shopDomain, pageKey, pageData, dateFrom, dateTo, currencySymbol, promptOverrides = null) {
@@ -349,7 +349,7 @@ export async function generateInsights(shopDomain, pageKey, pageData, dateFrom, 
 
   const dataHash = computeDataHash(pageData);
 
-  // Check cache — skip if data hasn't changed and insights are < 24h old
+  // Check cache - skip if data hasn't changed and insights are < 24h old
   // Always skip cache when custom prompts are provided (dev/testing mode)
   if (!promptOverrides) {
     const cached = await getCachedInsights(shopDomain, pageKey, dateFrom, dateTo);
@@ -373,7 +373,7 @@ export async function generateInsights(shopDomain, pageKey, pageData, dateFrom, 
   const text = response.content[0]?.type === "text" ? response.content[0].text : "";
   const tokenCost = (response.usage?.input_tokens || 0) + (response.usage?.output_tokens || 0);
 
-  // Parse JSON response — handle code fences if Claude adds them
+  // Parse JSON response - handle code fences if Claude adds them
   let insights;
   try {
     const cleaned = text.replace(/^```json?\s*/, "").replace(/\s*```$/, "").trim();

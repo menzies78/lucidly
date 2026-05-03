@@ -45,7 +45,7 @@ function extractSkus(lineItems) {
 // `unitPrice` is the post-discount unit price, `totalPrice = unitPrice * qty`.
 // Refund amounts / quantities are matched against the per-title refund payload
 // we already parse for `Order.refundLineItems`. Title matching is imperfect
-// when one product appears on multiple lines of the same order — that's an
+// when one product appears on multiple lines of the same order - that's an
 // accepted precision loss, same as today's per-product refund attribution.
 function buildLineItemRowsFromGraphQL(shopDomain, shopifyOrderId, orderLineItems, refunds) {
   // Accumulate refund totals per title, across all refunds on the order.
@@ -146,7 +146,7 @@ async function computeOrderCounts(shopDomain, customerIdsToUpdate = null) {
     });
   }
 
-  // Build customer total lookup — only for the customers we're processing
+  // Build customer total lookup - only for the customers we're processing
   const customers = await db.customer.findMany({
     where: {
       shopDomain,
@@ -205,7 +205,7 @@ async function computeOrderCounts(shopDomain, customerIdsToUpdate = null) {
       status: "running",
       current: totalUpdated,
       total: customerIds.length * 2, // rough estimate (orders > customers)
-      message: `Step 2 of 2 — Order counts: ${totalUpdated.toLocaleString()} orders processed (${Math.min(b + BATCH, customerIds.length).toLocaleString()}/${customerIds.length.toLocaleString()} customers)`,
+      message: `Step 2 of 2 - Order counts: ${totalUpdated.toLocaleString()} orders processed (${Math.min(b + BATCH, customerIds.length).toLocaleString()}/${customerIds.length.toLocaleString()} customers)`,
     });
   }
 
@@ -382,7 +382,7 @@ export async function syncOrders(admin, shopDomain) {
       let utmCampaign = journey?.utmParameters?.campaign || "";
       let utmContent = journey?.utmParameters?.content || "";
       let utmTerm = journey?.utmParameters?.term || "";
-      // utm_id is a custom param not in Shopify's utmParameters — extract from landing page URL
+      // utm_id is a custom param not in Shopify's utmParameters - extract from landing page URL
       let utmId = "";
       if (landingSite && landingSite.includes("utm_id=")) {
         try {
@@ -392,7 +392,7 @@ export async function syncOrders(admin, shopDomain) {
       }
 
       // Prefer Elevar's captured values (from order.customAttributes) over
-      // Shopify's native journey data — Elevar's first-party cookie survives
+      // Shopify's native journey data - Elevar's first-party cookie survives
       // consent banners that suppress Shopify's _shopify_y session cookie.
       const elevar = parseElevarVisitorInfo(order.customAttributes);
       if (elevar.hasElevar) {
@@ -406,7 +406,7 @@ export async function syncOrders(admin, shopDomain) {
       const fbclid = elevar.fbclid;
       const metaAdIdFromUtm = elevar.metaAdIdFromUtm;
 
-      // UTM classification — is this a paid Meta ad click?
+      // UTM classification - is this a paid Meta ad click?
       const utmConfirmedMeta = isPaidMetaUtm(utmSource, utmMedium);
 
       const discountCodes = (order.discountCodes || []).join(", ");
@@ -418,7 +418,7 @@ export async function syncOrders(admin, shopDomain) {
         : totalRefunded >= totalPrice ? "full" : "partial";
       const refundLineItems = buildRefundLineItems(order.refunds);
 
-      // Customer name fields are protected — preserve existing values if already
+      // Customer name fields are protected - preserve existing values if already
       // populated. When the DB row has no firstName yet (typical for orders that
       // came in via the GraphQL backfill before this branch was added), fall back
       // to the billing firstName from Shopify so name-based gender inference has
@@ -431,7 +431,7 @@ export async function syncOrders(admin, shopDomain) {
         || (billing?.firstName || "").trim()
         || "";
       const customerLastInitial = existingOrder?.customerLastInitial || "";
-      // Don't set customerOrderCountAtPurchase during import — it will be computed
+      // Don't set customerOrderCountAtPurchase during import - it will be computed
       // correctly by computeOrderCounts() after all orders are imported, using the
       // customer's numberOfOrders as an anchor to count backwards.
       const customerOrderCountAtPurchase = null;
@@ -498,7 +498,7 @@ export async function syncOrders(admin, shopDomain) {
         setProgress(`syncOrders:${shopDomain}`, {
           status: "running",
           current: totalImported,
-          message: `Step 1 of 2 — Importing orders: ${totalImported.toLocaleString()} imported (page ${pageCount})`,
+          message: `Step 1 of 2 - Importing orders: ${totalImported.toLocaleString()} imported (page ${pageCount})`,
         });
       }
 
@@ -535,7 +535,7 @@ export async function syncOrders(admin, shopDomain) {
   // Initial backfill: full shop-wide sweep. Incremental: only customers touched this run.
   setProgress(`syncOrders:${shopDomain}`, {
     status: "running",
-    message: `Step 2 of 2 — Computing customer order counts (${totalImported.toLocaleString()} orders)...`,
+    message: `Step 2 of 2 - Computing customer order counts (${totalImported.toLocaleString()} orders)...`,
   });
   if (isInitialBackfill) {
     await computeOrderCounts(shopDomain);
@@ -544,7 +544,7 @@ export async function syncOrders(admin, shopDomain) {
   }
 
   // Initial backfill: also infer gender from billing first names. Skipped on
-  // incremental syncs — webhooks handle per-order updates as they arrive.
+  // incremental syncs - webhooks handle per-order updates as they arrive.
   if (isInitialBackfill) {
     setProgress(`syncOrders:${shopDomain}`, {
       status: "running",
@@ -572,7 +572,7 @@ export async function syncOrders(admin, shopDomain) {
 /**
  * Targeted backfill for Order.customerFirstName. The original GraphQL query
  * never asked for billing.firstName, so historical orders imported before
- * that fix have empty names — which makes name-based gender inference a
+ * that fix have empty names - which makes name-based gender inference a
  * no-op for the vast majority of customers.
  *
  * Memory-conservative implementation:
@@ -609,7 +609,7 @@ export async function backfillCustomerFirstNames(admin, shopDomain) {
   const queryFilter = sinceIso
     ? `created_at:>='${sinceIso}' status:any`
     : "status:any";
-  console.log(`[backfillFirstNames] sinceDate=${sinceIso || "(none — scanning all)"}`);
+  console.log(`[backfillFirstNames] sinceDate=${sinceIso || "(none - scanning all)"}`);
 
   let cursor = null;
   let hasNextPage = true;
@@ -697,7 +697,7 @@ export async function backfillCustomerFirstNames(admin, shopDomain) {
   // until segments + rollups are rebuilt. The hourly scheduler skips the
   // rebuild when there are no new conversions, so without an explicit
   // rebuild here the merchant sees stale demographic counts after a
-  // backfill. Wrap in try/catch — failure to rebuild shouldn't lose the
+  // backfill. Wrap in try/catch - failure to rebuild shouldn't lose the
   // fact that we successfully wrote firstName + gender.
   setProgress(taskId, { status: "running", message: "Rebuilding customer demographics..." });
   let rollups = { skipped: false };

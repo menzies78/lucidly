@@ -20,7 +20,7 @@ export const loader = async ({ request }: { request: Request }) => {
   const shop = await db.shop.findUnique({ where: { shopDomain } });
   const tz = shop?.shopifyTimezone || "UTC";
 
-  // Lifecycle metadata — may be null if syncMetaEntities hasn't picked this
+  // Lifecycle metadata - may be null if syncMetaEntities hasn't picked this
   // entity up yet. Fall back to the MetaInsight-derived effective window.
   const entity = await db.metaEntity.findUnique({
     where: {
@@ -28,7 +28,7 @@ export const loader = async ({ request }: { request: Request }) => {
     },
   });
 
-  // Change log events for this object — not date-scoped, since the drawer
+  // Change log events for this object - not date-scoped, since the drawer
   // shows the full history.
   const events = await db.metaChange.findMany({
     where: { shopDomain, objectId: id, objectType: type },

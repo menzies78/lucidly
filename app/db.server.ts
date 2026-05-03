@@ -37,7 +37,7 @@ if (process.env.NODE_ENV !== "production") {
 }
 
 /**
- * SQLite PRAGMA tuning — applied once per process.
+ * SQLite PRAGMA tuning - applied once per process.
  *
  * Defaults are hilariously conservative for an analytics workload. These
  * switch us to WAL (readers don't block writers), bump the page cache from

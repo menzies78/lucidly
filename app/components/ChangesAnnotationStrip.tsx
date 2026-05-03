@@ -165,7 +165,7 @@ export default function ChangesAnnotationStrip({
         );
       })}
 
-      {/* Hover popover — floating, portal-free for simplicity */}
+      {/* Hover popover - floating, portal-free for simplicity */}
       {hoverDay && hoveredEvents.length > 0 && hoverAnchor && (
         <HoverPopover
           x={hoverAnchor.x}
@@ -214,7 +214,7 @@ function HoverPopover({ x, y, dayKey, events, onEventClick }: {
             <span>{CATEGORY_ICON[ev.category] || "·"}</span>
             <span style={{ flex: 1 }}>
               <span style={{ opacity: 0.85 }}>{CATEGORY_LABEL[ev.category] || ev.category}</span>
-              {" — "}{ev.summary}
+              {" - "}{ev.summary}
               {ev.objectName && <span style={{ opacity: 0.65 }}> · {ev.objectName}</span>}
             </span>
           </button>

@@ -18,7 +18,7 @@ import { invalidateShop } from "./queryCache.server";
  * Layer system:
  * - Layer 1: Cookie/UTM based (future, 100% confidence)
  * - Layer 2: Statistical matcher (this file, variable confidence %)
- * Layer 1 matches take priority — orders already attributed by Layer 1 are excluded.
+ * Layer 1 matches take priority - orders already attributed by Layer 1 are excluded.
  *
  * Filters:
  * - Only isOnlineStore=true orders are matched (POS/wholesale excluded)
@@ -27,7 +27,7 @@ import { invalidateShop } from "./queryCache.server";
  */
 
 const PADDING_MINUTES = 6;
-// Fallback window — used by runFillGaps to catch orders that fell outside
+// Fallback window - used by runFillGaps to catch orders that fell outside
 // the tight 6-minute window of the primary matcher. Starting tight keeps
 // the candidate set small in the common case; widening to 10 rescues the
 // occasional order where the Meta pixel fired ≥7 minutes after checkout.
@@ -114,7 +114,7 @@ function calculateConfidence(pick, allCandidates, allPicks) {
       const valueDiff = Math.abs(candidate.total - pick.total) / pick.total;
       if (valueDiff > RIVAL_VALUE_TOLERANCE) continue;
     }
-    // Time slot compatibility — could this candidate go in the same slot?
+    // Time slot compatibility - could this candidate go in the same slot?
     const hasCompatibleSlot = candidate.slots.some(s => s === pick.slot);
     if (!hasCompatibleSlot) continue;
     // Country disqualification
@@ -341,7 +341,7 @@ function fastGreedyMatch(pool, R, slotCaps, metaRevenue, budgetMs) {
 
 /**
  * Build a per-date lookup of countries where Meta spent money.
- * Used as a soft preference signal during matching — orders from countries
+ * Used as a soft preference signal during matching - orders from countries
  * where Meta advertised on that date are preferred over orders from other countries.
  */
 async function buildMetaSpendCountries(shopDomain) {
@@ -377,7 +377,7 @@ export async function runAttribution(shopDomain) {
     return { matched: 0, unmatched: 0 };
   }
 
-  // CRITICAL: Only match against web orders — POS/wholesale/draft orders must never
+  // CRITICAL: Only match against web orders - POS/wholesale/draft orders must never
   // enter the matching pool. They have nothing to do with Meta ad conversions.
   const allOrders = await db.order.findMany({
     where: { shopDomain, isOnlineStore: true },
@@ -633,7 +633,7 @@ export async function runAttribution(shopDomain) {
         continue;
       }
 
-      // Per-slot Meta value — NOT total/picks average.
+      // Per-slot Meta value - NOT total/picks average.
       // pick.slot tells us which slot the solver assigned this order to.
       for (const pick of picks) {
         const assignedSlot = slots[pick.slot];
@@ -693,7 +693,7 @@ export async function runDateRangeRematch(shopDomain, fromDate, toDate) {
   const rangeStart = new Date(fromDate + "T00:00:00.000Z");
   const rangeEnd = new Date(toDate + "T23:59:59.999Z");
 
-  // Load Meta insights ONLY for the date range (hourly only — daily aggregates can't be time-matched)
+  // Load Meta insights ONLY for the date range (hourly only - daily aggregates can't be time-matched)
   const metaInsights = await db.metaInsight.findMany({
     where: {
       shopDomain,
@@ -993,7 +993,7 @@ export async function runDateRangeRematch(shopDomain, fromDate, toDate) {
         continue;
       }
 
-      // Per-slot Meta value — NOT total/picks average.
+      // Per-slot Meta value - NOT total/picks average.
       // pick.slot tells us which slot the solver assigned this order to.
       for (const pick of picks) {
         const assignedSlot = slots[pick.slot];
@@ -1032,14 +1032,14 @@ export async function runDateRangeRematch(shopDomain, fromDate, toDate) {
 }
 
 /**
- * Fill Gaps — auto-detects days with Meta conversions but no/missing attributions,
+ * Fill Gaps - auto-detects days with Meta conversions but no/missing attributions,
  * then matches ONLY those gaps without deleting any existing attributions.
  *
  * Scans the last `lookbackDays` days (default 30) for:
  *   - Days where Meta has conversions but zero matched attributions
  *   - Days where web orders exist with no attribution record at all
  *
- * Safe to run at any time — purely additive.
+ * Safe to run at any time - purely additive.
  */
 export async function runFillGaps(shopDomain, lookbackDays = 30) {
   const taskKey = `fillGaps:${shopDomain}`;
@@ -1060,7 +1060,7 @@ export async function runFillGaps(shopDomain, lookbackDays = 30) {
 
   setProgress(taskKey, { status: "running", message: "Scanning for attribution gaps..." });
 
-  // Load Meta conversions in the lookback window (hourly only — daily aggregates can't be time-matched)
+  // Load Meta conversions in the lookback window (hourly only - daily aggregates can't be time-matched)
   const metaInsights = await db.metaInsight.findMany({
     where: {
       shopDomain,
@@ -1072,7 +1072,7 @@ export async function runFillGaps(shopDomain, lookbackDays = 30) {
   });
 
   // Load web orders in the lookback window + the wide padding before start.
-  // Fill Gaps deliberately uses the 10-minute window — its job is to catch
+  // Fill Gaps deliberately uses the 10-minute window - its job is to catch
   // orders the tight 6-minute primary matcher missed.
   const paddedLookbackStart = new Date(lookbackStart.getTime() - PADDING_MINUTES_WIDE * 60 * 1000);
   const allOrders = await db.order.findMany({
@@ -1112,8 +1112,8 @@ export async function runFillGaps(shopDomain, lookbackDays = 30) {
 
   // Group orders by shop-local day so Fill Gaps aligns with how MetaInsight
   // buckets data (ad-account-local day stored as UTC-midnight of that date).
-  // Without this, an order placed 00:20 BST — which Meta logs under Apr 15
-  // but which sits in the Apr 14 UTC range — gets mis-attributed to the
+  // Without this, an order placed 00:20 BST - which Meta logs under Apr 15
+  // but which sits in the Apr 14 UTC range - gets mis-attributed to the
   // previous UTC day and its value pollutes the wrong day's remaining-revenue
   // math. Shop tz is used as a proxy for Meta tz; they're the same for
   // Vollebak (both Europe/London).
@@ -1173,7 +1173,7 @@ export async function runFillGaps(shopDomain, lookbackDays = 30) {
 
   if (gapDays.length === 0) {
     console.log("[Attribution] Fill Gaps: No gaps found");
-    completeProgress(taskKey, { matched: 0, unmatched: 0, gapDays: 0, message: "No gaps found — all days fully matched" });
+    completeProgress(taskKey, { matched: 0, unmatched: 0, gapDays: 0, message: "No gaps found - all days fully matched" });
     return { matched: 0, unmatched: 0, gapDays: 0 };
   }
 
@@ -1275,7 +1275,7 @@ export async function runFillGaps(shopDomain, lookbackDays = 30) {
       // this day's dayOrderIds so we can catch Meta reporting lag into the
       // next day's hour-0 slot. But padding also picks up orders from the
       // *start* of the prev shop-local day (Apr-19 00:00 BST = Apr-18 23:00
-      // UTC) purely because their UTC-minute-of-day is late — even though
+      // UTC) purely because their UTC-minute-of-day is late - even though
       // they're 24h before this Meta-day's boundary. An attribution on such
       // an order belongs to a different day's conversions and would wrongly
       // satisfy the quota here. Filter by ABSOLUTE time: the order must sit
@@ -1291,7 +1291,7 @@ export async function runFillGaps(shopDomain, lookbackDays = 30) {
         return t >= dayStartUtcMs - paddingMs && t < dayEndUtcMs;
       });
 
-      // Count unmatched placeholders for this ad on this day — each one is a
+      // Count unmatched placeholders for this ad on this day - each one is a
       // confirmed gap Meta told us about that we haven't paired with an order.
       const placeholderCount = await db.attribution.count({
         where: {
@@ -1330,13 +1330,13 @@ export async function runFillGaps(shopDomain, lookbackDays = 30) {
       const slotCaps = slots.map(s => Math.max(0, s.cap));
 
       // Decrement slotCaps for each existing match by locating which slot
-      // its createdAt falls into. This gives a TRUE per-slot remainder —
+      // its createdAt falls into. This gives a TRUE per-slot remainder -
       // the target becomes the sum of Meta's original per-slot values for
       // slots that aren't yet filled, rather than (metaRevenue - sumStored).
       // The aggregate subtraction drifts whenever stored metaConversionValue
       // diverges slightly from Meta's source slot value (rounding, per-slot
       // averaging used in other code paths). On single-slot residuals
-      // (R=1) that drift — often ~1% — pushes the target outside the
+      // (R=1) that drift - often ~1% - pushes the target outside the
       // shop's matchingTolerance and leaves the slot permanently unfilled.
       for (const existingMatch of existingMatchedForAd) {
         const order = dayOrderByIdLookup.get(existingMatch.shopifyOrderId);
@@ -1362,7 +1362,7 @@ export async function runFillGaps(shopDomain, lookbackDays = 30) {
       for (const order of dayOrders) {
         if (usedOrders.has(order.id)) continue;
         // Skip orders already claimed by a confident non-UTM attribution.
-        // UTM Layer 1 attributions remain eligible — a Layer 2 pick with
+        // UTM Layer 1 attributions remain eligible - a Layer 2 pick with
         // rivalCount=0 is allowed to overwrite UTM last-click (handles
         // view-through vs click-through divergence).
         const existingAttr = attrByOrderId.get(order.shopifyOrderId);
@@ -1399,7 +1399,7 @@ export async function runFillGaps(shopDomain, lookbackDays = 30) {
 
       // ── UTM ground-truth pass (before statistical matching) ──
       // If a candidate has utmConfirmedMeta AND its metaAdId matches this ad,
-      // it's a definitive match — no revenue tolerance needed. This handles
+      // it's a definitive match - no revenue tolerance needed. This handles
       // cross-midnight cases where the revenue residual drifts from the exact
       // per-slot value.
       {
@@ -1418,7 +1418,7 @@ export async function runFillGaps(shopDomain, lookbackDays = 30) {
             const utmMetaValue = candSlot
               ? Math.round((candSlot.slotValue / Math.max(1, candSlot.cap)) * 100) / 100
               : (ad.totalConversions > 0 ? Math.round((ad.totalConversionValue / ad.totalConversions) * 100) / 100 : 0);
-            // Upsert — the order may already have a Layer 1 UTM attribution
+            // Upsert - the order may already have a Layer 1 UTM attribution
             // from the incremental pass; this overwrite agrees with it and
             // refines with per-slot Meta value.
             const utmPassAttrData = {

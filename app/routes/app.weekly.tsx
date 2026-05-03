@@ -59,7 +59,7 @@ function fmtCurrency(val: number, currency: string): string {
 }
 
 function fmtRoas(val: number): string {
-  if (!isFinite(val) || isNaN(val)) return "—";
+  if (!isFinite(val) || isNaN(val)) return "-";
   return `${val.toFixed(1)}x`;
 }
 
@@ -123,7 +123,7 @@ export const loader = async ({ request }) => {
     })),
     queryCached(cacheKey("attrs"), DEFAULT_TTL, () => db.attribution.findMany({
       where: { shopDomain, matchedAt: { gte: prevMonday, lte: sunday } },
-      // Only the fields actually used downstream — Attribution has many large columns
+      // Only the fields actually used downstream - Attribution has many large columns
       select: {
         shopifyOrderId: true,
         confidence: true,
@@ -160,7 +160,7 @@ export const loader = async ({ request }) => {
       : Promise.resolve([] as Array<{ entityId: string; createdTime: Date | null }>),
   ]);
 
-  // Pre-computed customer segments (from Customer.metaSegment — set at sync time)
+  // Pre-computed customer segments (from Customer.metaSegment - set at sync time)
   const customerMap = new Map<string, any>();
   for (const c of customers) customerMap.set(c.shopifyCustomerId, c);
 
@@ -177,7 +177,7 @@ export const loader = async ({ request }) => {
     if (metaAcquiredCustomers.has(o.shopifyCustomerId)) continue;
     const customer = customerMap.get(o.shopifyCustomerId);
     if (!customer) continue;
-    // Prefer Shopify's per-order count (ground truth) — date-matching
+    // Prefer Shopify's per-order count (ground truth) - date-matching
     // misclassified same-day repeats as "first" orders.
     const isFirst = o.customerOrderCountAtPurchase != null
       ? o.customerOrderCountAtPurchase === 1
@@ -262,7 +262,7 @@ export const loader = async ({ request }) => {
 
       // Determine Meta attribution status: Layer-2 match takes priority,
       // then UTM-confirmed (utmConfirmedMeta=true with no Layer-2 match).
-      // Both count as confirmed Meta revenue — UTM proves the ad click
+      // Both count as confirmed Meta revenue - UTM proves the ad click
       // even when Meta's pixel doesn't register a conversion.
       const attr = aMap.get(order.shopifyOrderId);
       const isMetaOrder = !!attr || order.utmConfirmedMeta;
@@ -280,7 +280,7 @@ export const loader = async ({ request }) => {
         else if (cls === "retargeted") { dayBuckets[idx].retargetedOrders++; dayBuckets[idx].retargetedRevenue += rev; }
       } else {
         // No ad attribution AND no UTM confirmation. Check if the customer
-        // was originally acquired via Meta — if so, this is an organic
+        // was originally acquired via Meta - if so, this is an organic
         // return visit. Captures the LTV of Meta acquisition beyond the
         // initial ad-driven purchase.
         if (rev === 0) continue;
@@ -333,7 +333,7 @@ export const loader = async ({ request }) => {
   }
 
   // ── Helper: build geo/product aggregates for a set of orders ──
-  // Includes both Layer-2 attributed AND UTM-only orders — UTM proves
+  // Includes both Layer-2 attributed AND UTM-only orders - UTM proves
   // the ad click even when Meta's pixel doesn't register a conversion.
   const buildGeo = (ords: any[], aMap: Map<string, any>) => {
     const agg: Record<string, { orders: number; revenue: number }> = {};
@@ -585,15 +585,15 @@ function DayTile({ title, subtitle, data, prevData, currency, highlight }: {
       <div style={{ fontSize: "11px", fontWeight: 600, color: "#e67e22", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "4px" }}>All Meta Customers</div>
       <MetricRow label="Orders" value={String(data.adOrders + data.unmatchedConversions)} current={data.adOrders + data.unmatchedConversions} prev={showCompare ? prevData.adOrders + prevData.unmatchedConversions : undefined} />
       <MetricRow label="Revenue" value={fmtCurrency(blendedRevenue, currency)} current={blendedRevenue} prev={showCompare ? prevData.adRevenue + prevData.unmatchedRevenue : undefined} />
-      <MetricRow label="AOV" value={(data.adOrders + data.unmatchedConversions) > 0 ? fmtCurrency(blendedRevenue / (data.adOrders + data.unmatchedConversions), currency) : "—"} current={(data.adOrders + data.unmatchedConversions) > 0 ? blendedRevenue / (data.adOrders + data.unmatchedConversions) : 0} prev={prevAov} />
-      <MetricRow label="ROAS" value={data.adSpend > 0 ? fmtRoas(blendedRoas) : "—"} current={blendedRoas} prev={prevBlendedRoas} />
+      <MetricRow label="AOV" value={(data.adOrders + data.unmatchedConversions) > 0 ? fmtCurrency(blendedRevenue / (data.adOrders + data.unmatchedConversions), currency) : "-"} current={(data.adOrders + data.unmatchedConversions) > 0 ? blendedRevenue / (data.adOrders + data.unmatchedConversions) : 0} prev={prevAov} />
+      <MetricRow label="ROAS" value={data.adSpend > 0 ? fmtRoas(blendedRoas) : "-"} current={blendedRoas} prev={prevBlendedRoas} />
 
       <div style={{ height: "8px" }} />
       <div style={{ fontSize: "11px", fontWeight: 600, color: "#7c3aed", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "4px" }}>New Meta Customers</div>
       <MetricRow label="Orders" value={String(data.newOrders)} muted={data.newOrders === 0} current={data.newOrders} prev={showCompare ? prevData.newOrders : undefined} />
       <MetricRow label="Revenue" value={fmtCurrency(data.newRevenue, currency)} muted={data.newOrders === 0} current={data.newRevenue} prev={showCompare ? prevData.newRevenue : undefined} />
-      <MetricRow label="AOV" value={data.newOrders > 0 ? fmtCurrency(newAov, currency) : "—"} muted={data.newOrders === 0} current={newAov} prev={prevNewAov} />
-      <MetricRow label="ROAS" value={data.adSpend > 0 && data.newOrders > 0 ? fmtRoas(newRoas) : "—"} muted={data.newOrders === 0} current={newRoas} prev={prevNewRoas} />
+      <MetricRow label="AOV" value={data.newOrders > 0 ? fmtCurrency(newAov, currency) : "-"} muted={data.newOrders === 0} current={newAov} prev={prevNewAov} />
+      <MetricRow label="ROAS" value={data.adSpend > 0 && data.newOrders > 0 ? fmtRoas(newRoas) : "-"} muted={data.newOrders === 0} current={newRoas} prev={prevNewRoas} />
 
       <div style={{ height: "8px" }} />
       <div style={{ fontSize: "11px", fontWeight: 600, color: "#0891B2", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "4px" }}>Repeat Meta (Organic Return)</div>
@@ -608,7 +608,7 @@ function DayTile({ title, subtitle, data, prevData, currency, highlight }: {
           <>
             <MetricRow label="Orders" value={String(mOrd)} muted={mOrd === 0} current={mOrd} prev={showCompare ? prevMOrd : undefined} />
             <MetricRow label="Revenue" value={fmtCurrency(mRev, currency)} muted={mOrd === 0} current={mRev} prev={showCompare ? prevMRev : undefined} />
-            <MetricRow label="AOV" value={mOrd > 0 ? fmtCurrency(mAov, currency) : "—"} muted={mOrd === 0} current={mAov} prev={prevMAov} />
+            <MetricRow label="AOV" value={mOrd > 0 ? fmtCurrency(mAov, currency) : "-"} muted={mOrd === 0} current={mAov} prev={prevMAov} />
           </>
         );
       })()}
@@ -671,7 +671,7 @@ function AdSection({ title, ads, currency, color }: { title: string; ads: AdPerf
           String(ad.orders),
           fmtCurrency(ad.revenue, currency),
           fmtCurrency(ad.spend, currency),
-          ad.spend > 0 ? fmtRoas(ad.revenue / ad.spend) : "—",
+          ad.spend > 0 ? fmtRoas(ad.revenue / ad.spend) : "-",
         ]} />
       ))}
     </div>
@@ -734,13 +734,13 @@ function generateSummary(totals: DayData, prevTotals: DayData, currency: string,
   // Best performing new customer ad
   if (topAdsNew.length > 0) {
     const best = topAdsNew[0];
-    points.push(`Best new customer ad: "${best.adName.length > 40 ? best.adName.slice(0, 38) + "…" : best.adName}" — ${best.orders} orders, ${f(best.revenue)}.`);
+    points.push(`Best new customer ad: "${best.adName.length > 40 ? best.adName.slice(0, 38) + "…" : best.adName}" - ${best.orders} orders, ${f(best.revenue)}.`);
   }
 
   // Best existing customer ad
   if (topAdsExisting.length > 0) {
     const best = topAdsExisting[0];
-    points.push(`Best existing customer ad: "${best.adName.length > 40 ? best.adName.slice(0, 38) + "…" : best.adName}" — ${best.orders} orders, ${f(best.revenue)}.`);
+    points.push(`Best existing customer ad: "${best.adName.length > 40 ? best.adName.slice(0, 38) + "…" : best.adName}" - ${best.orders} orders, ${f(best.revenue)}.`);
   }
 
   // AOV comparison
@@ -767,9 +767,9 @@ function generateSummary(totals: DayData, prevTotals: DayData, currency: string,
       const adLabel = ad.adName.length > 40 ? ad.adName.slice(0, 38) + "…" : ad.adName;
       if (ad.orders > 0) {
         const roas = ad.spend > 0 ? (ad.revenue / ad.spend).toFixed(1) : "N/A";
-        points.push(`New ad launched: "${adLabel}" — ${ad.orders} orders, ${f(ad.revenue)}, ROAS: ${roas}x.`);
+        points.push(`New ad launched: "${adLabel}" - ${ad.orders} orders, ${f(ad.revenue)}, ROAS: ${roas}x.`);
       } else {
-        points.push(`New ad launched: "${adLabel}" — no orders yet, spend ${f(ad.spend)}.`);
+        points.push(`New ad launched: "${adLabel}" - no orders yet, spend ${f(ad.spend)}.`);
       }
     }
   }
@@ -812,7 +812,7 @@ export default function WeeklyReport() {
   return (
     <Page title="Weekly Report" fullWidth>
       <ReportTabs>
-        {/* Print styles — 2 pages: summary+tiles on page 1, detail tables on page 2 */}
+        {/* Print styles - 2 pages: summary+tiles on page 1, detail tables on page 2 */}
         <style>{`
           @media print {
             @page { size: landscape; margin: 10mm; }
@@ -924,7 +924,7 @@ export default function WeeklyReport() {
                           row.country,
                           String(row.orders),
                           fmtCurrency(row.revenue, currency),
-                          totalNewRev > 0 ? `${Math.round((row.revenue / totalNewRev) * 100)}%` : "—",
+                          totalNewRev > 0 ? `${Math.round((row.revenue / totalNewRev) * 100)}%` : "-",
                         ]} wow={<WowBadge current={row.revenue} prev={row.prevRevenue} />} />
                       ))}
                       <TableRow cells={["Total", String(geoNew.reduce((s, r) => s + r.orders, 0)), fmtCurrency(totalNewRev, currency), "100%"]} bold />
@@ -949,7 +949,7 @@ export default function WeeklyReport() {
                         fmtCurrency(row.spend, currency),
                         String(row.orders),
                         fmtCurrency(row.revenue, currency),
-                        row.spend > 0 ? fmtRoas(row.revenue / row.spend) : "—",
+                        row.spend > 0 ? fmtRoas(row.revenue / row.spend) : "-",
                       ]} />
                     ))}
                   </>

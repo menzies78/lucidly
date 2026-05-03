@@ -37,7 +37,7 @@ const MAX_COHORT_MONTHS = 13;
 // large datasets. Without this, the customer / order / rollup loops run
 // flat-out on the single JS thread and starve incoming HTTP requests for
 // the duration of a cycle (observed: 48s tab-click freeze on Vollebak).
-// 250 strikes a good balance — yields ~120 times across 30k customers,
+// 250 strikes a good balance - yields ~120 times across 30k customers,
 // adds <50ms total overhead, but keeps p99 request latency in the
 // hundreds of ms instead of tens of seconds.
 const YIELD_EVERY = 250;
@@ -51,11 +51,11 @@ function median(arr) {
 }
 
 // Some merchants (e.g. Vollebak) maintain near-duplicate product listings
-// for technical reasons — "Sashiko Chore Jacket. Blue edition." and
+// for technical reasons - "Sashiko Chore Jacket. Blue edition." and
 // "Sashiko Chore Jacket. Blue edition" share a SKU but are two listings.
 // We don't have SKU-level analytics yet (the `productSkus` field on Order
 // is captured but unused downstream), so for now we normalize titles by
-// stripping trailing periods + whitespace. Universally safe — there's no
+// stripping trailing periods + whitespace. Universally safe - there's no
 // merchant where "Foo." and "Foo" should be different products. If we
 // ever see non-trailing-period dup patterns we'll graduate to a real
 // SKU → canonical-name mapping.
@@ -171,7 +171,7 @@ export async function rebuildCustomerSegments(shopDomain) {
       // Ground truth: Shopify's customerOrderCountAtPurchase tells us if this
       // is genuinely the customer's first-ever order (not just first in our DB)
       const isGenuinelyNew = o.customerOrderCountAtPurchase === 1;
-      if (!isGenuinelyNew) break; // Not a new customer — skip to retargeted detection
+      if (!isGenuinelyNew) break; // Not a new customer - skip to retargeted detection
       if (matchedOrderIds.has(o.shopifyOrderId)) {
         metaAcquiredCustomers.add(custId);
         const attr = attrByOrderId.get(o.shopifyOrderId);
@@ -198,7 +198,7 @@ export async function rebuildCustomerSegments(shopDomain) {
     }
   }
 
-  // ── Determine retargeted customers (O(N) — uses orderById map) ──
+  // ── Determine retargeted customers (O(N) - uses orderById map) ──
   const orderById = new Map();
   for (const o of orders) orderById.set(o.shopifyOrderId, o);
 
@@ -272,7 +272,7 @@ export async function rebuildCustomerSegments(shopDomain) {
   // Typical 30k-customer merchant = ~3 MB JSON / ~250 KB gzipped.
   const customerMapPoints = [];
 
-  // Global product index for the map blob — strings deduped once, points
+  // Global product index for the map blob - strings deduped once, points
   // reference them by integer index. Lets the map filter by "buyers of X"
   // without bloating each point with full product names. Per customer we
   // include only DISTINCT products (not quantity), which is what the filter
@@ -375,7 +375,7 @@ export async function rebuildCustomerSegments(shopDomain) {
     // unplaceable customers (no country, exotic country code) are dropped
     // rather than rendered at lat 0,0 in the Atlantic.
     if (lat != null && lng != null && custOrders.length > 0) {
-      // Compact point shape — single-letter keys + only fields the client
+      // Compact point shape - single-letter keys + only fields the client
       // can't trivially derive. The blob is held in memory alongside every
       // other rollup data structure, so trimming each point ~60% (vs the
       // verbose object shape) keeps a 30k-customer merchant inside the
@@ -393,7 +393,7 @@ export async function rebuildCustomerSegments(shopDomain) {
       //   pr distinct product indices into productList
       const distinctProductIdx = Object.keys(productCounts).map(getProductIdx);
       // Gender resolution mirrors ltvCustomers: prefer attribution gender
-      // (Meta breakdown — only ~30% of orders carry it), fall back to the
+      // (Meta breakdown - only ~30% of orders carry it), fall back to the
       // name-based inferredGender on the Customer row. Without this fallback
       // the map filter only covered Meta-acquired customers; with it, every
       // segment (organic, retargeted, Meta-new) gets a M/F tag wherever the
@@ -414,7 +414,7 @@ export async function rebuildCustomerSegments(shopDomain) {
         d: lastOrder ? Math.floor((now - lastOrder.createdAt.getTime()) / DAY_MS) : null,
         // x = 1 when the customer plotted at the country centroid rather
         // than a real city. Detect by *coordinate match* against the
-        // centroid table — covers both "no city captured" and "city
+        // centroid table - covers both "no city captured" and "city
         // present but not in the geonames cities5000 dump". Coords are
         // compared post-rounding (4dp) so floating-point match is safe.
         x: (() => {
@@ -458,7 +458,7 @@ export async function rebuildCustomerSegments(shopDomain) {
       if (timeTo2nd != null) ltvMetaNewTimeTo2nd.push(timeTo2nd);
     }
 
-    // Maturity-windowed LTV — plus per-customer window snapshots (metaNew
+    // Maturity-windowed LTV - plus per-customer window snapshots (metaNew
     // only) for the filterable LTV tile exploration.
     const customerLtvByWindow = {};
     for (const w of LTV_WINDOWS) {
@@ -735,7 +735,7 @@ export async function rebuildCustomerSegments(shopDomain) {
       all: buildMonthlyTable(allMonthlyCohorts),
     },
     // Per-metaNew-customer records powering the filterable LTV tile.
-    // Consumers: app.customers.tsx MetaLtvTile — filters by gender/age/country
+    // Consumers: app.customers.tsx MetaLtvTile - filters by gender/age/country
     // and recomputes avg LTV, LTV:CAC, payback, and maturation line from this
     // array.
     ltvCustomers,
@@ -837,13 +837,13 @@ export async function rebuildCustomerSegments(shopDomain) {
   // don't fire on noise from tiny markets. Score = lift × sqrt(count) so
   // we prefer high-lift gems in countries with real volume.
   //
-  // MEMORY: this runs at the peak of customerRollups — ltv/journey/geo
+  // MEMORY: this runs at the peak of customerRollups - ltv/journey/geo
   // blobs are still in memory alongside customerMapPoints. We deliberately
   // avoid per-country product Maps (would be O(C × P) ≈ 500k entries) and
   // instead bound the product×country grid to top 5 products × top 10
   // countries. The Apr 28 OOM was traced to that O(C × P) Map.
   const productList = Array.from(productIndex.keys());
-  productIndex.clear();   // release the Map — productList carries forward
+  productIndex.clear();   // release the Map - productList carries forward
   const gems = (() => {
     const N = customerMapPoints.length;
     if (N < 50) return [];
@@ -908,7 +908,7 @@ export async function rebuildCustomerSegments(shopDomain) {
       testAnomaly("lapsed", cc, ag.lapsed, ag.total, gLapsedShare, { country: cc, recency: "lapsed" });
     }
 
-    // Product × country anomalies — bounded grid so we never blow up on
+    // Product × country anomalies - bounded grid so we never blow up on
     // catalogues with thousands of SKUs. Top 5 products globally × top 10
     // countries by total = max 50 cells, regardless of merchant size.
     const topProductIdx = Object.keys(gProduct)
@@ -967,7 +967,7 @@ export async function rebuildCustomerSegments(shopDomain) {
   // the LTV/journey/geo blobs. For Vollebak (~30k customers) this saved
   // ~50 MB of peak heap and prevented the OOM kill that caught the first
   // hourly cycle after the Customer Map deploy. (anon-rss 3.79 GB on a
-  // 3 GB --max-old-space-size process — every byte matters.)
+  // 3 GB --max-old-space-size process - every byte matters.)
   let customerMapBlob = {
     points: customerMapPoints,
     thresholds: vipThresholds,
@@ -1007,7 +1007,7 @@ export async function rebuildCustomerSegments(shopDomain) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// rebuildCustomerRollups — daily per-segment aggregates
+// rebuildCustomerRollups - daily per-segment aggregates
 // ═══════════════════════════════════════════════════════════════
 
 export async function rebuildCustomerRollups(shopDomain) {
@@ -1019,7 +1019,7 @@ export async function rebuildCustomerRollups(shopDomain) {
 
   const [orders, customers] = await Promise.all([
     // Load both online-store AND POS orders. POS orders are only counted
-    // below when a Meta-acquired customer is making a repeat purchase —
+    // below when a Meta-acquired customer is making a repeat purchase -
     // Order Explorer tags these as "Meta Repeat". Every other POS order
     // is dropped (no Meta relationship).
     db.order.findMany({
@@ -1078,7 +1078,7 @@ export async function rebuildCustomerRollups(shopDomain) {
     if (!order.isOnlineStore) {
       // POS / non-online orders only count when a Meta-acquired customer
       // is making a repeat purchase (Order Explorer's "Meta Repeat" tag).
-      // Every other POS order has no Meta relationship — drop it.
+      // Every other POS order has no Meta relationship - drop it.
       if (custSegment === "metaNew" && !isFirstPurchase) {
         orderSegment = "metaRepeat";
       } else {

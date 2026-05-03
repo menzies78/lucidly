@@ -7,7 +7,7 @@ import db from "../db.server";
  * Meta campaign/adset/ad IDs and names using MetaInsight data.
  *
  * Key: when an ad is resolved (by ID or name), we look up the CURRENT parent
- * campaign/adset from the most recent MetaInsight row for that ad — not the
+ * campaign/adset from the most recent MetaInsight row for that ad - not the
  * UTM's campaign/adset values, which may be stale (renamed campaigns etc).
  *
  * Populates Order.metaCampaignId/Name, metaAdSetId/Name, metaAdId/Name.
@@ -66,7 +66,7 @@ async function buildLookupMaps(shopDomain) {
  * Resolve a UTM value to an ad ID.
  *
  * A numeric-looking utmId is only trusted when it actually exists in the
- * shop's ad catalog. Otherwise we fall through to the ad-name lookup —
+ * shop's ad catalog. Otherwise we fall through to the ad-name lookup -
  * which is crucial when the landing URL carries a truncated or malformed
  * utm_id (we've seen Meta ad links render `utm_id=1202422` in place of
  * the full 13-digit ID, and the garbage would otherwise get saved as
@@ -115,14 +115,14 @@ export async function linkUtmToCampaigns(shopDomain) {
     const existingAdIdIsStale = !!order.metaAdId && !adHierarchy[order.metaAdId];
 
     // Skip if matcher already populated full campaign data (and the adId
-    // actually resolves to a known ad — otherwise we need to re-resolve).
+    // actually resolves to a known ad - otherwise we need to re-resolve).
     if (order.metaCampaignId && order.metaAdId && !existingAdIdIsStale) {
       alreadyLinked++;
       continue;
     }
 
     // Resolve ad ID from utm_id (preferred), utm_content (ad name), or
-    // existing metaAdId — but only trust the existing ID when it resolves.
+    // existing metaAdId - but only trust the existing ID when it resolves.
     const adId = resolveAdId(order.utmId, ads)
       || resolveAdId(order.utmContent, ads)
       || (existingAdIdIsStale ? null : order.metaAdId)
@@ -136,7 +136,7 @@ export async function linkUtmToCampaigns(shopDomain) {
     // Look up the CURRENT hierarchy for this ad
     const hierarchy = adHierarchy[adId];
     if (!hierarchy) {
-      // Ad ID found but no insight data — set what we can
+      // Ad ID found but no insight data - set what we can
       const updateData = {};
       if (existingAdIdIsStale || !order.metaAdId) updateData.metaAdId = adId;
       if (!order.metaAdName && ads.byId[adId]) updateData.metaAdName = ads.byId[adId];

@@ -108,7 +108,7 @@ export const loader = async ({ request }) => {
   const customerMap = {};
   for (const c of customers) customerMap[c.shopifyCustomerId] = c;
 
-  // Pre-computed customer segments (from Customer.metaSegment — set at sync time)
+  // Pre-computed customer segments (from Customer.metaSegment - set at sync time)
   const matchedAttrs = attributions.filter(a => a.confidence > 0);
   const matchedOrderIds = new Set(matchedAttrs.map(a => a.shopifyOrderId));
   const utmConfirmedOrderIds = new Set<string>();
@@ -132,7 +132,7 @@ export const loader = async ({ request }) => {
     return parts.join("&");
   }
 
-  // Step 2: Build rows — start from ALL orders, tag each one
+  // Step 2: Build rows - start from ALL orders, tag each one
   const rows = [];
   const processedOrderIds = new Set();
 
@@ -151,7 +151,7 @@ export const loader = async ({ request }) => {
       const isMetaAcquired = metaAcquiredCustomers.has(custId);
       if (isMetaAcquired) {
         // Use Shopify's per-order count (ground truth) rather than comparing
-        // the order's shop-local date to the customer's firstOrderDate — two
+        // the order's shop-local date to the customer's firstOrderDate - two
         // orders placed on the same day would otherwise both tag as Meta New.
         const isFirst = order.customerOrderCountAtPurchase != null
           ? order.customerOrderCountAtPurchase === 1
@@ -217,8 +217,8 @@ export const loader = async ({ request }) => {
     });
   }
 
-  // 2b-ii: UTM-only Meta orders — utmConfirmedMeta=true but no Layer 2 match.
-  // Tagged as Meta Unmatched New / Repeat / Retargeted — same logic as matched tags.
+  // 2b-ii: UTM-only Meta orders - utmConfirmedMeta=true but no Layer 2 match.
+  // Tagged as Meta Unmatched New / Repeat / Retargeted - same logic as matched tags.
   for (const order of orders) {
     if (processedOrderIds.has(order.shopifyOrderId)) continue;
     if (!order.utmConfirmedMeta) continue;
@@ -274,7 +274,7 @@ export const loader = async ({ request }) => {
     });
   }
 
-  // 2c: Remaining orders — Meta Repeat, Non-Meta, or Non-Meta POS
+  // 2c: Remaining orders - Meta Repeat, Non-Meta, or Non-Meta POS
   for (const order of orders) {
     if (processedOrderIds.has(order.shopifyOrderId)) continue;
 
@@ -502,7 +502,7 @@ function RevenueBreakdownChart({ dailyData, formatPrice, highlight, onHighlightC
                           setTooltip(null);
                         }}
                       />
-                      {/* Capped indicator — small triangle at top if bar exceeds scale */}
+                      {/* Capped indicator - small triangle at top if bar exceeds scale */}
                       {isCapped && isActive && (
                         <polygon
                           points={`${slotX + barStartOffset + si * barWidth + (barWidth - 1) / 2},0 ${slotX + barStartOffset + si * barWidth},6 ${slotX + barStartOffset + si * barWidth + barWidth - 1},6`}
@@ -614,7 +614,7 @@ export default function Orders() {
       meta: { description: "When the order was placed" },
       cell: ({ getValue, row }) => {
         const iso = getValue() || (row.original.date ? row.original.date + "T12:00:00" : "");
-        if (!iso) return "—";
+        if (!iso) return "-";
         const d = new Date(iso);
         const date = d.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
         const time = d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", hour12: false });
@@ -623,66 +623,66 @@ export default function Orders() {
     },
     { accessorKey: "orderNumber", header: "Order",
       meta: { description: "Shopify order ID" },
-      cell: ({ getValue }) => getValue() || "—" },
+      cell: ({ getValue }) => getValue() || "-" },
     { accessorKey: "country", header: "Country",
       meta: { filterType: "multi-select", description: "Customer's shipping country" },
       filterFn: "multiSelect",
-      cell: ({ getValue }) => getValue() || "—" },
+      cell: ({ getValue }) => getValue() || "-" },
     { accessorKey: "city", header: "City",
       meta: { description: "Customer's shipping city" },
-      cell: ({ getValue }) => getValue() || "—" },
+      cell: ({ getValue }) => getValue() || "-" },
     { accessorKey: "orderCount", header: "Order #",
       meta: { align: "right", description: "Which order this was for the customer (1st, 2nd, 3rd, etc.) at the time of purchase" },
       cell: ({ getValue }) => {
         const v = getValue();
-        if (v == null) return "—";
+        if (v == null) return "-";
         return v === 1 ? "1st" : v === 2 ? "2nd" : v === 3 ? "3rd" : `${v}th`;
       } },
     { accessorKey: "campaign", header: "Campaign",
       meta: { maxWidth: "200px", filterType: "multi-select", description: "Meta campaign that drove this order" },
       filterFn: "multiSelect",
-      cell: ({ getValue }) => getValue() || "—" },
+      cell: ({ getValue }) => getValue() || "-" },
     { accessorKey: "adSet", header: "Ad Set",
       meta: { maxWidth: "180px", filterType: "multi-select", description: "Meta ad set that drove this order" },
       filterFn: "multiSelect",
-      cell: ({ getValue }) => getValue() || "—" },
+      cell: ({ getValue }) => getValue() || "-" },
     { accessorKey: "adName", header: "Ad",
       meta: { maxWidth: "180px", filterType: "multi-select", description: "Specific Meta ad creative that drove this order" },
       filterFn: "multiSelect",
-      cell: ({ getValue }) => getValue() || "—" },
+      cell: ({ getValue }) => getValue() || "-" },
     { accessorKey: "lineItems", header: "Products", meta: { maxWidth: "200px", description: "Products purchased in this order" },
-      cell: ({ getValue }) => getValue() || "—" },
+      cell: ({ getValue }) => getValue() || "-" },
     { accessorKey: "productSkus", header: "SKUs", meta: { maxWidth: "160px", description: "Product SKU codes in this order" },
-      cell: ({ getValue }) => getValue() || "—" },
+      cell: ({ getValue }) => getValue() || "-" },
     { accessorKey: "productCollections", header: "Collections",
       meta: { maxWidth: "160px", filterType: "multi-select", description: "Shopify collections the ordered products belong to" },
       filterFn: "multiSelect",
-      cell: ({ getValue }) => getValue() || "—" },
+      cell: ({ getValue }) => getValue() || "-" },
     { accessorKey: "discountCodes", header: "Discount",
       meta: { filterType: "multi-select", description: "Discount or promo code applied to this order" },
       filterFn: "multiSelect",
-      cell: ({ getValue }) => getValue() || "—" },
-    { accessorKey: "revenue", header: "Revenue", meta: { align: "right", description: "Order total at time of purchase (frozen — unaffected by later edits)" },
-      cell: ({ getValue }) => getValue() ? `${cs}${getValue().toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "—" },
+      cell: ({ getValue }) => getValue() || "-" },
+    { accessorKey: "revenue", header: "Revenue", meta: { align: "right", description: "Order total at time of purchase (frozen - unaffected by later edits)" },
+      cell: ({ getValue }) => getValue() ? `${cs}${getValue().toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "-" },
     { accessorKey: "totalRefunded", header: "Refunded", meta: { align: "right", description: "Amount refunded on this order" },
-      cell: ({ getValue }) => getValue() > 0 ? `${cs}${getValue().toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "—" },
+      cell: ({ getValue }) => getValue() > 0 ? `${cs}${getValue().toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "-" },
     { accessorKey: "netRevenue", header: "Net Revenue", meta: { align: "right", description: "Revenue after refunds", calc: "Revenue − Refunded" },
       cell: ({ getValue }) => {
         const v = getValue();
-        if (v == null) return "—";
+        if (v == null) return "-";
         return `${cs}${v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
       } },
     { accessorKey: "refundStatus", header: "Refund Status",
       meta: { filterType: "multi-select", description: "Current refund status of this order (none, partial, full)" },
       filterFn: "multiSelect",
-      cell: ({ getValue }) => getValue() === "none" ? "—" : getValue() },
+      cell: ({ getValue }) => getValue() === "none" ? "-" : getValue() },
     { accessorKey: "tag", header: "Type",
       meta: { filterType: "multi-select", description: "How this order relates to Meta ads. Meta New = first-time customer via Meta. Meta Repeat = returning Meta-acquired customer. Meta Retargeted = existing customer converted by Meta. Meta Unmatched New/Repeat/Retargeted = UTM confirms Meta click but no statistical match. Non-Meta = online order with no Meta attribution. Non-Meta POS = in-store/POS order" },
       filterFn: "multiSelect" },
     { accessorKey: "difference", header: "Difference", meta: { align: "right", description: "Gap between Shopify order values and Meta-reported conversion values for the same ad+day group. Positive = Shopify higher", calc: "(Shopify value − Meta value) ÷ Meta value × 100" },
       cell: ({ getValue }) => {
         const v = getValue();
-        if (v === null || v === undefined) return "—";
+        if (v === null || v === undefined) return "-";
         return `${v > 0 ? "+" : ""}${v}%`;
       },
     },
@@ -698,13 +698,13 @@ export default function Orders() {
     { accessorKey: "method", header: "Method",
       meta: { filterType: "multi-select", description: "Attribution method used. Primary = exhaustive backtracking matcher. FAST = greedy fallback. UTM = attributed via UTM parameters" },
       filterFn: "multiSelect",
-      cell: ({ getValue }) => getValue() || "—" },
+      cell: ({ getValue }) => getValue() || "-" },
     { accessorKey: "attributionSource", header: "Source",
       meta: { filterType: "multi-select", description: "How this order was attributed. UTM & Lucidly = both UTM and statistical matcher agree. UTM = UTM confirms Meta ad but no statistical match. Lucidly = statistical match only. Unattributed = neither" },
       filterFn: "multiSelect",
       cell: ({ getValue }) => {
         const v = getValue();
-        if (!v || v === "Unattributed") return "—";
+        if (!v || v === "Unattributed") return "-";
         return v;
       },
     },
@@ -712,7 +712,7 @@ export default function Orders() {
       meta: { maxWidth: "300px", description: "Raw UTM parameters from the landing page URL when this order was placed" },
       cell: ({ getValue }) => {
         const v = getValue();
-        if (!v) return "—";
+        if (!v) return "-";
         return <span style={{ fontFamily: "monospace", fontSize: "11px" }}>{v}</span>;
       },
     },
@@ -726,7 +726,7 @@ export default function Orders() {
   const columnProfiles = useMemo(() => [
     {
       id: "overview", label: "Overview", icon: "📊",
-      description: "Key order details — who bought, what campaign, and how confident the match is",
+      description: "Key order details - who bought, what campaign, and how confident the match is",
       columns: ["createdAtISO", "orderCount", "campaign", "revenue", "tag", "confidence"],
       fullColumns: ["createdAtISO", "orderNumber", "orderCount", "campaign", "revenue", "netRevenue", "tag", "difference", "confidence"],
     },
@@ -774,7 +774,7 @@ export default function Orders() {
       campaign: "", adSet: "", adName: "",
       lineItems: "", productSkus: "", productCollections: "", discountCodes: "",
       revenue: fmtPrice(revenue),
-      totalRefunded: refunded > 0 ? fmtPrice(refunded) : "—",
+      totalRefunded: refunded > 0 ? fmtPrice(refunded) : "-",
       netRevenue: fmtPrice(netRev),
       refundStatus: "",
       tag: "",
@@ -793,7 +793,7 @@ export default function Orders() {
           <BlockStack gap="300">
             <Text as="p" variant="bodySm" tone="subdued">
               Every Shopify order in the selected period, enriched with Meta attribution data.
-              Each order is tagged — <strong>Meta New</strong> (first-ever purchase via Meta),
+              Each order is tagged - <strong>Meta New</strong> (first-ever purchase via Meta),
               {" "}<strong>Meta Repeat</strong> (returning Meta-acquired customer),
               {" "}<strong>Meta Retargeted</strong> (existing customer converted by a Meta ad),
               {" "}<strong>Meta Unmatched New/Repeat/Retargeted</strong> (UTM confirms Meta click but no statistical match),

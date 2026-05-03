@@ -1,11 +1,11 @@
-// Server-side date range parser — used by all report loaders.
+// Server-side date range parser - used by all report loaders.
 //
 // All day boundaries are computed in the shop's timezone (falls back to
 // UTC if the shop has no timezone set). The returned `fromDate` / `toDate`
 // are real UTC instants (start of shop-local fromKey / end of shop-local
 // toKey) and can be fed directly into Prisma `gte` / `lte` filters.
 //
-// `fromKey` / `toKey` are the shop-local YYYY-MM-DD strings — handy for
+// `fromKey` / `toKey` are the shop-local YYYY-MM-DD strings - handy for
 // keys in in-memory maps.
 
 import {
@@ -22,7 +22,7 @@ export interface DateRange {
   toKey: string;
   // Active preset value ("last30", "thisWeek", "all", …) when the selector's
   // preset was applied, or "" when the user picked a custom range via the
-  // date picker. Consumers use this to label the summary header — preset
+  // date picker. Consumers use this to label the summary header - preset
   // name when set, explicit date range otherwise.
   preset: string;
   compareFrom: Date | null;

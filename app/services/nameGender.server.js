@@ -3,7 +3,7 @@
 //
 // Backed by `gender-detection-from-name` (curated per-language name lists).
 // The package only emits "male"/"female"/"unknown"; "unknown" means the
-// author judged the name too ambiguous to assign — which already enforces
+// author judged the name too ambiguous to assign - which already enforces
 // a high-confidence threshold inside the package.
 //
 // We layer one extra check on top: when a country code is available, we
@@ -41,7 +41,7 @@ const DEFAULT_CONFIDENCE = 0.95;
 
 // Confidence when the only signal is a leading title token (Mr/Mrs/…) and
 // the name itself was unidentifiable. Lower than DEFAULT_CONFIDENCE because
-// title fields are noisy — people copy-paste "Mr Smith" or just "Mr."
+// title fields are noisy - people copy-paste "Mr Smith" or just "Mr."
 const TITLE_FALLBACK_CONFIDENCE = 0.85;
 
 // Parse a raw firstName field into:
@@ -99,7 +99,7 @@ export function inferGender(firstName, countryCode) {
   if (!parsed) return { gender: null, confidence: null };
   const { name, titleGender } = parsed;
 
-  // 1. Manual overrides — country-qualified first, then plain. These take
+  // 1. Manual overrides - country-qualified first, then plain. These take
   //    precedence over the package because they exist precisely to correct
   //    its over-cautious "unknown" calls (e.g. "chris", "ryan") and to
   //    cover markets it doesn't ship lists for (JP, KR, NL).
@@ -107,7 +107,7 @@ export function inferGender(firstName, countryCode) {
     const override = checkOverrides(name.toLowerCase(), countryCode);
     if (override) return { gender: override, confidence: DEFAULT_CONFIDENCE };
 
-    // 2. Package lookup — country-language vs. global, with the
+    // 2. Package lookup - country-language vs. global, with the
     //    cross-cultural disagreement guard from the original logic.
     const lang = countryCode ? COUNTRY_TO_LANG[countryCode.toUpperCase()] : null;
     let countryAnswer;
@@ -126,13 +126,13 @@ export function inferGender(firstName, countryCode) {
     const g = globalAnswer === "male" || globalAnswer === "female" ? globalAnswer : null;
     if (c && g) {
       if (c === g) return { gender: c, confidence: DEFAULT_CONFIDENCE };
-      // Cross-cultural disagreement — fall through to the title fallback
+      // Cross-cultural disagreement - fall through to the title fallback
       // below if there's a Mr/Mrs prefix to lean on, otherwise null.
     } else if (c && !g) return { gender: c, confidence: DEFAULT_CONFIDENCE };
     else if (!c && g) return { gender: g, confidence: DEFAULT_CONFIDENCE };
   }
 
-  // 3. Title fallback — when the name itself was missing or unresolved
+  // 3. Title fallback - when the name itself was missing or unresolved
   //    but the firstName field started with "Mr"/"Mrs"/etc., trust the
   //    salutation at lower confidence.
   if (titleGender) {
@@ -168,7 +168,7 @@ export async function backfillShopInferredGender(db, shopDomain) {
   // customer would be slow at 30k+ rows, so pull all orders for this
   // shop in one go and pick the earliest qualifying order per customer
   // client-side. Note: we deliberately don't pass `shopifyCustomerId in
-  // [...]` here — at 30k+ IDs combined with a negation filter Prisma
+  // [...]` here - at 30k+ IDs combined with a negation filter Prisma
   // hits SQLite's parameter limit (and can't auto-split). The shopDomain
   // scope alone is correct since every order belongs to a customer in
   // this shop's customer list.
@@ -207,7 +207,7 @@ export async function backfillShopInferredGender(db, shopDomain) {
     });
   }
 
-  // Batched updates — chunks of 200 keep the SQLite write transaction
+  // Batched updates - chunks of 200 keep the SQLite write transaction
   // small enough to avoid locking the connection pool.
   for (let i = 0; i < updates.length; i += 200) {
     const chunk = updates.slice(i, i + 200);
@@ -218,7 +218,7 @@ export async function backfillShopInferredGender(db, shopDomain) {
 }
 
 /**
- * Single-customer update path — used by webhooks and order sync when a
+ * Single-customer update path - used by webhooks and order sync when a
  * new order arrives. Only writes when we have a confident inference
  * AND the customer doesn't already have one (so we never re-infer on
  * later orders, which could bounce on multi-token names).

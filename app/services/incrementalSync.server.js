@@ -38,7 +38,7 @@ async function rebuildAllRollups(shopDomain, { force }) {
   const ageMs = Date.now() - last;
   if (!force && last > 0 && ageMs < ROLLUP_REBUILD_MIN_INTERVAL_MS) {
     const minutes = Math.round(ageMs / 60000);
-    console.log(`[IncrementalSync] Skipping rollup rebuild for ${shopDomain} — last rebuild ${minutes}m ago, no new conversions`);
+    console.log(`[IncrementalSync] Skipping rollup rebuild for ${shopDomain} - last rebuild ${minutes}m ago, no new conversions`);
     return false;
   }
   setProgress(`incrementalSync:${shopDomain}`, { status: "running", message: "Rebuilding product rollups..." });
@@ -69,7 +69,7 @@ async function rebuildAllRollups(shopDomain, { force }) {
   lastRollupRebuildAt.set(shopDomain, Date.now());
   return true;
 }
-// Fallback padding — tried only when the 6-minute window returned no
+// Fallback padding - tried only when the 6-minute window returned no
 // Shopify candidates for a conversion. Starting at 6 keeps the candidate
 // set tight for the common case; widening to 10 rescues the occasional
 // order where the pixel fired ≥7 minutes after checkout.
@@ -102,7 +102,7 @@ function getTimezoneOffsetMinutes(timezone, dateStr) {
 
 /**
  * Convert a Meta hour slot from Meta's timezone to UTC minutes range.
- * Meta reports hourly_stats_aggregated_by_advertiser_time_zone — we need UTC
+ * Meta reports hourly_stats_aggregated_by_advertiser_time_zone - we need UTC
  * to compare against Shopify order.createdAt (which is UTC).
  *
  * Padding is backward-only: the Shopify order is placed BEFORE Meta logs the
@@ -114,7 +114,7 @@ function hourToMinuteRange(hour, metaOffsetMinutes = 0, paddingMinutes = PADDING
   // Convert Meta local hour to UTC minutes
   let utcStart = hour * 60 - metaOffsetMinutes;
   let utcEnd = utcStart + 59;
-  // Backward padding only — order is placed before Meta logs the conversion
+  // Backward padding only - order is placed before Meta logs the conversion
   utcStart -= paddingMinutes;
   // Wrap around midnight
   if (utcStart < 0) utcStart += 1440;
@@ -286,7 +286,7 @@ async function fetchTodayCountryBreakdown(metaAccessToken, metaAdAccountId, toda
  * Diff current country totals vs last MetaCountrySnapshot. Returns a map keyed by
  * adId → Set<country> of countries whose conversion count increased this cycle.
  * When exactly one country ticked up for an ad, that's deterministic per-conversion
- * country attribution. When several did, each is included — the matcher treats any
+ * country attribution. When several did, each is included - the matcher treats any
  * of them as a strong signal (rank 2).
  */
 async function computeCountryDeltas(shopDomain, today, currentRows) {
@@ -355,7 +355,7 @@ async function saveInsights(shopDomain, today, currentData) {
 const RIVAL_VALUE_TOLERANCE = 0.02;
 
 /**
- * LAYER 1 — UTM ground truth pass.
+ * LAYER 1 - UTM ground truth pass.
  *
  * Runs BEFORE the Layer 2 statistical matcher. For each order with
  * utmConfirmedMeta=true, writes an Attribution row (layer=1, confidence=100,
@@ -364,8 +364,8 @@ const RIVAL_VALUE_TOLERANCE = 0.02;
  * If the order fits a Meta conversion slot reported in this cycle (same adId,
  * same hour window), we DECREMENT that conv's deltaConversions/deltaValue so
  * Layer 2 solves the residual. If no slot exists (Meta didn't report this
- * conversion — common: dropped pixel, iOS, ad-blocker) we still write the
- * Layer 1 row — it's a confirmed Meta order regardless.
+ * conversion - common: dropped pixel, iOS, ad-blocker) we still write the
+ * Layer 1 row - it's a confirmed Meta order regardless.
  *
  * Existing confident attributions on the same orderId are UPGRADED to Layer 1
  * (UTM is authoritative over statistical guesses).
@@ -390,7 +390,7 @@ async function runUtmLayer1Pass(shopDomain, dayStr, dayOrders, newConversions, m
   // Skip orders that already have ANY confident attribution. This covers:
   //   (a) UTM rows written in prior cycles (idempotent skip), and
   //   (b) statistical rows that overrode a prior UTM when the Layer 2 pick
-  //       was unambiguous — re-running Layer 1 over those would undo the
+  //       was unambiguous - re-running Layer 1 over those would undo the
   //       override and flip the attribution back to UTM every cycle.
   const orderIdList = utmOrders.map(o => o.shopifyOrderId);
   const existing = await db.attribution.findMany({
@@ -545,7 +545,7 @@ async function recalculateConfidence(shopDomain, matchedOrderIds) {
 
   if (attrsWithRivals.length === 0) return 0;
 
-  // Build the set of ALL matched order IDs (not just from this run — globally)
+  // Build the set of ALL matched order IDs (not just from this run - globally)
   const allMatchedAttrs = await db.attribution.findMany({
     where: { shopDomain, confidence: { gt: 0 } },
     select: { shopifyOrderId: true },
@@ -616,7 +616,7 @@ async function matchSingleConversion(shopDomain, conv, todayOrders, revenueField
       const orderTotal = revenueField === "subtotal_price" ? order.frozenSubtotalPrice : order.frozenTotalPrice;
       // Country rank:
       //   2 = order country appears in this ad's per-cycle country delta (deterministic)
-      //   1 = order country is one this ad had day-level spend in (soft signal) — also when no data
+      //   1 = order country is one this ad had day-level spend in (soft signal) - also when no data
       //   0 = order country is NOT in the ad's day-level spend set
       const orderCountry = (order.countryCode || "").toUpperCase();
       const deltaSet = adCountryDeltas ? adCountryDeltas[conv.adId] : null;
@@ -651,7 +651,7 @@ async function matchSingleConversion(shopDomain, conv, todayOrders, revenueField
       console.log(`[DeltaMatch] Widened window to ${WIDE_PADDING_MINUTES}min for ad ${conv.adId} hour ${conv.hourSlot}: ${wide.length} candidates`);
     }
   }
-  // Time window actually used by the candidate set — referenced by the
+  // Time window actually used by the candidate set - referenced by the
   // zero-value £0 non-online fallback path below.
   const { start, end } = hourToMinuteRange(conv.hourSlot, metaOffsetMinutes, paddingUsed);
 
@@ -712,7 +712,7 @@ async function matchSingleConversion(shopDomain, conv, todayOrders, revenueField
     });
   }
 
-  // R=1 fast path — the common case with hourly data. Meta reports one conversion
+  // R=1 fast path - the common case with hourly data. Meta reports one conversion
   // in one hour slot → we look for the single Shopify order whose total is closest
   // to the Meta value within tolerance. No combinatorial search, no averaging.
   const target = conv.deltaValue;
@@ -763,7 +763,7 @@ async function matchSingleConversion(shopDomain, conv, todayOrders, revenueField
     }];
   }
 
-  // R>1 path — multiple conversions in the same ad-hour slot. Backtracking finds
+  // R>1 path - multiple conversions in the same ad-hour slot. Backtracking finds
   // the combination of R orders whose totals sum to Meta's deltaValue within a
   // DYNAMIC tolerance derived from observed per-conversion drift on the same day.
   const R = Math.min(conv.deltaConversions, allCandidates.length);
@@ -876,7 +876,7 @@ async function syncTodayBreakdowns(shopDomain, metaAccessToken, metaAdAccountId,
 /**
  * Match new conversion deltas for a specific historical day.
  * Reads from MetaInsight (already synced by syncMetaAll), compares against
- * MetaSnapshot, and only matches NEW deltas — never touches existing attributions.
+ * MetaSnapshot, and only matches NEW deltas - never touches existing attributions.
  * Used by the nightly scheduler for the 7-day lookback.
  */
 export async function matchDayDeltas(shopDomain, dayStr) {
@@ -915,7 +915,7 @@ export async function matchDayDeltas(shopDomain, dayStr) {
   });
   const metaSpendCountries = new Set(countryRows.map(r => r.breakdownValue.toUpperCase()));
 
-  // Load existing incremental attributions for this day — these are PROTECTED.
+  // Load existing incremental attributions for this day - these are PROTECTED.
   // Incremental matches are more accurate (captured original order values in real-time
   // before Shopify edits/refunds). The daily sweep must never overwrite them.
   const dayStart = new Date(dayStr + "T00:00:00.000Z");
@@ -944,7 +944,7 @@ export async function matchDayDeltas(shopDomain, dayStr) {
 
   const dayOrderIds = new Set(dayOrders.map(o => o.shopifyOrderId));
 
-  // Find incremental attributions linked to orders on this day — these are PROTECTED.
+  // Find incremental attributions linked to orders on this day - these are PROTECTED.
   // Count per ad+hour so h23 deltas aren't consumed by earlier-hour matches.
   // We derive the Meta hour slot from the order's createdAt + timezone offset.
   const existingIncrementals = await db.attribution.findMany({
@@ -988,7 +988,7 @@ export async function matchDayDeltas(shopDomain, dayStr) {
 
   for (const conv of remainingNewConversions) {
     // PRIORITY RULE: skip conversions already covered by incremental matches.
-    // Now tracked per ad+hour — h23 deltas are only consumed by h23 incrementals.
+    // Now tracked per ad+hour - h23 deltas are only consumed by h23 incrementals.
     const adHourKey = `${conv.adId}|${conv.hourSlot}`;
     const incrementalCount = incrementalCountByAdHour[adHourKey] || 0;
     if (incrementalCount > 0) {
@@ -1011,7 +1011,7 @@ export async function matchDayDeltas(shopDomain, dayStr) {
     if (matched.length > 0) {
       for (const pick of matched) {
         // SAFETY: never overwrite an incremental or blended-incremental match.
-        // Daily-sweep is last-resort only — fills gaps the incremental run missed.
+        // Daily-sweep is last-resort only - fills gaps the incremental run missed.
         const existing = await db.attribution.findUnique({
           where: { shopDomain_shopifyOrderId: { shopDomain, shopifyOrderId: pick.orderId } },
           select: { matchMethod: true, confidence: true, metaAdId: true },
@@ -1142,7 +1142,7 @@ export async function runIncrementalSync(shopDomain) {
   // "today" is resolved in the shop's Shopify timezone so every downstream
   // bucket / snapshot / rollup aligns with how the merchant sees their day.
   // For shops where Meta ad account tz differs from Shopify tz, we still use
-  // the Shopify day — Meta will return that calendar date's data in its own tz,
+  // the Shopify day - Meta will return that calendar date's data in its own tz,
   // which is close enough for incremental matching and auto-heals across cycles.
   const today = shopLocalToday(shop.shopifyTimezone || "UTC");
 
@@ -1170,7 +1170,7 @@ export async function runIncrementalSync(shopDomain) {
   const newConversions = await findNewConversions(shopDomain, today, currentData);
   console.log(`[IncrementalSync] Found ${newConversions.length} new conversion events`);
 
-  // Save snapshot IMMEDIATELY after finding deltas — before matching or breakdowns.
+  // Save snapshot IMMEDIATELY after finding deltas - before matching or breakdowns.
   // This prevents stale snapshots if a later step crashes (fetch failed, etc.).
   // The snapshot must reflect what Meta currently reports, regardless of whether
   // we successfully match or sync breakdowns.
@@ -1226,7 +1226,7 @@ export async function runIncrementalSync(shopDomain) {
     } catch (err) {
       console.error(`[IncrementalSync] Breakdown sync failed (non-fatal): ${err.message}`);
     }
-    // No new conversions — throttle rollup rebuilds to once per day so the
+    // No new conversions - throttle rollup rebuilds to once per day so the
     // hourly scheduler doesn't spend ~13 min every cycle rewriting identical
     // rollup rows. A fresh boot still rebuilds once (lastRollupRebuildAt starts
     // empty), so deploys continue to pick up code changes promptly.
@@ -1266,7 +1266,7 @@ export async function runIncrementalSync(shopDomain) {
   });
   const metaSpendCountries = new Set(countryRows.map(r => r.breakdownValue.toUpperCase()));
 
-  // LAYER 1: UTM ground truth pass — claims utmConfirmedMeta orders before
+  // LAYER 1: UTM ground truth pass - claims utmConfirmedMeta orders before
   // the statistical matcher runs and consumes slot capacity from newConversions.
   const layer1 = await runUtmLayer1Pass(shopDomain, today, todayOrders, newConversions, metaOffsetMinutes);
 
@@ -1474,7 +1474,7 @@ export async function runIncrementalSync(shopDomain) {
     console.error(`[IncrementalSync] Demographic enrichment failed (non-fatal): ${err.message}`);
   }
 
-  // New conversions arrived — rollups may be stale, force a full rebuild.
+  // New conversions arrived - rollups may be stale, force a full rebuild.
   await rebuildAllRollups(shopDomain, { force: true });
 
   invalidateShop(shopDomain);

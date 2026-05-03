@@ -2,7 +2,7 @@
  * parseElevarVisitorInfo
  *
  * Elevar (a marketing attribution app installed on some merchants' Shopify stores)
- * writes a JSON blob to order.note_attributes — keyed `_elevar_visitor_info` —
+ * writes a JSON blob to order.note_attributes - keyed `_elevar_visitor_info` -
  * containing the original UTM / click context captured on the visitor's first
  * pageview. This is data Shopify's own session tracker (`customerJourneySummary`)
  * often misses when a consent banner gates the `_shopify_y` cookie, but Elevar

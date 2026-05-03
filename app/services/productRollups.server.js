@@ -8,7 +8,7 @@
  *
  * Also builds the "analysis cache" blob containing basket combos,
  * journey flows, first-purchase lists, add-ons and the
- * metaAcquiredCustomers set — stuff that doesn't normalize cleanly
+ * metaAcquiredCustomers set - stuff that doesn't normalize cleanly
  * and needs to be precomputed per shop.
  *
  * Call sites:
@@ -38,7 +38,7 @@ const COLORS = new Set([
 export function toParentProduct(name) {
   // Some merchants (e.g. Vollebak) maintain near-duplicate listings that
   // differ only by a trailing period (same SKU, two listings). Strip it
-  // here so "Foo." and "Foo" collapse to one parent everywhere — Products
+  // here so "Foo." and "Foo" collapse to one parent everywhere - Products
   // rollup, journey analysis, etc.
   const cleaned = (name || "").replace(/[.\s]+$/u, "").trim();
   const parts = cleaned.split(" ");
@@ -127,7 +127,7 @@ export async function rebuildProductRollups(shopDomain) {
   ]);
 
   // Group line-item rows by order. Each order has 0..N rows; an empty array
-  // means "no structured data — use the legacy even-split path".
+  // means "no structured data - use the legacy even-split path".
   const lineItemsByOrder = {};
   for (const r of lineItemRowsRaw) {
     (lineItemsByOrder[r.shopifyOrderId] ||= []).push(r);
@@ -221,7 +221,7 @@ export async function rebuildProductRollups(shopDomain) {
       // Structured path: sum per parent-product across the row list so a
       // product that appears on multiple lines (e.g. different variants)
       // collapses into a single bucket entry for the rollup. Quantity counts
-      // the distinct line-item rows that mention the parent product — this
+      // the distinct line-item rows that mention the parent product - this
       // matches the legacy semantics where `b.items` was the line count,
       // not the qty sold, so repeat-product tiles stay comparable.
       const byParent = {};
@@ -243,7 +243,7 @@ export async function rebuildProductRollups(shopDomain) {
       }));
       if (perProduct.length === 0) continue;
     } else {
-      // Legacy even-split fallback — kept so the rollup keeps working on
+      // Legacy even-split fallback - kept so the rollup keeps working on
       // orders that haven't been re-synced into the new table yet.
       const rawItems = (order.lineItems || "").split(", ").map(s => s.trim()).filter(Boolean);
       if (rawItems.length === 0) continue;
@@ -331,7 +331,7 @@ export async function rebuildProductRollups(shopDomain) {
 
   // ── Build the analysis cache blob ──
   // Contains: journey flows, basket combos, add-ons, first-purchase lists,
-  // metaAcquiredCustomers — all the stuff that doesn't fit a date rollup.
+  // metaAcquiredCustomers - all the stuff that doesn't fit a date rollup.
   // Computed once per shop, cached until the next sync.
   const analysisBlob = await buildAnalysisBlob({
     orders, attrByOrderId, metaAcquiredCustomers, tz, lineItemsByOrder,
@@ -377,7 +377,7 @@ async function buildAnalysisBlob({ orders, attrByOrderId, metaAcquiredCustomers,
     // back to the legacy even-split over the comma-separated titles for
     // orders that predate the line-item backfill.
     const structuredRows = lineItemsByOrder[order.shopifyOrderId];
-    let parentItems; // array of parent names (may contain duplicates — basket semantics)
+    let parentItems; // array of parent names (may contain duplicates - basket semantics)
     let revenueByParent; // parent → allocated revenue for first-purchase totals
     if (structuredRows && structuredRows.length > 0) {
       parentItems = [];
@@ -560,7 +560,7 @@ async function buildAnalysisBlob({ orders, attrByOrderId, metaAcquiredCustomers,
     nonMetaCombos: buildCombos(nonMetaBaskets),
     topAddons: buildAddons([...metaBaskets, ...nonMetaBaskets]),
     topAddonsMeta: buildAddons(metaBaskets),
-    // Total multi-product baskets — denominators for the add-on share %
+    // Total multi-product baskets - denominators for the add-on share %
     // shown in the Top Add-ons tile. Without these the loader was dividing
     // all-time appearances by per-period order counts, producing values
     // like 5,000% on the UI.

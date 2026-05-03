@@ -152,13 +152,13 @@ export const loader = async ({ request }) => {
         _sum: { conversions: true, conversionValue: true, spend: true, impressions: true },
       }),
     )),
-    // All-Meta gender bars — per-attribution rather than Meta's audience-level
+    // All-Meta gender bars - per-attribution rather than Meta's audience-level
     // breakdown, so we can COALESCE in the name-inferred gender. Meta's
     // breakdown API only returns rows when audience size clears its privacy
     // threshold, so historical / small date ranges look empty. Per-attribution
     // covers every matched order; the inferredGender fallback fills the long
-    // tail. Pivot on Order.createdAt (NOT Attribution.matchedAt — the latter
-    // is when the matcher ran, not when the order happened — see
+    // tail. Pivot on Order.createdAt (NOT Attribution.matchedAt - the latter
+    // is when the matcher ran, not when the order happened - see
     // memory: attribution_matchedat_gotcha.md).
     time("allMetaCombinedGender", queryCached(
       `${shopDomain}:attrAllGender:${dateFromStr}:${dateToStr}`, DEFAULT_TTL,
@@ -179,7 +179,7 @@ export const loader = async ({ request }) => {
         GROUP BY COALESCE(a.metaGender, c.inferredGender)
       `,
     )),
-    // New-Meta gender bars — same combined approach scoped to first-order
+    // New-Meta gender bars - same combined approach scoped to first-order
     // attributions. Replaces the old findMany() that required metaAge NOT
     // NULL (which silently dropped most rows on date ranges where Meta's
     // breakdown enrichment hadn't covered the audience).
@@ -203,7 +203,7 @@ export const loader = async ({ request }) => {
         GROUP BY COALESCE(a.metaGender, c.inferredGender)
       `,
     )),
-    // All-Customers gender — every order in range joined to Customer.inferredGender.
+    // All-Customers gender - every order in range joined to Customer.inferredGender.
     // Surfaces gender for organic customers, where neither Meta breakdown nor
     // Attribution has a row. £0 orders excluded to match rollup conventions.
     time("allCustomerGender", queryCached(
@@ -225,7 +225,7 @@ export const loader = async ({ request }) => {
     )),
     time("blobs", queryCached(`${shopDomain}:customersBlobs`, DEFAULT_TTL, loadAnalysisBlobs)),
     time("aiCache", getCachedInsights(shopDomain, "customers", dateFromStr, dateToStr)),
-    // Unmatched attribution rows (confidence=0) — Meta conversions the matcher
+    // Unmatched attribution rows (confidence=0) - Meta conversions the matcher
     // couldn't tie to a Shopify order. shopifyOrderId is a synthetic key of the
     // form `unmatched_<adId>_<YYYY-MM-DD>...`, so the date extracts by regex.
     // Pulled for the union of current + previous ranges; bucketed per-day below.
@@ -245,7 +245,7 @@ export const loader = async ({ request }) => {
 
   // ── Build per-customer table rows from Customer model (cached, expensive at 15k+ rows) ──
   // The output depends only on `customers` (which is itself cached) and current time
-  // for daysSince calculations. The 2-hour TTL is fine — those values change daily.
+  // for daysSince calculations. The 2-hour TTL is fine - those values change daily.
   const rows = await queryCached(`${shopDomain}:customerRows`, DEFAULT_TTL, async () => {
     const out = customers.map(c => {
       const tag = c.metaSegment === "metaNew" ? "Meta New"
@@ -339,7 +339,7 @@ export const loader = async ({ request }) => {
   // agree on the unmatched number.
   const unmatchedByDay: Record<string, { count: number; revenue: number }> = {};
   const prevUnmatchedByDay: Record<string, { count: number; revenue: number }> = {};
-  // Value>0 counters power the Total Meta Orders tile — £0 unmatched
+  // Value>0 counters power the Total Meta Orders tile - £0 unmatched
   // conversions (typically customer-service/replacement) should not count
   // as a Meta order. prev* variants power the tile's delta badge + the
   // Meta Order Revenue tile's previousValue (was buggy previously).
@@ -526,7 +526,7 @@ export const loader = async ({ request }) => {
     metaBreakdownGenderConversions += (r._sum?.conversions || 0);
   }
 
-  // genderBreakdown (All Meta) — now per-attribution + COALESCE so it
+  // genderBreakdown (All Meta) - now per-attribution + COALESCE so it
   // populates whenever there are matched orders, not just when Meta's
   // audience-level breakdown happens to cover the range.
   const allMetaConversionsTotal = (allMetaCombinedGenderRaw as Array<{ conversions: bigint | number }>)
@@ -546,7 +546,7 @@ export const loader = async ({ request }) => {
     .sort((a, b) => b.conversions - a.conversions);
   const totalDemoConversions = ageBreakdown.reduce((s, a) => s + a.conversions, 0);
 
-  // All-Customers gender breakdown — name-inferred only, every order in range.
+  // All-Customers gender breakdown - name-inferred only, every order in range.
   // No spend column (no per-order ad-spend signal); chip switches to AOV at
   // render time.
   const allCustomerGenderBreakdown = (allCustomerGenderRaw as Array<{ gender: string | null; orders: bigint | number; revenue: number | null }>)
@@ -559,7 +559,7 @@ export const loader = async ({ request }) => {
     .filter(g => g.conversions > 0 && g.label !== "Unknown")
     .sort((a, b) => b.conversions - a.conversions);
 
-  // New-Meta demographics — pulled from Attribution rows (which carry
+  // New-Meta demographics - pulled from Attribution rows (which carry
   // per-order metaAge/metaGender from the breakdown enrichment step),
   // filtered to isNewCustomer=true within the date range. More precise
   // than Meta's aggregate breakdown because it's per-matched-order.
@@ -578,7 +578,7 @@ export const loader = async ({ request }) => {
     }),
   );
   const newAgeAgg: Record<string, { conversions: number; value: number; spend: number; impressions: number }> = {};
-  // Gender no longer aggregated here — moved to newMetaCombinedGenderRaw
+  // Gender no longer aggregated here - moved to newMetaCombinedGenderRaw
   // (per-attribution + COALESCE with Customer.inferredGender). Age stays
   // here since there's no name-based age inference.
   for (const a of newMetaAttrsWithDemo) {
@@ -601,7 +601,7 @@ export const loader = async ({ request }) => {
       return { label: age, conversions, spend: avgCpa * conversions, revenue: s?.value || 0 };
     })
     .filter(a => a.conversions > 0);
-  // newGenderBreakdown — uses the per-attribution + COALESCE query so the
+  // newGenderBreakdown - uses the per-attribution + COALESCE query so the
   // gender bars populate even when Meta's breakdown enrichment hadn't run
   // for these orders. Spend per gender uses Meta's per-gender CPA when
   // available (genderBreakdown), falling back to proportional period spend.
@@ -625,7 +625,7 @@ export const loader = async ({ request }) => {
   const newDemoConversions = newMetaCombinedConversionsTotal;
   const newDemoExactCount = 0;
 
-  // Date-scoped geography — computed at loader time from orders placed in
+  // Date-scoped geography - computed at loader time from orders placed in
   // the selected range, then joined to Attribution to classify each order
   // as organic / allMeta / metaNew. Replaces the all-time geoBlob that
   // previously fed this section (blob is left in place for other consumers
@@ -739,7 +739,7 @@ export const loader = async ({ request }) => {
   const allMetaGeoCount = geoInRange.allMeta.count;
   const metaNewGeoCount = geoInRange.metaNew.count;
 
-  // Date-scoped customer journey — customers whose FIRST order fell in the
+  // Date-scoped customer journey - customers whose FIRST order fell in the
   // selected period. Fetch their first three orders (online store only) and
   // compute median AOV + gap stats per scope (meta-new vs all). Replaces the
   // all-time journeyBlob that previously fed this tile so the "New Customer
@@ -846,7 +846,7 @@ export const loader = async ({ request }) => {
     },
   );
 
-  // Date-scoped Customer Breakdown — replicates Order Explorer's exact
+  // Date-scoped Customer Breakdown - replicates Order Explorer's exact
   // tagging so the donut matches the "All Meta" filter. Key differences
   // vs the DailyCustomerRollup-based counts above:
   //   • Includes POS orders (rollup is online-store only).
@@ -860,7 +860,7 @@ export const loader = async ({ request }) => {
     async () => {
       const empty = { metaNew: { customers: 0, revenue: 0 }, metaRepeat: { customers: 0, revenue: 0 }, metaRetargeted: { customers: 0, revenue: 0 } };
       const orders = await db.order.findMany({
-        // Exclude £0 orders (staff / replacement / warranty) — same rule
+        // Exclude £0 orders (staff / replacement / warranty) - same rule
         // Order Explorer + the rollup apply so customer counts agree.
         where: {
           shopDomain,
@@ -932,7 +932,7 @@ export const loader = async ({ request }) => {
     },
   );
 
-  // Single/Repeat splits — derive from customers
+  // Single/Repeat splits - derive from customers
   let metaNewSingleCount = 0, metaNewSingleOrders = 0, metaNewSingleRevenue = 0;
   let metaNewRepeatCount2 = 0, metaNewRepeatOrders = 0, metaNewRepeatRevenue = 0;
   let metaRetargetedCountTile = 0, metaRetargetedOrdersTile = 0, metaRetargetedRevenueTile = 0;
@@ -953,7 +953,7 @@ export const loader = async ({ request }) => {
     }
   }
 
-  // Weekly cohort revenue — one bucket per ISO week the customer was
+  // Weekly cohort revenue - one bucket per ISO week the customer was
   // acquired (keyed on the Monday), separately for all customers and for
   // Meta-acquired customers only. Bottom of each bar = first-order revenue,
   // top = repeat revenue from the same customers (totalSpent − first-order
@@ -965,7 +965,7 @@ export const loader = async ({ request }) => {
   // Feb 2026 would be counted as a Feb-2026 acquisition and their
   // totalSpent from years of shopping would pollute the repeat stack. We
   // lean on Shopify's own customerOrderCountAtPurchase = 1 (set on the
-  // order row at sync time) as ground truth for "genuinely new" —
+  // order row at sync time) as ground truth for "genuinely new" -
   // metaSegment "metaNew" already bakes this in for the Meta lane; for the
   // All-customers lane we pull a set of genuinely-new customer IDs from
   // the Order table.
@@ -997,7 +997,7 @@ export const loader = async ({ request }) => {
   for (const c of customers) {
     if (!c.firstOrderDate) continue;
     // Filter out customers whose earliest imported order wasn't their true
-    // first-ever purchase — their totalSpent reflects years of prior
+    // first-ever purchase - their totalSpent reflects years of prior
     // shopping and would hugely inflate the repeat stack.
     if (!c.shopifyCustomerId || !genuinelyNewIds.has(c.shopifyCustomerId)) continue;
     const firstRev = Math.max(0, c.firstOrderValue || 0);
@@ -1026,7 +1026,7 @@ export const loader = async ({ request }) => {
   const journeyMeta = journeyBlob?.meta || {};
   const journeyAll = journeyBlob?.all || {};
 
-  // LTV from cache blob — also synthesize tile.cpa + tile.paybackOrders for the component
+  // LTV from cache blob - also synthesize tile.cpa + tile.paybackOrders for the component
   const ltvTileRaw = ltvBlob?.ltvTile || { meta: {}, all: {} };
   const ltvMetaCount = ltvTileRaw.meta?.count || 0;
   const ltvMetaAvgFirst = ltvTileRaw.meta?.avgFirstOrder || 0;
@@ -1072,12 +1072,12 @@ export const loader = async ({ request }) => {
   const reorderWithin90 = 0;
   const prevMedianTimeTo2nd = null;
 
-  // Unmatched conversions — count actual Attribution rows with confidence=0
+  // Unmatched conversions - count actual Attribution rows with confidence=0
   // whose synthetic shopifyOrderId date falls in the range. This matches the
   // Weekly Report's approach exactly, so the two pages always agree.
   // (Previously computed as `max(0, totalMetaConversions - metaCount)`, which
-  // subtracted new-customer count from total Meta-reported conversions — two
-  // different populations — and inflated whenever Meta reported more total
+  // subtracted new-customer count from total Meta-reported conversions - two
+  // different populations - and inflated whenever Meta reported more total
   // conversions than we matched to NEW customers, regardless of why.)
   let unmatchedConversions = 0;
   let unmatchedRevenue = 0;
@@ -1436,7 +1436,7 @@ function JourneyFlow({ firstAOV, gapDays, secondAOV, thirdAOV, gap2to3Days, cust
       }}>
         <div style={{ fontSize: "11px", fontWeight: 500, opacity: 0.8, textTransform: "uppercase", letterSpacing: "0.5px" }}>{label}</div>
         <div style={{ fontSize: "28px", fontWeight: 800, marginTop: "5px" }}>
-          {hasData ? `${cs}${Math.round(aov)}` : "—"}
+          {hasData ? `${cs}${Math.round(aov)}` : "-"}
         </div>
         <div style={{ fontSize: "11px", opacity: 0.7, marginTop: "2px" }}>
           {hasData ? (
@@ -1469,7 +1469,7 @@ function JourneyFlow({ firstAOV, gapDays, secondAOV, thirdAOV, gap2to3Days, cust
           {/* Lozenge background */}
           <rect x="20" y="3" width="66" height="24" rx="12" fill="#F9FAFB" stroke="#E5E7EB" strokeWidth="1" />
           <text x="53" y="20" textAnchor="middle" fontSize="11" fontWeight="700" fill="#374151">
-            {days != null ? `${days} days` : "—"}
+            {days != null ? `${days} days` : "-"}
           </text>
         </svg>
       </div>
@@ -1495,7 +1495,7 @@ function JourneyFlow({ firstAOV, gapDays, secondAOV, thirdAOV, gap2to3Days, cust
 
 
 // ═══════════════════════════════════════════════════════════════
-// Revenue by Weekly Cohort — stacked bars, first-order revenue at the
+// Revenue by Weekly Cohort - stacked bars, first-order revenue at the
 // bottom and repeat-order revenue stacked on top. Hover shows both
 // actual figures; toggle selects the last 52 weeks or the whole history.
 // ═══════════════════════════════════════════════════════════════
@@ -1517,7 +1517,7 @@ function WeeklyCohortRevenue({ weekly, cs }: { weekly: { all: WeeklyCohortPoint[
   const sorted = useMemo(() => series.slice().sort((a, b) => a.weekStart.localeCompare(b.weekStart)), [series]);
   const windowed = useMemo(() => {
     if (scope === "all" || sorted.length === 0) return sorted;
-    // 365 days back from the latest cohort in the dataset — 52-ish weeks.
+    // 365 days back from the latest cohort in the dataset - 52-ish weeks.
     const lastKey = sorted[sorted.length - 1].weekStart;
     const [y, m, d] = lastKey.split("-").map(Number);
     const cutoff = new Date(Date.UTC(y, m - 1, d - 365));
@@ -1569,9 +1569,9 @@ function WeeklyCohortRevenue({ weekly, cs }: { weekly: { all: WeeklyCohortPoint[
         // Overlay a repeat-% line on a second Y-axis (0–100% right-side).
         // Repeat % = repeatRev / (firstRev + repeatRev). It tells the
         // merchant how much of that week's cohort revenue is coming from
-        // customers who came back — the real LTV signal.
+        // customers who came back - the real LTV signal.
         const PLOT_H = 200;
-        const lineColor = "#F59E0B"; // amber — contrasts indigo bars
+        const lineColor = "#F59E0B"; // amber - contrasts indigo bars
         return (
           <div ref={wrapRef} style={{ position: "relative" }}>
           <div style={{ display: "flex", gap: 8 }}>
@@ -1864,10 +1864,10 @@ export default function Customers() {
   const [ltvFilterAges, setLtvFilterAges] = useState<string[]>([]); // empty = all
   const [ltvFilterCountry, setLtvFilterCountry] = useState<string>("All");
   const [ltvWindowPreset, setLtvWindowPreset] = useState<"lifetime" | 30 | 60 | 90 | 180 | 365>(365);
-  // Gross margin % for the profit-payback calc. Default 60 — reasonable
+  // Gross margin % for the profit-payback calc. Default 60 - reasonable
   // midpoint for DTC/fashion. Revenue-based payback was misleading
   // ("1 order = payback" sounds great but ROAS=1 doesn't cover product
-  // cost, fulfilment, fees). Persist per-browser — eventually migrate
+  // cost, fulfilment, fees). Persist per-browser - eventually migrate
   // to Shop.defaultMargin.
   const [marginPct, setMarginPct] = useState<number>(60);
   const [chartHover, setChartHover] = useState<{ window: number; bench: number; recent: number | null } | null>(null);
@@ -2018,7 +2018,7 @@ export default function Customers() {
     { label: "Organic", value: "Organic" },
   ];
 
-  // Customer breakdown donut — segments sized by unique customers (default)
+  // Customer breakdown donut - segments sized by unique customers (default)
   // or net revenue. Matches what's rendered in the legend to the right.
   const acqSegments = useMemo(() => {
     if (acqMode === "customers") {
@@ -2038,7 +2038,7 @@ export default function Customers() {
   const acqTotal = acqSegments.reduce((s, seg) => s + seg.value, 0);
 
   const fmtOrd = (v: number | null) => {
-    if (v == null) return "—";
+    if (v == null) return "-";
     return v === 1 ? "1st" : v === 2 ? "2nd" : v === 3 ? "3rd" : `${v}th`;
   };
 
@@ -2051,10 +2051,10 @@ export default function Customers() {
     { accessorKey: "acquisitionCampaign", header: "Acquisition Campaign",
       meta: { maxWidth: "200px", filterType: "multi-select", description: "The Meta campaign that first brought this customer" },
       filterFn: "multiSelect",
-      cell: ({ getValue }) => getValue() || "—" },
+      cell: ({ getValue }) => getValue() || "-" },
     { accessorKey: "acquisitionAdSet", header: "Acquisition Ad Set",
       meta: { maxWidth: "180px", description: "The Meta ad set that first brought this customer" },
-      cell: ({ getValue }) => getValue() || "—" },
+      cell: ({ getValue }) => getValue() || "-" },
     { accessorKey: "totalOrders", header: "Orders",
       meta: { align: "right", description: "Total number of orders from this customer" } },
     { accessorKey: "metaOrders", header: "Meta Orders",
@@ -2066,50 +2066,50 @@ export default function Customers() {
       cell: ({ getValue }) => fmtOrd(getValue()) },
     { accessorKey: "grossRevenue", header: "Gross Revenue",
       meta: { align: "right", description: "Total revenue from all orders (before refunds)" },
-      cell: ({ getValue }) => getValue() ? `${cs}${Math.round(getValue()).toLocaleString()}` : "—" },
+      cell: ({ getValue }) => getValue() ? `${cs}${Math.round(getValue()).toLocaleString()}` : "-" },
     { accessorKey: "totalRefunded", header: "Refunded",
       meta: { align: "right", description: "Total refund amount across all orders" },
-      cell: ({ getValue }) => getValue() > 0 ? `${cs}${Math.round(getValue()).toLocaleString()}` : "—" },
+      cell: ({ getValue }) => getValue() > 0 ? `${cs}${Math.round(getValue()).toLocaleString()}` : "-" },
     { accessorKey: "netRevenue", header: "Net Revenue",
-      meta: { align: "right", description: "Revenue after all refunds — the customer's true lifetime value", calc: "Gross Revenue - Refunded" },
+      meta: { align: "right", description: "Revenue after all refunds - the customer's true lifetime value", calc: "Gross Revenue - Refunded" },
       cell: ({ getValue }) => `${cs}${Math.round(getValue()).toLocaleString()}` },
     { accessorKey: "avgOrderValue", header: "AOV",
       meta: { align: "right", description: "Average order value for this customer", calc: "Gross Revenue / Orders" },
-      cell: ({ getValue }) => getValue() ? `${cs}${Math.round(getValue()).toLocaleString()}` : "—" },
+      cell: ({ getValue }) => getValue() ? `${cs}${Math.round(getValue()).toLocaleString()}` : "-" },
     { accessorKey: "firstOrderValue", header: "1st Order",
       meta: { align: "right", description: "Value of the customer's first order" },
-      cell: ({ getValue }) => getValue() ? `${cs}${Math.round(getValue()).toLocaleString()}` : "—" },
+      cell: ({ getValue }) => getValue() ? `${cs}${Math.round(getValue()).toLocaleString()}` : "-" },
     { accessorKey: "ltvMultiplier", header: "LTV Multiplier",
       meta: { align: "right", description: "How much more the customer has spent beyond their first order", calc: "Gross Revenue / First Order Value" },
-      cell: ({ getValue }) => getValue() != null ? `${getValue()}x` : "—" },
+      cell: ({ getValue }) => getValue() != null ? `${getValue()}x` : "-" },
     { accessorKey: "lastOrderDate", header: "Last Order",
       meta: { description: "Date of the customer's most recent order" } },
     { accessorKey: "daysSinceLastOrder", header: "Days Since Last",
-      meta: { align: "right", description: "Days since their most recent order — high numbers may indicate churn" } },
+      meta: { align: "right", description: "Days since their most recent order - high numbers may indicate churn" } },
     { accessorKey: "daysSinceAcquisition", header: "Customer Age",
-      meta: { align: "right", description: "Days since first order — how long they've been a customer" },
+      meta: { align: "right", description: "Days since first order - how long they've been a customer" },
       cell: ({ getValue }) => `${getValue()}d` },
     { accessorKey: "timeTo2ndOrder", header: "Days to 2nd Order",
-      meta: { align: "right", description: "Days between their first and second purchase. Key retention indicator — shorter is better" },
-      cell: ({ getValue }) => getValue() != null ? `${getValue()}d` : "—" },
+      meta: { align: "right", description: "Days between their first and second purchase. Key retention indicator - shorter is better" },
+      cell: ({ getValue }) => getValue() != null ? `${getValue()}d` : "-" },
     { accessorKey: "country", header: "Country",
       meta: { filterType: "multi-select", description: "Customer's billing country (from first order)" },
       filterFn: "multiSelect",
-      cell: ({ getValue }) => getValue() || "—" },
+      cell: ({ getValue }) => getValue() || "-" },
     { accessorKey: "city", header: "City",
       meta: { description: "Customer's billing city (from first order)" },
-      cell: ({ getValue }) => getValue() || "—" },
+      cell: ({ getValue }) => getValue() || "-" },
     { accessorKey: "topProducts", header: "Top Products",
       meta: { maxWidth: "200px", description: "Most frequently purchased products by this customer" },
-      cell: ({ getValue }) => getValue() || "—" },
+      cell: ({ getValue }) => getValue() || "-" },
     { accessorKey: "discountOrders", header: "Discount Orders",
       meta: { align: "right", description: "Number of orders where a discount code was used" } },
     { accessorKey: "refundRate", header: "Refund Rate",
       meta: { align: "right", description: "Percentage of gross revenue that was refunded", calc: "Refunded / Gross Revenue x 100" },
-      cell: ({ getValue }) => getValue() > 0 ? `${getValue()}%` : "—" },
+      cell: ({ getValue }) => getValue() > 0 ? `${getValue()}%` : "-" },
     { accessorKey: "avgConfidence", header: "Avg Confidence",
       meta: { align: "right", description: "Average attribution confidence across all Meta-matched orders for this customer" },
-      cell: ({ getValue }) => getValue() != null ? `${getValue()}%` : "—" },
+      cell: ({ getValue }) => getValue() != null ? `${getValue()}%` : "-" },
   ], [cs]);
 
   const defaultVisibleColumns = useMemo(() => [
@@ -2120,19 +2120,19 @@ export default function Customers() {
   const columnProfiles = useMemo(() => [
     {
       id: "overview", label: "Overview", icon: "📊",
-      description: "Key customer details — acquisition type, orders, revenue and recency",
+      description: "Key customer details - acquisition type, orders, revenue and recency",
       columns: ["tag", "acquisitionDate", "totalOrders", "netRevenue", "lastOrderDate", "daysSinceLastOrder"],
       fullColumns: ["tag", "acquisitionDate", "acquisitionCampaign", "totalOrders", "metaOrders", "grossRevenue", "totalRefunded", "netRevenue", "lastOrderDate", "daysSinceLastOrder"],
     },
     {
       id: "ltv", label: "Lifetime Value", icon: "💎",
-      description: "Deep dive into customer value — LTV, multipliers, order frequency and retention signals",
+      description: "Deep dive into customer value - LTV, multipliers, order frequency and retention signals",
       columns: ["tag", "totalOrders", "netRevenue", "avgOrderValue", "ltvMultiplier", "timeTo2ndOrder"],
       fullColumns: ["tag", "totalOrders", "grossRevenue", "totalRefunded", "netRevenue", "avgOrderValue", "firstOrderValue", "ltvMultiplier", "daysSinceAcquisition", "timeTo2ndOrder", "refundRate"],
     },
     {
       id: "acquisition", label: "Acquisition", icon: "🎯",
-      description: "How each customer was acquired — which campaigns and ads brought them in",
+      description: "How each customer was acquired - which campaigns and ads brought them in",
       columns: ["tag", "acquisitionCampaign", "acquisitionDate", "netRevenue", "avgConfidence"],
       fullColumns: ["tag", "acquisitionCampaign", "acquisitionAdSet", "acquisitionDate", "orderNumAtAcq", "metaOrders", "organicOrders", "netRevenue", "avgConfidence"],
     },
@@ -2153,7 +2153,7 @@ export default function Customers() {
   const fmtCount = (v: number) => Math.round(v).toLocaleString();
   const fmtRatio = (v: number) => `${v.toFixed(1)}x`;
 
-  // Age bar colors — gradient from light to deep purple
+  // Age bar colors - gradient from light to deep purple
   const ageColors = ["#C4B5FD", "#A78BFA", "#8B5CF6", "#7C3AED", "#6D28D9", "#5B21B6", "#4C1D95"];
 
   // Metric computation for demographics bars
@@ -2173,7 +2173,7 @@ export default function Customers() {
     return "";
   };
 
-  // Metric selector component — underlined text links
+  // Metric selector component - underlined text links
   const MetricSelector = ({ options, active, onChange }: {
     options: { value: string; label: string }[];
     active: string;
@@ -2193,9 +2193,9 @@ export default function Customers() {
   );
 
   // Demographics: active data based on toggle. Three scopes:
-  //   • "new"     — Meta-acquired new customers (per-Attribution metaGender)
-  //   • "allMeta" — Meta's audience-level breakdown (MetaBreakdown rows)
-  //   • "all"     — every customer who ordered in range, gender from
+  //   • "new"     - Meta-acquired new customers (per-Attribution metaGender)
+  //   • "allMeta" - Meta's audience-level breakdown (MetaBreakdown rows)
+  //   • "all"     - every customer who ordered in range, gender from
   //                 Customer.inferredGender (name-based). Only this scope
   //                 surfaces organic customers + historical ranges where
   //                 Meta has no data.
@@ -2235,9 +2235,9 @@ export default function Customers() {
       organicOrders: (orders - metaOrd).toLocaleString(),
       orderNumAtAcq: "",
       grossRevenue: fmtPrice(gross),
-      totalRefunded: refunded > 0 ? fmtPrice(refunded) : "—",
+      totalRefunded: refunded > 0 ? fmtPrice(refunded) : "-",
       netRevenue: fmtPrice(net),
-      avgOrderValue: filteredRows.length > 0 ? fmtPrice(Math.round(gross / filteredRows.length)) : "—",
+      avgOrderValue: filteredRows.length > 0 ? fmtPrice(Math.round(gross / filteredRows.length)) : "-",
       firstOrderValue: "", ltvMultiplier: "",
       lastOrderDate: "", daysSinceLastOrder: "",
       daysSinceAcquisition: "", timeTo2ndOrder: "",
@@ -2249,7 +2249,7 @@ export default function Customers() {
 
   // ── Page summary bullets ──
   // Seven at-a-glance lines, tied to the currently selected date range.
-  // Computed from the same pre-aggregated loader data the tiles below use —
+  // Computed from the same pre-aggregated loader data the tiles below use -
   // no AI, no caching, no round-trips. Order is deliberate: who they are,
   // where they are, how many + how efficient, do they pay back, do they
   // come back, are they worth it, are we measuring honestly.
@@ -2276,7 +2276,7 @@ export default function Customers() {
     if (avgAge != null || femalePct != null || malePct != null) {
       const parts: string[] = [];
       if (avgAge != null) parts.push(`Avg age ${avgAge}`);
-      // Gender split — biggest first so the dominant audience leads the line.
+      // Gender split - biggest first so the dominant audience leads the line.
       if (femalePct != null && malePct != null) {
         parts.push(femalePct >= malePct
           ? `${femalePct}% female / ${malePct}% male`
@@ -2293,7 +2293,7 @@ export default function Customers() {
     }
 
     // 1b) CAC split by gender. Uses newGenderBreakdown.spend, which is
-    // (all-Meta avg CPA) × new conversions — same basis as the CPA chips
+    // (all-Meta avg CPA) × new conversions - same basis as the CPA chips
     // under the Gender split on the Customer Demographics tile, so numbers
     // tie out between the summary and the chart.
     {
@@ -2314,7 +2314,7 @@ export default function Customers() {
       }
     }
 
-    // 2) Top country + top city — identical data source and denominator
+    // 2) Top country + top city - identical data source and denominator
     // as the Customer Geography tile below (metaNewTopCountries/Cities +
     // metaNewGeoCount from geoBlob, customer-count based, all-time).
     const topCountry = (metaNewTopCountries || [])[0];
@@ -2377,7 +2377,7 @@ export default function Customers() {
         : "neutral";
       out.push({
         tone,
-        text: <><strong>Acquired {metaCount.toLocaleString()} new Meta customer{metaCount === 1 ? "" : "s"}</strong> — {countStr}{cpaStr}.</>,
+        text: <><strong>Acquired {metaCount.toLocaleString()} new Meta customer{metaCount === 1 ? "" : "s"}</strong> - {countStr}{cpaStr}.</>,
       });
     }
 
@@ -2403,13 +2403,13 @@ export default function Customers() {
           msg = <>Pays back in ~{payback.toFixed(1)} orders (AOV:CAC {(effectiveRatio || 0).toFixed(2)}×{scope}).</>;
         } else {
           tone = "warning";
-          msg = <>Pays back in ~{payback.toFixed(1)} orders{scope} — CAC is outpacing first-order AOV.</>;
+          msg = <>Pays back in ~{payback.toFixed(1)} orders{scope} - CAC is outpacing first-order AOV.</>;
         }
         out.push({ tone, text: <><strong>Payback:</strong> {msg}</> });
       }
     }
 
-    // 5) Returning Meta customers — absolute count of Meta-attributed
+    // 5) Returning Meta customers - absolute count of Meta-attributed
     // customers who made a repeat purchase in this period. Prior framing
     // as "repeat rate" divided returning customers by newly-acquired in
     // the same window (different cohorts) which produced nonsense
@@ -2420,9 +2420,9 @@ export default function Customers() {
       if (prevMetaRepeatTotal > 0) {
         const diff = metaRepeatTotal - prevMetaRepeatTotal;
         const pct = Math.round((diff / prevMetaRepeatTotal) * 100);
-        if (pct >= 10) { tone = "positive"; delta = <> — up {pct}% vs previous period.</>; }
-        else if (pct <= -10) { tone = "warning"; delta = <> — down {Math.abs(pct)}% vs previous period.</>; }
-        else { delta = <> — roughly flat vs previous period.</>; }
+        if (pct >= 10) { tone = "positive"; delta = <> - up {pct}% vs previous period.</>; }
+        else if (pct <= -10) { tone = "warning"; delta = <> - down {Math.abs(pct)}% vs previous period.</>; }
+        else { delta = <> - roughly flat vs previous period.</>; }
       }
       out.push({
         tone,
@@ -2446,8 +2446,8 @@ export default function Customers() {
         const label = heroWindow >= 365 ? `${Math.round(heroWindow / 365)}yr` : `${heroWindow}d`;
         let tone: SummaryTone = "neutral";
         let tail: React.ReactNode = "";
-        if (ratio >= 3) { tone = "positive"; tail = " — healthy."; }
-        else if (ratio < 2) { tone = "warning"; tail = " — below 2× threshold."; }
+        if (ratio >= 3) { tone = "positive"; tail = " - healthy."; }
+        else if (ratio < 2) { tone = "warning"; tail = " - below 2× threshold."; }
         out.push({
           tone,
           text: <><strong>LTV:CAC {ratio.toFixed(2)}×</strong> at {label} ({cs}{Math.round(heroLtv).toLocaleString()} LTV vs {cs}{Math.round(cac).toLocaleString()}{scope} CAC){tail}</>,
@@ -2455,7 +2455,7 @@ export default function Customers() {
       }
     }
 
-    // 7) Attribution health — surface only if unmatched share is material
+    // 7) Attribution health - surface only if unmatched share is material
     {
       const matched = matchedMetaOrdersInRange || 0;
       const unmatched = unmatchedConversionsWithValue || 0;
@@ -2466,7 +2466,7 @@ export default function Customers() {
           const tone: SummaryTone = pct >= 20 ? "warning" : "neutral";
           out.push({
             tone,
-            text: <><strong>Attribution:</strong> {pct}% of Meta conversions ({unmatched.toLocaleString()}) couldn&apos;t be matched to a Shopify order — likely edited orders or refunds after purchase.</>,
+            text: <><strong>Attribution:</strong> {pct}% of Meta conversions ({unmatched.toLocaleString()}) couldn&apos;t be matched to a Shopify order - likely edited orders or refunds after purchase.</>,
           });
         }
       }
@@ -2490,7 +2490,7 @@ export default function Customers() {
       <style dangerouslySetInnerHTML={{ __html: layoutStyles }} />
       <ReportTabs>
       <BlockStack gap="500">
-        {/* Hidden for V1 — bring back in V2. Loader wiring kept intact. */}
+        {/* Hidden for V1 - bring back in V2. Loader wiring kept intact. */}
         {false && (
           <AiInsightsPanel
             pageKey="customers"
@@ -2584,7 +2584,7 @@ export default function Customers() {
                       ? "All New customer Meta-reported conversions by age & gender"
                       : demoScope === "allMeta"
                         ? "All Meta-reported conversions by age & gender"
-                        : "All customers (Meta + organic) by gender — name-based inference, age unavailable"}
+                        : "All customers (Meta + organic) by gender - name-based inference, age unavailable"}
                   </Text>
                 </div>
                 <div className="toggle-group">
@@ -2671,7 +2671,7 @@ export default function Customers() {
                           );
                         })}
                       </div>
-                      {/* Spend comparison — CPA only meaningful when we have
+                      {/* Spend comparison - CPA only meaningful when we have
                           spend, which the "all" (name-inferred) scope does not.
                           For "all" we show AOV instead so the chip stays useful. */}
                       <div style={{ display: "flex", gap: "12px", justifyContent: "center", marginTop: "4px" }}>
@@ -2804,8 +2804,8 @@ export default function Customers() {
               </div>
               <Text as="p" variant="bodySm" tone="subdued">
                 {journeyScope === "meta"
-                  ? "New customers acquired via Meta in this period — did they come back?"
-                  : "All new customers acquired in this period — did they come back?"}
+                  ? "New customers acquired via Meta in this period - did they come back?"
+                  : "All new customers acquired in this period - did they come back?"}
               </Text>
               <JourneyFlow
                 firstAOV={journeyScope === "meta" ? journeyFirstAOV : allJourneyFirstAOV}
@@ -2926,7 +2926,7 @@ export default function Customers() {
                 <div style={{ flex: 1, textAlign: "center" }}>
                   <Text as="h2" variant="headingLg">{ltvTab === "meta" ? "Meta Customer Lifetime Value Explorer" : "All Customer Lifetime Value Explorer"}</Text>
                   <Text as="p" variant="bodySm" tone="subdued">
-                    Cohort analysis across all matured customers — independent of the date range selector at the top of the page.
+                    Cohort analysis across all matured customers - independent of the date range selector at the top of the page.
                   </Text>
                 </div>
                 <div style={{ flex: 1, display: "flex", justifyContent: "flex-end" }}>
@@ -2962,7 +2962,7 @@ export default function Customers() {
                 const avgOrds = useFiltered ? ltvFiltered.avgOrders : baseAvgOrds;
                 const repeatRate = useFiltered ? ltvFiltered.repeatRate : baseRepeatRate;
                 const medT2 = useFiltered ? ltvFiltered.medianTimeTo2nd : baseMedT2;
-                // Always use ltvFiltered.benchmarkWindows — it computes a
+                // Always use ltvFiltered.benchmarkWindows - it computes a
                 // FIXED COHORT (same customers at every window) so the curve
                 // is monotonic and the 30d/180d/365d points are directly
                 // comparable. The legacy baseBenchmarkWindows used a
@@ -2977,7 +2977,7 @@ export default function Customers() {
 
                 // Hero LTV respects the window preset. "Lifetime" = true
                 // realised cumulative spend per customer (sum of c.ltv over
-                // the cohort) — uncapped by any maturity window. Numeric
+                // the cohort) - uncapped by any maturity window. Numeric
                 // presets pick that specific window from benchmarkWindows.
                 const preset = ltvWindowPreset;
                 const isLifetime = preset === "lifetime";
@@ -3012,10 +3012,10 @@ export default function Customers() {
                   ? (payback <= 1 ? 0 : Math.round(medT2 * (payback - 1)))
                   : null;
                 const ratioColor = ltvCacRatio >= 3 ? "#059669" : ltvCacRatio >= 2 ? "#1F2937" : ltvCacRatio >= 1 ? "#D97706" : "#DC2626";
-                const ratioBlurb = ltvCacRatio >= 3 ? `Healthy — every ${cs}1 of ad spend returns ${cs}${ltvCacRatio.toFixed(2)} over ${heroLabel.replace(" LTV", "")}`
-                  : ltvCacRatio >= 2 ? `On track — ${cs}1 spent returns ${cs}${ltvCacRatio.toFixed(2)}`
-                  : ltvCacRatio >= 1 ? "Thin margin — lift repeat rate or lower CAC"
-                  : ltvCacRatio > 0 ? "Unprofitable — CAC is outpacing LTV"
+                const ratioBlurb = ltvCacRatio >= 3 ? `Healthy - every ${cs}1 of ad spend returns ${cs}${ltvCacRatio.toFixed(2)} over ${heroLabel.replace(" LTV", "")}`
+                  : ltvCacRatio >= 2 ? `On track - ${cs}1 spent returns ${cs}${ltvCacRatio.toFixed(2)}`
+                  : ltvCacRatio >= 1 ? "Thin margin - lift repeat rate or lower CAC"
+                  : ltvCacRatio > 0 ? "Unprofitable - CAC is outpacing LTV"
                   : "Not enough mature customers yet";
 
                 return (
@@ -3026,7 +3026,7 @@ export default function Customers() {
                       <div style={{ padding: "18px 22px", background: "linear-gradient(135deg, #EEF2FF 0%, #F5F3FF 100%)", borderRadius: "10px", border: "1px solid #E0E7FF" }}>
                         <div style={{ fontSize: "11px", fontWeight: 700, color: "#6366F1", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "6px" }}>Lifetime Value</div>
                         <div style={{ fontSize: "34px", fontWeight: 800, color: "#1F2937", lineHeight: 1.05 }}>
-                          {heroLtv > 0 ? `${cs}${Math.round(heroLtv).toLocaleString()}` : "—"}
+                          {heroLtv > 0 ? `${cs}${Math.round(heroLtv).toLocaleString()}` : "-"}
                         </div>
                         <div style={{ fontSize: "12px", color: "#4B5563", marginTop: "6px" }}>
                           {isLifetime
@@ -3041,7 +3041,7 @@ export default function Customers() {
                         <div style={{ padding: "18px 22px", background: "#fff", borderRadius: "10px", border: "1px solid #E5E7EB" }}>
                           <div style={{ fontSize: "11px", fontWeight: 700, color: "#6366F1", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "6px" }}>LTV : CAC</div>
                           <div style={{ fontSize: "34px", fontWeight: 800, color: ratioColor, lineHeight: 1.05 }}>
-                            {ltvCacRatio > 0 ? `${ltvCacRatio.toFixed(2)}×` : "—"}
+                            {ltvCacRatio > 0 ? `${ltvCacRatio.toFixed(2)}×` : "-"}
                           </div>
                           <div style={{ fontSize: "12px", color: "#4B5563", marginTop: "6px" }}>{ratioBlurb}</div>
                           {cac > 0 && heroLtv > 0 && (
@@ -3062,7 +3062,7 @@ export default function Customers() {
                           <div style={{ fontSize: "34px", fontWeight: 800, color: "#1F2937", lineHeight: 1.05 }}>
                             {payback > 0
                               ? (paybackDays != null ? (paybackDays === 0 ? "Day 1" : `${paybackDays}d`) : `${payback.toFixed(1)} orders`)
-                              : "—"}
+                              : "-"}
                           </div>
                           <div style={{ fontSize: "12px", color: "#4B5563", marginTop: "6px" }}>
                             {payback > 0
@@ -3084,12 +3084,12 @@ export default function Customers() {
                     <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "0", marginBottom: "20px", padding: "12px 16px", background: "#FAFAFA", borderRadius: "8px", border: "1px solid #F3F4F6" }}>
                       <div style={{ borderRight: "1px solid #E5E7EB", paddingRight: "16px" }}>
                         <div style={{ fontSize: "10px", fontWeight: 600, color: "#9CA3AF", textTransform: "uppercase", letterSpacing: "0.5px" }}>Avg Order</div>
-                        <div style={{ fontSize: "18px", fontWeight: 700, color: "#1F2937", marginTop: "2px" }}>{avgAov > 0 ? `${cs}${Math.round(avgAov).toLocaleString()}` : "—"}</div>
+                        <div style={{ fontSize: "18px", fontWeight: 700, color: "#1F2937", marginTop: "2px" }}>{avgAov > 0 ? `${cs}${Math.round(avgAov).toLocaleString()}` : "-"}</div>
                         <div style={{ fontSize: "11px", color: "#9CA3AF" }}>{avgOrds > 0 ? `${avgOrds.toFixed(1)} orders / customer` : "no data"}</div>
                       </div>
                       <div style={{ borderRight: "1px solid #E5E7EB", padding: "0 16px" }}>
                         <div style={{ fontSize: "10px", fontWeight: 600, color: "#9CA3AF", textTransform: "uppercase", letterSpacing: "0.5px" }}>Days to 2nd Order</div>
-                        <div style={{ fontSize: "18px", fontWeight: 700, color: "#1F2937", marginTop: "2px" }}>{medT2 != null ? `${medT2}d` : "—"}</div>
+                        <div style={{ fontSize: "18px", fontWeight: 700, color: "#1F2937", marginTop: "2px" }}>{medT2 != null ? `${medT2}d` : "-"}</div>
                         <div style={{ fontSize: "11px", color: "#9CA3AF" }}>median across cohort</div>
                       </div>
                       <div style={{ paddingLeft: "16px" }}>
@@ -3098,7 +3098,7 @@ export default function Customers() {
                         <div style={{ fontSize: "11px", color: "#9CA3AF" }}>{count.toLocaleString()} customer{count !== 1 ? "s" : ""}</div>
                       </div>
                     </div>
-                    {/* Filters — sit between the headline tiles and the LTV
+                    {/* Filters - sit between the headline tiles and the LTV
                         progression chart. Window/Gender/Age/Country/Margin
                         re-shape the cohort and re-derive the three hero stats
                         + chart. Only relevant on the Meta tab. */}
@@ -3166,7 +3166,7 @@ export default function Customers() {
                       const monthlyDataObj = isMeta ? ltvMonthly?.meta : ltvMonthly?.all;
                       const allMonthlyRows = monthlyDataObj?.rows || [];
                       // Cap the cohort view to the most recent 12 cohort rows
-                      // and 12 month columns — anything older/longer is
+                      // and 12 month columns - anything older/longer is
                       // diminishing-returns noise for merchant decisions.
                       const monthlyRows = allMonthlyRows.slice(-12);
                       const maxMonthCol = Math.min(monthlyDataObj?.maxMonth || 0, 12);
@@ -3177,7 +3177,7 @@ export default function Customers() {
                               <Text as="p" variant="headingSm">{ltvView === "progression" ? "LTV Progression" : "Monthly Cohort Table"}</Text>
                               <Text as="p" variant="bodySm" tone="subdued">
                                 {ltvView === "progression"
-                                  ? "Benchmark cohort: the longest-tenured group of Meta-acquired customers, tracked at every window. Same customers at every point — curve shows their cumulative revenue growing over time. Recent cohort: latest fully-matured group, for trend comparison."
+                                  ? "Benchmark cohort: the longest-tenured group of Meta-acquired customers, tracked at every window. Same customers at every point - curve shows their cumulative revenue growing over time. Recent cohort: latest fully-matured group, for trend comparison."
                                   : cohortMetric === "ltv"
                                     ? "Each row is an acquisition month. Values show cumulative revenue per customer through each 30-day period."
                                     : "Each row is an acquisition month. Values show % of customers who placed at least one order in each 30-day period."}
@@ -3254,7 +3254,7 @@ export default function Customers() {
                                     </div>
                                   )}
                                 </div>
-                                {/* Diagnostic readout — surfaces fixed-cohort
+                                {/* Diagnostic readout - surfaces fixed-cohort
                                     size + per-window values so flat curves can
                                     be read directly without guessing. */}
                                 <div style={{ display: "flex", flexWrap: "wrap", gap: "10px", marginBottom: "10px", fontSize: "11px", color: "#6B7280", background: "#FAFAFA", border: "1px solid #F3F4F6", borderRadius: 6, padding: "6px 10px" }}>
@@ -3406,9 +3406,9 @@ export default function Customers() {
                                             <td style={{ padding: "6px 8px", textAlign: "right", color: "#6B7280", fontWeight: 500 }}>{row.count}</td>
                                             {Array.from({ length: maxMonthCol + 1 }, (_, mi) => {
                                               const md = row.months[mi];
-                                              if (!md?.matured) return <td key={mi} style={{ padding: "6px 8px", textAlign: "right", color: "#D1D5DB" }}>—</td>;
+                                              if (!md?.matured) return <td key={mi} style={{ padding: "6px 8px", textAlign: "right", color: "#D1D5DB" }}>-</td>;
                                               const val = cohortMetric === "ltv" ? md.avgLtv : md.retention;
-                                              if (val === null || val === undefined) return <td key={mi} style={{ padding: "6px 8px", textAlign: "right", color: "#D1D5DB" }}>—</td>;
+                                              if (val === null || val === undefined) return <td key={mi} style={{ padding: "6px 8px", textAlign: "right", color: "#D1D5DB" }}>-</td>;
                                               let cellBg = "transparent", cellText = "#1F2937";
                                               if (cohortMetric === "retention") { const colors = getRetentionColor(val); cellBg = colors.bg; cellText = colors.text; }
                                               else { const avg = colAvgs[mi]; if (avg > 0) { const delta = ((val - avg) / avg) * 100; if (delta >= 10) { cellBg = "#ECFDF5"; cellText = "#059669"; } else if (delta <= -10) { cellBg = "#FEF2F2"; cellText = "#DC2626"; } } }
@@ -3451,7 +3451,7 @@ export default function Customers() {
 
 
 
-        {/* Customer table removed — not needed at this stage */}
+        {/* Customer table removed - not needed at this stage */}
       </BlockStack>
       </ReportTabs>
     </Page>

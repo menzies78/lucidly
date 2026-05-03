@@ -3,7 +3,7 @@
  *
  * Interactive zoomable world map of every geocoded customer, with cohort
  * filters that mirror Product Demographics Explorer. Built on react-leaflet
- * + supercluster — clusters at low zoom collapse into individual city dots
+ * + supercluster - clusters at low zoom collapse into individual city dots
  * as the user zooms in. Tile layer uses CartoDB Positron for the clean
  * flat-vector look from the brief.
  *
@@ -26,7 +26,7 @@ type Scope = "metaAcquired" | "allMeta" | "all";
 type RecencyBand = "any" | "active" | "dormant" | "lapsed";
 type OrderBand = "any" | "1" | "2-3" | "4+";
 
-// Compact wire shape — keys are single letters to keep the JSON blob small.
+// Compact wire shape - keys are single letters to keep the JSON blob small.
 // Server side: app/services/customerRollups.server.js builds this.
 export interface MapPoint {
   i: string;                       // customer id
@@ -96,7 +96,7 @@ interface Props {
   blob: MapBlob | null;
   cs: string;
   /** Protomaps API key (referrer-restricted, safe in client). When null we
-   *  fall back to the CARTO Voyager raster basemap — fine for dev, NOT
+   *  fall back to the CARTO Voyager raster basemap - fine for dev, NOT
    *  acceptable for App Store launch (CARTO's CDN is fair-use only). */
   protomapsKey?: string | null;
 }
@@ -104,7 +104,7 @@ interface Props {
 const DAY_MS = 86400000;
 
 // In-tile time-window control. Defaults to "all" so the map paints with full
-// historic depth on first view — that's the moment the visualisation has
+// historic depth on first view - that's the moment the visualisation has
 // the most impact. Narrower windows are user-driven, not page-driven, because
 // most pages default to a 30d range and that would make this tile look empty
 // the moment it loaded. Values are days; "all" disables filtering.
@@ -126,14 +126,14 @@ export default function CustomerMapExplorer({ blob, cs, protomapsKey = null }: P
   const [refundsTop, setRefundsTop] = useState<boolean>(false);
   const [orderBand, setOrderBand] = useState<OrderBand>("any");
   const [recency, setRecency] = useState<RecencyBand>("any");
-  // Country/product filters have no permanent UI controls — they're set
+  // Country/product filters have no permanent UI controls - they're set
   // by clicking a Gem and surfaced as removable chips. Country picker was
   // intentionally removed; product picker is below.
   const [country, setCountry] = useState<string>("All");
   const [product, setProduct] = useState<string>("All");
   const [productSearch, setProductSearch] = useState<string>("");
 
-  // In-tile time-window. "all" = no filtering (default — preserves the
+  // In-tile time-window. "all" = no filtering (default - preserves the
   // first-paint impact of seeing every customer). Numeric values mean
   // "customers with an order in the last N days".
   const [timeWindow, setTimeWindow] = useState<TimeWindow>("all");
@@ -146,7 +146,7 @@ export default function CustomerMapExplorer({ blob, cs, protomapsKey = null }: P
     const raw: MapPoint[] = blob?.points || [];
     for (const p of raw) { if (!p.pr) p.pr = []; }
     if (timeWindow === "all") return raw;
-    // Filter on `d` (days-since-last-order) — present on every blob version,
+    // Filter on `d` (days-since-last-order) - present on every blob version,
     // so the window control works without waiting for fd/ld to populate.
     const cutoff = timeWindow as number;
     return raw.filter((p) => p.d != null && p.d <= cutoff);
@@ -154,7 +154,7 @@ export default function CustomerMapExplorer({ blob, cs, protomapsKey = null }: P
   const productList = blob?.productList || [];
   const gems = blob?.gems || [];
 
-  // Gender filter is available across every scope — even on All Customers,
+  // Gender filter is available across every scope - even on All Customers,
   // because customerRollups.server.js falls back to Customer.inferredGender
   // (name-based) when Meta's per-attribution metaGender is missing. Age,
   // however, still requires a Meta breakdown row, so it remains gated to
@@ -276,7 +276,7 @@ export default function CustomerMapExplorer({ blob, cs, protomapsKey = null }: P
   };
 
   // Apply a Gem's filter set in one pass. Resets fields the gem doesn't
-  // touch so the user sees a clean slice — chasing one anomaly at a time.
+  // touch so the user sees a clean slice - chasing one anomaly at a time.
   const applyGem = (g: MapGem) => {
     const f = g.filters;
     setGender("All"); setAges([]);
@@ -290,7 +290,7 @@ export default function CustomerMapExplorer({ blob, cs, protomapsKey = null }: P
     setRecency(f.recency || "any");
   };
 
-  // Product picker options — show the full product list once we have one,
+  // Product picker options - show the full product list once we have one,
   // sorted alphabetically. Cap at the products that actually have any
   // customers in the active scope, so the list shrinks for All Meta etc.
   const productOptions = useMemo(() => {
@@ -324,12 +324,12 @@ export default function CustomerMapExplorer({ blob, cs, protomapsKey = null }: P
   const baseSubtitle = scope === "metaAcquired"
     ? "Where your Meta-acquired customers live. Drill into cities, filter by demographics, spotlight VIPs and discount-only buyers."
     : scope === "allMeta"
-    ? "All Meta customers — acquired + retargeted. Gender filter uses Meta's reported demographics where available, otherwise name-based inference."
+    ? "All Meta customers - acquired + retargeted. Gender filter uses Meta's reported demographics where available, otherwise name-based inference."
     : "Every customer in your Shopify, regardless of source. Gender filter uses name-based inference for non-Meta customers; age remains Meta-only.";
-  // Always remind people the dots are city-grain, not address-grain — the
+  // Always remind people the dots are city-grain, not address-grain - the
   // map happily zooms to street level but the underlying signal is the
   // city centroid from geonames cities5000.
-  const subtitle = `${baseSubtitle} Locations are approximate — each pin is the city centroid (or the country centroid where the customer's city is unknown), not the customer's exact address.`;
+  const subtitle = `${baseSubtitle} Locations are approximate - each pin is the city centroid (or the country centroid where the customer's city is unknown), not the customer's exact address.`;
 
   return (
     <Card>
@@ -355,7 +355,7 @@ export default function CustomerMapExplorer({ blob, cs, protomapsKey = null }: P
         <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-start", gap: 12, flexWrap: "wrap" }}>
           <div
             className="cme-toggle-group"
-            title="Filter by recency of last order. All time is the default — narrower windows highlight customers who've ordered recently."
+            title="Filter by recency of last order. All time is the default - narrower windows highlight customers who've ordered recently."
           >
             {TIME_WINDOWS.map((w) => (
               <button
@@ -374,7 +374,7 @@ export default function CustomerMapExplorer({ blob, cs, protomapsKey = null }: P
           </div>
         </div>
 
-        {/* Map + side panel — placed above the filters per Andy's preference:
+        {/* Map + side panel - placed above the filters per Andy's preference:
             users want to see the map first and tweak filters below it. */}
         <div style={{ display: "grid", gridTemplateColumns: "1fr 280px", gap: "16px", minHeight: 540 }}>
           <MapCanvas points={filtered} cs={cs} protomapsKey={protomapsKey} />
@@ -395,7 +395,7 @@ export default function CustomerMapExplorer({ blob, cs, protomapsKey = null }: P
             column under 900px. */}
         <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)", gap: 16, marginTop: 4 }}>
         <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
-          {/* Active filter chips — country + product. Both can only be set
+          {/* Active filter chips - country + product. Both can only be set
               by clicking a Gem (no UI control for country); chip is the
               way to clear. */}
           {(country !== "All" || product !== "All") && (
@@ -425,7 +425,7 @@ export default function CustomerMapExplorer({ blob, cs, protomapsKey = null }: P
             </div>
           )}
 
-          {/* Product picker — dropdown + open-text search. Lets the user
+          {/* Product picker - dropdown + open-text search. Lets the user
               ask "where do buyers of X live?" without having to memorise
               exact product titles. Both inputs filter independently;
               search trumps dropdown when both are set. */}
@@ -459,7 +459,7 @@ export default function CustomerMapExplorer({ blob, cs, protomapsKey = null }: P
             />
           </div>
 
-          {/* Gender — available on every scope. Coverage is roughly:
+          {/* Gender - available on every scope. Coverage is roughly:
               ~30% from Meta breakdown + ~50% extra from name-based
               inference, so most points carry a tag regardless of segment. */}
           <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
@@ -552,7 +552,7 @@ export default function CustomerMapExplorer({ blob, cs, protomapsKey = null }: P
             ))}
           </div>
 
-          {/* Recency — stacked below Orders so the right-hand Gems column
+          {/* Recency - stacked below Orders so the right-hand Gems column
               has room to breathe at 50% width. */}
           <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
             <span style={labelStyle}>Recency</span>
@@ -583,7 +583,7 @@ export default function CustomerMapExplorer({ blob, cs, protomapsKey = null }: P
           )}
         </div>
 
-        {/* Gems — auto-surfaced statistical anomalies. Click to populate
+        {/* Gems - auto-surfaced statistical anomalies. Click to populate
             the filters with the exact slice the gem describes. Same shape
             as the gems below the Product Demographics Explorer. */}
         <GemsList gems={gems} onApply={applyGem} />
@@ -594,7 +594,7 @@ export default function CustomerMapExplorer({ blob, cs, protomapsKey = null }: P
 }
 
 // ───────────────────────────────────────────────────────────────────────────
-// GemsList — right-hand "Gems spotted in this period" panel
+// GemsList - right-hand "Gems spotted in this period" panel
 // ───────────────────────────────────────────────────────────────────────────
 
 function GemsList({ gems, onApply }: { gems: MapGem[]; onApply: (g: MapGem) => void }) {
@@ -603,14 +603,14 @@ function GemsList({ gems, onApply }: { gems: MapGem[]; onApply: (g: MapGem) => v
       <Text as="h3" variant="headingSm">Gems spotted in this period</Text>
       {gems.length === 0 && (
         <div style={{ color: "#9CA3AF", fontSize: 12, padding: "10px 0" }}>
-          Nothing statistically unusual yet — gems appear once you have
+          Nothing statistically unusual yet - gems appear once you have
           enough customers in multiple countries.
         </div>
       )}
       <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
         {gems.map((g, i) => {
           const cn = countryDisplay(g.country) || g.country;
-          // Sentence varies by gem kind — each one frames the lift in the
+          // Sentence varies by gem kind - each one frames the lift in the
           // language of the filter it'll apply.
           let text = "";
           if (g.kind === "vip") text = `${cn} has ${g.lift}× the share of Top 5% VIP customers (${g.count} vs ~${g.expected} expected)`;
@@ -651,7 +651,7 @@ function GemsList({ gems, onApply }: { gems: MapGem[]; onApply: (g: MapGem) => v
 }
 
 // ───────────────────────────────────────────────────────────────────────────
-// MapCanvas — leaflet + supercluster, lazy-loaded client-side
+// MapCanvas - leaflet + supercluster, lazy-loaded client-side
 // ───────────────────────────────────────────────────────────────────────────
 
 interface MapCanvasProps {
@@ -670,7 +670,7 @@ function MapCanvas({ points, cs, protomapsKey }: MapCanvasProps) {
   useEffect(() => {
     let mounted = true;
     (async () => {
-      // protomaps-leaflet is only loaded when we actually have a key —
+      // protomaps-leaflet is only loaded when we actually have a key -
       // saves ~80kb on the initial chunk for dev/CARTO-fallback users.
       const imports: Promise<any>[] = [
         import("react-leaflet"),
@@ -734,7 +734,7 @@ function MapCanvas({ points, cs, protomapsKey }: MapCanvasProps) {
         inertia={false}
         // Clamp the viewport to the world so users can't pan into the
         // grey void above/below the map. Leaflet's maxBounds clamps the
-        // *center* of the map, not the viewport edges — so at minZoom=2
+        // *center* of the map, not the viewport edges - so at minZoom=2
         // the bound has to be tightened well inside the web-mercator
         // ±85 limit to keep half a viewport's worth of latitude inside
         // the world tile. ±60 lat covers every populated area we care
@@ -758,14 +758,14 @@ function MapCanvas({ points, cs, protomapsKey }: MapCanvasProps) {
   );
 }
 
-// ProtomapsBaseLayer — vector basemap from api.protomaps.com.
+// ProtomapsBaseLayer - vector basemap from api.protomaps.com.
 //
 // Why this exists: react-leaflet has no native binding for protomaps-leaflet,
 // which uses an imperative `leafletLayer({ url, theme }).addTo(map)` API.
 // We hook in via useMap (same pattern as ClusterLayer) and clean up on
 // unmount so HMR / theme switches don't leak layers.
 //
-// API key is referrer-restricted by Protomaps — safe in client bundle. If
+// API key is referrer-restricted by Protomaps - safe in client bundle. If
 // the key ever needs rotating, swap PROTOMAPS_API_KEY in fly secrets and
 // redeploy. No code change required.
 function ProtomapsBaseLayer({ apiKey, protomapsL, useMap }: { apiKey: string; protomapsL: any; useMap: any }) {
@@ -773,7 +773,7 @@ function ProtomapsBaseLayer({ apiKey, protomapsL, useMap }: { apiKey: string; pr
   useEffect(() => {
     if (!map || !protomapsL) return;
     // v5 API: option is `flavor` (not `theme`), URL must be a Z/X/Y .mvt
-    // endpoint or a .pmtiles archive — passing the v4.json TileJSON URL
+    // endpoint or a .pmtiles archive - passing the v4.json TileJSON URL
     // silently fails to render.
     const layer = protomapsL.leafletLayer({
       url: `https://api.protomaps.com/tiles/v4/{z}/{x}/{y}.mvt?key=${apiKey}`,
@@ -803,7 +803,7 @@ function ClusterLayer({ points, L, useMap, Supercluster, cs }: ClusterLayerProps
 
   // Build supercluster index whenever the input points change. We coerce
   // the lon/lat into geojson features inline. Cluster radius 60px is a
-  // sensible default — tighter and you get noisy single-customer clusters
+  // sensible default - tighter and you get noisy single-customer clusters
   // at country zoom; looser and big cities never separate from continents.
   useEffect(() => {
     const features = points.map((p) => ({
@@ -813,7 +813,7 @@ function ClusterLayer({ points, L, useMap, Supercluster, cs }: ClusterLayerProps
     }));
     // map/reduce roll the per-leaf `approx` flag into a per-cluster count so
     // we can flag clusters that are entirely (or mostly) country-centroid
-    // fallbacks — those never decompose at zoom because every leaf shares
+    // fallbacks - those never decompose at zoom because every leaf shares
     // the same lat/lng, so we explain that in the cluster's tooltip.
     const idx = new Supercluster({
       radius: 60,
@@ -828,7 +828,7 @@ function ClusterLayer({ points, L, useMap, Supercluster, cs }: ClusterLayerProps
   }, [points, Supercluster]);
 
   // Repaint markers on every move/zoom. We tear down the previous L.layerGroup
-  // and rebuild — for ~30k point shops this is fine (supercluster is fast,
+  // and rebuild - for ~30k point shops this is fine (supercluster is fast,
   // visible cluster count caps in the hundreds at any given zoom). For
   // higher-volume merchants we'd switch to incremental updates.
   useEffect(() => {
@@ -853,12 +853,12 @@ function ClusterLayer({ points, L, useMap, Supercluster, cs }: ClusterLayerProps
           // "Approx-heavy" = the bulk of leaves are country-centroid fallbacks.
           // Two signals, either is sufficient:
           //   1. ≥80% of leaves carry the per-point `x` flag (the rollup-time
-          //      detection — coordinate-matched against COUNTRY_CENTROIDS).
+          //      detection - coordinate-matched against COUNTRY_CENTROIDS).
           //   2. supercluster reports the cluster expands at > maxZoom, i.e.
-          //      every leaf shares the exact same lat/lng — only possible
+          //      every leaf shares the exact same lat/lng - only possible
           //      when they're all on a centroid. This is the live-blob
           //      fallback for points predating the coordinate-based `x`.
-          //      Note: > maxZoom (not >=) — clusters that split AT maxZoom
+          //      Note: > maxZoom (not >=) - clusters that split AT maxZoom
           //      are genuinely close-but-distinct cities (e.g. dense US
           //      metros) and must NOT be flagged as approximate.
           const expansionZoom = indexRef.current.getClusterExpansionZoom(c.id);
@@ -877,7 +877,7 @@ function ClusterLayer({ points, L, useMap, Supercluster, cs }: ClusterLayerProps
               <div style="font-size:12px;line-height:1.4;max-width:240px;">
                 <div style="font-weight:700;font-size:13px;margin-bottom:4px;color:#92400E;">Approximate location</div>
                 <div style="color:#374151;">${count.toLocaleString()} customer${count === 1 ? "" : "s"} plotted at this country's centroid because Shopify didn't capture (or matched) their city.</div>
-                <div style="color:#6B7280;margin-top:6px;">Zooming won't split this cluster — they all share the same fallback coordinates.</div>
+                <div style="color:#6B7280;margin-top:6px;">Zooming won't split this cluster - they all share the same fallback coordinates.</div>
               </div>`;
             m.bindPopup(popup);
           } else {
@@ -946,7 +946,7 @@ function ClusterLayer({ points, L, useMap, Supercluster, cs }: ClusterLayerProps
 }
 
 // ───────────────────────────────────────────────────────────────────────────
-// TopCitiesPanel — right-hand list, click to fly the map to the city
+// TopCitiesPanel - right-hand list, click to fly the map to the city
 // ───────────────────────────────────────────────────────────────────────────
 
 interface TopCity {
@@ -1002,7 +1002,7 @@ function TopCitiesPanel({ cities, cs }: { cities: TopCity[]; cs: string }) {
           >
             <div style={{ minWidth: 0, flex: 1 }}>
               <div style={{ fontWeight: 600, color: "#111827", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{c.city}</div>
-              <div style={{ color: "#9CA3AF", fontSize: "11px" }}>{c.country || "—"}</div>
+              <div style={{ color: "#9CA3AF", fontSize: "11px" }}>{c.country || "-"}</div>
             </div>
             <div style={{ textAlign: "right", flexShrink: 0 }}>
               <div style={{ fontWeight: 700, color: "#7C3AED" }}>

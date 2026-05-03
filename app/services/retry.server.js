@@ -26,7 +26,7 @@ export async function withRetry(fn, label = "external", opts = {}) {
         throw err;
       }
       const delay = baseDelayMs * Math.pow(2, attempt - 1); // 1s, 2s, 4s
-      console.warn(`[${label}] attempt ${attempt}/${maxAttempts} failed: ${err.message} — retrying in ${delay}ms`);
+      console.warn(`[${label}] attempt ${attempt}/${maxAttempts} failed: ${err.message} - retrying in ${delay}ms`);
       await new Promise(r => setTimeout(r, delay));
     }
   }

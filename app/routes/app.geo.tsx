@@ -487,7 +487,7 @@ export const loader = async ({ request }) => {
 
   // ── Customer Map Explorer blob (computed at rollup time) ──
   // The blob is all-time. The tile has its own time-window control (default
-  // All time — page-level date filter intentionally NOT applied here so the
+  // All time - page-level date filter intentionally NOT applied here so the
   // first paint shows full historic depth). If the rollup hasn't run yet,
   // the component renders an empty state.
   const customerMapRow = await db.shopAnalysisCache.findUnique({
@@ -505,7 +505,7 @@ export const loader = async ({ request }) => {
   const aiGeneratedAt = aiCached?.generatedAt?.toISOString() || null;
   const aiIsStale = aiCached ? aiCached.dataHash !== aiCurrentHash : false;
 
-  // Protomaps API key — public referrer-restricted key, safe to send to the
+  // Protomaps API key - public referrer-restricted key, safe to send to the
   // browser. Falls back to null so the client uses the CARTO basemap in dev
   // before the secret is set. App Store launch requires this to be present.
   const protomapsKey = process.env.PROTOMAPS_API_KEY || null;
@@ -814,7 +814,7 @@ export default function GeoPerformance() {
     const cpaCandidates = [...overallRows].filter((r: any) => r.attributedOrders >= 5 && r.cpa > 0);
     const cheapestCPA = cpaCandidates.sort((a: any, b: any) => a.cpa - b.cpa)[0] || null;
 
-    // d. Spend Drains — campaigns with highest spend but ROAS < 1x
+    // d. Spend Drains - campaigns with highest spend but ROAS < 1x
     const drainCampaigns = (campaignEntities as any[])
       .filter(e => {
         const rev = e.totalAttributedRevenue + e.totalUnverifiedRevenue;
@@ -826,7 +826,7 @@ export default function GeoPerformance() {
     const topDrainROAS = topDrain && topDrain.totalSpend > 0
       ? r2((topDrain.totalAttributedRevenue + topDrain.totalUnverifiedRevenue) / topDrain.totalSpend) : 0;
 
-    // e. Geo Mismatch — countries with spend but zero conversions
+    // e. Geo Mismatch - countries with spend but zero conversions
     const mismatchCountries = overallRows.filter((r: any) => r.spend > 0 && r.attributedOrders === 0 && r.metaConversions === 0);
     const mismatchSpend = mismatchCountries.reduce((s: number, r: any) => s + r.spend, 0);
 
@@ -845,7 +845,7 @@ export default function GeoPerformance() {
         tone: "positive",
         text: (
           <>
-            <strong>Top new-customer country:</strong> {countryName(quickStats.topNewCust.country)} — {quickStats.topNewCust.newCustomers} new customers ({fmtCompact(quickStats.topNewCust.newCustomerRevenue, cs)} rev)
+            <strong>Top new-customer country:</strong> {countryName(quickStats.topNewCust.country)} - {quickStats.topNewCust.newCustomers} new customers ({fmtCompact(quickStats.topNewCust.newCustomerRevenue, cs)} rev)
           </>
         ),
       });
@@ -856,7 +856,7 @@ export default function GeoPerformance() {
         tone: "positive",
         text: (
           <>
-            <strong>Best Meta ROAS:</strong> {countryName(quickStats.bestROAS.country)} — {quickStats.bestROAS.blendedROAS}x ({quickStats.bestROAS.attributedOrders} orders)
+            <strong>Best Meta ROAS:</strong> {countryName(quickStats.bestROAS.country)} - {quickStats.bestROAS.blendedROAS}x ({quickStats.bestROAS.attributedOrders} orders)
           </>
         ),
       });
@@ -867,7 +867,7 @@ export default function GeoPerformance() {
         tone: "positive",
         text: (
           <>
-            <strong>Cheapest Meta CPA:</strong> {countryName(quickStats.cheapestCPA.country)} — {cs}{Math.round(quickStats.cheapestCPA.cpa)} per order
+            <strong>Cheapest Meta CPA:</strong> {countryName(quickStats.cheapestCPA.country)} - {cs}{Math.round(quickStats.cheapestCPA.cpa)} per order
           </>
         ),
       });
@@ -878,7 +878,7 @@ export default function GeoPerformance() {
         tone: "negative",
         text: (
           <>
-            <strong>Top spend drain:</strong> {quickStats.topDrain.entityName} — {fmtCompact(quickStats.topDrain.totalSpend, cs)} spent at {quickStats.topDrainROAS}x ROAS
+            <strong>Top spend drain:</strong> {quickStats.topDrain.entityName} - {fmtCompact(quickStats.topDrain.totalSpend, cs)} spent at {quickStats.topDrainROAS}x ROAS
           </>
         ),
       });
@@ -889,13 +889,13 @@ export default function GeoPerformance() {
         tone: "warning",
         text: (
           <>
-            <strong>Geo mismatch:</strong> {quickStats.mismatchCountries.length} {quickStats.mismatchCountries.length === 1 ? "country" : "countries"} with Meta spend but zero conversions — {fmtCompact(quickStats.mismatchSpend, cs)} at risk
+            <strong>Geo mismatch:</strong> {quickStats.mismatchCountries.length} {quickStats.mismatchCountries.length === 1 ? "country" : "countries"} with Meta spend but zero conversions - {fmtCompact(quickStats.mismatchSpend, cs)} at risk
           </>
         ),
       });
     }
 
-    // Country concentration — how top-heavy is the Meta spend?
+    // Country concentration - how top-heavy is the Meta spend?
     const spendRows = [...overallRows].filter((r: any) => r.spend > 0).sort((a: any, b: any) => b.spend - a.spend);
     if (spendRows.length > 0) {
       const top = spendRows[0];
@@ -955,7 +955,7 @@ export default function GeoPerformance() {
       <ReportTabs>
         <BlockStack gap="500">
 
-          {/* Hidden for V1 — bring back in V2. Loader wiring kept intact. */}
+          {/* Hidden for V1 - bring back in V2. Loader wiring kept intact. */}
           {false && (
             <AiInsightsPanel
               pageKey="geo"
@@ -975,7 +975,7 @@ export default function GeoPerformance() {
             { id: "topNewCust", label: "Top New Customers", render: () => (
               <SummaryTile
                 label="Top Meta New Customers"
-                value={quickStats.topNewCust ? `${countryFlag(quickStats.topNewCust.country)} ${quickStats.topNewCust.newCustomers}` : "—"}
+                value={quickStats.topNewCust ? `${countryFlag(quickStats.topNewCust.country)} ${quickStats.topNewCust.newCustomers}` : "-"}
                 subtitle={quickStats.topNewCust ? `${countryName(quickStats.topNewCust.country)} · ${fmtCompact(quickStats.topNewCust.newCustomerRevenue, cs)} rev` : "No data"}
                 tooltip={{ definition: "Country with the most unique first-time Meta-acquired customers within the selected date range" }}
               />
@@ -983,7 +983,7 @@ export default function GeoPerformance() {
             { id: "bestRoas", label: "Best Meta ROAS Country", render: () => (
               <SummaryTile
                 label="Best Meta ROAS Country"
-                value={quickStats.bestROAS ? `${countryFlag(quickStats.bestROAS.country)} ${quickStats.bestROAS.blendedROAS}x` : "—"}
+                value={quickStats.bestROAS ? `${countryFlag(quickStats.bestROAS.country)} ${quickStats.bestROAS.blendedROAS}x` : "-"}
                 subtitle={quickStats.bestROAS ? `${countryName(quickStats.bestROAS.country)} · ${quickStats.bestROAS.attributedOrders} orders` : "Min 10 orders needed"}
                 tooltip={{ definition: "Country with the highest Meta blended ROAS within the selected date range (min 10 attributed orders)", calc: "(Matched + unverified revenue) ÷ Meta spend per country" }}
               />
@@ -991,7 +991,7 @@ export default function GeoPerformance() {
             { id: "cheapestCpa", label: "Cheapest Meta CPA", render: () => (
               <SummaryTile
                 label="Cheapest Meta CPA"
-                value={quickStats.cheapestCPA ? `${countryFlag(quickStats.cheapestCPA.country)} ${cs}${Math.round(quickStats.cheapestCPA.cpa)}` : "—"}
+                value={quickStats.cheapestCPA ? `${countryFlag(quickStats.cheapestCPA.country)} ${cs}${Math.round(quickStats.cheapestCPA.cpa)}` : "-"}
                 subtitle={quickStats.cheapestCPA ? `${countryName(quickStats.cheapestCPA.country)} · ${quickStats.cheapestCPA.attributedOrders} orders` : "Min 5 orders needed"}
                 tooltip={{ definition: "Country with the lowest Meta cost per attributed order within the selected date range (min 5 orders)" }}
               />
@@ -1285,7 +1285,7 @@ export default function GeoPerformance() {
                           </div>
                         )}
 
-                        {/* Country sub-rows — aligned with parent columns */}
+                        {/* Country sub-rows - aligned with parent columns */}
                         {isExpanded && entity.countries.map((c: any, ci: number) => {
                           const filtered = applyFilter(c);
                           const crs = roasStyle(filtered.blendedROAS);

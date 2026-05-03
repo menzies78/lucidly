@@ -94,7 +94,7 @@ model Customer {
   // probability for the chosen label (0–1); only stored when ≥ 0.95.
   inferredGender           String?
   inferredGenderConfidence Float?
-  inferredGenderSource     String?  // "name" — reserved for future signals
+  inferredGenderSource     String?  // "name" - reserved for future signals
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
 
@@ -153,9 +153,9 @@ model Order {
   utmTerm                      String   @default("")
   utmId                        String   @default("")
   utmConfirmedMeta             Boolean  @default(false)
-  // Elevar / Web Pixel extras — populated from order note_attributes when present.
+  // Elevar / Web Pixel extras - populated from order note_attributes when present.
   // fbclid: Meta's click identifier (useful for future CAPI / identity work).
-  // metaAdIdFromUtm: Elevar puts the Meta ad id in utm_term — storing it
+  // metaAdIdFromUtm: Elevar puts the Meta ad id in utm_term - storing it
   // separately lets the matcher do a direct ad-id lookup for Layer-1 matches
   // without overloading utm_term. Hidden by default in UI.
   fbclid                       String   @default("")
@@ -175,12 +175,12 @@ model Order {
 
 // Structured line-item rows. Replaces the even-split revenue logic that used
 // to divide `Order.frozenTotalPrice` by the count of titles in the comma-
-// separated `Order.lineItems` string — an approach that misattributed revenue
+// separated `Order.lineItems` string - an approach that misattributed revenue
 // whenever an order mixed products at different price points.
 //
 // `unitPrice` is the discounted unit price (after any line-level discount).
 // `totalPrice` is `unitPrice * quantity` (i.e. the net revenue this line item
-// contributed to the order — excludes shipping / tax which are order-level).
+// contributed to the order - excludes shipping / tax which are order-level).
 // Sum of `totalPrice` across an order's line items ≈ `frozenSubtotalPrice`.
 //
 // `refundedQuantity` / `refundedAmount` are populated from the same per-title
@@ -263,8 +263,8 @@ model Attribution {
   matchMethod           String?
   metaConversionValue   Float    @default(0)
   rivalCount            Int      @default(0)  // number of alternative candidates (for transparency)
-  // Demographic enrichment — assigned from MetaBreakdown after matching
-  metaAge               String?  // e.g. "25-34" — age bracket of the converter
+  // Demographic enrichment - assigned from MetaBreakdown after matching
+  metaAge               String?  // e.g. "25-34" - age bracket of the converter
   metaGender            String?  // "male", "female", "unknown"
   metaPlatform          String?  // "facebook", "instagram", etc.
   metaPlacement         String?  // "feed", "story", "reels", etc.
@@ -336,13 +336,13 @@ model MetaEntity {
   fetchedAt        DateTime  @default(now())
   // Ad set targeting: raw JSON from Meta API targeting_spec + derived funnel stage
   targetingSpec    String?   // JSON blob from Meta targeting field (ad sets only)
-  funnelStage      String?   // cold | warm | hot — derived from targetingSpec at sync time
+  funnelStage      String?   // cold | warm | hot - derived from targetingSpec at sync time
 
   @@unique([shopDomain, entityType, entityId])
   @@index([shopDomain, entityType])
 }
 
-// Meta ad-account activity log — one row per change event fetched from
+// Meta ad-account activity log - one row per change event fetched from
 // /act_{id}/activities. Each event is classified into a stable category
 // (see app/services/metaChangeClassifier.server.js) while rawEventType
 // preserves Meta's original value for debugging / power-user queries.

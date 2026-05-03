@@ -29,7 +29,7 @@ function isManualSyncRunning(shopDomain) {
   for (const t of manualTasks) {
     const p = getProgress(`${t}:${shopDomain}`);
     if (p && p.status === "running") {
-      console.log(`[Scheduler] Skipping — manual task ${t} is running for ${shopDomain}`);
+      console.log(`[Scheduler] Skipping - manual task ${t} is running for ${shopDomain}`);
       return true;
     }
   }
@@ -63,7 +63,7 @@ async function runHourlyCycle() {
         const result = await runIncrementalSync(shop.shopDomain);
         console.log(`[Scheduler] Incremental sync for ${shop.shopDomain}: ${result.matched} matched, ${result.unmatched} unmatched, ${result.breakdownRows} breakdowns`);
 
-        // 3. Meta change log delta (last ~36h) — small, quick, lets the
+        // 3. Meta change log delta (last ~36h) - small, quick, lets the
         // Changes page + campaign chart annotations stay current between
         // daily refreshes. Non-fatal on failure.
         try {
@@ -104,7 +104,7 @@ async function runDailyCycle() {
       try {
         // Don't compete with manual syncs for Meta API rate limit
         if (isManualSyncRunning(shop.shopDomain)) {
-          console.log(`[Scheduler] Deferring daily sync for ${shop.shopDomain} — manual task running`);
+          console.log(`[Scheduler] Deferring daily sync for ${shop.shopDomain} - manual task running`);
           lastDailyRun = null; // Reset so it retries next 15-min check
           continue;
         }
@@ -113,8 +113,8 @@ async function runDailyCycle() {
         console.log(`[Scheduler] Daily sync complete for ${shop.shopDomain}`);
 
         // Match only NEW conversion deltas for each of the last 7 days
-        // Compares refreshed MetaInsight against snapshots — never touches existing attributions
-        // PRIORITY: incremental matches are preserved — daily sweep only handles genuinely new deltas
+        // Compares refreshed MetaInsight against snapshots - never touches existing attributions
+        // PRIORITY: incremental matches are preserved - daily sweep only handles genuinely new deltas
         let totalNew = 0, totalMatched = 0, totalUnmatched = 0, totalPreserved = 0;
         for (let i = 7; i >= 1; i--) {
           const d = new Date();
@@ -185,7 +185,7 @@ async function runDailyCycle() {
 }
 
 export function startScheduler() {
-  // Clear previous intervals on HMR restart — old callbacks reference stale modules
+  // Clear previous intervals on HMR restart - old callbacks reference stale modules
   if (global.__lucidlySchedulerHourly) clearInterval(global.__lucidlySchedulerHourly);
   if (global.__lucidlySchedulerDaily) clearInterval(global.__lucidlySchedulerDaily);
   if (global.__lucidlySchedulerBoot) clearTimeout(global.__lucidlySchedulerBoot);

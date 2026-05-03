@@ -6,7 +6,7 @@ import { shopLocalDayKey } from "../utils/shopTime.server";
  *
  * Strategy:
  *  1. Load all MetaInsight rows for the shop (scoped to the relevant date
- *     window — currently full-history; Meta-side churn is low).
+ *     window - currently full-history; Meta-side churn is low).
  *  2. Sum hour-slot rows into per-(date,adId) buckets with full entity names.
  *  3. Load all matched attributions + their orders within the same window.
  *     For each confident attribution, add the order revenue/count to the
@@ -63,7 +63,7 @@ export async function rebuildCampaignRollups(shopDomain) {
   const orderMap = new Map();
   for (const o of orders) orderMap.set(o.shopifyOrderId, o);
 
-  // bucket key: `${shopLocalDayKey}|${adId}` — every day bucket is a shop-local
+  // bucket key: `${shopLocalDayKey}|${adId}` - every day bucket is a shop-local
   // calendar day. The stored .date is UTC-midnight of that calendar day
   // (canonical handle, matches MetaInsight.date convention).
   const buckets = new Map();
@@ -156,7 +156,7 @@ export async function rebuildCampaignRollups(shopDomain) {
       }
     } else {
       // Placeholder attributions encode the date in shopifyOrderId like
-      // "unmatched-{YYYY-MM-DD}-..." — extract and bucket unverified revenue.
+      // "unmatched-{YYYY-MM-DD}-..." - extract and bucket unverified revenue.
       const m = a.shopifyOrderId.match(/(\d{4}-\d{2}-\d{2})/);
       if (!m) continue;
       const date = new Date(`${m[1]}T00:00:00.000Z`);

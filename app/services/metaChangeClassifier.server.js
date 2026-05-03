@@ -1,6 +1,6 @@
 // Normalises a raw Meta /activities event into the shape we store in
 // MetaChange. The dispatch table below intentionally maps Meta's many
-// event_type values into a small, scannable category set — filtering +
+// event_type values into a small, scannable category set - filtering +
 // chart annotations rely on there being ~10 categories, not ~40.
 //
 // Anything we don't recognise falls into "other" with a best-effort
@@ -62,7 +62,7 @@ const CATEGORY_RULES = [
   { match: /start_time|end_time|stop_time|schedule/i, category: "schedule",
     summary: (o) => `Schedule changed${deltaSuffix(o)}` },
 
-  // Name / label tweaks are noise — group under "other"
+  // Name / label tweaks are noise - group under "other"
   { match: /_name/i, category: "other",
     summary: (o) => `Renamed${deltaSuffix(o)}` },
 ];
@@ -80,7 +80,7 @@ export function classifyEvent(raw, shopDomain) {
   // Meta sometimes delivers timestamps as seconds-since-epoch, sometimes as ISO.
   const eventTime = parseEventTime(raw.event_time);
 
-  // Extract old/new from extra_data. Meta wraps these differently per type —
+  // Extract old/new from extra_data. Meta wraps these differently per type -
   // fall back to JSON.stringify so we always have something for the UI.
   const { oldValue, newValue } = extractDelta(raw);
 
@@ -167,15 +167,15 @@ function describeField(rawEventType) {
   return parts.slice(-1)[0] || rawEventType;
 }
 
-// If extra_data gave us old/new, append a ": old → new" suffix — money-aware
+// If extra_data gave us old/new, append a ": old → new" suffix - money-aware
 // when the caller marks it.
 function deltaSuffix({ oldValue, newValue }, { money = false } = {}) {
   if (oldValue == null && newValue == null) return "";
   const format = (v) => {
-    if (v == null) return "—";
+    if (v == null) return "-";
     if (!money) return v;
     // Meta budgets are typically in minor units (cents/pence), but raw JSON
-    // in /activities isn't always — we render as-is and let the UI decide.
+    // in /activities isn't always - we render as-is and let the UI decide.
     return v;
   };
   return `: ${format(oldValue)} → ${format(newValue)}`;

@@ -29,7 +29,7 @@ const CATEGORY_META: Record<string, { label: string; icon: string; color: string
   other:        { label: "Other",        icon: "·",  color: "#6B7280" },
 };
 
-// Patterns that mark an event as "routine" — billing, run-status tweaks that
+// Patterns that mark an event as "routine" - billing, run-status tweaks that
 // don't reflect operator intent, and anything whose whole content is "event"
 // / "spec" noise from Meta's internal pipeline. Filtered out by default;
 // toggleable via the "Hide routine events" checkbox. Patterns run against
@@ -46,7 +46,7 @@ const NOISE_PATTERNS: Array<RegExp> = [
 // old/new that itself contains the amount in minor units:
 //   old: { type: "payment_amount", currency: "USD", old_value: 140000, ... }
 //   new: { type: "payment_amount", currency: "USD", new_value: 70000, ... }
-// Returns { minorUnits, currency } — currency is the ISO code from Meta.
+// Returns { minorUnits, currency } - currency is the ISO code from Meta.
 function extractBudget(v: string | null, side: "old" | "new"): { minorUnits: number | null; currency: string | null } {
   if (v == null || v === "") return { minorUnits: null, currency: null };
   if (/^-?\d+(\.\d+)?$/.test(v)) return { minorUnits: Number(v), currency: null };
@@ -73,7 +73,7 @@ function symbolFor(currency: string | null): string {
 }
 
 function formatBudgetWithSymbol(minorUnits: number | null, currency: string | null): string {
-  if (minorUnits == null) return "—";
+  if (minorUnits == null) return "-";
   const display = Math.round(minorUnits / 100); // whole-currency, no decimals
   return `${symbolFor(currency)}${display.toLocaleString("en-GB")}`;
 }
@@ -102,7 +102,7 @@ function statusTransition(c: {
 }
 
 function titleStatus(s: string | null): string {
-  if (!s) return "—";
+  if (!s) return "-";
   return s.replace(/_/g, " ").toLowerCase().replace(/\b\w/g, (ch) => ch.toUpperCase());
 }
 
@@ -149,7 +149,7 @@ function renderSummary(c: { category: string; summary: string; oldValue: string 
 
 // Column value the Summary filter sees. Groups volatile summaries (budgets,
 // renames) under a single canonical label so the filter dropdown stays
-// useable — without grouping, every unique amount/name pair shows up as
+// useable - without grouping, every unique amount/name pair shows up as
 // its own filter option.
 function filterSummaryKey(r: { category: string; summary: string }): string {
   if (r.category === "budget") return "Budget changed";
@@ -215,7 +215,7 @@ export const loader = async ({ request }: { request: Request }) => {
     };
   });
 
-  // Tile maths — count against the signal rows (excluding noise) so the
+  // Tile maths - count against the signal rows (excluding noise) so the
   // header numbers match what the user sees by default.
   const signalRows = rows.filter((r) => !r.isNoise);
   const byCategory: Record<string, number> = {};
@@ -308,7 +308,7 @@ export default function ChangeLog() {
       meta: { maxWidth: "110px", description: "When Meta recorded this change" },
       cell: ({ getValue }) => {
         const v = getValue() as string;
-        if (!v) return "—";
+        if (!v) return "-";
         const d = new Date(v);
         return (
           <span style={{ whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums" }}>
@@ -349,7 +349,7 @@ export default function ChangeLog() {
       header: "Object",
       meta: { maxWidth: "320px", description: "Name of the campaign/ad set/ad at the time the change was made. Click to open the full timeline." },
       cell: ({ row, getValue }) => {
-        const value = getValue() || "—";
+        const value = getValue() || "-";
         const r = row.original;
         if (r.objectType === "account" || !r.objectId) return value;
         return (
@@ -373,13 +373,13 @@ export default function ChangeLog() {
       header: "Summary",
       meta: { maxWidth: "520px", filterType: "multi-select", description: "Human-readable description of the change. Filter groups volatile summaries (e.g. budget amounts, renames) under a single canonical label." },
       filterFn: "multiSelect" as any,
-      cell: ({ row }) => row.original.summaryDisplay || "—",
+      cell: ({ row }) => row.original.summaryDisplay || "-",
     },
     {
       accessorKey: "actor",
       header: "By",
       meta: { maxWidth: "80px", description: "User who made the change. 'System' = Meta automation" },
-      cell: ({ getValue }) => getValue() || "—",
+      cell: ({ getValue }) => getValue() || "-",
     },
     {
       accessorKey: "oldValue",
@@ -387,7 +387,7 @@ export default function ChangeLog() {
       meta: { maxWidth: "120px", description: "Previous value before the change (where applicable)" },
       cell: ({ getValue }) => {
         const v = getValue();
-        if (!v) return "—";
+        if (!v) return "-";
         return <span style={{ fontFamily: "monospace", fontSize: 11 }}>{String(v)}</span>;
       },
     },
@@ -397,16 +397,16 @@ export default function ChangeLog() {
       meta: { maxWidth: "120px", description: "New value after the change (where applicable)" },
       cell: ({ getValue }) => {
         const v = getValue();
-        if (!v) return "—";
+        if (!v) return "-";
         return <span style={{ fontFamily: "monospace", fontSize: 11 }}>{String(v)}</span>;
       },
     },
     {
       accessorKey: "rawEventType",
       header: "Event",
-      meta: { maxWidth: "180px", filterType: "multi-select", description: "Meta's raw event_type — useful when filtering to a specific kind of change" },
+      meta: { maxWidth: "180px", filterType: "multi-select", description: "Meta's raw event_type - useful when filtering to a specific kind of change" },
       filterFn: "multiSelect" as any,
-      cell: ({ getValue }) => <span style={{ fontFamily: "monospace", fontSize: 11 }}>{String(getValue() || "—")}</span>,
+      cell: ({ getValue }) => <span style={{ fontFamily: "monospace", fontSize: 11 }}>{String(getValue() || "-")}</span>,
     },
   ], []);
 

@@ -10,7 +10,7 @@ import { fetchAllPages } from "./metaFetch.server";
 export async function syncMetaEntities(shopDomain) {
   const shop = await db.shop.findUnique({ where: { shopDomain } });
   if (!shop?.metaAccessToken || !shop?.metaAdAccountId) {
-    console.log(`[MetaEntitySync] Skipping ${shopDomain} — not connected`);
+    console.log(`[MetaEntitySync] Skipping ${shopDomain} - not connected`);
     return { campaigns: 0, adsets: 0, ads: 0 };
   }
 
@@ -60,7 +60,7 @@ export async function syncMetaEntities(shopDomain) {
     }
   }
 
-  // Fetch ad sets — includes targeting for funnel classification
+  // Fetch ad sets - includes targeting for funnel classification
   if (missingAdSets.length > 0) {
     const adsets = await fetchEntityBatch(accountId, token, "adsets", missingAdSets, "id,created_time,targeting");
     for (const a of adsets) {
@@ -124,7 +124,7 @@ export async function syncMetaEntities(shopDomain) {
 
   console.log(`[MetaEntitySync] ${shopDomain}: ${totals.campaigns} campaigns, ${totals.adsets} adsets, ${totals.ads} ads synced`);
 
-  // Nightly UTM audit — flag missing/inconsistent UTMs (no auto-push without consent)
+  // Nightly UTM audit - flag missing/inconsistent UTMs (no auto-push without consent)
   try {
     const { nightlyUtmAudit } = await import("./utmManager.server.js");
     await nightlyUtmAudit(shopDomain);
@@ -165,7 +165,7 @@ export function classifyFunnelStage(targeting) {
   );
   if (allLookalike) return "cold";
 
-  // Default: has custom audiences but unclear type — treat as warm
+  // Default: has custom audiences but unclear type - treat as warm
   return "warm";
 }
 

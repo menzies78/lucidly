@@ -5,11 +5,11 @@ import { getExchangeRate, prefetchExchangeRates, convertMetaFields } from "./exc
 import { fetchAllPages, getMetaApiUsage, ReduceDataError } from "./metaFetch.server";
 
 const CONCURRENCY = 10; // 10 parallel API calls per batch
-const HOURLY_LIMIT_DAYS = 395; // ~13 months — Meta's limit for hourly time slot data
+const HOURLY_LIMIT_DAYS = 395; // ~13 months - Meta's limit for hourly time slot data
 const DAILY_RANGE_SIZE = 90; // 90 days per API call for daily aggregates (Meta max)
-const HOURLY_RANGE_SIZE = 14; // 14 days per hourly call — auto-splits to single days if Meta says too large
-const DB_BATCH_SIZE = 500; // 500 rows per $transaction — SQLite handles this fine
-const PAGE_LIMIT = 1000; // rows per API page — fewer round-trips
+const HOURLY_RANGE_SIZE = 14; // 14 days per hourly call - auto-splits to single days if Meta says too large
+const DB_BATCH_SIZE = 500; // 500 rows per $transaction - SQLite handles this fine
+const PAGE_LIMIT = 1000; // rows per API page - fewer round-trips
 
 function parseActionValue(actions, actionType) {
   if (!actions) return 0;
@@ -105,7 +105,7 @@ async function batchUpsertInsights(shopDomain, parsedRows, ratesByDate) {
   }
 }
 
-// Fetch a date range as daily aggregates (no hourly breakdown) — used for data >13 months old
+// Fetch a date range as daily aggregates (no hourly breakdown) - used for data >13 months old
 async function fetchDailyRange(metaAccessToken, metaAdAccountId, since, until, fields) {
   const params = new URLSearchParams({
     fields, level: "ad",
@@ -121,7 +121,7 @@ async function fetchDailyRange(metaAccessToken, metaAdAccountId, since, until, f
   return apiRows.map(row => parseRow(row, -1));
 }
 
-// Fetch a date range with hourly breakdowns — used for recent data
+// Fetch a date range with hourly breakdowns - used for recent data
 // If Meta returns "reduce data" error, automatically splits into single-day requests
 async function fetchHourlyRange(metaAccessToken, metaAdAccountId, since, until, fields) {
   try {

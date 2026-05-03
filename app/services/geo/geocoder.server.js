@@ -7,7 +7,7 @@
 //
 // cities.json is imported (not fs.readFileSync'd) so Vite knows to ship it
 // with the production bundle. Reading it via __dirname resolved to
-// build/server/assets/ in prod, where the file didn't exist — ENOENT
+// build/server/assets/ in prod, where the file didn't exist - ENOENT
 // crashed customerRollups every cycle on Apr 27 2026.
 import citiesData from "./cities.json";
 import { COUNTRY_CENTROIDS } from "./countryCentroids.js";

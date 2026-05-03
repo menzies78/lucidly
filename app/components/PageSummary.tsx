@@ -13,7 +13,7 @@ export interface SummaryBullet {
 interface PageSummaryProps {
   title?: string;
   bullets: SummaryBullet[];
-  fromKey?: string; // YYYY-MM-DD — when provided alongside toKey, title becomes "Summary for <range>"
+  fromKey?: string; // YYYY-MM-DD - when provided alongside toKey, title becomes "Summary for <range>"
   toKey?: string;
   // Active preset slug from DateRangeSelector (e.g. "last90", "thisMonth",
   // "all"). When set, title reads "Summary for <preset label>" instead of
@@ -67,7 +67,7 @@ const TONE_COLOR: Record<SummaryTone, string> = {
 // ── Component ──
 // Rule-based page summary. Lives side-by-side with AiInsightsPanel at the
 // top of a page. Bullets are computed in the route loader from the same
-// pre-aggregated data that feeds the tiles below — no AI, no caching,
+// pre-aggregated data that feeds the tiles below - no AI, no caching,
 // tied to the currently selected date range. Always single-column,
 // left-aligned.
 

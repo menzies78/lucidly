@@ -4,7 +4,7 @@
 // click feels sluggish during the cycle.
 //
 // Stored on globalThis so HMR doesn't lose the flag and so multiple
-// imports share the same value (per perf_shared_cache_gotcha — module
+// imports share the same value (per perf_shared_cache_gotcha - module
 // scope is not stable in Vite/Remix server builds).
 
 const KEY = "__lucidlySyncStatus__";

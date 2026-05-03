@@ -1,9 +1,9 @@
 /**
- * UTM Classification — determines if an order's UTMs indicate a paid Meta ad click.
+ * UTM Classification - determines if an order's UTMs indicate a paid Meta ad click.
  *
  * Paid Meta = utm_source is a Meta platform AND utm_medium indicates paid traffic.
  * Organic Facebook/Instagram traffic (utm_medium = "social", "referral", or empty)
- * is explicitly excluded — we only attribute paid ads.
+ * is explicitly excluded - we only attribute paid ads.
  */
 
 const META_SOURCES = new Set([

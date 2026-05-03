@@ -3,7 +3,7 @@
 // Single source of truth for mapping an ISO 4217 currency code (as stored on
 // Shop.shopifyCurrency / Shop.metaAccountCurrency) to its display symbol.
 // Use this everywhere instead of inlining `currency === "GBP" ? "£" : ...`
-// ternaries — those silently lumped AUD/CAD/JPY into "$".
+// ternaries - those silently lumped AUD/CAD/JPY into "$".
 
 const CURRENCY_SYMBOL: Record<string, string> = {
   GBP: "£",
@@ -22,7 +22,7 @@ const CURRENCY_SYMBOL: Record<string, string> = {
 // Returns the display symbol for a currency code. Falls back to the code
 // itself followed by a space (e.g. "ZAR 123") for unknown currencies so the
 // user still sees *something* accurate instead of a misleading "$".
-// `defaultCode` is used when `code` is nullish — defaults to GBP (Lucidly
+// `defaultCode` is used when `code` is nullish - defaults to GBP (Lucidly
 // merchant base is UK-first).
 export function currencySymbolFromCode(
   code: string | null | undefined,

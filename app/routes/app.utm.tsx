@@ -334,7 +334,7 @@ export default function UtmManagement() {
               <Banner tone={pushResult.failed === 0 ? "success" : "warning"}>
                 <p>
                   {pushResult.fixed} ads updated.
-                  {pushResult.failed > 0 && <> {pushResult.failed} failed (likely DPA creatives — edit manually in Ads Manager).</>}
+                  {pushResult.failed > 0 && <> {pushResult.failed} failed (likely DPA creatives - edit manually in Ads Manager).</>}
                 </p>
               </Banner>
             )}

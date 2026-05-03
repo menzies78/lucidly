@@ -111,7 +111,7 @@ async function buildBreakdownAgg(shopDomain, breakdownType, from, to) {
   return result;
 }
 
-// Inline copy of aggregateRollupAllLevels — kept here to avoid importing from
+// Inline copy of aggregateRollupAllLevels - kept here to avoid importing from
 // a .tsx route file. If the logic changes, update both places.
 function aggregateRollupAllLevels(rows) {
   const campaign = {}, adset = {}, ad = {};
@@ -259,7 +259,7 @@ async function warmShop(shopDomain) {
     }),
   ));
 
-  // Warm shop row (SQLite page cache) — not queryCached because it's a single row
+  // Warm shop row (SQLite page cache) - not queryCached because it's a single row
   tasks.push(() => db.shop.findUnique({ where: { shopDomain } }));
 
   // Order Explorer: customers (shared across all date ranges)
@@ -451,7 +451,7 @@ async function warmShop(shopDomain) {
         ),
         queryCached(`${shopDomain}:geoOrders:${fromKey}:${toKey}`, TTL, () =>
           db.order.findMany({
-            // Exclude £0 orders (in-house / staff) — see commit a02b4f8.
+            // Exclude £0 orders (in-house / staff) - see commit a02b4f8.
             where: { shopDomain, isOnlineStore: true, frozenTotalPrice: { gt: 0 }, createdAt: { gte: from, lte: to } },
           }),
         ),
@@ -490,7 +490,7 @@ async function warmShop(shopDomain) {
 export async function warmAllShops() {
   try {
     const shops = await db.shop.findMany({ select: { shopDomain: true } });
-    console.log(`[warmer] starting — ${shops.length} shops`);
+    console.log(`[warmer] starting - ${shops.length} shops`);
     const t0 = Date.now();
     for (const { shopDomain } of shops) {
       await warmShop(shopDomain).catch(err => {

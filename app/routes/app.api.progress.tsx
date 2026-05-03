@@ -13,7 +13,7 @@ export const loader = async ({ request }) => {
   const fullKey = `${taskId}:${shopDomain}`;
   const progress = getProgress(fullKey);
 
-  // Do NOT clear terminal state here — React StrictMode, re-renders, and
+  // Do NOT clear terminal state here - React StrictMode, re-renders, and
   // network jitter cause the same terminal state to be polled more than once.
   // progress.server.js TTL-sweeps terminal entries after 5 minutes.
   return json({ progress });
