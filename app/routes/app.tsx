@@ -24,15 +24,55 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 function LoadingIndicator() {
   const navigation = useNavigation();
   const isLoading = navigation.state === "loading";
-  const [showIndicator, setShowIndicator] = useState(false);
+  const [showLoadingPill, setShowLoadingPill] = useState(false);
+  // Sync-status polling — lets the pill say "Hourly sync running…" instead
+  // of leaving the merchant wondering why a tab click is sluggish. Polled
+  // every 8s while the tab is visible; cheap (single int comparison + JSON
+  // response) and pauses when the tab is hidden to avoid wasted load.
+  const [syncRunning, setSyncRunning] = useState(false);
 
   useEffect(() => {
     if (isLoading) {
-      const timer = setTimeout(() => setShowIndicator(true), 1500);
+      const timer = setTimeout(() => setShowLoadingPill(true), 1500);
       return () => clearTimeout(timer);
     }
-    setShowIndicator(false);
+    setShowLoadingPill(false);
   }, [isLoading]);
+
+  useEffect(() => {
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const poll = async () => {
+      try {
+        const res = await fetch("/app/api/sync-status", { credentials: "include" });
+        if (!cancelled && res.ok) {
+          const data = await res.json();
+          setSyncRunning(!!data.running);
+        }
+      } catch {
+        // Network blips are not interesting here; just keep polling.
+      } finally {
+        if (!cancelled) {
+          // Slow down when the tab is hidden — no point spamming the server
+          // when nobody is looking at the pill.
+          const delay = document.visibilityState === "hidden" ? 60_000 : 8_000;
+          timer = setTimeout(poll, delay);
+        }
+      }
+    };
+    poll();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, []);
+
+  // The two pill triggers can overlap. Sync is the more informative
+  // message, so it wins when both are true.
+  const showPill = syncRunning || showLoadingPill;
+  const pillText = syncRunning
+    ? "Hourly sync running — your data may take a moment"
+    : "Loading your data...";
 
   return (
     <>
@@ -51,8 +91,8 @@ function LoadingIndicator() {
         }
       `}</style>
 
-      {/* Slim shimmer bar — always visible during load */}
-      {isLoading && (
+      {/* Slim shimmer bar — visible during nav loads or while sync runs */}
+      {(isLoading || syncRunning) && (
         <div style={{
           position: "fixed", top: 0, left: 0, right: 0, height: "3px", zIndex: 99999,
           background: "linear-gradient(90deg, transparent, #7c3aed, #a78bfa, #7c3aed, transparent)",
@@ -61,8 +101,8 @@ function LoadingIndicator() {
         }} />
       )}
 
-      {/* Friendly label — fades in after 1.5s */}
-      {showIndicator && (
+      {/* Friendly label — fades in after 1.5s for nav, immediately for sync */}
+      {showPill && (
         <div style={{
           position: "fixed", top: "8px", left: 0, right: 0,
           display: "flex", justifyContent: "center",
@@ -75,7 +115,7 @@ function LoadingIndicator() {
             boxShadow: "0 2px 12px rgba(124, 58, 237, 0.3)",
             animation: "lucidly-fade-in 0.3s ease-out, lucidly-pulse 2s ease-in-out infinite",
           }}>
-            Loading your data...
+            {pillText}
           </div>
         </div>
       )}

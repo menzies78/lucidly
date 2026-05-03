@@ -33,6 +33,16 @@ const MONTH_MS = 30 * DAY_MS;
 const LTV_WINDOWS = [30, 60, 90, 180, 365];
 const MAX_COHORT_MONTHS = 13;
 
+// How often to hand control back to the Node event loop while iterating
+// large datasets. Without this, the customer / order / rollup loops run
+// flat-out on the single JS thread and starve incoming HTTP requests for
+// the duration of a cycle (observed: 48s tab-click freeze on Vollebak).
+// 250 strikes a good balance — yields ~120 times across 30k customers,
+// adds <50ms total overhead, but keeps p99 request latency in the
+// hundreds of ms instead of tens of seconds.
+const YIELD_EVERY = 250;
+const yieldEventLoop = () => new Promise((resolve) => setImmediate(resolve));
+
 function median(arr) {
   if (!arr.length) return null;
   const sorted = [...arr].sort((a, b) => a - b);
@@ -286,7 +296,9 @@ export async function rebuildCustomerSegments(shopDomain) {
     customerUpdates = [];
   }
 
+  let _custLoopI = 0;
   for (const c of customers) {
+    if (++_custLoopI % YIELD_EVERY === 0) await yieldEventLoop();
     const custId = c.shopifyCustomerId;
     const custOrders = ordersByCustomer.get(custId) || [];
 
@@ -1047,7 +1059,9 @@ export async function rebuildCustomerRollups(shopDomain) {
 
   const countedNewCustomers = new Set();
 
+  let _orderLoopI = 0;
   for (const order of orders) {
+    if (++_orderLoopI % YIELD_EVERY === 0) await yieldEventLoop();
     const custId = order.shopifyCustomerId;
     if (!custId) continue;
     // Skip £0 orders (staff / replacement / warranty) from customer

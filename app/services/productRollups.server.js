@@ -19,6 +19,13 @@
 import db from "../db.server";
 import { shopLocalDayKey } from "../utils/shopTime.server";
 
+// Hand control back to Node's event loop every N iterations so the rollup
+// rebuild doesn't peg the JS thread for tens of seconds and starve incoming
+// HTTP requests during the hourly cycle. See customerRollups.server.js for
+// the full rationale.
+const YIELD_EVERY = 250;
+const yieldEventLoop = () => new Promise((resolve) => setImmediate(resolve));
+
 // ── Variant stripping (mirror of app.products.tsx) ──
 const COLORS = new Set([
   "black", "cream", "grey", "blue", "white", "red", "oyster", "pink",
@@ -191,7 +198,9 @@ export async function rebuildProductRollups(shopDomain) {
     return b;
   }
 
+  let _orderLoopI = 0;
   for (const order of orders) {
+    if (++_orderLoopI % YIELD_EVERY === 0) await yieldEventLoop();
     // Skip £0 orders (staff / replacement / warranty) from product metrics
     // so they don't inflate order counts and drag down per-product AOV.
     if ((order.frozenTotalPrice || 0) === 0) continue;
@@ -324,7 +333,7 @@ export async function rebuildProductRollups(shopDomain) {
   // Contains: journey flows, basket combos, add-ons, first-purchase lists,
   // metaAcquiredCustomers — all the stuff that doesn't fit a date rollup.
   // Computed once per shop, cached until the next sync.
-  const analysisBlob = buildAnalysisBlob({
+  const analysisBlob = await buildAnalysisBlob({
     orders, attrByOrderId, metaAcquiredCustomers, tz, lineItemsByOrder,
   });
 
@@ -349,7 +358,7 @@ export async function rebuildProductRollups(shopDomain) {
  * Build the analysis blob: journey flows, basket combos, first-purchase
  * lists, add-ons, metaAcquiredCustomers. All-time precomputation.
  */
-function buildAnalysisBlob({ orders, attrByOrderId, metaAcquiredCustomers, tz, lineItemsByOrder = {} }) {
+async function buildAnalysisBlob({ orders, attrByOrderId, metaAcquiredCustomers, tz, lineItemsByOrder = {} }) {
   const metaBaskets = [];
   const nonMetaBaskets = [];
   const metaFirstPurchaseProducts = {};
@@ -360,7 +369,9 @@ function buildAnalysisBlob({ orders, attrByOrderId, metaAcquiredCustomers, tz, l
   // Per-date per-product refund data (for prev-period highestRefund)
   const dailyRefundByProduct = {}; // date → product → { total, refunded }
 
+  let _blobLoopI = 0;
   for (const order of orders) {
+    if (++_blobLoopI % YIELD_EVERY === 0) await yieldEventLoop();
     // Build parent-item list + per-parent revenue. Prefer the structured
     // OrderLineItem rows (real discounted-unit-price × qty per line); fall
     // back to the legacy even-split over the comma-separated titles for

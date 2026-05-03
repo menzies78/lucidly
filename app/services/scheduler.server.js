@@ -6,6 +6,7 @@ import { linkUtmToCampaigns } from "./utmLinkage.server";
 import { getProgress } from "./progress.server";
 import { syncOrders } from "./orderSync.server.js";
 import { unauthenticated } from "../shopify.server";
+import { markSyncStart, markSyncEnd } from "./syncStatus.server.js";
 
 const HOURLY_MS = 60 * 60 * 1000;
 const DAILY_CHECK_MS = 15 * 60 * 1000; // check every 15 min if daily sync is due
@@ -37,6 +38,7 @@ function isManualSyncRunning(shopDomain) {
 
 async function runHourlyCycle() {
   console.log(`[Scheduler] Hourly cycle starting at ${new Date().toISOString()}`);
+  markSyncStart("hourly");
   try {
     const shops = await getConnectedShops();
     if (shops.length === 0) {
@@ -79,6 +81,8 @@ async function runHourlyCycle() {
     }
   } catch (err) {
     console.error("[Scheduler] Hourly cycle error:", err.message);
+  } finally {
+    markSyncEnd();
   }
 }
 
@@ -93,6 +97,7 @@ async function runDailyCycle() {
   lastDailyRun = today;
 
   console.log(`[Scheduler] Daily 7-day sync starting at ${now.toISOString()}`);
+  markSyncStart("daily");
   try {
     const shops = await getConnectedShops();
     for (const shop of shops) {
@@ -174,6 +179,8 @@ async function runDailyCycle() {
     }
   } catch (err) {
     console.error("[Scheduler] Daily cycle error:", err.message);
+  } finally {
+    markSyncEnd();
   }
 }
 
