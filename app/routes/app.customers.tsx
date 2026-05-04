@@ -1570,22 +1570,24 @@ function WeeklyCohortRevenue({ weekly, cs }: { weekly: { all: WeeklyCohortPoint[
         // Repeat % = repeatRev / (firstRev + repeatRev). It tells the
         // merchant how much of that week's cohort revenue is coming from
         // customers who came back - the real LTV signal.
-        const PLOT_H = 200;
+        const PLOT_H = 320;
+        const X_AXIS_H = 20;            // reserved for the week labels under the bars
+        const OUTER_H = PLOT_H + X_AXIS_H;
         const lineColor = "#F59E0B"; // amber - contrasts indigo bars
         return (
           <div ref={wrapRef} style={{ position: "relative" }}>
           <div style={{ display: "flex", gap: 8 }}>
             {/* Left Y-axis: £ revenue */}
-            <div style={{ width: 44, flexShrink: 0, display: "flex", flexDirection: "column", justifyContent: "space-between", fontSize: 10, color: "#9CA3AF", paddingTop: 2, paddingBottom: 18 }}>
+            <div style={{ width: 44, flexShrink: 0, display: "flex", flexDirection: "column", justifyContent: "space-between", fontSize: 10, color: "#9CA3AF", paddingTop: 2, paddingBottom: X_AXIS_H - 2 }}>
               <span>{fmtMoney(maxVal)}</span>
               <span>{fmtMoney(maxVal / 2)}</span>
               <span>{cs}0</span>
             </div>
-            <div style={{ flex: 1, position: "relative", height: 220 }}>
+            <div style={{ flex: 1, position: "relative", height: OUTER_H }}>
               {/* Gridlines */}
               {[0, 0.5, 1].map((f) => (
                 <div key={f} style={{
-                  position: "absolute", left: 0, right: 0, top: `${(1 - f) * 100 * (PLOT_H / 220)}%`,
+                  position: "absolute", left: 0, right: 0, top: `${(1 - f) * 100 * (PLOT_H / OUTER_H)}%`,
                   borderTop: "1px dashed #F3F4F6",
                 }} />
               ))}
@@ -1682,7 +1684,7 @@ function WeeklyCohortRevenue({ weekly, cs }: { weekly: { all: WeeklyCohortPoint[
               </div>
             </div>
             {/* Right Y-axis: repeat % */}
-            <div style={{ width: 36, flexShrink: 0, display: "flex", flexDirection: "column", justifyContent: "space-between", fontSize: 10, color: lineColor, fontWeight: 600, paddingTop: 2, paddingBottom: 18, textAlign: "right" }}>
+            <div style={{ width: 36, flexShrink: 0, display: "flex", flexDirection: "column", justifyContent: "space-between", fontSize: 10, color: lineColor, fontWeight: 600, paddingTop: 2, paddingBottom: X_AXIS_H - 2, textAlign: "right" }}>
               <span>100%</span>
               <span>50%</span>
               <span>0%</span>
@@ -1858,8 +1860,9 @@ export default function Customers() {
 
   // ── LTV exploration state ─────────────────────────────────────────
   // Filters target the metaNew cohort (ltvCustomers) to answer
-  // "which segments have the highest LTV?". Persistent via localStorage
-  // so the explorer remembers the user's last cut between sessions.
+  // "which segments have the highest LTV?". Reset on every page load -
+  // remembering filters between visits caused confusion when the page
+  // first opened with stale cuts applied.
   const [ltvFilterGender, setLtvFilterGender] = useState<"All" | "male" | "female">("All");
   const [ltvFilterAges, setLtvFilterAges] = useState<string[]>([]); // empty = all
   const [ltvFilterCountry, setLtvFilterCountry] = useState<string>("All");
@@ -1867,33 +1870,9 @@ export default function Customers() {
   // Gross margin % for the profit-payback calc. Default 60 - reasonable
   // midpoint for DTC/fashion. Revenue-based payback was misleading
   // ("1 order = payback" sounds great but ROAS=1 doesn't cover product
-  // cost, fulfilment, fees). Persist per-browser - eventually migrate
-  // to Shop.defaultMargin.
+  // cost, fulfilment, fees). Eventually migrate to Shop.defaultMargin.
   const [marginPct, setMarginPct] = useState<number>(60);
   const [chartHover, setChartHover] = useState<{ window: number; bench: number; recent: number | null } | null>(null);
-
-  // Load persisted prefs on mount
-  useEffect(() => {
-    try {
-      const raw = localStorage.getItem("lucidly.ltvExplorer");
-      if (raw) {
-        const p = JSON.parse(raw);
-        if (p.gender) setLtvFilterGender(p.gender);
-        if (Array.isArray(p.ages)) setLtvFilterAges(p.ages);
-        if (p.country) setLtvFilterCountry(p.country);
-        if (p.window) setLtvWindowPreset(p.window);
-        if (typeof p.margin === "number" && p.margin >= 0 && p.margin <= 100) setMarginPct(p.margin);
-      }
-    } catch {}
-  }, []);
-  useEffect(() => {
-    try {
-      localStorage.setItem("lucidly.ltvExplorer", JSON.stringify({
-        gender: ltvFilterGender, ages: ltvFilterAges, country: ltvFilterCountry,
-        window: ltvWindowPreset, margin: marginPct,
-      }));
-    } catch {}
-  }, [ltvFilterGender, ltvFilterAges, ltvFilterCountry, ltvWindowPreset, marginPct]);
 
   // Unique age brackets + countries pulled from the per-customer dataset.
   const ltvAgeOptions = useMemo(() => {
