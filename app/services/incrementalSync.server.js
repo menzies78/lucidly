@@ -57,14 +57,23 @@ async function rebuildAllRollups(shopDomain, { force }) {
     console.error(`[IncrementalSync] Product rollup rebuild failed (non-fatal): ${err.message}`);
   }
   if (global.gc) global.gc();
-  setProgress(`incrementalSync:${shopDomain}`, { status: "running", message: "Rebuilding campaign rollups..." });
-  try {
-    const { rebuildCampaignRollups } = await import("./campaignRollups.server.js");
-    await rebuildCampaignRollups(shopDomain);
-  } catch (err) {
-    console.error(`[IncrementalSync] Campaign rollup rebuild failed (non-fatal): ${err.message}`);
+
+  // Campaign rollups: ONLY when new conversions arrived (force=true).
+  // This is the expensive one (~340s for Vollebak, 621k insight rows → 36k rollup rows).
+  // Running it hourly with 0 new conversions monopolizes the SQLite writer lock
+  // and makes the entire app unresponsive. The nightly 3am sweep (which always has
+  // new data from the 7-day lookback) handles the daily refresh.
+  if (force) {
+    setProgress(`incrementalSync:${shopDomain}`, { status: "running", message: "Rebuilding campaign rollups..." });
+    try {
+      const { rebuildCampaignRollups } = await import("./campaignRollups.server.js");
+      await rebuildCampaignRollups(shopDomain);
+    } catch (err) {
+      console.error(`[IncrementalSync] Campaign rollup rebuild failed (non-fatal): ${err.message}`);
+    }
+    if (global.gc) global.gc();
   }
-  if (global.gc) global.gc();
+
   setProgress(`incrementalSync:${shopDomain}`, { status: "running", message: "Rebuilding customer rollups..." });
   try {
     const { rebuildCustomerSegments, rebuildCustomerRollups } = await import("./customerRollups.server.js");
