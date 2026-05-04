@@ -3226,10 +3226,10 @@ export default function Customers() {
                       const monthlyRows = allMonthlyRows.slice(-12);
                       const maxMonthCol = Math.min(monthlyDataObj?.maxMonth || 0, 12);
                       return (
-                        <div style={{ borderTop: "1px solid #E5E7EB", paddingTop: "16px" }}>
-                          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "14px" }}>
-                            <div>
-                              <Text as="p" variant="headingSm">{ltvView === "progression" ? "LTV Progression" : "Monthly Cohort Table"}</Text>
+                        <div style={{ borderTop: "1px solid #E5E7EB", paddingTop: 20 }}>
+                          <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 20, gap: 16 }}>
+                            <BlockStack gap="200">
+                              <Text as="h2" variant="headingLg">{ltvView === "progression" ? "LTV Progression" : "Monthly Cohort Table"}</Text>
                               <Text as="p" variant="bodySm" tone="subdued">
                                 {ltvView === "progression"
                                   ? "Cumulative spend per customer over time. Anchor line is your long-term average across all fully-observed Meta-acquired customers. 6/3/1m views overlay recent cohorts on top, with a dotted projection to month 12."
@@ -3237,7 +3237,7 @@ export default function Customers() {
                                     ? "Each row is an acquisition month. Values show cumulative revenue per customer through each 30-day period."
                                     : "Each row is an acquisition month. Values show % of customers who placed at least one order in each 30-day period."}
                               </Text>
-                            </div>
+                            </BlockStack>
                             <div className="toggle-group">
                               <button className={`toggle-btn ${ltvView === "progression" ? "active" : ""}`} onClick={() => setLtvView("progression")}>Progression</button>
                               <button className={`toggle-btn ${ltvView === "cohorts" ? "active" : ""}`} onClick={() => setLtvView("cohorts")}>Cohort Table</button>
@@ -3403,8 +3403,8 @@ export default function Customers() {
                             // 1:1 - text/lines/dots stay at native pixel
                             // size regardless of how wide the wrapper grows.
                             const chartWidth = ltvChartW;
-                            const chartHeight = 260;
-                            const padL = 48, padR = 18, padT = 14, padB = 30;
+                            const chartHeight = 340;
+                            const padL = 64, padR = 24, padT = 20, padB = 42;
                             const innerW = chartWidth - padL - padR;
                             const innerH = chartHeight - padT - padB;
                             const allPoints: number[] = [
@@ -3524,7 +3524,7 @@ export default function Customers() {
                             if (!hasAnything) {
                               return (
                                 <div style={{ background: "linear-gradient(180deg, #FAFAFF 0%, #FFFFFF 60%)", border: "1px solid #ECECF5", borderRadius: 12, padding: "16px 18px" }}>
-                                  <div style={{ display: "flex", justifyContent: "center", marginBottom: 12 }}>{windowSelector}</div>
+                                  <div style={{ display: "flex", justifyContent: "center", marginBottom: 16 }}>{windowSelector}</div>
                                   <div style={{ padding: "20px 12px", textAlign: "center", color: "#9CA3AF", fontSize: 13 }}>
                                     {isMeta
                                       ? "Not enough Meta-acquired customers with 12+ months of history yet to build the long-term anchor."
@@ -3601,6 +3601,8 @@ export default function Customers() {
                                     </>
                                   )}
                                 </div>
+                                {/* Window selector - above the chart */}
+                                <div style={{ display: "flex", justifyContent: "center", marginBottom: 16 }}>{windowSelector}</div>
                                 {/* Chart */}
                                 <div ref={ltvChartRef} style={{ position: "relative", width: "70vw", margin: "0 auto" }}>
                                   <svg width={chartWidth} height={chartHeight} viewBox={`0 0 ${chartWidth} ${chartHeight}`} style={{ display: "block" }}>
@@ -3619,7 +3621,7 @@ export default function Customers() {
                                     {gridVals.map((v, i) => (
                                       <g key={i}>
                                         <line x1={padL} x2={chartWidth - padR} y1={yPos(v)} y2={yPos(v)} stroke="#EEF0F7" strokeWidth="1" />
-                                        <text x={padL - 6} y={yPos(v) + 3} textAnchor="end" fontSize="9" fill="#9CA3AF">{cs}{Math.round(v).toLocaleString()}</text>
+                                        <text x={padL - 8} y={yPos(v) + 4} textAnchor="end" fontSize="12" fill="#9CA3AF">{cs}{Math.round(v).toLocaleString()}</text>
                                       </g>
                                     ))}
                                     {/* X-axis baseline */}
@@ -3627,18 +3629,18 @@ export default function Customers() {
                                     {/* X ticks 0..xMaxAxis */}
                                     {xTicks.map((m) => (
                                       <g key={m}>
-                                        <line x1={xPos(m)} x2={xPos(m)} y1={padT + innerH} y2={padT + innerH + 3} stroke="#9CA3AF" strokeWidth="1" />
-                                        <text x={xPos(m)} y={chartHeight - padB + 14} textAnchor="middle" fontSize="10" fontWeight="600" fill="#6B7280">{m}</text>
+                                        <line x1={xPos(m)} x2={xPos(m)} y1={padT + innerH} y2={padT + innerH + 4} stroke="#9CA3AF" strokeWidth="1" />
+                                        <text x={xPos(m)} y={chartHeight - padB + 18} textAnchor="middle" fontSize="13" fontWeight="600" fill="#6B7280">{m}</text>
                                       </g>
                                     ))}
-                                    <text x={(padL + chartWidth - padR) / 2} y={chartHeight - 6} textAnchor="middle" fontSize="9" fontWeight="600" fill="#9CA3AF" letterSpacing="0.5">MONTHS SINCE FIRST ORDER</text>
+                                    <text x={(padL + chartWidth - padR) / 2} y={chartHeight - 8} textAnchor="middle" fontSize="11" fontWeight="600" fill="#9CA3AF" letterSpacing="0.5">MONTHS SINCE FIRST ORDER</text>
                                     {/* Area fill (under primary curve) */}
                                     <path d={areaPath} fill="url(#ltvAreaGradient)" stroke="none" />
                                     {/* CAC reference */}
                                     {isMeta && cac > 0 && cac < ltvMax && (
                                       <g>
-                                        <line x1={padL} x2={chartWidth - padR} y1={yPos(cac)} y2={yPos(cac)} stroke="#DC2626" strokeWidth="1" strokeDasharray="3 3" />
-                                        <text x={chartWidth - padR - 3} y={yPos(cac) - 4} textAnchor="end" fontSize="9" fontWeight="700" fill="#DC2626">CAC {cs}{Math.round(cac).toLocaleString()}</text>
+                                        <line x1={padL} x2={chartWidth - padR} y1={yPos(cac)} y2={yPos(cac)} stroke="#DC2626" strokeWidth="1.5" strokeDasharray="4 4" />
+                                        <text x={chartWidth - padR - 4} y={yPos(cac) - 6} textAnchor="end" fontSize="12" fontWeight="700" fill="#DC2626">CAC {cs}{Math.round(cac).toLocaleString()}</text>
                                       </g>
                                     )}
                                     {/* Anchor line - muted base when overlay present, primary when 12m */}
@@ -3647,7 +3649,7 @@ export default function Customers() {
                                         d={anchorPath}
                                         fill="none"
                                         stroke={targetM === 12 ? "url(#ltvLineGradient)" : "#94A3B8"}
-                                        strokeWidth={targetM === 12 ? 2 : 1.5}
+                                        strokeWidth={targetM === 12 ? 3 : 2}
                                         strokeLinecap="round"
                                         strokeLinejoin="round"
                                         opacity={targetM === 12 ? 1 : 0.55}
@@ -3655,11 +3657,11 @@ export default function Customers() {
                                     )}
                                     {/* "all" tab fallback - single curve */}
                                     {!isMeta && fallbackPath && (
-                                      <path d={fallbackPath} fill="none" stroke="url(#ltvLineGradient)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                                      <path d={fallbackPath} fill="none" stroke="url(#ltvLineGradient)" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
                                     )}
                                     {/* Recent overlay - on top, primary purple */}
                                     {isMeta && targetM !== 12 && overlayPath && (
-                                      <path d={overlayPath} fill="none" stroke="url(#ltvLineGradient)" strokeWidth="2.25" strokeLinecap="round" strokeLinejoin="round" />
+                                      <path d={overlayPath} fill="none" stroke="url(#ltvLineGradient)" strokeWidth="3.25" strokeLinecap="round" strokeLinejoin="round" />
                                     )}
                                     {/* Projection - dotted continuation */}
                                     {projection && (
@@ -3667,23 +3669,23 @@ export default function Customers() {
                                         <line
                                           x1={xPos(projection.from.month)} y1={yPos(projection.from.avgLtv)}
                                           x2={xPos(projection.to.month)} y2={yPos(projection.to.avgLtv)}
-                                          stroke="#7C3AED" strokeWidth="1.75" strokeDasharray="3 3" opacity="0.85"
+                                          stroke="#7C3AED" strokeWidth="2.5" strokeDasharray="4 4" opacity="0.85"
                                         />
-                                        <circle cx={xPos(projection.to.month)} cy={yPos(projection.to.avgLtv)} r="4" fill="#fff" stroke="#7C3AED" strokeWidth="1.75" />
+                                        <circle cx={xPos(projection.to.month)} cy={yPos(projection.to.avgLtv)} r="6" fill="#fff" stroke="#7C3AED" strokeWidth="2.5" />
                                       </g>
                                     )}
                                     {/* Payback marker on primary */}
                                     {paybackMonth != null && (
                                       <g>
-                                        <line x1={xPos(paybackMonth)} x2={xPos(paybackMonth)} y1={yPos(cac)} y2={padT + innerH} stroke="#DC2626" strokeWidth="1" strokeDasharray="2 2" />
-                                        <circle cx={xPos(paybackMonth)} cy={yPos(cac)} r="5" fill="#fff" stroke="#DC2626" strokeWidth="1.5" />
-                                        <text x={xPos(paybackMonth)} y={yPos(cac) - 9} textAnchor="middle" fontSize="9" fontWeight="700" fill="#DC2626">Payback m{paybackMonth.toFixed(1)}</text>
+                                        <line x1={xPos(paybackMonth)} x2={xPos(paybackMonth)} y1={yPos(cac)} y2={padT + innerH} stroke="#DC2626" strokeWidth="1.5" strokeDasharray="3 3" />
+                                        <circle cx={xPos(paybackMonth)} cy={yPos(cac)} r="7" fill="#fff" stroke="#DC2626" strokeWidth="2" />
+                                        <text x={xPos(paybackMonth)} y={yPos(cac) - 12} textAnchor="middle" fontSize="12" fontWeight="700" fill="#DC2626">Payback m{paybackMonth.toFixed(1)}</text>
                                       </g>
                                     )}
                                     {/* Hit targets across all xTicks */}
                                     {xTicks.map((m) => (
                                       <g key={`hit-${m}`} style={{ cursor: "pointer" }} onMouseEnter={() => setChartHover({ month: m })} onMouseLeave={() => setChartHover(null)}>
-                                        <rect x={xPos(m) - 18} y={padT} width={36} height={innerH} fill="transparent" />
+                                        <rect x={xPos(m) - 22} y={padT} width={44} height={innerH} fill="transparent" />
                                       </g>
                                     ))}
                                     {/* Anchor dots (when 12m view) or recent dots (when overlay) */}
@@ -3692,8 +3694,8 @@ export default function Customers() {
                                       const isLast = p.month === anchorSeries[anchorSeries.length - 1].month;
                                       return (
                                         <g key={`a-${p.month}`} pointerEvents="none">
-                                          {(isHover || isLast) && <circle cx={xPos(p.month)} cy={yPos(p.avgLtv)} r="7" fill="#7C3AED" opacity="0.18" />}
-                                          <circle cx={xPos(p.month)} cy={yPos(p.avgLtv)} r={isLast ? 4 : isHover ? 3.5 : 2.5} fill="#7C3AED" stroke="#fff" strokeWidth="1.5" />
+                                          {(isHover || isLast) && <circle cx={xPos(p.month)} cy={yPos(p.avgLtv)} r="10" fill="#7C3AED" opacity="0.18" />}
+                                          <circle cx={xPos(p.month)} cy={yPos(p.avgLtv)} r={isLast ? 6 : isHover ? 5 : 4} fill="#7C3AED" stroke="#fff" strokeWidth="2" />
                                         </g>
                                       );
                                     })}
@@ -3702,8 +3704,8 @@ export default function Customers() {
                                       const isLast = p.month === overlaySeries[overlaySeries.length - 1].month;
                                       return (
                                         <g key={`o-${p.month}`} pointerEvents="none">
-                                          {(isHover || isLast) && <circle cx={xPos(p.month)} cy={yPos(p.avgLtv)} r="7" fill="#7C3AED" opacity="0.18" />}
-                                          <circle cx={xPos(p.month)} cy={yPos(p.avgLtv)} r={isLast ? 4 : isHover ? 3.5 : 2.5} fill="#7C3AED" stroke="#fff" strokeWidth="1.5" />
+                                          {(isHover || isLast) && <circle cx={xPos(p.month)} cy={yPos(p.avgLtv)} r="10" fill="#7C3AED" opacity="0.18" />}
+                                          <circle cx={xPos(p.month)} cy={yPos(p.avgLtv)} r={isLast ? 6 : isHover ? 5 : 4} fill="#7C3AED" stroke="#fff" strokeWidth="2" />
                                         </g>
                                       );
                                     })}
@@ -3712,8 +3714,8 @@ export default function Customers() {
                                       const isLast = p.month === fallbackSeries[fallbackSeries.length - 1].month;
                                       return (
                                         <g key={`f-${p.month}`} pointerEvents="none">
-                                          {(isHover || isLast) && <circle cx={xPos(p.month)} cy={yPos(p.avgLtv)} r="7" fill="#7C3AED" opacity="0.18" />}
-                                          <circle cx={xPos(p.month)} cy={yPos(p.avgLtv)} r={isLast ? 4 : isHover ? 3.5 : 2.5} fill="#7C3AED" stroke="#fff" strokeWidth="1.5" />
+                                          {(isHover || isLast) && <circle cx={xPos(p.month)} cy={yPos(p.avgLtv)} r="10" fill="#7C3AED" opacity="0.18" />}
+                                          <circle cx={xPos(p.month)} cy={yPos(p.avgLtv)} r={isLast ? 6 : isHover ? 5 : 4} fill="#7C3AED" stroke="#fff" strokeWidth="2" />
                                         </g>
                                       );
                                     })}
@@ -3722,13 +3724,13 @@ export default function Customers() {
                                       const x = xPos(primaryLast.month);
                                       const y = yPos(primaryLast.avgLtv);
                                       const labelText = `${cs}${Math.round(primaryLast.avgLtv).toLocaleString()}`;
-                                      const labelW = 12 + labelText.length * 6;
-                                      const lx = x - labelW - 8;
-                                      const ly = y - 9;
+                                      const labelW = 16 + labelText.length * 7;
+                                      const lx = x - labelW - 10;
+                                      const ly = y - 12;
                                       return (
                                         <g pointerEvents="none">
-                                          <rect x={lx} y={ly} width={labelW} height={18} rx="9" fill="#7C3AED" />
-                                          <text x={lx + labelW / 2} y={ly + 12} textAnchor="middle" fontSize="10" fontWeight="700" fill="#fff">{labelText}</text>
+                                          <rect x={lx} y={ly} width={labelW} height={24} rx="12" fill="#7C3AED" />
+                                          <text x={lx + labelW / 2} y={ly + 16} textAnchor="middle" fontSize="13" fontWeight="700" fill="#fff">{labelText}</text>
                                         </g>
                                       );
                                     })()}
@@ -3747,33 +3749,31 @@ export default function Customers() {
                                       if (showAnchor) rows.push({ kind: "anchor", data: hoverAnchor! });
                                       if (showFallback) rows.push({ kind: "fallback", data: hoverFallback! });
                                       if (rows.length === 0) return null;
-                                      const tipW = 178;
-                                      const tipH = 24 + rows.length * 14 + 12;
+                                      const tipW = 220;
+                                      const tipH = 30 + rows.length * 18 + 14;
                                       const leftSide = hx > chartWidth / 2;
-                                      const tx = leftSide ? hx - tipW - 10 : hx + 10;
+                                      const tx = leftSide ? hx - tipW - 12 : hx + 12;
                                       const ty = padT + 6;
                                       return (
                                         <g pointerEvents="none">
-                                          <line x1={hx} x2={hx} y1={padT} y2={padT + innerH} stroke="#9CA3AF" strokeWidth="1" strokeDasharray="2 3" />
-                                          <rect x={tx} y={ty} width={tipW} height={tipH} rx="6" fill="#0F172A" opacity="0.96" />
-                                          <text x={tx + 9} y={ty + 16} fontSize="10" fontWeight="700" fill="#fff">Month {chartHover.month}</text>
+                                          <line x1={hx} x2={hx} y1={padT} y2={padT + innerH} stroke="#9CA3AF" strokeWidth="1.25" strokeDasharray="3 4" />
+                                          <rect x={tx} y={ty} width={tipW} height={tipH} rx="8" fill="#0F172A" opacity="0.96" />
+                                          <text x={tx + 12} y={ty + 20} fontSize="13" fontWeight="700" fill="#fff">Month {chartHover.month}</text>
                                           {rows.map((r, idx) => {
-                                            const y = ty + 30 + idx * 14;
+                                            const y = ty + 38 + idx * 18;
                                             if (r.kind === "overlay") {
-                                              return <text key={idx} x={tx + 9} y={y} fontSize="9" fill="#C4B5FD">Recent {targetM}m: <tspan fontWeight="700" fill="#fff">{cs}{Math.round(r.data.avgLtv).toLocaleString()}</tspan> <tspan fill="#94A3B8">(n={r.data.n})</tspan></text>;
+                                              return <text key={idx} x={tx + 12} y={y} fontSize="12" fill="#C4B5FD">Recent {targetM}m: <tspan fontWeight="700" fill="#fff">{cs}{Math.round(r.data.avgLtv).toLocaleString()}</tspan> <tspan fill="#94A3B8">(n={r.data.n})</tspan></text>;
                                             }
                                             if (r.kind === "anchor") {
-                                              return <text key={idx} x={tx + 9} y={y} fontSize="9" fill="#94A3B8">Anchor: <tspan fontWeight="700" fill="#E5E7EB">{cs}{Math.round(r.data.avgLtv).toLocaleString()}</tspan> <tspan fill="#64748B">(n={r.data.n})</tspan></text>;
+                                              return <text key={idx} x={tx + 12} y={y} fontSize="12" fill="#94A3B8">Anchor: <tspan fontWeight="700" fill="#E5E7EB">{cs}{Math.round(r.data.avgLtv).toLocaleString()}</tspan> <tspan fill="#64748B">(n={r.data.n})</tspan></text>;
                                             }
-                                            return <text key={idx} x={tx + 9} y={y} fontSize="9" fill="#C4B5FD">Cumulative: <tspan fontWeight="700" fill="#fff">{cs}{Math.round(r.data.avgLtv).toLocaleString()}</tspan> <tspan fill="#94A3B8">(n={r.data.n})</tspan></text>;
+                                            return <text key={idx} x={tx + 12} y={y} fontSize="12" fill="#C4B5FD">Cumulative: <tspan fontWeight="700" fill="#fff">{cs}{Math.round(r.data.avgLtv).toLocaleString()}</tspan> <tspan fill="#94A3B8">(n={r.data.n})</tspan></text>;
                                           })}
                                         </g>
                                       );
                                     })()}
                                   </svg>
                                 </div>
-                                {/* Central, large window selector */}
-                                <div style={{ display: "flex", justifyContent: "center", marginTop: 12 }}>{windowSelector}</div>
                                 {/* Footnotes / payback callouts */}
                                 {isMeta && targetM !== 12 && projection && (
                                   <div style={{ marginTop: 10, padding: "8px 12px", background: "#F5F3FF", border: "1px solid #DDD6FE", borderRadius: 8, fontSize: 12, color: "#5B21B6" }}>
