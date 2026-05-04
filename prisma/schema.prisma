@@ -39,6 +39,7 @@ model Shop {
   currencyCode          String   @default("GBP")
   lastOrderSync         DateTime?
   lastMetaSync          DateTime?
+  lastRollupRebuild     DateTime?
   shopifyTimezone       String   @default("Europe/London")
   shopifyCurrency       String   @default("GBP")
   metaCurrency          String   @default("GBP")

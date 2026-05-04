@@ -34,7 +34,15 @@ const previousDayChecked = /** @type {Set<string>} */ (
  * @returns {Promise<boolean>} true if a rebuild actually ran
  */
 async function rebuildAllRollups(shopDomain, { force }) {
-  const last = lastRollupRebuildAt.get(shopDomain) || 0;
+  // Check in-memory timestamp first; if empty (fresh boot), check the DB.
+  let last = lastRollupRebuildAt.get(shopDomain) || 0;
+  if (last === 0) {
+    const shop = await db.shop.findUnique({ where: { shopDomain }, select: { lastRollupRebuild: true } });
+    if (shop?.lastRollupRebuild) {
+      last = new Date(shop.lastRollupRebuild).getTime();
+      lastRollupRebuildAt.set(shopDomain, last);
+    }
+  }
   const ageMs = Date.now() - last;
   if (!force && last > 0 && ageMs < ROLLUP_REBUILD_MIN_INTERVAL_MS) {
     const minutes = Math.round(ageMs / 60000);
@@ -66,7 +74,10 @@ async function rebuildAllRollups(shopDomain, { force }) {
     console.error(`[IncrementalSync] Customer rollup rebuild failed (non-fatal): ${err.message}`);
   }
   if (global.gc) global.gc();
-  lastRollupRebuildAt.set(shopDomain, Date.now());
+  const now = Date.now();
+  lastRollupRebuildAt.set(shopDomain, now);
+  // Persist to DB so OOM restarts don't trigger unnecessary rebuilds
+  await db.shop.update({ where: { shopDomain }, data: { lastRollupRebuild: new Date(now) } }).catch(() => {});
   return true;
 }
 // Fallback padding - tried only when the 6-minute window returned no
@@ -1226,20 +1237,22 @@ export async function runIncrementalSync(shopDomain) {
     } catch (err) {
       console.error(`[IncrementalSync] Breakdown sync failed (non-fatal): ${err.message}`);
     }
-    // No new conversions - throttle rollup rebuilds to once per day so the
-    // hourly scheduler doesn't spend ~13 min every cycle rewriting identical
-    // rollup rows. A fresh boot still rebuilds once (lastRollupRebuildAt starts
-    // empty), so deploys continue to pick up code changes promptly.
-    const didRebuild = await rebuildAllRollups(shopDomain, { force: false });
-    if (didRebuild) {
-      invalidateShop(shopDomain);
-      // Re-warm the query cache in background (fire-and-forget)
-      import("./cacheWarmer.server.js").then(({ warmAllShops }) => {
-        warmAllShops().catch(err => console.error("[IncrementalSync] post-sync warm failed:", err.message));
-      }).catch(err => console.error("[IncrementalSync] warmer import failed:", err.message));
-    }
+    // Mark sync complete IMMEDIATELY so the UI unblocks. Rollups are
+    // housekeeping — they shouldn't hold the user hostage.
     await db.shop.update({ where: { shopDomain }, data: { lastMetaSync: new Date() } });
     completeProgress(`incrementalSync:${shopDomain}`, { newConversions: 0, matched: 0, unmatched: 0, breakdownRows });
+
+    // No new conversions — throttle rollup rebuilds to once per day.
+    // Run in background (fire-and-forget) so the scheduler isn't blocked.
+    rebuildAllRollups(shopDomain, { force: false }).then(didRebuild => {
+      if (didRebuild) {
+        invalidateShop(shopDomain);
+        import("./cacheWarmer.server.js").then(({ warmAllShops }) => {
+          warmAllShops().catch(err => console.error("[IncrementalSync] post-sync warm failed:", err.message));
+        }).catch(err => console.error("[IncrementalSync] warmer import failed:", err.message));
+      }
+    }).catch(err => console.error("[IncrementalSync] Background rollup failed:", err.message));
+
     return { newConversions: 0, matched: 0, unmatched: 0, breakdownRows };
   }
 
@@ -1474,22 +1487,19 @@ export async function runIncrementalSync(shopDomain) {
     console.error(`[IncrementalSync] Demographic enrichment failed (non-fatal): ${err.message}`);
   }
 
-  // New conversions arrived - rollups may be stale, force a full rebuild.
-  await rebuildAllRollups(shopDomain, { force: true });
-
-  invalidateShop(shopDomain);
-
-  // Re-warm the query cache for this shop in the background.
-  // Without this, the first user tab load after a sync would be slow
-  // (the sync invalidated the cache; the warm queries repopulate it).
-  import("./cacheWarmer.server.js").then(({ warmAllShops }) => {
-    // warmAllShops() warms every shop; cheap on small installs.
-    // For large installs we could call warmShop(shopDomain) if it was exported.
-    warmAllShops().catch(err => console.error("[IncrementalSync] post-sync warm failed:", err.message));
-  }).catch(err => console.error("[IncrementalSync] warmer import failed:", err.message));
-
+  // Mark sync complete IMMEDIATELY so the UI unblocks.
   await db.shop.update({ where: { shopDomain }, data: { lastMetaSync: new Date() } });
   completeProgress(`incrementalSync:${shopDomain}`, { newConversions: newConversions.length, layer1: layer1.layer1Written, matched: totalMatched, unmatched: totalUnmatched, breakdownRows, ...enrichResult });
   console.log(`[IncrementalSync] Complete: ${layer1.layer1Written} UTM layer1, ${totalMatched} matched, ${totalUnmatched} unmatched, ${breakdownRows} breakdowns, ${enrichResult.enriched} demographics enriched`);
+
+  // Rollups + cache warm in background (fire-and-forget). New conversions
+  // arrived so force rebuild, but don't block the user or the scheduler.
+  invalidateShop(shopDomain);
+  rebuildAllRollups(shopDomain, { force: true }).then(() => {
+    import("./cacheWarmer.server.js").then(({ warmAllShops }) => {
+      warmAllShops().catch(err => console.error("[IncrementalSync] post-sync warm failed:", err.message));
+    }).catch(err => console.error("[IncrementalSync] warmer import failed:", err.message));
+  }).catch(err => console.error("[IncrementalSync] Background rollup failed:", err.message));
+
   return { newConversions: newConversions.length, layer1: layer1.layer1Written, matched: totalMatched, unmatched: totalUnmatched, breakdownRows, ...enrichResult };
 }
