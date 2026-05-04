@@ -224,8 +224,10 @@ export async function rebuildCustomerSegments(shopDomain) {
   // LTV accumulators (all-history)
   let ltvMetaNewCount = 0, ltvMetaNewRevenue = 0, ltvMetaNewOrders = 0, ltvMetaNewRepeatCt = 0, ltvMetaNewFirstTotal = 0;
   const ltvMetaNewTimeTo2nd = [];
+  const ltvMetaNewTenures = []; // days from first→last for repeat customers only
   let ltvAllCount = 0, ltvAllRevenue = 0, ltvAllOrders = 0, ltvAllRepeatCt = 0;
   const ltvAllTimeTo2nd = [];
+  const ltvAllTenures = [];
 
   // Maturity-windowed LTV
   const metaNewLtvByWindow = {};
@@ -449,6 +451,13 @@ export async function rebuildCustomerSegments(shopDomain) {
       timeTo2nd = Math.floor((secondOrder.createdAt.getTime() - acqTime) / DAY_MS);
       ltvAllTimeTo2nd.push(timeTo2nd);
     }
+    // Tenure (days first→last) - only for repeat customers (single-order
+    // customers have no observed lifetime).
+    let tenureDaysAccum = null;
+    if (custOrders.length > 1 && lastOrder?.createdAt) {
+      tenureDaysAccum = Math.floor((lastOrder.createdAt.getTime() - acqTime) / DAY_MS);
+      if (tenureDaysAccum > 0) ltvAllTenures.push(tenureDaysAccum);
+    }
     if (segment === "metaNew") {
       ltvMetaNewCount++;
       ltvMetaNewRevenue += netRevenue;
@@ -456,6 +465,7 @@ export async function rebuildCustomerSegments(shopDomain) {
       ltvMetaNewFirstTotal += (firstOrder.frozenTotalPrice || 0);
       if (custOrders.length > 1) ltvMetaNewRepeatCt++;
       if (timeTo2nd != null) ltvMetaNewTimeTo2nd.push(timeTo2nd);
+      if (tenureDaysAccum != null && tenureDaysAccum > 0) ltvMetaNewTenures.push(tenureDaysAccum);
     }
 
     // Maturity-windowed LTV - plus per-customer window snapshots (metaNew
@@ -516,6 +526,7 @@ export async function rebuildCustomerSegments(shopDomain) {
         firstOrder: r2(firstOrder.frozenTotalPrice || 0),
         orders: custOrders.length,
         timeTo2nd,
+        tenureDays: tenureDaysAccum,
         acqMonth: shopLocalDayKey(tz, firstOrder.createdAt).slice(0, 7),
         ltvByWindow: customerLtvByWindow,
       });
@@ -712,6 +723,8 @@ export async function rebuildCustomerSegments(shopDomain) {
         avgAov: ltvMetaNewOrders > 0 ? r2(ltvMetaNewRevenue / ltvMetaNewOrders) : 0,
         medianTimeTo2nd: median(ltvMetaNewTimeTo2nd),
         avgFirstOrder: ltvMetaNewCount > 0 ? r2(ltvMetaNewFirstTotal / ltvMetaNewCount) : 0,
+        avgTenureDays: ltvMetaNewTenures.length > 0 ? Math.round(ltvMetaNewTenures.reduce((s, v) => s + v, 0) / ltvMetaNewTenures.length) : null,
+        tenuresCount: ltvMetaNewTenures.length,
       },
       all: {
         count: ltvAllCount,
@@ -720,6 +733,8 @@ export async function rebuildCustomerSegments(shopDomain) {
         repeatRate: ltvAllCount > 0 ? Math.round((ltvAllRepeatCt / ltvAllCount) * 100) : 0,
         avgAov: ltvAllOrders > 0 ? r2(ltvAllRevenue / ltvAllOrders) : 0,
         medianTimeTo2nd: median(ltvAllTimeTo2nd),
+        avgTenureDays: ltvAllTenures.length > 0 ? Math.round(ltvAllTenures.reduce((s, v) => s + v, 0) / ltvAllTenures.length) : null,
+        tenuresCount: ltvAllTenures.length,
       },
     },
     ltvBenchmark: {
