@@ -525,6 +525,23 @@ export async function rebuildCustomerSegments(shopDomain) {
       // ad+date intersect with MetaBreakdown rows), so the fallback fills
       // the long tail of historical customers.
       const resolvedGender = firstAttr2?.gender || customerInferredGenderMap.get(custId) || null;
+      // Per-customer cumulative net revenue at end of each 30-day month
+      // since acquisition. Powers the anchor + recent-overlay LTV
+      // progression chart on the client. Length up to 13 (months 1..13);
+      // index m holds cumulative through (m+1)*30 days. Only includes
+      // months the customer has fully observed - so a 65-day-old customer
+      // gives [v0, v1] and stops.
+      const customerLtvByMonth = [];
+      for (let m = 0; m < MAX_COHORT_MONTHS; m++) {
+        if (daysSinceAcq < (m + 1) * 30) break;
+        const cutoff = acqTime + (m + 1) * MONTH_MS;
+        let cumRev = 0;
+        for (const o of custOrders) {
+          if (o.createdAt.getTime() >= cutoff) break;
+          cumRev += (o.frozenTotalPrice || 0) - (o.totalRefunded || 0);
+        }
+        customerLtvByMonth.push(r2(cumRev));
+      }
       ltvCustomers.push({
         gender: resolvedGender,
         age: firstAttr2?.age || null,
@@ -535,7 +552,9 @@ export async function rebuildCustomerSegments(shopDomain) {
         timeTo2nd,
         tenureDays: tenureDaysAccum,
         acqMonth: shopLocalDayKey(tz, firstOrder.createdAt).slice(0, 7),
+        acqDaysAgo: daysSinceAcq,
         ltvByWindow: customerLtvByWindow,
+        ltvByMonth: customerLtvByMonth,
       });
     }
 

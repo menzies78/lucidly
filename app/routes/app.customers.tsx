@@ -1044,7 +1044,9 @@ export const loader = async ({ request }) => {
     gender: string | null; age: string | null; country: string | null;
     ltv: number; firstOrder: number; orders: number;
     timeTo2nd: number | null; tenureDays: number | null; acqMonth: string;
+    acqDaysAgo?: number;
     ltvByWindow: Record<string, number>;
+    ltvByMonth?: number[];
   }> = ltvBlob?.ltvCustomers || [];
 
   // LTV tile component fields (mn = Meta New, all = all customers)
@@ -1872,9 +1874,11 @@ export default function Customers() {
   // ("1 order = payback" sounds great but ROAS=1 doesn't cover product
   // cost, fulfilment, fees). Eventually migrate to Shop.defaultMargin.
   const [marginPct, setMarginPct] = useState<number>(60);
-  const [chartHover, setChartHover] = useState<{ month: number; avgLtv: number; cohortCustomers: number } | null>(null);
-  // Chart horizon selector. Drives both X-axis range and which acquisition
-  // cohorts qualify (only those that have fully observed >= horizon months).
+  const [chartHover, setChartHover] = useState<{ month: number } | null>(null);
+  // Chart horizon selector. 12m = anchor only (long-term average across all
+  // fully-observed Meta-acquired customers). 6/3/1m = anchor PLUS a recent
+  // overlay of customers acquired in the last N months, with projection to
+  // month 12 using the anchor's historical ratio.
   const [ltvChartWindow, setLtvChartWindow] = useState<1 | 3 | 6 | 12>(12);
 
   // Unique age brackets + countries pulled from the per-customer dataset.
@@ -3209,7 +3213,7 @@ export default function Customers() {
                               <Text as="p" variant="headingSm">{ltvView === "progression" ? "LTV Progression" : "Monthly Cohort Table"}</Text>
                               <Text as="p" variant="bodySm" tone="subdued">
                                 {ltvView === "progression"
-                                  ? "Cumulative spend per customer over time. Uses a fixed cohort - the same customers contribute at every month - so the curve is monotonic by construction."
+                                  ? "Cumulative spend per customer over time. Anchor line is your long-term average across all fully-observed Meta-acquired customers. 6/3/1m views overlay recent cohorts on top, with a dotted projection to month 12."
                                   : cohortMetric === "ltv"
                                     ? "Each row is an acquisition month. Values show cumulative revenue per customer through each 30-day period."
                                     : "Each row is an acquisition month. Values show % of customers who placed at least one order in each 30-day period."}
@@ -3221,94 +3225,183 @@ export default function Customers() {
                             </div>
                           </div>
                           {ltvView === "progression" && (() => {
-                            // Fixed-cohort LTV progression. Same customers must
-                            // contribute at every X-tick or the curve drifts
-                            // non-monotonically as cohort composition changes.
+                            // Anchor + recent-overlay LTV progression.
                             //
-                            // Cohort row maxMonth in the rollup is computed
-                            // from cohort START - so a 12-month-old "April"
-                            // cohort is flagged matured to month 12 even
-                            // though customers acquired Apr 28 only have ~7
-                            // days of bucket-12 data observed. That partial
-                            // bucket gets summed but divided by full cohort
-                            // count, dragging the average down (the "cliff"
-                            // at the last month). Fix: re-derive maxMonth
-                            // here using cohort END so a bucket only counts
-                            // when EVERY customer in the cohort has fully
-                            // observed it.
+                            // ANCHOR: long-term average across every Meta-New
+                            // customer with at least 12 fully-observed months
+                            // (acqDaysAgo >= 365). At each x=m we average
+                            // their cumulative net spend at end-of-month-m.
+                            // Always rendered as the muted base line.
                             //
-                            // Window selector (1/3/6/12) controls both the
-                            // X-axis range and which cohorts qualify - only
-                            // those with strictMaxMonth >= window are
-                            // included.
-                            const NOW_C = Date.now();
-                            const MS_PER_DAY = 86400000;
-                            const MS_PER_MONTH = 30 * MS_PER_DAY;
-                            const strictMaxMonth = (acqMonth: string): number => {
-                              if (!acqMonth) return -1;
-                              const [y, mo] = acqMonth.split("-").map(Number);
-                              // First day of the month *after* acq (latest
-                              // possible acq within the cohort, conservative).
-                              const acqEnd = new Date(y, mo, 1).getTime();
-                              const elapsed = (NOW_C - acqEnd) / MS_PER_MONTH;
-                              return Math.max(-1, Math.floor(elapsed) - 1);
-                            };
-                            const cohortRows = monthlyDataObj?.rows || [];
+                            // OVERLAY (when window != 12): customers acquired
+                            // in the last N months (window) plotted over
+                            // months 0..N. At each x=m we average across
+                            // customers who reached month m, so the overlay
+                            // tapers gracefully where sample size shrinks.
+                            //
+                            // PROJECTION: extends the overlay's last point
+                            // to month 12 using the anchor's historical
+                            // multiplier (anchor[12] / anchor[N]). Dotted.
+                            //
+                            // x=0 is acquisition (£0). x=m corresponds to
+                            // ltvByMonth[m-1] (cumulative through end of
+                            // 30-day month m). Server caps at 13 months.
+                            //
+                            // "all" tab: ltvCustomers is metaNew-only, so
+                            // we fall back to the pre-existing rollup-based
+                            // chart for non-meta. Most decision value here
+                            // is on the Meta tab.
                             const targetM: number = ltvChartWindow;
-                            const fullyMatured = cohortRows.filter((r: any) => strictMaxMonth(r.month) >= targetM);
-                            const fixedCohortCustomers = fullyMatured.reduce((s: number, r: any) => s + r.count, 0);
-                            const monthly: Array<{ month: number; avgLtv: number; cohortCustomers: number }> = [
-                              { month: 0, avgLtv: 0, cohortCustomers: fixedCohortCustomers },
-                            ];
-                            if (fixedCohortCustomers > 0) {
-                              for (let m = 1; m <= targetM; m++) {
-                                let totalRev = 0, totalCust = 0;
-                                for (const row of fullyMatured) {
-                                  const md = row.months[m];
-                                  if (md?.avgLtv != null) {
-                                    totalRev += md.avgLtv * row.count;
-                                    totalCust += row.count;
-                                  }
+                            const MAX_MONTHS = 12;
+
+                            // ── Build anchor + overlay from per-customer ──
+                            // ltvByMonth (Meta tab only). For "all" tab we
+                            // gracefully degrade to a single-line chart
+                            // built from cohort rollups.
+                            type Series = Array<{ month: number; avgLtv: number; n: number }>;
+                            const buildSeriesFromCusts = (
+                              custs: Array<{ ltvByMonth?: number[] }>,
+                              upTo: number
+                            ): Series => {
+                              const out: Series = [{ month: 0, avgLtv: 0, n: custs.length }];
+                              for (let m = 1; m <= upTo; m++) {
+                                let sum = 0, n = 0;
+                                for (const c of custs) {
+                                  const v = c.ltvByMonth?.[m - 1];
+                                  if (v != null) { sum += v; n++; }
                                 }
-                                if (totalCust > 0) {
-                                  monthly.push({ month: m, avgLtv: totalRev / totalCust, cohortCustomers: totalCust });
+                                if (n > 0) out.push({ month: m, avgLtv: sum / n, n });
+                              }
+                              return out;
+                            };
+
+                            const DAY_MS_C = 86400000;
+
+                            // Anchor: ≥365 days since acquisition. Always
+                            // 0..12.
+                            let anchorSeries: Series = [];
+                            let anchorN = 0;
+                            // Overlay: customers acquired within last
+                            // (window) months. Plotted 0..window.
+                            let overlaySeries: Series = [];
+                            let overlayN = 0;
+                            // For "all" tab fallback only:
+                            let fallbackSeries: Series = [];
+
+                            if (isMeta) {
+                              const sourceCusts = ltvCustomers as Array<{ ltvByMonth?: number[]; acqDaysAgo?: number; acqMonth: string }>;
+                              const NOW_DAYS = Date.now();
+                              // Resolve days-since-acquisition. Prefer the
+                              // exact acqDaysAgo from the rollup; fall back
+                              // to deriving from acqMonth (start of that
+                              // month) so the chart still functions on
+                              // pre-existing blobs not yet refreshed.
+                              const daysSince = (c: { acqDaysAgo?: number; acqMonth: string }): number => {
+                                if (c.acqDaysAgo != null) return c.acqDaysAgo;
+                                if (!c.acqMonth) return -1;
+                                const [y, mo] = c.acqMonth.split("-").map(Number);
+                                const acqStart = new Date(y, mo - 1, 1).getTime();
+                                return Math.floor((NOW_DAYS - acqStart) / DAY_MS_C);
+                              };
+                              const anchorCusts = sourceCusts.filter((c) => daysSince(c) >= 365);
+                              anchorN = anchorCusts.length;
+                              anchorSeries = buildSeriesFromCusts(anchorCusts, MAX_MONTHS);
+
+                              if (targetM !== 12) {
+                                const overlayDays = targetM * 30;
+                                const overlayCusts = sourceCusts.filter((c) => {
+                                  const d = daysSince(c);
+                                  return d >= 0 && d <= overlayDays;
+                                });
+                                overlayN = overlayCusts.length;
+                                overlaySeries = buildSeriesFromCusts(overlayCusts, targetM);
+                              }
+                            } else {
+                              // "all" tab fallback - reuse existing rollup
+                              // logic (fixed cohort, fully-matured filter).
+                              const NOW_C = Date.now();
+                              const MS_PER_MONTH = 30 * DAY_MS_C;
+                              const strictMaxMonth = (acqMonth: string): number => {
+                                if (!acqMonth) return -1;
+                                const [y, mo] = acqMonth.split("-").map(Number);
+                                const acqEnd = new Date(y, mo, 1).getTime();
+                                const elapsed = (NOW_C - acqEnd) / MS_PER_MONTH;
+                                return Math.max(-1, Math.floor(elapsed) - 1);
+                              };
+                              const cohortRows = monthlyDataObj?.rows || [];
+                              const matured = cohortRows.filter((r: any) => strictMaxMonth(r.month) >= targetM);
+                              const totalN = matured.reduce((s: number, r: any) => s + r.count, 0);
+                              fallbackSeries = [{ month: 0, avgLtv: 0, n: totalN }];
+                              if (totalN > 0) {
+                                for (let m = 1; m <= targetM; m++) {
+                                  let totalRev = 0, totalCust = 0;
+                                  for (const row of matured) {
+                                    const md = row.months[m];
+                                    if (md?.avgLtv != null) {
+                                      totalRev += md.avgLtv * row.count;
+                                      totalCust += row.count;
+                                    }
+                                  }
+                                  if (totalCust > 0) fallbackSeries.push({ month: m, avgLtv: totalRev / totalCust, n: totalCust });
                                 }
                               }
                             }
-                            const totalCohortCustomers = fixedCohortCustomers;
-                            const cohortPlural = totalCohortCustomers === 1 ? "" : "s";
 
-                            // Compact dimensions, tuned to sit comfortably in
-                            // the explorer alongside the headline tiles.
-                            // SVG width/height attrs are set so it renders at
-                            // native size, with maxWidth: 100% letting it
-                            // scale down on narrow viewports but never blow
-                            // up on wide ones.
+                            // Projection: anchor's multiplier from window-end
+                            // to 12m, applied to overlay's last point.
+                            let projection: { from: { month: number; avgLtv: number }; to: { month: number; avgLtv: number }; multiplier: number } | null = null;
+                            if (isMeta && targetM !== 12 && overlaySeries.length > 0 && anchorSeries.length > 0) {
+                              const overlayLast = overlaySeries[overlaySeries.length - 1];
+                              const anchorAtN = anchorSeries.find((p) => p.month === overlayLast.month);
+                              const anchorAt12 = anchorSeries[anchorSeries.length - 1];
+                              if (anchorAtN && anchorAt12 && anchorAtN.avgLtv > 0 && anchorAt12.month === MAX_MONTHS) {
+                                const mult = anchorAt12.avgLtv / anchorAtN.avgLtv;
+                                projection = {
+                                  from: { month: overlayLast.month, avgLtv: overlayLast.avgLtv },
+                                  to: { month: MAX_MONTHS, avgLtv: overlayLast.avgLtv * mult },
+                                  multiplier: mult,
+                                };
+                              }
+                            }
+
+                            // Determine the active "headline" curve and the
+                            // value at month-12 (or window end).
+                            const primarySeries = isMeta && targetM !== 12 && overlaySeries.length > 1
+                              ? overlaySeries
+                              : (isMeta ? anchorSeries : fallbackSeries);
+                            const primaryLast = primarySeries[primarySeries.length - 1];
+
+                            // Empty state: no anchor data AND no overlay/
+                            // fallback. Nothing meaningful to show.
+                            const hasAnything = (isMeta
+                              ? (anchorSeries.length > 1 || overlaySeries.length > 1)
+                              : fallbackSeries.length > 1);
+                            const xMaxAxis = isMeta ? MAX_MONTHS : targetM;
+
+                            // Chart geometry. Native size; scales down on
+                            // narrow viewports via maxWidth.
                             const chartWidth = 560;
                             const chartHeight = 200;
                             const padL = 48, padR = 18, padT = 14, padB = 30;
                             const innerW = chartWidth - padL - padR;
                             const innerH = chartHeight - padT - padB;
-                            const ltvMaxRaw = Math.max(
-                              ...monthly.map((p) => p.avgLtv),
+                            const allPoints: number[] = [
+                              ...anchorSeries.map((p) => p.avgLtv),
+                              ...overlaySeries.map((p) => p.avgLtv),
+                              ...fallbackSeries.map((p) => p.avgLtv),
+                              projection?.to?.avgLtv ?? 0,
                               isMeta && cac > 0 ? cac * 1.15 : 0,
                               1,
-                            );
+                            ];
+                            const ltvMaxRaw = Math.max(...allPoints);
                             const ltvMax = ltvMaxRaw * 1.12;
-                            const xMax = Math.max(targetM, 1);
-                            const xPos = (m: number) => padL + (m / xMax) * innerW;
+                            const xPos = (m: number) => padL + (m / Math.max(xMaxAxis, 1)) * innerW;
                             const yPos = (v: number) => padT + innerH - (v / ltvMax) * innerH;
 
-                            // Monotone cubic Hermite (Fritsch-Carlson)
-                            // smoothing. Catmull-Rom can overshoot - it
-                            // produced the "shoots up to month 1, comes back
-                            // down to month 2" artefact. Fritsch-Carlson
-                            // clamps tangents to enforce monotonicity wherever
-                            // the data itself is monotonic, so the curve
-                            // passes through every point without dipping
-                            // below or above neighbours.
-                            const pts = monthly;
-                            const buildSmoothPath = (points: Array<{ month: number; avgLtv: number }>) => {
+                            // Fritsch-Carlson monotone cubic Hermite. Same
+                            // smoother as before - prevents the overshoot
+                            // that Catmull-Rom produced.
+                            const buildSmoothPath = (points: Series) => {
                               const n = points.length;
                               if (n < 2) return "";
                               const xs = points.map((p) => p.month);
@@ -3319,18 +3412,13 @@ export default function Customers() {
                                 dx.push(xs[i + 1] - xs[i]);
                                 slopes.push((ys[i + 1] - ys[i]) / dx[i]);
                               }
-                              // Initial tangents - average of adjacent slopes
                               const t = new Array<number>(n);
                               t[0] = slopes[0];
                               t[n - 1] = slopes[n - 2];
                               for (let i = 1; i < n - 1; i++) t[i] = (slopes[i - 1] + slopes[i]) / 2;
-                              // Fritsch-Carlson: enforce monotonicity by
-                              // zeroing/scaling tangents where neighbouring
-                              // slopes flatten or change sign.
                               for (let i = 0; i < n - 1; i++) {
                                 if (slopes[i] === 0) {
-                                  t[i] = 0;
-                                  t[i + 1] = 0;
+                                  t[i] = 0; t[i + 1] = 0;
                                 } else {
                                   const a = t[i] / slopes[i];
                                   const b = t[i + 1] / slopes[i];
@@ -3346,8 +3434,6 @@ export default function Customers() {
                               }
                               let d = `M ${xPos(xs[0]).toFixed(1)},${yPos(ys[0]).toFixed(1)}`;
                               for (let i = 0; i < n - 1; i++) {
-                                // Cubic Bezier control points from Hermite
-                                // tangents (data domain), then map to screen.
                                 const c1xData = xs[i] + dx[i] / 3;
                                 const c1yData = ys[i] + (t[i] * dx[i]) / 3;
                                 const c2xData = xs[i + 1] - dx[i] / 3;
@@ -3356,85 +3442,144 @@ export default function Customers() {
                               }
                               return d;
                             };
-                            const linePath = buildSmoothPath(pts);
-                            const lastPoint = monthly[monthly.length - 1];
-                            const areaPath = pts.length >= 2
-                              ? `${linePath} L ${xPos(lastPoint.month).toFixed(1)} ${(padT + innerH).toFixed(1)} L ${xPos(0).toFixed(1)} ${(padT + innerH).toFixed(1)} Z`
+
+                            const anchorPath = buildSmoothPath(anchorSeries);
+                            const overlayPath = buildSmoothPath(overlaySeries);
+                            const fallbackPath = buildSmoothPath(fallbackSeries);
+                            // Area fill under the primary headline curve
+                            const areaSeries = primarySeries;
+                            const areaPath = areaSeries.length >= 2
+                              ? `${buildSmoothPath(areaSeries)} L ${xPos(areaSeries[areaSeries.length - 1].month).toFixed(1)} ${(padT + innerH).toFixed(1)} L ${xPos(0).toFixed(1)} ${(padT + innerH).toFixed(1)} Z`
                               : "";
 
-                            // Payback: month where curve crosses CAC.
+                            // Payback uses primary curve.
                             let paybackMonth: number | null = null;
                             if (isMeta && cac > 0) {
-                              for (let i = 1; i < pts.length; i++) {
-                                const a = pts[i - 1], b = pts[i];
+                              for (let i = 1; i < primarySeries.length; i++) {
+                                const a = primarySeries[i - 1], b = primarySeries[i];
                                 if (a.avgLtv <= cac && b.avgLtv >= cac && b.avgLtv !== a.avgLtv) {
                                   paybackMonth = a.month + (b.month - a.month) * (cac - a.avgLtv) / (b.avgLtv - a.avgLtv);
                                   break;
                                 }
                               }
                             }
-                            const ltvCacRatioCurve = isMeta && cac > 0 && lastPoint ? lastPoint.avgLtv / cac : 0;
+                            const ltvCacRatioCurve = isMeta && cac > 0 && primaryLast ? primaryLast.avgLtv / cac : 0;
                             const gridVals = [0, ltvMax * 0.25, ltvMax * 0.5, ltvMax * 0.75, ltvMax];
 
                             const windowOptions: Array<{ value: 1 | 3 | 6 | 12; label: string }> = [
                               { value: 12, label: "12m" }, { value: 6, label: "6m" }, { value: 3, label: "3m" }, { value: 1, label: "1m" },
                             ];
+                            // Big, central button group - this is the
+                            // headline interaction.
                             const windowSelector = (
-                              <div className="toggle-group">
-                                {windowOptions.map((opt) => (
-                                  <button key={opt.value} className={`toggle-btn ${ltvChartWindow === opt.value ? "active" : ""}`} onClick={() => setLtvChartWindow(opt.value)}>{opt.label}</button>
-                                ))}
+                              <div style={{ display: "inline-flex", border: "1px solid #E5E7EB", borderRadius: 10, padding: 3, background: "#F9FAFB", gap: 2 }}>
+                                {windowOptions.map((opt) => {
+                                  const active = ltvChartWindow === opt.value;
+                                  return (
+                                    <button
+                                      key={opt.value}
+                                      onClick={() => setLtvChartWindow(opt.value)}
+                                      style={{
+                                        padding: "8px 18px",
+                                        fontSize: 14,
+                                        fontWeight: 700,
+                                        background: active ? "#fff" : "transparent",
+                                        color: active ? "#7C3AED" : "#6B7280",
+                                        border: active ? "1px solid #DDD6FE" : "1px solid transparent",
+                                        borderRadius: 8,
+                                        cursor: "pointer",
+                                        boxShadow: active ? "0 1px 2px rgba(124, 58, 237, 0.10)" : "none",
+                                        minWidth: 56,
+                                        transition: "all 120ms ease",
+                                      }}
+                                    >{opt.label}</button>
+                                  );
+                                })}
                               </div>
                             );
 
-                            // Empty state: no cohort fully observed at this
-                            // window. Surface the selector so user can pick
-                            // a shorter horizon.
-                            if (monthly.length < 2 || totalCohortCustomers === 0) {
+                            // Empty state.
+                            if (!hasAnything) {
                               return (
-                                <div style={{ background: "linear-gradient(180deg, #FAFAFF 0%, #FFFFFF 60%)", border: "1px solid #ECECF5", borderRadius: "12px", padding: "16px 18px" }}>
-                                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "10px" }}>
-                                    <Text as="p" variant="bodySm" tone="subdued">Cohort window</Text>
-                                    {windowSelector}
-                                  </div>
-                                  <div style={{ padding: "20px 12px", textAlign: "center", color: "#9CA3AF", fontSize: "13px" }}>
-                                    No cohort has fully observed {targetM} month{targetM === 1 ? "" : "s"} of data yet. Try a shorter horizon.
+                                <div style={{ background: "linear-gradient(180deg, #FAFAFF 0%, #FFFFFF 60%)", border: "1px solid #ECECF5", borderRadius: 12, padding: "16px 18px" }}>
+                                  <div style={{ display: "flex", justifyContent: "center", marginBottom: 12 }}>{windowSelector}</div>
+                                  <div style={{ padding: "20px 12px", textAlign: "center", color: "#9CA3AF", fontSize: 13 }}>
+                                    {isMeta
+                                      ? "Not enough Meta-acquired customers with 12+ months of history yet to build the long-term anchor."
+                                      : `No cohort has fully observed ${targetM} month${targetM === 1 ? "" : "s"} yet. Try a shorter horizon.`}
                                   </div>
                                 </div>
                               );
                             }
 
+                            // Hover lookup helpers.
+                            const lookup = (s: Series, m: number) => s.find((p) => p.month === m) ?? null;
+                            const hoverM = chartHover?.month ?? null;
+                            const hoverAnchor = hoverM != null ? lookup(anchorSeries, hoverM) : null;
+                            const hoverOverlay = hoverM != null ? lookup(overlaySeries, hoverM) : null;
+                            const hoverFallback = hoverM != null ? lookup(fallbackSeries, hoverM) : null;
+
+                            // Set of x positions that have at least one
+                            // active series datapoint - powers the hit
+                            // targets and dot rendering.
+                            const xTickSet = new Set<number>();
+                            for (const p of anchorSeries) xTickSet.add(p.month);
+                            for (const p of overlaySeries) xTickSet.add(p.month);
+                            for (const p of fallbackSeries) xTickSet.add(p.month);
+                            const xTicks = Array.from({ length: xMaxAxis + 1 }, (_, i) => i);
+
                             return (
-                              <div style={{ background: "linear-gradient(180deg, #FAFAFF 0%, #FFFFFF 60%)", border: "1px solid #ECECF5", borderRadius: "12px", padding: "14px 16px 12px", boxShadow: "0 1px 2px rgba(15, 23, 42, 0.04)" }}>
-                                {/* Top bar: cohort window selector + headline */}
-                                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: "12px", marginBottom: "10px" }}>
-                                  <div style={{ display: "flex", alignItems: "baseline", gap: "16px", flexWrap: "wrap" }}>
-                                    <div>
-                                      <div style={{ fontSize: "9px", fontWeight: 700, color: "#6366F1", textTransform: "uppercase", letterSpacing: "0.5px" }}>Month {lastPoint.month} cumulative</div>
-                                      <div style={{ fontSize: "20px", fontWeight: 800, color: "#1F2937", lineHeight: 1.1 }}>
-                                        {cs}{Math.round(lastPoint.avgLtv).toLocaleString()}
-                                      </div>
-                                      <div style={{ fontSize: "10px", color: "#9CA3AF" }}>per customer</div>
+                              <div style={{ background: "linear-gradient(180deg, #FAFAFF 0%, #FFFFFF 60%)", border: "1px solid #ECECF5", borderRadius: 12, padding: "14px 16px 12px", boxShadow: "0 1px 2px rgba(15, 23, 42, 0.04)" }}>
+                                {/* Headline numbers */}
+                                <div style={{ display: "flex", alignItems: "baseline", gap: 16, flexWrap: "wrap", marginBottom: 10 }}>
+                                  <div>
+                                    <div style={{ fontSize: 9, fontWeight: 700, color: "#6366F1", textTransform: "uppercase", letterSpacing: 0.5 }}>
+                                      {isMeta && targetM !== 12 ? `Recent (last ${targetM}m) at month ${primaryLast.month}` : `Anchor at month ${primaryLast.month}`}
                                     </div>
-                                    {isMeta && ltvCacRatioCurve > 0 && (
-                                      <div>
-                                        <div style={{ fontSize: "9px", fontWeight: 700, color: "#6B7280", textTransform: "uppercase", letterSpacing: "0.5px" }}>vs CAC</div>
-                                        <div style={{ fontSize: "16px", fontWeight: 700, color: ltvCacRatioCurve >= 3 ? "#059669" : ltvCacRatioCurve >= 1.5 ? "#1F2937" : "#D97706" }}>
-                                          {ltvCacRatioCurve.toFixed(2)}×
-                                        </div>
+                                    <div style={{ fontSize: 20, fontWeight: 800, color: "#1F2937", lineHeight: 1.1 }}>
+                                      {cs}{Math.round(primaryLast.avgLtv).toLocaleString()}
+                                    </div>
+                                    <div style={{ fontSize: 10, color: "#9CA3AF" }}>per customer</div>
+                                  </div>
+                                  {projection && (
+                                    <div>
+                                      <div style={{ fontSize: 9, fontWeight: 700, color: "#7C3AED", textTransform: "uppercase", letterSpacing: 0.5 }}>Projected month 12</div>
+                                      <div style={{ fontSize: 18, fontWeight: 800, color: "#7C3AED", lineHeight: 1.1 }}>
+                                        {cs}{Math.round(projection.to.avgLtv).toLocaleString()}
                                       </div>
-                                    )}
-                                  </div>
-                                  <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
-                                    <span style={{ fontSize: "10px", fontWeight: 700, color: "#6B7280", textTransform: "uppercase", letterSpacing: "0.5px" }}>Window</span>
-                                    {windowSelector}
-                                  </div>
+                                      <div style={{ fontSize: 10, color: "#9CA3AF" }}>{projection.multiplier.toFixed(2)}× anchor multiplier</div>
+                                    </div>
+                                  )}
+                                  {isMeta && ltvCacRatioCurve > 0 && (
+                                    <div>
+                                      <div style={{ fontSize: 9, fontWeight: 700, color: "#6B7280", textTransform: "uppercase", letterSpacing: 0.5 }}>vs CAC</div>
+                                      <div style={{ fontSize: 16, fontWeight: 700, color: ltvCacRatioCurve >= 3 ? "#059669" : ltvCacRatioCurve >= 1.5 ? "#1F2937" : "#D97706" }}>
+                                        {ltvCacRatioCurve.toFixed(2)}×
+                                      </div>
+                                    </div>
+                                  )}
                                 </div>
-                                {/* Diagnostic: fixed cohort population */}
-                                <div style={{ fontSize: "10px", color: "#6B7280", marginBottom: "8px" }}>
-                                  <span style={{ fontWeight: 600 }}>Cohort: {totalCohortCustomers.toLocaleString()} customer{cohortPlural}</span>
-                                  <span style={{ color: "#9CA3AF", marginLeft: 6 }}>fully observed through month {targetM} ({fullyMatured.length} acquisition month{fullyMatured.length === 1 ? "" : "s"})</span>
+                                {/* Cohort population diagnostics */}
+                                <div style={{ fontSize: 10, color: "#6B7280", marginBottom: 8 }}>
+                                  {isMeta ? (
+                                    <>
+                                      <span style={{ fontWeight: 600 }}>Anchor: {anchorN.toLocaleString()} customer{anchorN === 1 ? "" : "s"}</span>
+                                      <span style={{ color: "#9CA3AF", marginLeft: 6 }}>(acquired 12+ months ago, fully observed)</span>
+                                      {targetM !== 12 && (
+                                        <span style={{ marginLeft: 12 }}>
+                                          <span style={{ fontWeight: 600, color: "#7C3AED" }}>Recent: {overlayN.toLocaleString()}</span>
+                                          <span style={{ color: "#9CA3AF", marginLeft: 6 }}>(acquired in last {targetM} month{targetM === 1 ? "" : "s"})</span>
+                                        </span>
+                                      )}
+                                    </>
+                                  ) : (
+                                    <>
+                                      <span style={{ fontWeight: 600 }}>Cohort: {(fallbackSeries[0]?.n ?? 0).toLocaleString()} customer{fallbackSeries[0]?.n === 1 ? "" : "s"}</span>
+                                      <span style={{ color: "#9CA3AF", marginLeft: 6 }}>fully observed through month {targetM}</span>
+                                    </>
+                                  )}
                                 </div>
+                                {/* Chart */}
                                 <div style={{ position: "relative", width: "100%", maxWidth: chartWidth, margin: "0 auto" }}>
                                   <svg width={chartWidth} height={chartHeight} viewBox={`0 0 ${chartWidth} ${chartHeight}`} style={{ width: "100%", maxWidth: chartWidth, height: "auto", display: "block" }}>
                                     <defs>
@@ -3457,26 +3602,55 @@ export default function Customers() {
                                     ))}
                                     {/* X-axis baseline */}
                                     <line x1={padL} x2={chartWidth - padR} y1={padT + innerH} y2={padT + innerH} stroke="#D1D5DB" strokeWidth="1" />
-                                    {/* X ticks - 0..targetM */}
-                                    {Array.from({ length: targetM + 1 }, (_, i) => i).map((m) => (
+                                    {/* X ticks 0..xMaxAxis */}
+                                    {xTicks.map((m) => (
                                       <g key={m}>
                                         <line x1={xPos(m)} x2={xPos(m)} y1={padT + innerH} y2={padT + innerH + 3} stroke="#9CA3AF" strokeWidth="1" />
                                         <text x={xPos(m)} y={chartHeight - padB + 14} textAnchor="middle" fontSize="10" fontWeight="600" fill="#6B7280">{m}</text>
                                       </g>
                                     ))}
                                     <text x={(padL + chartWidth - padR) / 2} y={chartHeight - 6} textAnchor="middle" fontSize="9" fontWeight="600" fill="#9CA3AF" letterSpacing="0.5">MONTHS SINCE FIRST ORDER</text>
-                                    {/* Area fill */}
+                                    {/* Area fill (under primary curve) */}
                                     <path d={areaPath} fill="url(#ltvAreaGradient)" stroke="none" />
-                                    {/* CAC reference line */}
+                                    {/* CAC reference */}
                                     {isMeta && cac > 0 && cac < ltvMax && (
                                       <g>
                                         <line x1={padL} x2={chartWidth - padR} y1={yPos(cac)} y2={yPos(cac)} stroke="#DC2626" strokeWidth="1" strokeDasharray="3 3" />
                                         <text x={chartWidth - padR - 3} y={yPos(cac) - 4} textAnchor="end" fontSize="9" fontWeight="700" fill="#DC2626">CAC {cs}{Math.round(cac).toLocaleString()}</text>
                                       </g>
                                     )}
-                                    {/* Smooth curve */}
-                                    <path d={linePath} fill="none" stroke="url(#ltvLineGradient)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                                    {/* Payback marker */}
+                                    {/* Anchor line - muted base when overlay present, primary when 12m */}
+                                    {isMeta && anchorPath && (
+                                      <path
+                                        d={anchorPath}
+                                        fill="none"
+                                        stroke={targetM === 12 ? "url(#ltvLineGradient)" : "#94A3B8"}
+                                        strokeWidth={targetM === 12 ? 2 : 1.5}
+                                        strokeLinecap="round"
+                                        strokeLinejoin="round"
+                                        opacity={targetM === 12 ? 1 : 0.55}
+                                      />
+                                    )}
+                                    {/* "all" tab fallback - single curve */}
+                                    {!isMeta && fallbackPath && (
+                                      <path d={fallbackPath} fill="none" stroke="url(#ltvLineGradient)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                                    )}
+                                    {/* Recent overlay - on top, primary purple */}
+                                    {isMeta && targetM !== 12 && overlayPath && (
+                                      <path d={overlayPath} fill="none" stroke="url(#ltvLineGradient)" strokeWidth="2.25" strokeLinecap="round" strokeLinejoin="round" />
+                                    )}
+                                    {/* Projection - dotted continuation */}
+                                    {projection && (
+                                      <g>
+                                        <line
+                                          x1={xPos(projection.from.month)} y1={yPos(projection.from.avgLtv)}
+                                          x2={xPos(projection.to.month)} y2={yPos(projection.to.avgLtv)}
+                                          stroke="#7C3AED" strokeWidth="1.75" strokeDasharray="3 3" opacity="0.85"
+                                        />
+                                        <circle cx={xPos(projection.to.month)} cy={yPos(projection.to.avgLtv)} r="4" fill="#fff" stroke="#7C3AED" strokeWidth="1.75" />
+                                      </g>
+                                    )}
+                                    {/* Payback marker on primary */}
                                     {paybackMonth != null && (
                                       <g>
                                         <line x1={xPos(paybackMonth)} x2={xPos(paybackMonth)} y1={yPos(cac)} y2={padT + innerH} stroke="#DC2626" strokeWidth="1" strokeDasharray="2 2" />
@@ -3484,26 +3658,48 @@ export default function Customers() {
                                         <text x={xPos(paybackMonth)} y={yPos(cac) - 9} textAnchor="middle" fontSize="9" fontWeight="700" fill="#DC2626">Payback m{paybackMonth.toFixed(1)}</text>
                                       </g>
                                     )}
-                                    {/* Data points + hit targets */}
-                                    {monthly.map((p) => {
-                                      const isHover = chartHover?.month === p.month;
-                                      const isLast = p.month === lastPoint.month;
+                                    {/* Hit targets across all xTicks */}
+                                    {xTicks.map((m) => (
+                                      <g key={`hit-${m}`} style={{ cursor: "pointer" }} onMouseEnter={() => setChartHover({ month: m })} onMouseLeave={() => setChartHover(null)}>
+                                        <rect x={xPos(m) - 18} y={padT} width={36} height={innerH} fill="transparent" />
+                                      </g>
+                                    ))}
+                                    {/* Anchor dots (when 12m view) or recent dots (when overlay) */}
+                                    {isMeta && targetM === 12 && anchorSeries.map((p) => {
+                                      const isHover = hoverM === p.month;
+                                      const isLast = p.month === anchorSeries[anchorSeries.length - 1].month;
                                       return (
-                                        <g key={p.month} style={{ cursor: "pointer" }} onMouseEnter={() => setChartHover({ month: p.month, avgLtv: p.avgLtv, cohortCustomers: p.cohortCustomers })} onMouseLeave={() => setChartHover(null)}>
-                                          <rect x={xPos(p.month) - 18} y={padT} width={36} height={innerH} fill="transparent" />
-                                          {(isHover || isLast) && (
-                                            <circle cx={xPos(p.month)} cy={yPos(p.avgLtv)} r="7" fill="#7C3AED" opacity="0.18" />
-                                          )}
+                                        <g key={`a-${p.month}`} pointerEvents="none">
+                                          {(isHover || isLast) && <circle cx={xPos(p.month)} cy={yPos(p.avgLtv)} r="7" fill="#7C3AED" opacity="0.18" />}
                                           <circle cx={xPos(p.month)} cy={yPos(p.avgLtv)} r={isLast ? 4 : isHover ? 3.5 : 2.5} fill="#7C3AED" stroke="#fff" strokeWidth="1.5" />
                                         </g>
                                       );
                                     })}
-                                    {/* Final-point value pill - confident anchor at the end. */}
-                                    {(() => {
-                                      const lp = lastPoint;
-                                      const x = xPos(lp.month);
-                                      const y = yPos(lp.avgLtv);
-                                      const labelText = `${cs}${Math.round(lp.avgLtv).toLocaleString()}`;
+                                    {isMeta && targetM !== 12 && overlaySeries.map((p) => {
+                                      const isHover = hoverM === p.month;
+                                      const isLast = p.month === overlaySeries[overlaySeries.length - 1].month;
+                                      return (
+                                        <g key={`o-${p.month}`} pointerEvents="none">
+                                          {(isHover || isLast) && <circle cx={xPos(p.month)} cy={yPos(p.avgLtv)} r="7" fill="#7C3AED" opacity="0.18" />}
+                                          <circle cx={xPos(p.month)} cy={yPos(p.avgLtv)} r={isLast ? 4 : isHover ? 3.5 : 2.5} fill="#7C3AED" stroke="#fff" strokeWidth="1.5" />
+                                        </g>
+                                      );
+                                    })}
+                                    {!isMeta && fallbackSeries.map((p) => {
+                                      const isHover = hoverM === p.month;
+                                      const isLast = p.month === fallbackSeries[fallbackSeries.length - 1].month;
+                                      return (
+                                        <g key={`f-${p.month}`} pointerEvents="none">
+                                          {(isHover || isLast) && <circle cx={xPos(p.month)} cy={yPos(p.avgLtv)} r="7" fill="#7C3AED" opacity="0.18" />}
+                                          <circle cx={xPos(p.month)} cy={yPos(p.avgLtv)} r={isLast ? 4 : isHover ? 3.5 : 2.5} fill="#7C3AED" stroke="#fff" strokeWidth="1.5" />
+                                        </g>
+                                      );
+                                    })}
+                                    {/* Final value pill on primary */}
+                                    {primaryLast && (() => {
+                                      const x = xPos(primaryLast.month);
+                                      const y = yPos(primaryLast.avgLtv);
+                                      const labelText = `${cs}${Math.round(primaryLast.avgLtv).toLocaleString()}`;
                                       const labelW = 12 + labelText.length * 6;
                                       const lx = x - labelW - 8;
                                       const ly = y - 9;
@@ -3514,11 +3710,23 @@ export default function Customers() {
                                         </g>
                                       );
                                     })()}
-                                    {/* Hover tooltip */}
+                                    {/* Hover tooltip - shows both anchor +
+                                        overlay values when overlay active */}
                                     {chartHover && (() => {
                                       const hx = xPos(chartHover.month);
-                                      const tipW = 150;
-                                      const tipH = 56;
+                                      const showAnchor = isMeta && hoverAnchor != null;
+                                      const showOverlay = isMeta && targetM !== 12 && hoverOverlay != null;
+                                      const showFallback = !isMeta && hoverFallback != null;
+                                      // Build tooltip rows in priority order
+                                      // (overlay first - it's the headline,
+                                      // anchor underneath as comparator).
+                                      const rows: Array<{ kind: "overlay" | "anchor" | "fallback"; data: { avgLtv: number; n: number } }> = [];
+                                      if (showOverlay) rows.push({ kind: "overlay", data: hoverOverlay! });
+                                      if (showAnchor) rows.push({ kind: "anchor", data: hoverAnchor! });
+                                      if (showFallback) rows.push({ kind: "fallback", data: hoverFallback! });
+                                      if (rows.length === 0) return null;
+                                      const tipW = 178;
+                                      const tipH = 24 + rows.length * 14 + 12;
                                       const leftSide = hx > chartWidth / 2;
                                       const tx = leftSide ? hx - tipW - 10 : hx + 10;
                                       const ty = padT + 6;
@@ -3527,21 +3735,37 @@ export default function Customers() {
                                           <line x1={hx} x2={hx} y1={padT} y2={padT + innerH} stroke="#9CA3AF" strokeWidth="1" strokeDasharray="2 3" />
                                           <rect x={tx} y={ty} width={tipW} height={tipH} rx="6" fill="#0F172A" opacity="0.96" />
                                           <text x={tx + 9} y={ty + 16} fontSize="10" fontWeight="700" fill="#fff">Month {chartHover.month}</text>
-                                          <text x={tx + 9} y={ty + 30} fontSize="9" fill="#C4B5FD">Cumulative LTV: <tspan fontWeight="700" fill="#fff">{cs}{Math.round(chartHover.avgLtv).toLocaleString()}</tspan></text>
-                                          <text x={tx + 9} y={ty + 44} fontSize="9" fill="#94A3B8">Across {chartHover.cohortCustomers.toLocaleString()} customer{chartHover.cohortCustomers === 1 ? "" : "s"}</text>
+                                          {rows.map((r, idx) => {
+                                            const y = ty + 30 + idx * 14;
+                                            if (r.kind === "overlay") {
+                                              return <text key={idx} x={tx + 9} y={y} fontSize="9" fill="#C4B5FD">Recent {targetM}m: <tspan fontWeight="700" fill="#fff">{cs}{Math.round(r.data.avgLtv).toLocaleString()}</tspan> <tspan fill="#94A3B8">(n={r.data.n})</tspan></text>;
+                                            }
+                                            if (r.kind === "anchor") {
+                                              return <text key={idx} x={tx + 9} y={y} fontSize="9" fill="#94A3B8">Anchor: <tspan fontWeight="700" fill="#E5E7EB">{cs}{Math.round(r.data.avgLtv).toLocaleString()}</tspan> <tspan fill="#64748B">(n={r.data.n})</tspan></text>;
+                                            }
+                                            return <text key={idx} x={tx + 9} y={y} fontSize="9" fill="#C4B5FD">Cumulative: <tspan fontWeight="700" fill="#fff">{cs}{Math.round(r.data.avgLtv).toLocaleString()}</tspan> <tspan fill="#94A3B8">(n={r.data.n})</tspan></text>;
+                                          })}
                                         </g>
                                       );
                                     })()}
                                   </svg>
                                 </div>
-                                {isMeta && paybackMonth != null && (
-                                  <div style={{ marginTop: "10px", padding: "8px 12px", background: "#ECFDF5", border: "1px solid #A7F3D0", borderRadius: "8px", fontSize: "12px", color: "#065F46" }}>
-                                    <strong>Payback:</strong> Meta customers recoup their {cs}{Math.round(cac).toLocaleString()} acquisition cost around month {paybackMonth.toFixed(1)}. By month {lastPoint.month}, cumulative spend reaches {cs}{Math.round(lastPoint.avgLtv).toLocaleString()} per customer ({ltvCacRatioCurve.toFixed(2)}× CAC).
+                                {/* Central, large window selector */}
+                                <div style={{ display: "flex", justifyContent: "center", marginTop: 12 }}>{windowSelector}</div>
+                                {/* Footnotes / payback callouts */}
+                                {isMeta && targetM !== 12 && projection && (
+                                  <div style={{ marginTop: 10, padding: "8px 12px", background: "#F5F3FF", border: "1px solid #DDD6FE", borderRadius: 8, fontSize: 12, color: "#5B21B6" }}>
+                                    <strong>Projection:</strong> recent {targetM}-month cohort is at {cs}{Math.round(projection.from.avgLtv).toLocaleString()} by month {projection.from.month}. Anchor scales {projection.multiplier.toFixed(2)}× from there to month 12, suggesting <strong>{cs}{Math.round(projection.to.avgLtv).toLocaleString()}</strong> projected 12m LTV. Validates only as well as the anchor's pattern holds.
                                   </div>
                                 )}
-                                {isMeta && paybackMonth == null && cac > 0 && lastPoint.avgLtv > 0 && (
-                                  <div style={{ marginTop: "10px", padding: "8px 12px", background: "#FFFBEB", border: "1px solid #FCD34D", borderRadius: "8px", fontSize: "12px", color: "#92400E" }}>
-                                    <strong>Payback:</strong> by month {lastPoint.month}, cumulative LTV ({cs}{Math.round(lastPoint.avgLtv).toLocaleString()}) hasn&apos;t yet crossed CAC ({cs}{Math.round(cac).toLocaleString()}). Lift repeat rate or lower CAC to close the gap.
+                                {isMeta && paybackMonth != null && (
+                                  <div style={{ marginTop: 10, padding: "8px 12px", background: "#ECFDF5", border: "1px solid #A7F3D0", borderRadius: 8, fontSize: 12, color: "#065F46" }}>
+                                    <strong>Payback:</strong> Meta customers recoup their {cs}{Math.round(cac).toLocaleString()} acquisition cost around month {paybackMonth.toFixed(1)}. By month {primaryLast.month}, cumulative spend reaches {cs}{Math.round(primaryLast.avgLtv).toLocaleString()} per customer ({ltvCacRatioCurve.toFixed(2)}× CAC).
+                                  </div>
+                                )}
+                                {isMeta && paybackMonth == null && cac > 0 && primaryLast.avgLtv > 0 && (
+                                  <div style={{ marginTop: 10, padding: "8px 12px", background: "#FFFBEB", border: "1px solid #FCD34D", borderRadius: 8, fontSize: 12, color: "#92400E" }}>
+                                    <strong>Payback:</strong> by month {primaryLast.month}, cumulative LTV ({cs}{Math.round(primaryLast.avgLtv).toLocaleString()}) hasn&apos;t yet crossed CAC ({cs}{Math.round(cac).toLocaleString()}). Lift repeat rate or lower CAC to close the gap.
                                   </div>
                                 )}
                               </div>
