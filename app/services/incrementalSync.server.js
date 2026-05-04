@@ -398,6 +398,30 @@ async function runUtmLayer1Pass(shopDomain, dayStr, dayOrders, newConversions, m
   );
   if (utmOrders.length === 0) return { layer1Written: 0, slotCreditsConsumed: 0 };
 
+  // Build an ad-catalog lookup so we can validate that whatever IDs were
+  // captured at order-import time actually resolve to a real Ad. Vollebak's
+  // UTM template puts the AdSet ID in utm_term, which previously got stored
+  // as metaAdIdFromUtm and then written here as the Layer 1 metaAdId - a
+  // ghost ID that never resolves anywhere downstream. Caught via VBK1142602.
+  const adInsightRows = await db.metaInsight.findMany({
+    where: { shopDomain },
+    select: { adId: true, adName: true },
+    distinct: ["adId"],
+  });
+  const validAdIds = new Set();
+  const adNameToId = {};
+  for (const row of adInsightRows) {
+    if (row.adId) validAdIds.add(row.adId);
+    if (row.adName && row.adId && !adNameToId[row.adName]) adNameToId[row.adName] = row.adId;
+  }
+  const resolveAdId = (order) => {
+    if (order.metaAdId && validAdIds.has(order.metaAdId)) return order.metaAdId;
+    if (order.metaAdIdFromUtm && validAdIds.has(order.metaAdIdFromUtm)) return order.metaAdIdFromUtm;
+    if (order.utmContent && adNameToId[order.utmContent]) return adNameToId[order.utmContent];
+    if (order.metaAdName && adNameToId[order.metaAdName]) return adNameToId[order.metaAdName];
+    return null;
+  };
+
   // Precompute slot ranges for each conv so we don't recompute per order.
   const convsByAd = {};
   for (const conv of newConversions) {
@@ -429,9 +453,13 @@ async function runUtmLayer1Pass(shopDomain, dayStr, dayOrders, newConversions, m
 
     const orderTotal = order.frozenTotalPrice || 0;
     const orderMinute = dateToMinute(order.createdAt);
-    // Effective ad ID: prefer metaAdId (set by UTM linkage), fall back to
-    // metaAdIdFromUtm (parsed from utm_id at order import time).
-    const effectiveAdId = order.metaAdId || order.metaAdIdFromUtm || null;
+    // Effective ad ID: only trust an ID that resolves to a real ad in
+    // MetaInsight. Falls through to utm_content (ad name) lookup, mirroring
+    // utmLinkage.server.js. If nothing resolves we still write the Layer 1
+    // row (utmConfirmedMeta is a strong signal) but with metaAdId=null so
+    // the statistical matcher can fill in the right ad later instead of us
+    // poisoning the Attribution row with an AdSet ID dressed up as an Ad ID.
+    const effectiveAdId = resolveAdId(order);
 
     // Try to find a Meta conversion slot this cycle for the same ad whose
     // time window contains this order. Prefer slots with remaining capacity.
@@ -1238,7 +1266,14 @@ export async function runIncrementalSync(shopDomain) {
     console.error(`[IncrementalSync] Country delta fetch failed (non-fatal): ${err.message}`);
   }
 
-  if (newConversions.length === 0) {
+  // Early-return only when BOTH today and yesterday are empty. Previously this
+  // checked only `newConversions` (today), which silently skipped the entire
+  // yesterday-matching block at line ~1408. Symptom: a conversion first
+  // captured by the previous-day lookback at the midnight cycle (when "today"
+  // has no convs yet) was snapshotted but never matched - and subsequent
+  // cycles bypass the lookback (`previousDayChecked` flag), so the delta was
+  // permanently lost. Caught via Vollebak VBK1142602 on 2026-05-03.
+  if (newConversions.length === 0 && yesterdayNewConversions.length === 0) {
     setProgress(`incrementalSync:${shopDomain}`, { status: "running", message: "Syncing today's breakdowns..." });
     let breakdownRows = 0;
     try {
