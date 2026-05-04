@@ -2416,7 +2416,6 @@ export default function Products() {
               data={rows}
               defaultVisibleColumns={defaultVisibleColumns}
               tableId="products"
-              columnProfiles={columnProfiles}
               footerRow={footerRow}
             />
           </BlockStack>

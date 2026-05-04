@@ -810,7 +810,6 @@ export default function Orders() {
               data={rows}
               defaultVisibleColumns={defaultVisibleColumns}
               tableId="orders"
-              columnProfiles={columnProfiles}
               footerRow={footerRow}
               initialSorting={[{ id: "createdAtISO", desc: true }]}
             />

@@ -3541,7 +3541,6 @@ export default function Campaigns() {
                 }}
                 tableId="campaigns"
                 stickyTopOffset={perfTabsHeight}
-                columnProfiles={columnProfiles}
                 rowBackgroundFn={showBreakdown ? (original) => {
                   if (original._isBreakdownRow) return "#fff";
                   return "#f7f8fa";
