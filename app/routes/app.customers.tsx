@@ -3280,9 +3280,13 @@ export default function Customers() {
 
                             // Compact dimensions, tuned to sit comfortably in
                             // the explorer alongside the headline tiles.
-                            const chartWidth = 720;
-                            const chartHeight = 240;
-                            const padL = 56, padR = 24, padT = 18, padB = 38;
+                            // SVG width/height attrs are set so it renders at
+                            // native size, with maxWidth: 100% letting it
+                            // scale down on narrow viewports but never blow
+                            // up on wide ones.
+                            const chartWidth = 560;
+                            const chartHeight = 200;
+                            const padL = 48, padR = 18, padT = 14, padB = 30;
                             const innerW = chartWidth - padL - padR;
                             const innerH = chartHeight - padT - padB;
                             const ltvMaxRaw = Math.max(
@@ -3295,28 +3299,60 @@ export default function Customers() {
                             const xPos = (m: number) => padL + (m / xMax) * innerW;
                             const yPos = (v: number) => padT + innerH - (v / ltvMax) * innerH;
 
-                            // Catmull-Rom-to-Bezier smoothing. Tangent at
-                            // each point is derived from its neighbours, so
-                            // the curve passes through every data point with
-                            // proper through-flow rather than the flat-then-
-                            // curve-then-flat shape of horizontal-tangent
-                            // Bezier. End points use a one-sided slope.
+                            // Monotone cubic Hermite (Fritsch-Carlson)
+                            // smoothing. Catmull-Rom can overshoot - it
+                            // produced the "shoots up to month 1, comes back
+                            // down to month 2" artefact. Fritsch-Carlson
+                            // clamps tangents to enforce monotonicity wherever
+                            // the data itself is monotonic, so the curve
+                            // passes through every point without dipping
+                            // below or above neighbours.
                             const pts = monthly;
                             const buildSmoothPath = (points: Array<{ month: number; avgLtv: number }>) => {
-                              if (points.length < 2) return "";
-                              let d = `M ${xPos(points[0].month).toFixed(1)},${yPos(points[0].avgLtv).toFixed(1)}`;
-                              for (let i = 0; i < points.length - 1; i++) {
-                                const p0 = points[Math.max(0, i - 1)];
-                                const p1 = points[i];
-                                const p2 = points[i + 1];
-                                const p3 = points[Math.min(points.length - 1, i + 2)];
-                                const x1 = xPos(p1.month), y1 = yPos(p1.avgLtv);
-                                const x2 = xPos(p2.month), y2 = yPos(p2.avgLtv);
-                                const c1x = x1 + (xPos(p2.month) - xPos(p0.month)) / 6;
-                                const c1y = y1 + (yPos(p2.avgLtv) - yPos(p0.avgLtv)) / 6;
-                                const c2x = x2 - (xPos(p3.month) - xPos(p1.month)) / 6;
-                                const c2y = y2 - (yPos(p3.avgLtv) - yPos(p1.avgLtv)) / 6;
-                                d += ` C ${c1x.toFixed(1)},${c1y.toFixed(1)} ${c2x.toFixed(1)},${c2y.toFixed(1)} ${x2.toFixed(1)},${y2.toFixed(1)}`;
+                              const n = points.length;
+                              if (n < 2) return "";
+                              const xs = points.map((p) => p.month);
+                              const ys = points.map((p) => p.avgLtv);
+                              const dx: number[] = [];
+                              const slopes: number[] = [];
+                              for (let i = 0; i < n - 1; i++) {
+                                dx.push(xs[i + 1] - xs[i]);
+                                slopes.push((ys[i + 1] - ys[i]) / dx[i]);
+                              }
+                              // Initial tangents - average of adjacent slopes
+                              const t = new Array<number>(n);
+                              t[0] = slopes[0];
+                              t[n - 1] = slopes[n - 2];
+                              for (let i = 1; i < n - 1; i++) t[i] = (slopes[i - 1] + slopes[i]) / 2;
+                              // Fritsch-Carlson: enforce monotonicity by
+                              // zeroing/scaling tangents where neighbouring
+                              // slopes flatten or change sign.
+                              for (let i = 0; i < n - 1; i++) {
+                                if (slopes[i] === 0) {
+                                  t[i] = 0;
+                                  t[i + 1] = 0;
+                                } else {
+                                  const a = t[i] / slopes[i];
+                                  const b = t[i + 1] / slopes[i];
+                                  if (a < 0) t[i] = 0;
+                                  if (b < 0) t[i + 1] = 0;
+                                  const h = a * a + b * b;
+                                  if (h > 9) {
+                                    const scale = 3 / Math.sqrt(h);
+                                    t[i] = scale * a * slopes[i];
+                                    t[i + 1] = scale * b * slopes[i];
+                                  }
+                                }
+                              }
+                              let d = `M ${xPos(xs[0]).toFixed(1)},${yPos(ys[0]).toFixed(1)}`;
+                              for (let i = 0; i < n - 1; i++) {
+                                // Cubic Bezier control points from Hermite
+                                // tangents (data domain), then map to screen.
+                                const c1xData = xs[i] + dx[i] / 3;
+                                const c1yData = ys[i] + (t[i] * dx[i]) / 3;
+                                const c2xData = xs[i + 1] - dx[i] / 3;
+                                const c2yData = ys[i + 1] - (t[i + 1] * dx[i]) / 3;
+                                d += ` C ${xPos(c1xData).toFixed(1)},${yPos(c1yData).toFixed(1)} ${xPos(c2xData).toFixed(1)},${yPos(c2yData).toFixed(1)} ${xPos(xs[i + 1]).toFixed(1)},${yPos(ys[i + 1]).toFixed(1)}`;
                               }
                               return d;
                             };
@@ -3399,8 +3435,8 @@ export default function Customers() {
                                   <span style={{ fontWeight: 600 }}>Cohort: {totalCohortCustomers.toLocaleString()} customer{cohortPlural}</span>
                                   <span style={{ color: "#9CA3AF", marginLeft: 6 }}>fully observed through month {targetM} ({fullyMatured.length} acquisition month{fullyMatured.length === 1 ? "" : "s"})</span>
                                 </div>
-                                <div style={{ position: "relative", width: "100%" }}>
-                                  <svg viewBox={`0 0 ${chartWidth} ${chartHeight}`} style={{ width: "100%", height: "auto", display: "block" }}>
+                                <div style={{ position: "relative", width: "100%", maxWidth: chartWidth, margin: "0 auto" }}>
+                                  <svg width={chartWidth} height={chartHeight} viewBox={`0 0 ${chartWidth} ${chartHeight}`} style={{ width: "100%", maxWidth: chartWidth, height: "auto", display: "block" }}>
                                     <defs>
                                       <linearGradient id="ltvAreaGradient" x1="0" y1="0" x2="0" y2="1">
                                         <stop offset="0%" stopColor="#A78BFA" stopOpacity="0.32" />
