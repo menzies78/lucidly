@@ -243,7 +243,7 @@ export const loader = async ({ request }) => {
   };
 
   // Check if any background task is currently running for this shop
-  const taskNames = ["syncOrders", "syncMeta", "syncMetaHistorical", "runAttribution", "dateRangeRematch", "fillGaps", "incrementalSync", "startOngoingSync", "calibratePixel", "inferGender", "backfillFirstNames"];
+  const taskNames = ["syncOrders", "syncMeta", "syncMetaHistorical", "runAttribution", "dateRangeRematch", "fillGaps", "incrementalSync", "startOngoingSync", "calibratePixel", "inferGender", "backfillFirstNames", "forceRollups"];
   let activeTaskFromServer = null;
   for (const t of taskNames) {
     const p = getProgress(`${t}:${shopDomain}`);
@@ -369,6 +369,21 @@ export const action = async ({ request }) => {
       return runIncrementalSync(shopDomain);
     });
     return json({ started: true, task: "incrementalSync" });
+  }
+  if (actionType === "forceRollups") {
+    // Bypass the 24h rollup throttle in incrementalSync. Used when a deploy
+    // changes the rollup output schema (e.g. new fields on ltvCustomers)
+    // and the cached blob needs to refresh before the next forced rebuild.
+    runInBackground(async () => {
+      setProgress(taskId, { status: "running", message: "Rebuilding customer rollups..." });
+      const { rebuildCustomerSegments, rebuildCustomerRollups } = await import("../services/customerRollups.server.js");
+      await rebuildCustomerSegments(shopDomain);
+      await rebuildCustomerRollups(shopDomain);
+      const { invalidateShop } = await import("../services/queryCache.server.js");
+      invalidateShop(shopDomain);
+      completeProgress(taskId, { ok: true });
+    });
+    return json({ started: true, task: "forceRollups" });
   }
   if (actionType === "inferGender") {
     runInBackground(async () => {
@@ -1041,6 +1056,15 @@ export default function Index() {
                     {activeTask === "incrementalSync" ? "Running..." : "Incremental Sync"}
                   </Button>
                   <Text as="p" variant="bodySm" tone="subdued">Pulls today's data + matches new conversions</Text>
+                </BlockStack>
+              )}
+              {orderCount > 0 && (
+                <BlockStack gap="100">
+                  <Button onClick={() => startTask("forceRollups")} disabled={isRunning}
+                    loading={activeTask === "forceRollups"}>
+                    {activeTask === "forceRollups" ? "Rebuilding..." : "Force Rebuild Rollups"}
+                  </Button>
+                  <Text as="p" variant="bodySm" tone="subdued">Bypasses 24h throttle. Use after deploys that change rollup output.</Text>
                 </BlockStack>
               )}
               {metaConnected && orderCount > 0 && attribution.total > 0 && (
