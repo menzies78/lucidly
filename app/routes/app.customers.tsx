@@ -1873,6 +1873,9 @@ export default function Customers() {
   // cost, fulfilment, fees). Eventually migrate to Shop.defaultMargin.
   const [marginPct, setMarginPct] = useState<number>(60);
   const [chartHover, setChartHover] = useState<{ month: number; avgLtv: number; cohortCustomers: number } | null>(null);
+  // Chart horizon selector. Drives both X-axis range and which acquisition
+  // cohorts qualify (only those that have fully observed >= horizon months).
+  const [ltvChartWindow, setLtvChartWindow] = useState<1 | 3 | 6 | 12>(12);
 
   // Unique age brackets + countries pulled from the per-customer dataset.
   const ltvAgeOptions = useMemo(() => {
@@ -1921,9 +1924,24 @@ export default function Customers() {
     const t2 = subset.map((c) => c.timeTo2nd).filter((v): v is number => v != null).sort((a, b) => a - b);
     const medT2 = t2.length > 0 ? (t2.length % 2 ? t2[(t2.length - 1) / 2] : (t2[t2.length / 2 - 1] + t2[t2.length / 2]) / 2) : null;
     // Avg customer lifetime - only customers with >1 order (single-order
-    // customers have no observed tenure, so including them as 0d would
-    // pull the mean down to noise).
-    const tenures = subset.map((c) => c.tenureDays).filter((v): v is number => v != null && v > 0);
+    // customers have no observed tenure) AND only those acquired >=12mo
+    // ago. Without that maturity filter the mean is biased low: a repeat
+    // customer acquired last month with a 2nd order 3 weeks later has
+    // tenureDays=21, even though their actual lifetime might be years.
+    // Restricting to >=12mo-mature customers gives an honest "first year
+    // observed lifetime" - the most we can defensibly call lifetime
+    // without projection.
+    const NOW_MS_T = Date.now();
+    const TWELVE_MO_MS = 365 * 86400000;
+    const matureForTenure = subset.filter((c) => {
+      if (c.tenureDays == null || c.tenureDays <= 0) return false;
+      if (!c.acqMonth) return false;
+      const [ay, am] = c.acqMonth.split("-").map(Number);
+      // End of acq month (latest possible acq day in that month)
+      const acqMonthEnd = new Date(ay, am, 0).getTime();
+      return (NOW_MS_T - acqMonthEnd) >= TWELVE_MO_MS;
+    });
+    const tenures = matureForTenure.map((c) => c.tenureDays).filter((v): v is number => v != null);
     const avgTenureDays = tenures.length > 0 ? Math.round(tenures.reduce((s, v) => s + v, 0) / tenures.length) : null;
 
     // Fixed-cohort chart. Walk windows long-to-short and pick the longest
@@ -3066,9 +3084,12 @@ export default function Customers() {
                     {/* Secondary row: de-emphasised stats that round out the
                         cohort picture. Avg Lifetime Value = realised spend
                         per customer (uncapped). Avg Customer Lifetime =
-                        days from first→last order across repeat customers
-                        (single-order customers excluded so the mean isn't
-                        dragged toward zero). */}
+                        days from first→last order, restricted to repeat
+                        customers acquired >=12 months ago (so we've fully
+                        observed their first year - without that maturity
+                        filter the mean is dragged way down by recently-
+                        acquired customers whose lifetime hasn't played
+                        out yet). */}
                     {(() => {
                       const realisedAvgLtv = useFiltered ? ltvFiltered.avgLtv : (tile?.avgLtv || 0);
                       const tenureDays = isMeta ? (useFiltered ? ltvFiltered.avgTenureDays : ((tile as any)?.avgTenureDays ?? null)) : null;
@@ -3096,7 +3117,7 @@ export default function Customers() {
                             <div style={{ borderRight: "1px solid #E5E7EB", padding: "0 16px" }}>
                               <div style={{ fontSize: "10px", fontWeight: 600, color: "#9CA3AF", textTransform: "uppercase", letterSpacing: "0.5px" }}>Avg Customer Lifetime</div>
                               <div style={{ fontSize: "18px", fontWeight: 700, color: "#1F2937", marginTop: "2px" }}>{tenureLabel}</div>
-                              <div style={{ fontSize: "11px", color: "#9CA3AF" }}>{tenureCount > 0 ? `${tenureCount.toLocaleString()} repeat customer${tenureCount === 1 ? "" : "s"}` : "needs repeat customer data"}</div>
+                              <div style={{ fontSize: "11px", color: "#9CA3AF" }}>{tenureCount > 0 ? `${tenureCount.toLocaleString()} mature repeat customer${tenureCount === 1 ? "" : "s"} (>=12mo)` : "needs >=12mo repeat data"}</div>
                             </div>
                           )}
                           <div style={{ borderRight: "1px solid #E5E7EB", padding: "0 16px" }}>
@@ -3200,33 +3221,46 @@ export default function Customers() {
                             </div>
                           </div>
                           {ltvView === "progression" && (() => {
-                            // Fixed-cohort LTV progression. To get a monotonic
-                            // cumulative curve we need the SAME customers
-                            // contributing at every X-tick - otherwise newer
-                            // cohorts skew early months and dropping them as
-                            // X advances can make the blended average fall.
-                            // Approach: pick the largest target month M (<=12)
-                            // such that at least one acquisition cohort has
-                            // matured that far, then average ONLY those
-                            // cohorts across months 0..M. Month 0 is anchored
-                            // at GBP 0 by definition (no spend before first
-                            // order). Filter-awareness lives at tile level,
-                            // not chart - pre-aggregated cohort data isn't
-                            // sliced by gender/age.
+                            // Fixed-cohort LTV progression. Same customers must
+                            // contribute at every X-tick or the curve drifts
+                            // non-monotonically as cohort composition changes.
+                            //
+                            // Cohort row maxMonth in the rollup is computed
+                            // from cohort START - so a 12-month-old "April"
+                            // cohort is flagged matured to month 12 even
+                            // though customers acquired Apr 28 only have ~7
+                            // days of bucket-12 data observed. That partial
+                            // bucket gets summed but divided by full cohort
+                            // count, dragging the average down (the "cliff"
+                            // at the last month). Fix: re-derive maxMonth
+                            // here using cohort END so a bucket only counts
+                            // when EVERY customer in the cohort has fully
+                            // observed it.
+                            //
+                            // Window selector (1/3/6/12) controls both the
+                            // X-axis range and which cohorts qualify - only
+                            // those with strictMaxMonth >= window are
+                            // included.
+                            const NOW_C = Date.now();
+                            const MS_PER_DAY = 86400000;
+                            const MS_PER_MONTH = 30 * MS_PER_DAY;
+                            const strictMaxMonth = (acqMonth: string): number => {
+                              if (!acqMonth) return -1;
+                              const [y, mo] = acqMonth.split("-").map(Number);
+                              // First day of the month *after* acq (latest
+                              // possible acq within the cohort, conservative).
+                              const acqEnd = new Date(y, mo, 1).getTime();
+                              const elapsed = (NOW_C - acqEnd) / MS_PER_MONTH;
+                              return Math.max(-1, Math.floor(elapsed) - 1);
+                            };
                             const cohortRows = monthlyDataObj?.rows || [];
-                            // Find largest M where any cohort has matured to M.
-                            let targetM = 0;
-                            for (const row of cohortRows) {
-                              if (typeof row.maxMonth === "number" && row.maxMonth > targetM) targetM = row.maxMonth;
-                            }
-                            targetM = Math.min(targetM, 12);
-                            // Fixed cohort = cohorts that have data through targetM.
-                            const fullyMatured = cohortRows.filter((r: any) => (r.maxMonth || 0) >= targetM);
+                            const targetM: number = ltvChartWindow;
+                            const fullyMatured = cohortRows.filter((r: any) => strictMaxMonth(r.month) >= targetM);
                             const fixedCohortCustomers = fullyMatured.reduce((s: number, r: any) => s + r.count, 0);
                             const monthly: Array<{ month: number; avgLtv: number; cohortCustomers: number }> = [
                               { month: 0, avgLtv: 0, cohortCustomers: fixedCohortCustomers },
                             ];
-                            if (fixedCohortCustomers > 0 && targetM > 0) {
+                            if (fixedCohortCustomers > 0) {
                               for (let m = 1; m <= targetM; m++) {
                                 let totalRev = 0, totalCust = 0;
                                 for (const row of fullyMatured) {
@@ -3241,13 +3275,14 @@ export default function Customers() {
                                 }
                               }
                             }
-                            if (monthly.length < 2) return null;
                             const totalCohortCustomers = fixedCohortCustomers;
                             const cohortPlural = totalCohortCustomers === 1 ? "" : "s";
 
-                            const chartWidth = 980;
-                            const chartHeight = 380;
-                            const padL = 76, padR = 36, padT = 28, padB = 56;
+                            // Compact dimensions, tuned to sit comfortably in
+                            // the explorer alongside the headline tiles.
+                            const chartWidth = 720;
+                            const chartHeight = 240;
+                            const padL = 56, padR = 24, padT = 18, padB = 38;
                             const innerW = chartWidth - padL - padR;
                             const innerH = chartHeight - padT - padB;
                             const ltvMaxRaw = Math.max(
@@ -3260,25 +3295,36 @@ export default function Customers() {
                             const xPos = (m: number) => padL + (m / xMax) * innerW;
                             const yPos = (v: number) => padT + innerH - (v / ltvMax) * innerH;
 
-                            // Smooth path (cubic Bezier between consecutive
-                            // points using horizontal-tangent control points -
-                            // gives a clean S-curve without overshoot).
+                            // Catmull-Rom-to-Bezier smoothing. Tangent at
+                            // each point is derived from its neighbours, so
+                            // the curve passes through every data point with
+                            // proper through-flow rather than the flat-then-
+                            // curve-then-flat shape of horizontal-tangent
+                            // Bezier. End points use a one-sided slope.
                             const pts = monthly;
                             const buildSmoothPath = (points: Array<{ month: number; avgLtv: number }>) => {
                               if (points.length < 2) return "";
-                              let d = `M ${xPos(points[0].month).toFixed(1)} ${yPos(points[0].avgLtv).toFixed(1)}`;
-                              for (let i = 1; i < points.length; i++) {
-                                const p0 = points[i - 1];
+                              let d = `M ${xPos(points[0].month).toFixed(1)},${yPos(points[0].avgLtv).toFixed(1)}`;
+                              for (let i = 0; i < points.length - 1; i++) {
+                                const p0 = points[Math.max(0, i - 1)];
                                 const p1 = points[i];
-                                const x0 = xPos(p0.month), y0 = yPos(p0.avgLtv);
+                                const p2 = points[i + 1];
+                                const p3 = points[Math.min(points.length - 1, i + 2)];
                                 const x1 = xPos(p1.month), y1 = yPos(p1.avgLtv);
-                                const cx = (x0 + x1) / 2;
-                                d += ` C ${cx.toFixed(1)} ${y0.toFixed(1)}, ${cx.toFixed(1)} ${y1.toFixed(1)}, ${x1.toFixed(1)} ${y1.toFixed(1)}`;
+                                const x2 = xPos(p2.month), y2 = yPos(p2.avgLtv);
+                                const c1x = x1 + (xPos(p2.month) - xPos(p0.month)) / 6;
+                                const c1y = y1 + (yPos(p2.avgLtv) - yPos(p0.avgLtv)) / 6;
+                                const c2x = x2 - (xPos(p3.month) - xPos(p1.month)) / 6;
+                                const c2y = y2 - (yPos(p3.avgLtv) - yPos(p1.avgLtv)) / 6;
+                                d += ` C ${c1x.toFixed(1)},${c1y.toFixed(1)} ${c2x.toFixed(1)},${c2y.toFixed(1)} ${x2.toFixed(1)},${y2.toFixed(1)}`;
                               }
                               return d;
                             };
                             const linePath = buildSmoothPath(pts);
-                            const areaPath = `${linePath} L ${xPos(monthly[monthly.length - 1].month).toFixed(1)} ${(padT + innerH).toFixed(1)} L ${xPos(0).toFixed(1)} ${(padT + innerH).toFixed(1)} Z`;
+                            const lastPoint = monthly[monthly.length - 1];
+                            const areaPath = pts.length >= 2
+                              ? `${linePath} L ${xPos(lastPoint.month).toFixed(1)} ${(padT + innerH).toFixed(1)} L ${xPos(0).toFixed(1)} ${(padT + innerH).toFixed(1)} Z`
+                              : "";
 
                             // Payback: month where curve crosses CAC.
                             let paybackMonth: number | null = null;
@@ -3291,48 +3337,67 @@ export default function Customers() {
                                 }
                               }
                             }
-                            const lastPoint = monthly[monthly.length - 1];
-                            const ltvCacRatioCurve = isMeta && cac > 0 ? lastPoint.avgLtv / cac : 0;
+                            const ltvCacRatioCurve = isMeta && cac > 0 && lastPoint ? lastPoint.avgLtv / cac : 0;
                             const gridVals = [0, ltvMax * 0.25, ltvMax * 0.5, ltvMax * 0.75, ltvMax];
 
+                            const windowOptions: Array<{ value: 1 | 3 | 6 | 12; label: string }> = [
+                              { value: 12, label: "12m" }, { value: 6, label: "6m" }, { value: 3, label: "3m" }, { value: 1, label: "1m" },
+                            ];
+                            const windowSelector = (
+                              <div className="toggle-group">
+                                {windowOptions.map((opt) => (
+                                  <button key={opt.value} className={`toggle-btn ${ltvChartWindow === opt.value ? "active" : ""}`} onClick={() => setLtvChartWindow(opt.value)}>{opt.label}</button>
+                                ))}
+                              </div>
+                            );
+
+                            // Empty state: no cohort fully observed at this
+                            // window. Surface the selector so user can pick
+                            // a shorter horizon.
+                            if (monthly.length < 2 || totalCohortCustomers === 0) {
+                              return (
+                                <div style={{ background: "linear-gradient(180deg, #FAFAFF 0%, #FFFFFF 60%)", border: "1px solid #ECECF5", borderRadius: "12px", padding: "16px 18px" }}>
+                                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "10px" }}>
+                                    <Text as="p" variant="bodySm" tone="subdued">Cohort window</Text>
+                                    {windowSelector}
+                                  </div>
+                                  <div style={{ padding: "20px 12px", textAlign: "center", color: "#9CA3AF", fontSize: "13px" }}>
+                                    No cohort has fully observed {targetM} month{targetM === 1 ? "" : "s"} of data yet. Try a shorter horizon.
+                                  </div>
+                                </div>
+                              );
+                            }
+
                             return (
-                              <div style={{ background: "linear-gradient(180deg, #FAFAFF 0%, #FFFFFF 60%)", border: "1px solid #ECECF5", borderRadius: "12px", padding: "20px 22px 18px", boxShadow: "0 1px 2px rgba(15, 23, 42, 0.04)" }}>
-                                {/* Top bar: cohort size + headline values + legend */}
-                                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: "16px", marginBottom: "14px" }}>
-                                  <div style={{ display: "flex", alignItems: "baseline", gap: "20px", flexWrap: "wrap" }}>
+                              <div style={{ background: "linear-gradient(180deg, #FAFAFF 0%, #FFFFFF 60%)", border: "1px solid #ECECF5", borderRadius: "12px", padding: "14px 16px 12px", boxShadow: "0 1px 2px rgba(15, 23, 42, 0.04)" }}>
+                                {/* Top bar: cohort window selector + headline */}
+                                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: "12px", marginBottom: "10px" }}>
+                                  <div style={{ display: "flex", alignItems: "baseline", gap: "16px", flexWrap: "wrap" }}>
                                     <div>
-                                      <div style={{ fontSize: "10px", fontWeight: 700, color: "#6366F1", textTransform: "uppercase", letterSpacing: "0.5px" }}>Month {lastPoint.month} cumulative</div>
-                                      <div style={{ fontSize: "26px", fontWeight: 800, color: "#1F2937", lineHeight: 1.05 }}>
+                                      <div style={{ fontSize: "9px", fontWeight: 700, color: "#6366F1", textTransform: "uppercase", letterSpacing: "0.5px" }}>Month {lastPoint.month} cumulative</div>
+                                      <div style={{ fontSize: "20px", fontWeight: 800, color: "#1F2937", lineHeight: 1.1 }}>
                                         {cs}{Math.round(lastPoint.avgLtv).toLocaleString()}
                                       </div>
-                                      <div style={{ fontSize: "11px", color: "#9CA3AF" }}>per customer</div>
+                                      <div style={{ fontSize: "10px", color: "#9CA3AF" }}>per customer</div>
                                     </div>
                                     {isMeta && ltvCacRatioCurve > 0 && (
                                       <div>
-                                        <div style={{ fontSize: "10px", fontWeight: 700, color: "#6B7280", textTransform: "uppercase", letterSpacing: "0.5px" }}>vs CAC</div>
-                                        <div style={{ fontSize: "20px", fontWeight: 700, color: ltvCacRatioCurve >= 3 ? "#059669" : ltvCacRatioCurve >= 1.5 ? "#1F2937" : "#D97706" }}>
+                                        <div style={{ fontSize: "9px", fontWeight: 700, color: "#6B7280", textTransform: "uppercase", letterSpacing: "0.5px" }}>vs CAC</div>
+                                        <div style={{ fontSize: "16px", fontWeight: 700, color: ltvCacRatioCurve >= 3 ? "#059669" : ltvCacRatioCurve >= 1.5 ? "#1F2937" : "#D97706" }}>
                                           {ltvCacRatioCurve.toFixed(2)}×
                                         </div>
                                       </div>
                                     )}
                                   </div>
-                                  <div style={{ display: "flex", gap: "16px", fontSize: "11px", flexWrap: "wrap" }}>
-                                    <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-                                      <svg width="18" height="8"><line x1="0" y1="4" x2="18" y2="4" stroke="#7C3AED" strokeWidth="3" strokeLinecap="round" /></svg>
-                                      <span style={{ color: "#6B7280", fontWeight: 500 }}>Avg cumulative LTV</span>
-                                    </div>
-                                    {isMeta && cac > 0 && (
-                                      <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-                                        <svg width="18" height="8"><line x1="0" y1="4" x2="18" y2="4" stroke="#DC2626" strokeWidth="1.5" strokeDasharray="2 2" /></svg>
-                                        <span style={{ color: "#6B7280", fontWeight: 500 }}>CAC ({cs}{Math.round(cac).toLocaleString()})</span>
-                                      </div>
-                                    )}
+                                  <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+                                    <span style={{ fontSize: "10px", fontWeight: 700, color: "#6B7280", textTransform: "uppercase", letterSpacing: "0.5px" }}>Window</span>
+                                    {windowSelector}
                                   </div>
                                 </div>
-                                {/* Trim diagnostic: fixed cohort population. */}
-                                <div style={{ fontSize: "11px", color: "#6B7280", marginBottom: "12px" }}>
+                                {/* Diagnostic: fixed cohort population */}
+                                <div style={{ fontSize: "10px", color: "#6B7280", marginBottom: "8px" }}>
                                   <span style={{ fontWeight: 600 }}>Cohort: {totalCohortCustomers.toLocaleString()} customer{cohortPlural}</span>
-                                  <span style={{ color: "#9CA3AF", marginLeft: 8 }}>fully matured to month {targetM} ({fullyMatured.length} acquisition month{fullyMatured.length === 1 ? "" : "s"})</span>
+                                  <span style={{ color: "#9CA3AF", marginLeft: 6 }}>fully observed through month {targetM} ({fullyMatured.length} acquisition month{fullyMatured.length === 1 ? "" : "s"})</span>
                                 </div>
                                 <div style={{ position: "relative", width: "100%" }}>
                                   <svg viewBox={`0 0 ${chartWidth} ${chartHeight}`} style={{ width: "100%", height: "auto", display: "block" }}>
@@ -3351,7 +3416,7 @@ export default function Customers() {
                                     {gridVals.map((v, i) => (
                                       <g key={i}>
                                         <line x1={padL} x2={chartWidth - padR} y1={yPos(v)} y2={yPos(v)} stroke="#EEF0F7" strokeWidth="1" />
-                                        <text x={padL - 10} y={yPos(v) + 4} textAnchor="end" fontSize="11" fill="#9CA3AF">{cs}{Math.round(v).toLocaleString()}</text>
+                                        <text x={padL - 6} y={yPos(v) + 3} textAnchor="end" fontSize="9" fill="#9CA3AF">{cs}{Math.round(v).toLocaleString()}</text>
                                       </g>
                                     ))}
                                     {/* X-axis baseline */}
@@ -3359,28 +3424,28 @@ export default function Customers() {
                                     {/* X ticks - 0..targetM */}
                                     {Array.from({ length: targetM + 1 }, (_, i) => i).map((m) => (
                                       <g key={m}>
-                                        <line x1={xPos(m)} x2={xPos(m)} y1={padT + innerH} y2={padT + innerH + 5} stroke="#9CA3AF" strokeWidth="1" />
-                                        <text x={xPos(m)} y={chartHeight - padB + 22} textAnchor="middle" fontSize="12" fontWeight="600" fill="#6B7280">{m}</text>
+                                        <line x1={xPos(m)} x2={xPos(m)} y1={padT + innerH} y2={padT + innerH + 3} stroke="#9CA3AF" strokeWidth="1" />
+                                        <text x={xPos(m)} y={chartHeight - padB + 14} textAnchor="middle" fontSize="10" fontWeight="600" fill="#6B7280">{m}</text>
                                       </g>
                                     ))}
-                                    <text x={(padL + chartWidth - padR) / 2} y={chartHeight - 8} textAnchor="middle" fontSize="11" fontWeight="600" fill="#9CA3AF" letterSpacing="0.5">MONTHS SINCE FIRST ORDER</text>
+                                    <text x={(padL + chartWidth - padR) / 2} y={chartHeight - 6} textAnchor="middle" fontSize="9" fontWeight="600" fill="#9CA3AF" letterSpacing="0.5">MONTHS SINCE FIRST ORDER</text>
                                     {/* Area fill */}
                                     <path d={areaPath} fill="url(#ltvAreaGradient)" stroke="none" />
                                     {/* CAC reference line */}
                                     {isMeta && cac > 0 && cac < ltvMax && (
                                       <g>
-                                        <line x1={padL} x2={chartWidth - padR} y1={yPos(cac)} y2={yPos(cac)} stroke="#DC2626" strokeWidth="1.5" strokeDasharray="3 3" />
-                                        <text x={chartWidth - padR - 4} y={yPos(cac) - 6} textAnchor="end" fontSize="10" fontWeight="700" fill="#DC2626">CAC</text>
+                                        <line x1={padL} x2={chartWidth - padR} y1={yPos(cac)} y2={yPos(cac)} stroke="#DC2626" strokeWidth="1" strokeDasharray="3 3" />
+                                        <text x={chartWidth - padR - 3} y={yPos(cac) - 4} textAnchor="end" fontSize="9" fontWeight="700" fill="#DC2626">CAC {cs}{Math.round(cac).toLocaleString()}</text>
                                       </g>
                                     )}
                                     {/* Smooth curve */}
-                                    <path d={linePath} fill="none" stroke="url(#ltvLineGradient)" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
+                                    <path d={linePath} fill="none" stroke="url(#ltvLineGradient)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
                                     {/* Payback marker */}
                                     {paybackMonth != null && (
                                       <g>
                                         <line x1={xPos(paybackMonth)} x2={xPos(paybackMonth)} y1={yPos(cac)} y2={padT + innerH} stroke="#DC2626" strokeWidth="1" strokeDasharray="2 2" />
-                                        <circle cx={xPos(paybackMonth)} cy={yPos(cac)} r="7" fill="#fff" stroke="#DC2626" strokeWidth="2" />
-                                        <text x={xPos(paybackMonth)} y={yPos(cac) - 14} textAnchor="middle" fontSize="11" fontWeight="700" fill="#DC2626">Payback m{paybackMonth.toFixed(1)}</text>
+                                        <circle cx={xPos(paybackMonth)} cy={yPos(cac)} r="5" fill="#fff" stroke="#DC2626" strokeWidth="1.5" />
+                                        <text x={xPos(paybackMonth)} y={yPos(cac) - 9} textAnchor="middle" fontSize="9" fontWeight="700" fill="#DC2626">Payback m{paybackMonth.toFixed(1)}</text>
                                       </g>
                                     )}
                                     {/* Data points + hit targets */}
@@ -3389,58 +3454,57 @@ export default function Customers() {
                                       const isLast = p.month === lastPoint.month;
                                       return (
                                         <g key={p.month} style={{ cursor: "pointer" }} onMouseEnter={() => setChartHover({ month: p.month, avgLtv: p.avgLtv, cohortCustomers: p.cohortCustomers })} onMouseLeave={() => setChartHover(null)}>
-                                          <rect x={xPos(p.month) - 22} y={padT} width={44} height={innerH} fill="transparent" />
+                                          <rect x={xPos(p.month) - 18} y={padT} width={36} height={innerH} fill="transparent" />
                                           {(isHover || isLast) && (
-                                            <circle cx={xPos(p.month)} cy={yPos(p.avgLtv)} r="11" fill="#7C3AED" opacity="0.18" />
+                                            <circle cx={xPos(p.month)} cy={yPos(p.avgLtv)} r="7" fill="#7C3AED" opacity="0.18" />
                                           )}
-                                          <circle cx={xPos(p.month)} cy={yPos(p.avgLtv)} r={isLast ? 6 : isHover ? 5.5 : 4} fill="#7C3AED" stroke="#fff" strokeWidth="2" />
+                                          <circle cx={xPos(p.month)} cy={yPos(p.avgLtv)} r={isLast ? 4 : isHover ? 3.5 : 2.5} fill="#7C3AED" stroke="#fff" strokeWidth="1.5" />
                                         </g>
                                       );
                                     })}
-                                    {/* Final-point value pill - always visible
-                                        as a confident endpoint anchor. */}
+                                    {/* Final-point value pill - confident anchor at the end. */}
                                     {(() => {
                                       const lp = lastPoint;
                                       const x = xPos(lp.month);
                                       const y = yPos(lp.avgLtv);
                                       const labelText = `${cs}${Math.round(lp.avgLtv).toLocaleString()}`;
-                                      const labelW = 18 + labelText.length * 8;
-                                      const lx = x - labelW - 14;
-                                      const ly = y - 13;
+                                      const labelW = 12 + labelText.length * 6;
+                                      const lx = x - labelW - 8;
+                                      const ly = y - 9;
                                       return (
                                         <g pointerEvents="none">
-                                          <rect x={lx} y={ly} width={labelW} height={26} rx="13" fill="#7C3AED" />
-                                          <text x={lx + labelW / 2} y={ly + 17} textAnchor="middle" fontSize="13" fontWeight="700" fill="#fff">{labelText}</text>
+                                          <rect x={lx} y={ly} width={labelW} height={18} rx="9" fill="#7C3AED" />
+                                          <text x={lx + labelW / 2} y={ly + 12} textAnchor="middle" fontSize="10" fontWeight="700" fill="#fff">{labelText}</text>
                                         </g>
                                       );
                                     })()}
                                     {/* Hover tooltip */}
                                     {chartHover && (() => {
                                       const hx = xPos(chartHover.month);
-                                      const tipW = 188;
-                                      const tipH = 70;
+                                      const tipW = 150;
+                                      const tipH = 56;
                                       const leftSide = hx > chartWidth / 2;
-                                      const tx = leftSide ? hx - tipW - 14 : hx + 14;
-                                      const ty = padT + 8;
+                                      const tx = leftSide ? hx - tipW - 10 : hx + 10;
+                                      const ty = padT + 6;
                                       return (
                                         <g pointerEvents="none">
                                           <line x1={hx} x2={hx} y1={padT} y2={padT + innerH} stroke="#9CA3AF" strokeWidth="1" strokeDasharray="2 3" />
-                                          <rect x={tx} y={ty} width={tipW} height={tipH} rx="8" fill="#0F172A" opacity="0.96" />
-                                          <text x={tx + 12} y={ty + 20} fontSize="12" fontWeight="700" fill="#fff">Month {chartHover.month}</text>
-                                          <text x={tx + 12} y={ty + 38} fontSize="11" fill="#C4B5FD">Cumulative LTV: <tspan fontWeight="700" fill="#fff">{cs}{Math.round(chartHover.avgLtv).toLocaleString()}</tspan></text>
-                                          <text x={tx + 12} y={ty + 56} fontSize="11" fill="#94A3B8">Across {chartHover.cohortCustomers.toLocaleString()} customer{chartHover.cohortCustomers === 1 ? "" : "s"}</text>
+                                          <rect x={tx} y={ty} width={tipW} height={tipH} rx="6" fill="#0F172A" opacity="0.96" />
+                                          <text x={tx + 9} y={ty + 16} fontSize="10" fontWeight="700" fill="#fff">Month {chartHover.month}</text>
+                                          <text x={tx + 9} y={ty + 30} fontSize="9" fill="#C4B5FD">Cumulative LTV: <tspan fontWeight="700" fill="#fff">{cs}{Math.round(chartHover.avgLtv).toLocaleString()}</tspan></text>
+                                          <text x={tx + 9} y={ty + 44} fontSize="9" fill="#94A3B8">Across {chartHover.cohortCustomers.toLocaleString()} customer{chartHover.cohortCustomers === 1 ? "" : "s"}</text>
                                         </g>
                                       );
                                     })()}
                                   </svg>
                                 </div>
                                 {isMeta && paybackMonth != null && (
-                                  <div style={{ marginTop: "12px", padding: "10px 14px", background: "#ECFDF5", border: "1px solid #A7F3D0", borderRadius: "8px", fontSize: "13px", color: "#065F46" }}>
+                                  <div style={{ marginTop: "10px", padding: "8px 12px", background: "#ECFDF5", border: "1px solid #A7F3D0", borderRadius: "8px", fontSize: "12px", color: "#065F46" }}>
                                     <strong>Payback:</strong> Meta customers recoup their {cs}{Math.round(cac).toLocaleString()} acquisition cost around month {paybackMonth.toFixed(1)}. By month {lastPoint.month}, cumulative spend reaches {cs}{Math.round(lastPoint.avgLtv).toLocaleString()} per customer ({ltvCacRatioCurve.toFixed(2)}× CAC).
                                   </div>
                                 )}
                                 {isMeta && paybackMonth == null && cac > 0 && lastPoint.avgLtv > 0 && (
-                                  <div style={{ marginTop: "12px", padding: "10px 14px", background: "#FFFBEB", border: "1px solid #FCD34D", borderRadius: "8px", fontSize: "13px", color: "#92400E" }}>
+                                  <div style={{ marginTop: "10px", padding: "8px 12px", background: "#FFFBEB", border: "1px solid #FCD34D", borderRadius: "8px", fontSize: "12px", color: "#92400E" }}>
                                     <strong>Payback:</strong> by month {lastPoint.month}, cumulative LTV ({cs}{Math.round(lastPoint.avgLtv).toLocaleString()}) hasn&apos;t yet crossed CAC ({cs}{Math.round(cac).toLocaleString()}). Lift repeat rate or lower CAC to close the gap.
                                   </div>
                                 )}

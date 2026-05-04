@@ -451,12 +451,19 @@ export async function rebuildCustomerSegments(shopDomain) {
       timeTo2nd = Math.floor((secondOrder.createdAt.getTime() - acqTime) / DAY_MS);
       ltvAllTimeTo2nd.push(timeTo2nd);
     }
-    // Tenure (days first→last) - only for repeat customers (single-order
-    // customers have no observed lifetime).
+    // Tenure (days first→last) - only for repeat customers acquired
+    // >=12mo ago. Without the maturity filter the mean is biased low: a
+    // customer acquired last month with a 2nd order 3 weeks later has
+    // tenureDays=21, even though their actual lifetime might extend
+    // months or years. Restricting to >=12mo-mature gives an honest
+    // "first year observed lifetime" - the most we can defensibly call
+    // lifetime without forecasting.
+    const TENURE_MATURITY_MS = 365 * DAY_MS;
+    const matureForTenure = (now - acqTime) >= TENURE_MATURITY_MS;
     let tenureDaysAccum = null;
     if (custOrders.length > 1 && lastOrder?.createdAt) {
       tenureDaysAccum = Math.floor((lastOrder.createdAt.getTime() - acqTime) / DAY_MS);
-      if (tenureDaysAccum > 0) ltvAllTenures.push(tenureDaysAccum);
+      if (tenureDaysAccum > 0 && matureForTenure) ltvAllTenures.push(tenureDaysAccum);
     }
     if (segment === "metaNew") {
       ltvMetaNewCount++;
@@ -465,7 +472,7 @@ export async function rebuildCustomerSegments(shopDomain) {
       ltvMetaNewFirstTotal += (firstOrder.frozenTotalPrice || 0);
       if (custOrders.length > 1) ltvMetaNewRepeatCt++;
       if (timeTo2nd != null) ltvMetaNewTimeTo2nd.push(timeTo2nd);
-      if (tenureDaysAccum != null && tenureDaysAccum > 0) ltvMetaNewTenures.push(tenureDaysAccum);
+      if (tenureDaysAccum != null && tenureDaysAccum > 0 && matureForTenure) ltvMetaNewTenures.push(tenureDaysAccum);
     }
 
     // Maturity-windowed LTV - plus per-customer window snapshots (metaNew
