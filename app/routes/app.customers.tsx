@@ -3580,8 +3580,8 @@ export default function Customers() {
                                   )}
                                 </div>
                                 {/* Chart */}
-                                <div style={{ position: "relative", width: "100%", maxWidth: chartWidth, margin: "0 auto" }}>
-                                  <svg width={chartWidth} height={chartHeight} viewBox={`0 0 ${chartWidth} ${chartHeight}`} style={{ width: "100%", maxWidth: chartWidth, height: "auto", display: "block" }}>
+                                <div style={{ position: "relative", width: "70vw", margin: "0 auto" }}>
+                                  <svg viewBox={`0 0 ${chartWidth} ${chartHeight}`} preserveAspectRatio="xMidYMid meet" style={{ width: "100%", height: "auto", display: "block" }}>
                                     <defs>
                                       <linearGradient id="ltvAreaGradient" x1="0" y1="0" x2="0" y2="1">
                                         <stop offset="0%" stopColor="#A78BFA" stopOpacity="0.32" />
