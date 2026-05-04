@@ -2236,23 +2236,10 @@ function AdExplorerTable({ rows, cs, entityType, onEntityClick }: {
 }) {
   const [sortCol, setSortCol] = useState("spend");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
+  // customerFilter resets to "all" on every page load - persisting it
+  // between visits caused confusion when the explorer first opened with
+  // a stale cut applied.
   const [customerFilter, setCustomerFilter] = useState<"all" | "new" | "repeat">("all");
-
-  // Persist filter to localStorage
-  useEffect(() => {
-    try {
-      const raw = localStorage.getItem("lucidly.campaigns.explorer");
-      if (raw) {
-        const p = JSON.parse(raw);
-        if (p.customerFilter) setCustomerFilter(p.customerFilter);
-      }
-    } catch {}
-  }, []);
-  useEffect(() => {
-    try {
-      localStorage.setItem("lucidly.campaigns.explorer", JSON.stringify({ customerFilter }));
-    } catch {}
-  }, [customerFilter]);
 
   const toggleSort = (col: string) => {
     if (sortCol === col) setSortDir(d => d === "desc" ? "asc" : "desc");
