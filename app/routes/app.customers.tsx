@@ -3188,7 +3188,7 @@ export default function Customers() {
                               <Text as="p" variant="headingSm">{ltvView === "progression" ? "LTV Progression" : "Monthly Cohort Table"}</Text>
                               <Text as="p" variant="bodySm" tone="subdued">
                                 {ltvView === "progression"
-                                  ? "Cumulative spend per customer through their first 12 months. Each X-axis tick is one month since first order, averaged across every cohort that has matured to that point."
+                                  ? "Cumulative spend per customer over time. Uses a fixed cohort - the same customers contribute at every month - so the curve is monotonic by construction."
                                   : cohortMetric === "ltv"
                                     ? "Each row is an acquisition month. Values show cumulative revenue per customer through each 30-day period."
                                     : "Each row is an acquisition month. Values show % of customers who placed at least one order in each 30-day period."}
@@ -3200,32 +3200,49 @@ export default function Customers() {
                             </div>
                           </div>
                           {ltvView === "progression" && (() => {
-                            // 12-month LTV progression. X-axis: months since
-                            // first order (1-12). Y-axis: blended cumulative
-                            // spend per customer. Each X-point averages every
-                            // monthly cohort that has matured to that month
-                            // (count-weighted), so we show a single coherent
-                            // curve rather than overlapping cohort lines.
-                            // Filter-awareness intentionally lives at the
-                            // tile level, not the chart - pre-aggregated
-                            // monthly cohort data isn't sliced by gender/age.
+                            // Fixed-cohort LTV progression. To get a monotonic
+                            // cumulative curve we need the SAME customers
+                            // contributing at every X-tick - otherwise newer
+                            // cohorts skew early months and dropping them as
+                            // X advances can make the blended average fall.
+                            // Approach: pick the largest target month M (<=12)
+                            // such that at least one acquisition cohort has
+                            // matured that far, then average ONLY those
+                            // cohorts across months 0..M. Month 0 is anchored
+                            // at GBP 0 by definition (no spend before first
+                            // order). Filter-awareness lives at tile level,
+                            // not chart - pre-aggregated cohort data isn't
+                            // sliced by gender/age.
                             const cohortRows = monthlyDataObj?.rows || [];
-                            const monthly: Array<{ month: number; avgLtv: number; cohortCustomers: number }> = [];
-                            for (let m = 0; m < 12; m++) {
-                              let totalRev = 0, totalCust = 0;
-                              for (const row of cohortRows) {
-                                const md = row.months[m];
-                                if (md?.matured && md.avgLtv != null) {
-                                  totalRev += md.avgLtv * row.count;
-                                  totalCust += row.count;
+                            // Find largest M where any cohort has matured to M.
+                            let targetM = 0;
+                            for (const row of cohortRows) {
+                              if (typeof row.maxMonth === "number" && row.maxMonth > targetM) targetM = row.maxMonth;
+                            }
+                            targetM = Math.min(targetM, 12);
+                            // Fixed cohort = cohorts that have data through targetM.
+                            const fullyMatured = cohortRows.filter((r: any) => (r.maxMonth || 0) >= targetM);
+                            const fixedCohortCustomers = fullyMatured.reduce((s: number, r: any) => s + r.count, 0);
+                            const monthly: Array<{ month: number; avgLtv: number; cohortCustomers: number }> = [
+                              { month: 0, avgLtv: 0, cohortCustomers: fixedCohortCustomers },
+                            ];
+                            if (fixedCohortCustomers > 0 && targetM > 0) {
+                              for (let m = 1; m <= targetM; m++) {
+                                let totalRev = 0, totalCust = 0;
+                                for (const row of fullyMatured) {
+                                  const md = row.months[m];
+                                  if (md?.avgLtv != null) {
+                                    totalRev += md.avgLtv * row.count;
+                                    totalCust += row.count;
+                                  }
+                                }
+                                if (totalCust > 0) {
+                                  monthly.push({ month: m, avgLtv: totalRev / totalCust, cohortCustomers: totalCust });
                                 }
                               }
-                              if (totalCust > 0) {
-                                monthly.push({ month: m + 1, avgLtv: totalRev / totalCust, cohortCustomers: totalCust });
-                              }
                             }
-                            if (monthly.length === 0) return null;
-                            const totalCohortCustomers = cohortRows.reduce((s: number, r: any) => s + r.count, 0);
+                            if (monthly.length < 2) return null;
+                            const totalCohortCustomers = fixedCohortCustomers;
                             const cohortPlural = totalCohortCustomers === 1 ? "" : "s";
 
                             const chartWidth = 980;
@@ -3239,13 +3256,14 @@ export default function Customers() {
                               1,
                             );
                             const ltvMax = ltvMaxRaw * 1.12;
-                            const xPos = (m: number) => padL + ((m - 1) / 11) * innerW;
+                            const xMax = Math.max(targetM, 1);
+                            const xPos = (m: number) => padL + (m / xMax) * innerW;
                             const yPos = (v: number) => padT + innerH - (v / ltvMax) * innerH;
 
                             // Smooth path (cubic Bezier between consecutive
                             // points using horizontal-tangent control points -
                             // gives a clean S-curve without overshoot).
-                            const pts = [{ month: 1, avgLtv: 0 }, ...monthly];
+                            const pts = monthly;
                             const buildSmoothPath = (points: Array<{ month: number; avgLtv: number }>) => {
                               if (points.length < 2) return "";
                               let d = `M ${xPos(points[0].month).toFixed(1)} ${yPos(points[0].avgLtv).toFixed(1)}`;
@@ -3260,7 +3278,7 @@ export default function Customers() {
                               return d;
                             };
                             const linePath = buildSmoothPath(pts);
-                            const areaPath = `${linePath} L ${xPos(monthly[monthly.length - 1].month).toFixed(1)} ${(padT + innerH).toFixed(1)} L ${xPos(1).toFixed(1)} ${(padT + innerH).toFixed(1)} Z`;
+                            const areaPath = `${linePath} L ${xPos(monthly[monthly.length - 1].month).toFixed(1)} ${(padT + innerH).toFixed(1)} L ${xPos(0).toFixed(1)} ${(padT + innerH).toFixed(1)} Z`;
 
                             // Payback: month where curve crosses CAC.
                             let paybackMonth: number | null = null;
@@ -3311,10 +3329,10 @@ export default function Customers() {
                                     )}
                                   </div>
                                 </div>
-                                {/* Trim diagnostic: just cohort population. */}
+                                {/* Trim diagnostic: fixed cohort population. */}
                                 <div style={{ fontSize: "11px", color: "#6B7280", marginBottom: "12px" }}>
                                   <span style={{ fontWeight: 600 }}>Cohort: {totalCohortCustomers.toLocaleString()} customer{cohortPlural}</span>
-                                  <span style={{ color: "#9CA3AF", marginLeft: 8 }}>across {cohortRows.length} acquisition month{cohortRows.length === 1 ? "" : "s"}</span>
+                                  <span style={{ color: "#9CA3AF", marginLeft: 8 }}>fully matured to month {targetM} ({fullyMatured.length} acquisition month{fullyMatured.length === 1 ? "" : "s"})</span>
                                 </div>
                                 <div style={{ position: "relative", width: "100%" }}>
                                   <svg viewBox={`0 0 ${chartWidth} ${chartHeight}`} style={{ width: "100%", height: "auto", display: "block" }}>
@@ -3338,8 +3356,8 @@ export default function Customers() {
                                     ))}
                                     {/* X-axis baseline */}
                                     <line x1={padL} x2={chartWidth - padR} y1={padT + innerH} y2={padT + innerH} stroke="#D1D5DB" strokeWidth="1" />
-                                    {/* X ticks - 1..12 */}
-                                    {Array.from({ length: 12 }, (_, i) => i + 1).map((m) => (
+                                    {/* X ticks - 0..targetM */}
+                                    {Array.from({ length: targetM + 1 }, (_, i) => i).map((m) => (
                                       <g key={m}>
                                         <line x1={xPos(m)} x2={xPos(m)} y1={padT + innerH} y2={padT + innerH + 5} stroke="#9CA3AF" strokeWidth="1" />
                                         <text x={xPos(m)} y={chartHeight - padB + 22} textAnchor="middle" fontSize="12" fontWeight="600" fill="#6B7280">{m}</text>
