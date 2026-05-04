@@ -1880,6 +1880,25 @@ export default function Customers() {
   // overlay of customers acquired in the last N months, with projection to
   // month 12 using the anchor's historical ratio.
   const [ltvChartWindow, setLtvChartWindow] = useState<1 | 3 | 6 | 12>(12);
+  // Chart sizing - track the actual rendered width of the chart wrapper so
+  // the SVG viewBox can be set to match in pixel terms. This keeps internal
+  // elements (text, lines, dots) at their native pixel size regardless of
+  // viewport width - a fixed-size viewBox stretched into a wide container
+  // would magnify everything proportionally.
+  const ltvChartRef = useRef<HTMLDivElement>(null);
+  const [ltvChartW, setLtvChartW] = useState<number>(900);
+  useEffect(() => {
+    const el = ltvChartRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver((entries) => {
+      for (const e of entries) {
+        const w = Math.round(e.contentRect.width);
+        if (w > 0) setLtvChartW(w);
+      }
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
 
   // Unique age brackets + countries pulled from the per-customer dataset.
   const ltvAgeOptions = useMemo(() => {
@@ -3378,10 +3397,13 @@ export default function Customers() {
                               : fallbackSeries.length > 1);
                             const xMaxAxis = isMeta ? MAX_MONTHS : targetM;
 
-                            // Chart geometry. Native size; scales down on
-                            // narrow viewports via maxWidth.
-                            const chartWidth = 560;
-                            const chartHeight = 200;
+                            // Chart geometry. viewBox is sized to match the
+                            // measured wrapper width in pixels (via the
+                            // ResizeObserver up top), so SVG content renders
+                            // 1:1 - text/lines/dots stay at native pixel
+                            // size regardless of how wide the wrapper grows.
+                            const chartWidth = ltvChartW;
+                            const chartHeight = 260;
                             const padL = 48, padR = 18, padT = 14, padB = 30;
                             const innerW = chartWidth - padL - padR;
                             const innerH = chartHeight - padT - padB;
@@ -3580,8 +3602,8 @@ export default function Customers() {
                                   )}
                                 </div>
                                 {/* Chart */}
-                                <div style={{ position: "relative", width: "70vw", margin: "0 auto" }}>
-                                  <svg viewBox={`0 0 ${chartWidth} ${chartHeight}`} preserveAspectRatio="xMidYMid meet" style={{ width: "100%", height: "auto", display: "block" }}>
+                                <div ref={ltvChartRef} style={{ position: "relative", width: "70vw", margin: "0 auto" }}>
+                                  <svg width={chartWidth} height={chartHeight} viewBox={`0 0 ${chartWidth} ${chartHeight}`} style={{ display: "block" }}>
                                     <defs>
                                       <linearGradient id="ltvAreaGradient" x1="0" y1="0" x2="0" y2="1">
                                         <stop offset="0%" stopColor="#A78BFA" stopOpacity="0.32" />
