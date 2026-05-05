@@ -1,5 +1,5 @@
 import db from "../db.server";
-import { fetchAllPages, fetchWithRetry } from "./metaFetch.server";
+import { fetchWithRetry, ReduceDataError } from "./metaFetch.server";
 
 /**
  * Refresh ad creative thumbnails from Meta.
@@ -30,15 +30,40 @@ export async function refreshAdCreatives(shopDomain) {
   // 1) Bulk pull all ads on the account with their creative thumbs in one go.
   // Meta's /ads edge doesn't always return archived ads - the per-ad fallback
   // below handles those.
+  //
+  // Page size: Meta returns code 1 ("reduce the amount of data") on subsequent
+  // pages once the creative{...} expansion gets too heavy at limit=500. Empirically
+  // limit=100 paginates cleanly across thousands of ads. Don't raise without
+  // testing - a single ReduceDataError used to nuke the whole bulk fetch.
   const fields = "id,creative{thumbnail_url,image_url,image_hash}";
-  const url = `https://graph.facebook.com/v21.0/${accountId}/ads?fields=${fields}&limit=500&access_token=${token}`;
-  let bulkAds = [];
-  try {
-    bulkAds = await fetchAllPages(url, "MetaAdCreativeSync");
-  } catch (err) {
-    console.error(`[MetaAdCreativeSync] Bulk fetch failed for ${shopDomain}: ${err.message}`);
-    return { fetched: 0, updated: 0, missing: 0, error: err.message };
+  const initialUrl = `https://graph.facebook.com/v21.0/${accountId}/ads?fields=${fields}&limit=100&access_token=${token}`;
+  // Inline paging so a mid-walk failure preserves whatever pages already
+  // succeeded. fetchAllPages would discard the partial set on throw - which
+  // had been silently breaking thumbnail refresh for this account.
+  const bulkAds = [];
+  let nextUrl = initialUrl;
+  let pages = 0;
+  let pageError = null;
+  while (nextUrl) {
+    try {
+      const data = await fetchWithRetry(nextUrl, "MetaAdCreativeSync");
+      if (!data?.data) break;
+      bulkAds.push(...data.data);
+      pages++;
+      nextUrl = data.paging?.next || null;
+    } catch (err) {
+      pageError = err;
+      console.warn(`[MetaAdCreativeSync] Bulk fetch stopped after page ${pages} for ${shopDomain}: ${err.message}`);
+      // ReduceDataError or any other mid-walk failure: keep what we collected
+      // and continue to the per-ad fallback for the rest. Hard-fail only when
+      // page 1 itself failed (we have nothing to write).
+      break;
+    }
   }
+  if (pages === 0 && pageError) {
+    return { fetched: 0, updated: 0, missing: 0, error: pageError.message };
+  }
+  console.log(`[MetaAdCreativeSync] ${shopDomain}: bulk fetched ${bulkAds.length} ads across ${pages} pages${pageError ? ` (stopped: ${pageError.name})` : ""}`);
 
   const bulkMap = new Map(); // adId -> { thumbnail_url, image_url }
   for (const a of bulkAds) {

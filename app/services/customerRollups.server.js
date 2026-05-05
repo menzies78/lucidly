@@ -248,6 +248,11 @@ export async function rebuildCustomerSegments(shopDomain) {
   // Monthly cohorts
   const metaNewMonthlyCohorts = {};
   const allMonthlyCohorts = {};
+  // Per-gender cohorts for the "All Customers" tab gender filter on the LTV
+  // Explorer chart. Keyed by acqMonth like allMonthlyCohorts. Each customer
+  // is routed into exactly one bucket using the same gender resolution we
+  // use for ltvCustomers + map points (firstAttr.gender || inferredGender).
+  const allMonthlyCohortsByGender = { female: {}, male: {}, unknown: {} };
 
   // Journey accumulators
   const metaJourney = { firstAOV: [], secondAOV: [], thirdAOV: [], gap1to2: [], gap2to3: [] };
@@ -569,6 +574,16 @@ export async function rebuildCustomerSegments(shopDomain) {
     };
     if (!allMonthlyCohorts[acqMonth]) allMonthlyCohorts[acqMonth] = initRow();
     allMonthlyCohorts[acqMonth].count++;
+    // Gender resolution for the all-segment cohort split. Same priority as
+    // ltvCustomers / map points: attribution gender first (Meta breakdown),
+    // name-inferred fallback. "unknown" bucket catches customers whose first
+    // name didn't disambiguate.
+    const allGender = firstAttr?.gender || customerInferredGenderMap.get(custId) || null;
+    const allGenderKey = allGender === "female" ? "female" : allGender === "male" ? "male" : "unknown";
+    if (!allMonthlyCohortsByGender[allGenderKey][acqMonth]) {
+      allMonthlyCohortsByGender[allGenderKey][acqMonth] = initRow();
+    }
+    allMonthlyCohortsByGender[allGenderKey][acqMonth].count++;
     let cumRev = 0, cumOrd = 0;
     for (let m = 0; m < MAX_COHORT_MONTHS; m++) {
       if (daysSinceAcq < m * 30) break;
@@ -590,6 +605,12 @@ export async function rebuildCustomerSegments(shopDomain) {
       bucket.cumulativeRevenue += cumRev;
       bucket.cumulativeOrders += cumOrd;
       if (monthOrd > 0) bucket.activeCustomers++;
+      const gBucket = allMonthlyCohortsByGender[allGenderKey][acqMonth].months[m];
+      gBucket.revenue += monthRev;
+      gBucket.orders += monthOrd;
+      gBucket.cumulativeRevenue += cumRev;
+      gBucket.cumulativeOrders += cumOrd;
+      if (monthOrd > 0) gBucket.activeCustomers++;
     }
     if (segment === "metaNew") {
       if (!metaNewMonthlyCohorts[acqMonth]) metaNewMonthlyCohorts[acqMonth] = initRow();
@@ -773,7 +794,17 @@ export async function rebuildCustomerSegments(shopDomain) {
     },
     ltvMonthly: {
       meta: buildMonthlyTable(metaNewMonthlyCohorts),
-      all: buildMonthlyTable(allMonthlyCohorts),
+      all: {
+        ...buildMonthlyTable(allMonthlyCohorts),
+        // Per-gender cohort tables for the All Customers tab gender filter.
+        // Same shape as the parent (rows[], maxMonth) so the chart can
+        // swap them in without restructuring its series-builder.
+        byGender: {
+          female: buildMonthlyTable(allMonthlyCohortsByGender.female),
+          male: buildMonthlyTable(allMonthlyCohortsByGender.male),
+          unknown: buildMonthlyTable(allMonthlyCohortsByGender.unknown),
+        },
+      },
     },
     // Per-metaNew-customer records powering the filterable LTV tile.
     // Consumers: app.customers.tsx MetaLtvTile - filters by gender/age/country
