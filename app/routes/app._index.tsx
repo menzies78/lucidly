@@ -219,12 +219,10 @@ export const loader = async ({ request }) => {
       return { date: day, matchRate, matched, total };
     });
 
-  // Last 24h match accuracy
-  const oneDayAgoStr = oneDayAgo.toISOString().slice(0, 10);
-  const recent = matchAccuracyChart.filter(d => d.date >= oneDayAgoStr);
-  const recentMatched = recent.reduce((s, d) => s + d.matched, 0);
-  const recentTotal = recent.reduce((s, d) => s + d.total, 0);
-  const matchRate24h = recentTotal > 0 ? Math.min(100, Math.round((recentMatched / recentTotal) * 100)) : null;
+  // 30-day average match accuracy (headline number)
+  const allMatched30d = matchAccuracyChart.reduce((s, d) => s + d.matched, 0);
+  const allTotal30d = matchAccuracyChart.reduce((s, d) => s + d.total, 0);
+  const matchRate30d = allTotal30d > 0 ? Math.min(100, Math.round((allMatched30d / allTotal30d) * 100)) : null;
 
   // UTM health from shop record
   const utmHealth = {
@@ -271,8 +269,8 @@ export const loader = async ({ request }) => {
     },
     // Health-specific data
     matchAccuracyChart,
-    matchRate24h,
-    matchRate24hDetail: { matched: recentMatched, total: recentTotal },
+    matchRate30d,
+    matchRate30dDetail: { matched: allMatched30d, total: allTotal30d },
     utmHealth,
     syncFreshness,
     recentlyStoppedCampaigns: recentlyStoppedCampaigns.map(c => ({
@@ -606,7 +604,7 @@ export default function Index() {
     currencySymbol, isNewInstall, activeTaskFromServer,
     utmOnlyCount, utmOnlyRevenue, utmAndLucidlyCount, onboardingCompleted,
     webhooksRegisteredAt, webhooksFirstFiredAt, pixelCalibration,
-    matchAccuracyChart, matchRate24h, matchRate24hDetail, utmHealth, syncFreshness,
+    matchAccuracyChart, matchRate30d, matchRate30dDetail, utmHealth, syncFreshness,
     recentlyStoppedCampaigns, activeCampaignCount,
   } = useLoaderData();
   const submit = useSubmit();
@@ -780,20 +778,20 @@ export default function Index() {
               <BlockStack gap="300">
                 <InlineStack align="space-between" blockAlign="center">
                   <Text as="h2" variant="headingLg">Match Accuracy</Text>
-                  {matchRate24h !== null && (
+                  {matchRate30d !== null && (
                     <div style={{
                       fontSize: "28px", fontWeight: 800, letterSpacing: "-0.02em",
-                      color: matchRate24h >= 90 ? "#059669" : matchRate24h >= 70 ? "#D97706" : "#DC2626",
+                      color: matchRate30d >= 90 ? "#059669" : matchRate30d >= 70 ? "#D97706" : "#DC2626",
                     }}>
-                      {matchRate24h}%
+                      {matchRate30d}%
                       <span style={{ fontSize: "13px", fontWeight: 500, color: "#6B7280", marginLeft: "6px" }}>
-                        last 24h ({matchRate24hDetail.matched}/{matchRate24hDetail.total})
+                        30 days ({matchRate30dDetail.matched}/{matchRate30dDetail.total})
                       </span>
                     </div>
                   )}
                 </InlineStack>
-                {matchRate24h === null && (
-                  <Text as="p" variant="bodySm" tone="subdued">No conversion data in the last 24 hours</Text>
+                {matchRate30d === null && (
+                  <Text as="p" variant="bodySm" tone="subdued">No conversion data in the last 30 days</Text>
                 )}
                 <MatchAccuracyChart data={matchAccuracyChart} accent="#5C6AC4" />
                 <Text as="p" variant="bodySm" tone="subdued">
