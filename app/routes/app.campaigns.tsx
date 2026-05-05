@@ -413,7 +413,13 @@ export const loader = async ({ request }) => {
     time("metaEntities", queryCached(`${shopDomain}:metaEntities`, DEFAULT_TTL, () =>
       db.metaEntity.findMany({
         where: { shopDomain },
-        select: { entityType: true, entityId: true, createdTime: true, funnelStage: true, entityName: true },
+        select: {
+          entityType: true, entityId: true, entityName: true,
+          createdTime: true, funnelStage: true,
+          // Needed by AdFunnelTreeTile: live status badge + targeting summary
+          // for each ad set, so each ad inherits the right pool description.
+          targetingSpec: true, currentStatus: true,
+        },
       }),
     )),
     time("ltvSnapshot", queryCached(`${shopDomain}:ltvSnapshot`, DEFAULT_TTL, () => loadLtvSnapshot(shopDomain))),
@@ -1046,36 +1052,103 @@ export const loader = async ({ request }) => {
     changeCountsByObjectId[c.objectId] = (changeCountsByObjectId[c.objectId] || 0) + 1;
   }
 
-  // Ad Funnel: aggregate ad set performance by funnel stage (cold/warm/hot)
-  const adsetFunnelMap = new Map();
+  // Ad Funnel Tree: stage → ad sets → ads, with targeting + status metadata.
+  // Powers AdFunnelTreeTile - a vertical-band tree where every individual ad
+  // sits at the funnel stage (cold/warm/hot) inferred from its parent ad set's
+  // targeting spec. See classifyFunnelStage() in metaEntitySync.server.js for
+  // the rules. UI exposes the audience-pool definitions explicitly so the
+  // merchant can sanity-check the bucket each ad is in.
+  const adsetEntityById: Record<string, any> = {};
+  const adEntityById: Record<string, any> = {};
   for (const e of metaEntities) {
-    if (e.entityType === "adset" && e.funnelStage) {
-      adsetFunnelMap.set(e.entityId, { stage: e.funnelStage, name: e.entityName });
-    }
+    if (e.entityType === "adset") adsetEntityById[e.entityId] = e;
+    else if (e.entityType === "ad") adEntityById[e.entityId] = e;
   }
-  const funnelData = { cold: { spend: 0, newCustomers: 0, revenue: 0, orders: 0, adsets: [] as any[] },
-                       warm: { spend: 0, newCustomers: 0, revenue: 0, orders: 0, adsets: [] as any[] },
-                       hot:  { spend: 0, newCustomers: 0, revenue: 0, orders: 0, adsets: [] as any[] } };
+
+  const STAGE_KEYS = ["cold", "warm", "hot"] as const;
+  type StageKey = typeof STAGE_KEYS[number];
+  const funnelTree: Record<StageKey, any[]> = { cold: [], warm: [], hot: [] };
+  const adsetByIdForTree = new Map<string, any>();
+
   for (const row of adsetRows) {
-    const entity = adsetFunnelMap.get(row.id);
-    const stage = (entity?.stage || "cold") as keyof typeof funnelData;
-    if (!funnelData[stage]) continue;
-    funnelData[stage].spend += row.spend || 0;
-    funnelData[stage].newCustomers += row.newCustomerOrders || 0;
-    funnelData[stage].revenue += row.attributedRevenue || 0;
-    funnelData[stage].orders += row.attributedOrders || 0;
-    if ((row.spend || 0) > 0) {
-      funnelData[stage].adsets.push({
-        id: row.id, name: row.name || entity?.name || row.id,
-        spend: row.spend || 0, newCustomers: row.newCustomerOrders || 0,
-        revenue: row.attributedRevenue || 0,
-      });
+    if ((row.spend || 0) === 0 && (row.attributedRevenue || 0) === 0 && (row.attributedOrders || 0) === 0) continue;
+    const entity = adsetEntityById[row.id];
+    const stage: StageKey = (entity?.funnelStage && (STAGE_KEYS as readonly string[]).includes(entity.funnelStage))
+      ? entity.funnelStage as StageKey : "cold";
+
+    let audiences: string[] = [];
+    let excludedAudiences: string[] = [];
+    let targetingSummary = "";
+    if (entity?.targetingSpec) {
+      try {
+        const t = JSON.parse(entity.targetingSpec);
+        audiences = (t.custom_audiences || []).map((a: any) => a.name).filter(Boolean);
+        excludedAudiences = (t.excluded_custom_audiences || []).map((a: any) => a.name).filter(Boolean);
+        const bits: string[] = [];
+        if (t.geo_locations?.countries?.length) bits.push(`Geo: ${t.geo_locations.countries.join(", ")}`);
+        if (t.age_min || t.age_max) bits.push(`Age ${t.age_min || 13}–${t.age_max || 65}`);
+        if (t.genders?.length) bits.push(t.genders.includes(1) ? (t.genders.includes(2) ? "All genders" : "Male") : (t.genders.includes(2) ? "Female" : ""));
+        if (Array.isArray(t.flexible_spec) && t.flexible_spec.length) bits.push("Detailed targeting");
+        if (t.targeting_optimization === "expansion_all" || t.targeting_relaxation_types) bits.push("Advantage+ relaxed");
+        targetingSummary = bits.join(" · ");
+      } catch {}
     }
+
+    const adset = {
+      id: row.id,
+      name: row.name || row.id,
+      campaignId: row.campaignId,
+      campaignName: row.campaignName,
+      stage,
+      spend: row.spend || 0,
+      newCustomers: row.newCustomerOrders || 0,
+      revenue: row.attributedRevenue || 0,
+      orders: row.attributedOrders || 0,
+      impressions: row.impressions || 0,
+      roas: (row.spend || 0) > 0 ? Math.round((row.attributedRevenue / row.spend) * 100) / 100 : 0,
+      newCustomerCPA: row.newCustomerCPA ?? null,
+      status: entity?.currentStatus || null,
+      audiences, excludedAudiences, targetingSummary,
+      ads: [] as any[],
+    };
+    adsetByIdForTree.set(row.id, adset);
+    funnelTree[stage].push(adset);
   }
-  // Sort ad sets within each stage by spend descending, keep top 5
-  for (const stage of Object.values(funnelData)) {
-    stage.adsets.sort((a: any, b: any) => b.spend - a.spend);
-    stage.adsets = stage.adsets.slice(0, 5);
+
+  for (const row of adRows) {
+    if ((row.spend || 0) === 0 && (row.attributedRevenue || 0) === 0 && (row.attributedOrders || 0) === 0) continue;
+    const adset = adsetByIdForTree.get(row.adSetId);
+    if (!adset) continue;
+    const entity = adEntityById[row.id];
+    adset.ads.push({
+      id: row.id,
+      name: row.name || row.id,
+      spend: row.spend || 0,
+      newCustomers: row.newCustomerOrders || 0,
+      revenue: row.attributedRevenue || 0,
+      orders: row.attributedOrders || 0,
+      impressions: row.impressions || 0,
+      ctr: row.ctr || 0,
+      roas: (row.spend || 0) > 0 ? Math.round((row.attributedRevenue / row.spend) * 100) / 100 : 0,
+      newCustomerCPA: row.newCustomerCPA ?? null,
+      status: entity?.currentStatus || null,
+      ageDays: row.adAgeDays ?? null,
+    });
+  }
+
+  const stageTotals: Record<StageKey, any> = { cold: {}, warm: {}, hot: {} };
+  for (const stage of STAGE_KEYS) {
+    const adsets = funnelTree[stage];
+    adsets.sort((a, b) => b.spend - a.spend);
+    for (const adset of adsets) adset.ads.sort((a: any, b: any) => b.spend - a.spend);
+    stageTotals[stage] = {
+      spend: adsets.reduce((s, a) => s + a.spend, 0),
+      newCustomers: adsets.reduce((s, a) => s + a.newCustomers, 0),
+      revenue: adsets.reduce((s, a) => s + a.revenue, 0),
+      orders: adsets.reduce((s, a) => s + a.orders, 0),
+      adsetCount: adsets.length,
+      adCount: adsets.reduce((s, a) => s + a.ads.length, 0),
+    };
   }
 
   console.log(`[campaigns] total ${Date.now() - _t0}ms`);
@@ -1093,7 +1166,8 @@ export const loader = async ({ request }) => {
     fromKey, toKey, preset,
     changeEvents: changeEventsForStrip,
     changeCountsByObjectId,
-    funnelData,
+    funnelTree,
+    stageTotals,
   });
 };
 
@@ -2414,23 +2488,56 @@ function AdExplorerTable({ rows, cs, entityType, onEntityClick }: {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// Ad Funnel - SVG visual showing cold→warm→hot audience stages
-// ═══════════════════════════════════════════════════════════════
+// Ad Funnel Tree - per-stage tree of ad sets with their individual ads.
+// Each ad set sits in the cold/warm/hot band determined by its targeting
+// spec (see classifyFunnelStage in metaEntitySync.server.js); ads are
+// children of their parent ad set. Click an ad set or ad to drill in.
+// ═══════════════════════════════════════════════════════════════════════
 
 const FUNNEL_STAGES = [
-  { key: "cold", label: "Cold", sublabel: "Prospecting: lookalikes, interests, broad", color: "#3B82F6", bg: "#EFF6FF", border: "#93C5FD" },
-  { key: "warm", label: "Warm", sublabel: "Retargeting: site visitors, engagers", color: "#D97706", bg: "#FFFBEB", border: "#FCD34D" },
-  { key: "hot",  label: "Hot",  sublabel: "High intent: ATC, purchasers, VIPs",     color: "#DC2626", bg: "#FEF2F2", border: "#FCA5A5" },
+  {
+    key: "cold", label: "TOF · Cold", sublabel: "Prospecting",
+    pool: "Lookalikes, interest/broad targeting, Advantage+ broad audience, ad sets that exclude existing customers, or no custom audiences at all.",
+    color: "#1D4ED8", accent: "#3B82F6", bg: "#EFF6FF", surface: "#F8FAFC", border: "#BFDBFE",
+  },
+  {
+    key: "warm", label: "MOF · Warm", sublabel: "Retargeting",
+    pool: "Custom audiences of site visitors, video viewers, page/profile engagers, lead lists, abandoned-browsers - anyone who has interacted but not bought.",
+    color: "#B45309", accent: "#D97706", bg: "#FFFBEB", surface: "#FEFAF1", border: "#FDE68A",
+  },
+  {
+    key: "hot", label: "BOF · Hot", sublabel: "Conversion / Re-purchase",
+    pool: "Past purchasers, ATC + Initiate-Checkout abandoners, VIP / repeat-customer lists, DPA targeting recent product viewers and existing-customer lookbacks.",
+    color: "#B91C1C", accent: "#DC2626", bg: "#FEF2F2", surface: "#FFF7F7", border: "#FCA5A5",
+  },
 ] as const;
 
-function AdFunnelTile({ funnelData, cs, onAdSetClick }: {
-  funnelData: { cold: any; warm: any; hot: any };
+function statusColor(status: string | null): string {
+  switch (status) {
+    case "ACTIVE": return "#10B981";
+    case "PAUSED": return "#F59E0B";
+    case "ARCHIVED": case "DELETED": return "#9CA3AF";
+    case "SCHEDULED": return "#6366F1";
+    default: return "#9CA3AF";
+  }
+}
+
+type SortKey = "spend" | "roas" | "newCustomers";
+type FilterKey = "all" | "active" | "spending";
+
+function AdFunnelTreeTile({ funnelTree, stageTotals, cs, onAdSetClick, onAdClick }: {
+  funnelTree: { cold: any[]; warm: any[]; hot: any[] };
+  stageTotals: { cold: any; warm: any; hot: any };
   cs: string;
   onAdSetClick?: (id: string, name: string) => void;
+  onAdClick?: (id: string, name: string) => void;
 }) {
-  const totalSpend = (funnelData.cold?.spend || 0) + (funnelData.warm?.spend || 0) + (funnelData.hot?.spend || 0);
-  const hasData = totalSpend > 0;
+  const [sortKey, setSortKey] = useState<SortKey>("spend");
+  const [filterKey, setFilterKey] = useState<FilterKey>("all");
+  const [expandedAdsetId, setExpandedAdsetId] = useState<string | null>(null);
 
+  const totalSpend = (stageTotals.cold?.spend || 0) + (stageTotals.warm?.spend || 0) + (stageTotals.hot?.spend || 0);
+  const hasData = totalSpend > 0;
   if (!hasData) {
     return (
       <div style={{ padding: "24px", textAlign: "center", color: "#6B7280" }}>
@@ -2442,77 +2549,68 @@ function AdFunnelTile({ funnelData, cs, onAdSetClick }: {
     );
   }
 
+  const sortFn = (a: any, b: any) => {
+    if (sortKey === "roas") return (b.roas || 0) - (a.roas || 0);
+    if (sortKey === "newCustomers") return (b.newCustomers || 0) - (a.newCustomers || 0);
+    return (b.spend || 0) - (a.spend || 0);
+  };
+  const filterFn = (entity: any) => {
+    if (filterKey === "active") return entity.status === "ACTIVE";
+    if (filterKey === "spending") return (entity.spend || 0) > 0;
+    return true;
+  };
+
   return (
-    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "2px", padding: "12px 0" }}>
-      {FUNNEL_STAGES.map((stage, i) => {
-        const data = funnelData[stage.key] || { spend: 0, newCustomers: 0, revenue: 0, orders: 0, adsets: [] };
-        const widthPct = 100 - (i * 18); // 100%, 82%, 64% - narrowing funnel
-        const spendPct = totalSpend > 0 ? Math.round((data.spend / totalSpend) * 100) : 0;
-        const roas = data.spend > 0 ? (data.revenue / data.spend).toFixed(2) : "-";
+    <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+      {/* Toolbar */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "12px", padding: "8px 0", borderBottom: "1px solid #E5E7EB" }}>
+        <div style={{ display: "flex", gap: "16px", alignItems: "center", flexWrap: "wrap" }}>
+          <ToolbarToggle label="Sort" value={sortKey} options={[
+            { id: "spend", label: "Spend" }, { id: "roas", label: "ROAS" }, { id: "newCustomers", label: "New customers" },
+          ]} onChange={(v) => setSortKey(v as SortKey)} />
+          <ToolbarToggle label="Show" value={filterKey} options={[
+            { id: "all", label: "All" }, { id: "spending", label: "Spending" }, { id: "active", label: "Active only" },
+          ]} onChange={(v) => setFilterKey(v as FilterKey)} />
+        </div>
+        <div style={{ fontSize: "11px", color: "#6B7280" }}>
+          Click an ad set or ad to drill in · Click stage header to expand audience pool definition
+        </div>
+      </div>
+
+      {/* Stage bands */}
+      {FUNNEL_STAGES.map((stage) => {
+        const adsets = (funnelTree[stage.key] || []).filter(filterFn).slice().sort(sortFn);
+        const totals = stageTotals[stage.key] || {};
+        const spendPct = totalSpend > 0 ? Math.round(((totals.spend || 0) / totalSpend) * 100) : 0;
+        const roas = (totals.spend || 0) > 0 ? (totals.revenue / totals.spend).toFixed(2) : "—";
 
         return (
-          <div
-            key={stage.key}
-            style={{
-              width: `${widthPct}%`,
-              background: stage.bg,
-              border: `1px solid ${stage.border}`,
-              borderRadius: "10px",
-              padding: "14px 20px",
-              position: "relative",
-            }}
-          >
-            {/* Header row */}
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: "6px" }}>
-              <div>
-                <span style={{ fontSize: "15px", fontWeight: 700, color: stage.color }}>{stage.label}</span>
-                <span style={{ fontSize: "12px", color: "#6B7280", marginLeft: "8px" }}>{stage.sublabel}</span>
+          <div key={stage.key} style={{
+            background: stage.surface, border: `1px solid ${stage.border}`, borderLeft: `5px solid ${stage.accent}`,
+            borderRadius: "12px", overflow: "hidden",
+          }}>
+            <StageBandHeader stage={stage} totals={totals} spendPct={spendPct} roas={roas} cs={cs} />
+            {adsets.length === 0 ? (
+              <div style={{ padding: "16px 20px", color: "#6B7280", fontSize: "12px", fontStyle: "italic" }}>
+                No ad sets at this stage match the current filter.
               </div>
-              <span style={{ fontSize: "12px", color: "#6B7280", fontWeight: 500 }}>{spendPct}% of spend</span>
-            </div>
-
-            {/* Metrics row */}
-            <div style={{ display: "flex", gap: "24px", flexWrap: "wrap", marginBottom: data.adsets.length > 0 ? "8px" : 0 }}>
-              <div>
-                <span style={{ fontSize: "18px", fontWeight: 700, color: "#374151" }}>{cs}{Math.round(data.spend).toLocaleString()}</span>
-                <span style={{ fontSize: "11px", color: "#6B7280", marginLeft: "4px" }}>spend</span>
-              </div>
-              <div>
-                <span style={{ fontSize: "18px", fontWeight: 700, color: "#374151" }}>{data.newCustomers.toLocaleString()}</span>
-                <span style={{ fontSize: "11px", color: "#6B7280", marginLeft: "4px" }}>new customers</span>
-              </div>
-              <div>
-                <span style={{ fontSize: "18px", fontWeight: 700, color: "#374151" }}>{cs}{Math.round(data.revenue).toLocaleString()}</span>
-                <span style={{ fontSize: "11px", color: "#6B7280", marginLeft: "4px" }}>revenue</span>
-              </div>
-              <div>
-                <span style={{ fontSize: "18px", fontWeight: 700, color: "#374151" }}>{roas}{typeof roas === "string" && roas !== "-" ? "x" : ""}</span>
-                <span style={{ fontSize: "11px", color: "#6B7280", marginLeft: "4px" }}>ROAS</span>
-              </div>
-              <div>
-                <span style={{ fontSize: "14px", fontWeight: 600, color: "#6B7280" }}>{data.adsets.length}</span>
-                <span style={{ fontSize: "11px", color: "#6B7280", marginLeft: "4px" }}>ad sets</span>
-              </div>
-            </div>
-
-            {/* Top ad sets */}
-            {data.adsets.length > 0 && (
-              <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
-                {data.adsets.map((as: any) => (
-                  <button
-                    key={as.id}
-                    onClick={() => onAdSetClick?.(as.id, as.name)}
-                    style={{
-                      fontSize: "11px", padding: "3px 8px", borderRadius: "12px",
-                      background: "#fff", border: `1px solid ${stage.border}`,
-                      color: stage.color, cursor: "pointer", fontWeight: 500,
-                      maxWidth: "200px", overflow: "hidden", textOverflow: "ellipsis",
-                      whiteSpace: "nowrap",
-                    }}
-                    title={`${as.name} - ${cs}${Math.round(as.spend).toLocaleString()} spend, ${as.newCustomers} new customers`}
-                  >
-                    {as.name}
-                  </button>
+            ) : (
+              <div style={{
+                display: "grid", gap: "12px", padding: "12px 16px 16px",
+                gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))",
+              }}>
+                {adsets.map((adset: any) => (
+                  <AdSetCard
+                    key={adset.id}
+                    adset={adset}
+                    stage={stage}
+                    cs={cs}
+                    expanded={expandedAdsetId === adset.id}
+                    onToggleExpand={() => setExpandedAdsetId(expandedAdsetId === adset.id ? null : adset.id)}
+                    onAdSetClick={onAdSetClick}
+                    onAdClick={onAdClick}
+                    sortFn={sortFn}
+                  />
                 ))}
               </div>
             )}
@@ -2520,6 +2618,223 @@ function AdFunnelTile({ funnelData, cs, onAdSetClick }: {
         );
       })}
     </div>
+  );
+}
+
+function ToolbarToggle({ label, value, options, onChange }: {
+  label: string; value: string; options: { id: string; label: string }[]; onChange: (v: string) => void;
+}) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+      <span style={{ fontSize: "11px", color: "#6B7280", fontWeight: 500, textTransform: "uppercase", letterSpacing: "0.5px" }}>{label}</span>
+      <div style={{ display: "flex", border: "1px solid #D1D5DB", borderRadius: "6px", overflow: "hidden", background: "#fff" }}>
+        {options.map((o) => (
+          <button
+            key={o.id}
+            onClick={() => onChange(o.id)}
+            style={{
+              border: "none", padding: "4px 10px", fontSize: "12px",
+              background: value === o.id ? "#111827" : "transparent",
+              color: value === o.id ? "#fff" : "#374151",
+              cursor: "pointer", fontWeight: value === o.id ? 600 : 500,
+            }}
+          >{o.label}</button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function StageBandHeader({ stage, totals, spendPct, roas, cs }: {
+  stage: typeof FUNNEL_STAGES[number]; totals: any; spendPct: number; roas: string; cs: string;
+}) {
+  const [showPool, setShowPool] = useState(false);
+  return (
+    <div
+      style={{ padding: "12px 16px", background: stage.bg, borderBottom: `1px solid ${stage.border}`, cursor: "pointer", userSelect: "none" }}
+      onClick={() => setShowPool(!showPool)}
+    >
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "12px" }}>
+        <div style={{ display: "flex", alignItems: "baseline", gap: "12px", flexWrap: "wrap" }}>
+          <span style={{ fontSize: "15px", fontWeight: 700, color: stage.color, letterSpacing: "0.3px" }}>{stage.label}</span>
+          <span style={{ fontSize: "12px", color: "#4B5563" }}>{stage.sublabel}</span>
+          <span style={{ fontSize: "11px", color: stage.color, opacity: 0.7 }}>{showPool ? "▾ hide audience pool" : "▸ what counts as this stage?"}</span>
+        </div>
+        <div style={{ display: "flex", gap: "20px", alignItems: "baseline", flexWrap: "wrap" }}>
+          <Metric value={`${cs}${Math.round(totals.spend || 0).toLocaleString()}`} sub={`${spendPct}% of spend`} />
+          <Metric value={`${roas}${roas !== "—" ? "x" : ""}`} sub="ROAS" />
+          <Metric value={(totals.newCustomers || 0).toLocaleString()} sub="new customers" />
+          <Metric value={`${cs}${Math.round(totals.revenue || 0).toLocaleString()}`} sub="revenue" />
+          <Metric value={`${totals.adsetCount || 0}/${totals.adCount || 0}`} sub="ad sets / ads" />
+        </div>
+      </div>
+      {showPool && (
+        <div style={{ marginTop: "10px", padding: "10px 12px", background: "#fff", border: `1px dashed ${stage.border}`, borderRadius: "6px", fontSize: "12px", color: "#374151", lineHeight: 1.5 }}>
+          <strong style={{ color: stage.color }}>Audience pool · </strong>{stage.pool}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Metric({ value, sub }: { value: string | number; sub: string }) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", lineHeight: 1.2 }}>
+      <span style={{ fontSize: "16px", fontWeight: 700, color: "#111827" }}>{value}</span>
+      <span style={{ fontSize: "10px", color: "#6B7280", textTransform: "uppercase", letterSpacing: "0.4px" }}>{sub}</span>
+    </div>
+  );
+}
+
+function AdSetCard({ adset, stage, cs, expanded, onToggleExpand, onAdSetClick, onAdClick, sortFn }: {
+  adset: any; stage: typeof FUNNEL_STAGES[number]; cs: string; expanded: boolean;
+  onToggleExpand: () => void;
+  onAdSetClick?: (id: string, name: string) => void;
+  onAdClick?: (id: string, name: string) => void;
+  sortFn: (a: any, b: any) => number;
+}) {
+  const visibleAudiences = adset.audiences.slice(0, 2);
+  const hiddenAudienceCount = adset.audiences.length - visibleAudiences.length;
+  const hasExclusions = adset.excludedAudiences.length > 0;
+  const sortedAds = adset.ads.slice().sort(sortFn);
+  return (
+    <div style={{
+      background: "#fff", border: `1px solid ${stage.border}`, borderRadius: "10px",
+      overflow: "hidden", display: "flex", flexDirection: "column",
+      boxShadow: "0 1px 2px rgba(0,0,0,0.04)",
+    }}>
+      {/* Ad set header */}
+      <div style={{ padding: "10px 12px", borderBottom: `1px solid ${stage.border}`, background: stage.surface }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "8px" }}>
+          <button
+            onClick={() => onAdSetClick?.(adset.id, adset.name)}
+            title={`Open ${adset.name}`}
+            style={{
+              flex: 1, minWidth: 0, background: "transparent", border: "none", padding: 0, textAlign: "left", cursor: "pointer",
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "2px" }}>
+              <span title={adset.status || "unknown status"} style={{
+                display: "inline-block", width: "8px", height: "8px", borderRadius: "50%",
+                background: statusColor(adset.status), flexShrink: 0,
+              }} />
+              <span style={{ fontSize: "13px", fontWeight: 600, color: "#111827", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{adset.name}</span>
+            </div>
+            <div style={{ fontSize: "10px", color: "#6B7280", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              {adset.campaignName}
+            </div>
+          </button>
+          <button
+            onClick={onToggleExpand}
+            title={expanded ? "Hide targeting" : "Show targeting"}
+            style={{
+              background: "transparent", border: `1px solid ${stage.border}`, borderRadius: "4px",
+              padding: "1px 6px", cursor: "pointer", color: stage.color, fontSize: "10px", fontWeight: 600, flexShrink: 0,
+            }}
+          >{expanded ? "−" : "i"}</button>
+        </div>
+
+        {/* Audience chips */}
+        {(visibleAudiences.length > 0 || hasExclusions) && (
+          <div style={{ display: "flex", gap: "4px", flexWrap: "wrap", marginTop: "6px" }}>
+            {visibleAudiences.map((a: string, i: number) => (
+              <span key={i} title={a} style={{
+                fontSize: "10px", padding: "1px 6px", borderRadius: "8px",
+                background: "#fff", border: `1px solid ${stage.border}`, color: stage.color,
+                maxWidth: "160px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+              }}>{a}</span>
+            ))}
+            {hiddenAudienceCount > 0 && (
+              <span style={{ fontSize: "10px", padding: "1px 6px", borderRadius: "8px", background: "#F3F4F6", color: "#6B7280" }}>
+                +{hiddenAudienceCount}
+              </span>
+            )}
+            {hasExclusions && (
+              <span title={adset.excludedAudiences.join(", ")} style={{
+                fontSize: "10px", padding: "1px 6px", borderRadius: "8px",
+                background: "#fff", border: "1px dashed #9CA3AF", color: "#6B7280",
+              }}>excludes {adset.excludedAudiences.length}</span>
+            )}
+          </div>
+        )}
+
+        {/* Stats */}
+        <div style={{ display: "flex", gap: "10px", marginTop: "8px", fontSize: "11px", color: "#374151" }}>
+          <span><strong>{cs}{Math.round(adset.spend).toLocaleString()}</strong> spend</span>
+          <span><strong>{adset.roas || 0}x</strong> ROAS</span>
+          <span><strong>{adset.newCustomers}</strong> NC</span>
+        </div>
+      </div>
+
+      {/* Expanded targeting detail */}
+      {expanded && (
+        <div style={{ padding: "8px 12px", background: "#FAFAFA", borderBottom: `1px solid ${stage.border}`, fontSize: "11px", color: "#374151" }}>
+          {adset.targetingSummary && <div style={{ marginBottom: "4px" }}>{adset.targetingSummary}</div>}
+          {adset.audiences.length > 0 && (
+            <div style={{ marginBottom: "4px" }}>
+              <strong>Includes:</strong> {adset.audiences.join(", ")}
+            </div>
+          )}
+          {adset.excludedAudiences.length > 0 && (
+            <div><strong>Excludes:</strong> {adset.excludedAudiences.join(", ")}</div>
+          )}
+          {!adset.targetingSummary && adset.audiences.length === 0 && adset.excludedAudiences.length === 0 && (
+            <div style={{ fontStyle: "italic", color: "#6B7280" }}>No targeting metadata available — likely Advantage+ broad audience or unsynced.</div>
+          )}
+        </div>
+      )}
+
+      {/* Ads grid */}
+      {sortedAds.length > 0 ? (
+        <div style={{ padding: "8px", display: "grid", gap: "6px", gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))" }}>
+          {sortedAds.map((ad: any) => (
+            <AdMiniCard key={ad.id} ad={ad} stage={stage} cs={cs} onClick={() => onAdClick?.(ad.id, ad.name)} />
+          ))}
+        </div>
+      ) : (
+        <div style={{ padding: "10px 12px", fontSize: "11px", fontStyle: "italic", color: "#9CA3AF" }}>
+          No ads with activity in this period.
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AdMiniCard({ ad, stage, cs, onClick }: {
+  ad: any; stage: typeof FUNNEL_STAGES[number]; cs: string; onClick?: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      title={`${ad.name}\nStatus: ${ad.status || "unknown"}\nSpend: ${cs}${Math.round(ad.spend).toLocaleString()}\nROAS: ${ad.roas || 0}x\nNew customers: ${ad.newCustomers}\nAge: ${ad.ageDays != null ? ad.ageDays + "d" : "—"}`}
+      style={{
+        background: "#fff",
+        border: `1px solid ${stage.border}`,
+        borderLeft: `3px solid ${statusColor(ad.status)}`,
+        borderRadius: "6px",
+        padding: "6px 8px",
+        textAlign: "left",
+        cursor: "pointer",
+        display: "flex",
+        flexDirection: "column",
+        gap: "3px",
+        transition: "transform 80ms ease, box-shadow 80ms ease",
+      }}
+      onMouseEnter={(e) => { e.currentTarget.style.transform = "translateY(-1px)"; e.currentTarget.style.boxShadow = "0 2px 6px rgba(0,0,0,0.08)"; }}
+      onMouseLeave={(e) => { e.currentTarget.style.transform = "none"; e.currentTarget.style.boxShadow = "none"; }}
+    >
+      <div style={{ fontSize: "11px", fontWeight: 600, color: "#111827", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+        {ad.name}
+      </div>
+      <div style={{ display: "flex", justifyContent: "space-between", fontSize: "10px", color: "#374151" }}>
+        <span>{cs}{Math.round(ad.spend).toLocaleString()}</span>
+        <span style={{ fontWeight: 600, color: stage.color }}>{ad.roas || 0}x</span>
+      </div>
+      <div style={{ display: "flex", justifyContent: "space-between", fontSize: "10px", color: "#6B7280" }}>
+        <span>{ad.newCustomers} NC</span>
+        <span>{ad.ageDays != null ? `${ad.ageDays}d` : ""}</span>
+      </div>
+    </button>
   );
 }
 
@@ -2539,7 +2854,7 @@ export default function Campaigns() {
     uniqueNewMetaCustomers, prevUniqueNewMetaCustomers, totalNewCustomersInPeriod,
     shopDomain, fromKey, toKey, preset,
     changeEvents, changeCountsByObjectId,
-    funnelData,
+    funnelTree, stageTotals,
   } = useLoaderData();
   const cs = currencySymbol || currencySymbolFromCode(null);
   const [searchParams, setSearchParams] = useSearchParams();
@@ -3445,10 +3760,16 @@ export default function Campaigns() {
                   <BlockStack gap="300">
                     <Text as="h2" variant="headingLg">Ad Funnel</Text>
                     <Text as="p" variant="bodySm" tone="subdued">
-                      How your ad spend flows from cold prospecting through to hot purchase-intent audiences.
-                      Based on Meta targeting data - synced nightly.
+                      Every active ad placed at the funnel stage of its parent ad set, based on targeting data synced nightly from Meta.
+                      Click a stage header to see what audiences qualify, click any ad set or ad to drill in.
                     </Text>
-                    <AdFunnelTile funnelData={funnelData} cs={cs} onAdSetClick={(id, name) => setDrawerEntity({ objectType: "adset", objectId: id, objectName: name })} />
+                    <AdFunnelTreeTile
+                      funnelTree={funnelTree}
+                      stageTotals={stageTotals}
+                      cs={cs}
+                      onAdSetClick={(id, name) => setDrawerEntity({ objectType: "adset", objectId: id, objectName: name })}
+                      onAdClick={(id, name) => setDrawerEntity({ objectType: "ad", objectId: id, objectName: name })}
+                    />
                   </BlockStack>
                 </Card>
               )},
