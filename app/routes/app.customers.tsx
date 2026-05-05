@@ -513,8 +513,10 @@ export const loader = async ({ request }) => {
   const organicAvgLtv = organicCount > 0 ? r2(organicRevenue / organicCount) : 0;
   const metaAvgOrders = metaCount > 0 ? r2(metaOrders / metaCount) : 0;
   const organicAvgOrders = organicCount > 0 ? r2(organicOrders / organicCount) : 0;
-  // Use attribution-based count for CPA (matches Ad Campaigns tab exactly)
-  const newInPeriod = attrUniqueNewCustomers;
+  // Use DailyAdRollup newCustomerOrders for CPA — same source as Ad Campaigns tab.
+  // This counts new-customer ORDERS (not deduplicated customers) which matches
+  // effectiveTotals.newCustomerOrders on Campaigns exactly.
+  const newInPeriod = attrNewCustomerOrders;
   const newCustomerCPA = newInPeriod > 0 ? r2(totalMetaSpend / newInPeriod) : 0;
   const metaAvgFirstOrder = newInPeriod > 0 ? r2(attrNewCustomerRevenue / newInPeriod) : 0;
   const organicAvgFirstOrder = organicCount > 0 ? r2(organicFirstOrderTotal / organicCount) : 0;
@@ -2935,7 +2937,7 @@ export default function Customers() {
           }},
           { id: "newMetaCustomers", label: "New Meta Customers", render: () => (
             <SummaryTile label="New Meta Customers" value={newInPeriod.toLocaleString()}
-              tooltip={{ definition: "Unique customers whose first-ever order was attributed to a Meta ad within the selected date range (deduplicated by customer ID — same source as Ad Campaigns tab)" }}
+              tooltip={{ definition: "New customer orders attributed to Meta ads in the selected period (same source as Ad Campaigns tab: DailyAdRollup newCustomerOrders)" }}
               subtitle={`${newInPeriod + organicCount > 0 ? Math.round((newInPeriod / (newInPeriod + organicCount)) * 100) : 0}% of all new customers in period`}
               currentValue={newInPeriod} previousValue={prevMetaCount}
               chartData={dailyData} prevChartData={prevDailyData} chartKey="newMetaCustomers" chartColor="#2E7D32" chartFormat={fmtCount} />
