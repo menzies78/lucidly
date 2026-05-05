@@ -109,6 +109,9 @@ export const loader = async ({ request }) => {
     blobs,
     aiCached,
     unmatchedAttrs,
+    // Attribution-based new customer count (deduplicated by customer ID)
+    // Matches the same source Ad Campaigns uses — ensures tiles agree.
+    attrNewCustomerOrdersRaw,
   ] = await Promise.all([
     time("customers", queryCached(`${shopDomain}:customersAll`, DEFAULT_TTL, loadAllCustomers)),
     time("dailyRollups", db.dailyCustomerRollup.findMany({
@@ -124,7 +127,7 @@ export const loader = async ({ request }) => {
       () => db.dailyAdRollup.groupBy({
         by: ["date"],
         where: { shopDomain, date: { gte: fromDate, lte: toDate } },
-        _sum: { spend: true, metaConversions: true, metaConversionValue: true },
+        _sum: { spend: true, metaConversions: true, metaConversionValue: true, newCustomerOrders: true, newCustomerRevenue: true },
       }),
     )),
     time("prevInsights", queryCached(
@@ -241,6 +244,34 @@ export const loader = async ({ request }) => {
       where: { shopDomain, confidence: 0, shopifyOrderId: { startsWith: "unmatched_" } },
       select: { shopifyOrderId: true, metaConversionValue: true },
     })),
+    // Attribution-based new customers: deduplicated by shopifyCustomerId via Order join.
+    // Same logic as Ad Campaigns tab — guarantees matching numbers.
+    time("attrNewCustomerOrders", (async () => {
+      const newOrders = await db.order.findMany({
+        where: { shopDomain, isOnlineStore: true, isNewCustomerOrder: true, createdAt: { gte: fromDate, lte: toDate } },
+        select: { shopifyOrderId: true, shopifyCustomerId: true, frozenTotalPrice: true, totalRefunded: true },
+      });
+      const attrIds = newOrders.map(o => o.shopifyOrderId);
+      const attrs = attrIds.length > 0 ? await db.attribution.findMany({
+        where: { shopDomain, shopifyOrderId: { in: attrIds }, confidence: { gt: 0 } },
+        select: { shopifyOrderId: true },
+      }) : [];
+      const matchedSet = new Set(attrs.map(a => a.shopifyOrderId));
+      // Also include UTM-confirmed orders (Layer 1)
+      const metaNewOrders = newOrders.filter(o => matchedSet.has(o.shopifyOrderId) || false);
+      // Deduplicate by customer ID
+      const custIds = new Set();
+      let uniqueCount = 0;
+      let totalRev = 0;
+      for (const o of metaNewOrders) {
+        if (o.shopifyCustomerId && !custIds.has(o.shopifyCustomerId)) {
+          custIds.add(o.shopifyCustomerId);
+          uniqueCount++;
+        }
+        totalRev += (o.frozenTotalPrice || 0) - (o.totalRefunded || 0);
+      }
+      return { uniqueCount, totalRev, orderCount: metaNewOrders.length };
+    })()),
   ]);
   console.log(`[customers] db ${Date.now() - _qStart}ms (customers=${customers.length}, dailyRollups=${dailyRollups.length})`);
 
@@ -332,6 +363,11 @@ export const loader = async ({ request }) => {
   const totalMetaSpend = insights.reduce((s, i: any) => s + (i._sum?.spend || 0), 0);
   const totalMetaConversions = insights.reduce((s, i: any) => s + (i._sum?.metaConversions || 0), 0);
   const totalMetaConversionValue = insights.reduce((s, i: any) => s + (i._sum?.metaConversionValue || 0), 0);
+  // Attribution-based new customer revenue from DailyAdRollup (same source as Ad Campaigns)
+  const attrNewCustomerRevenue = insights.reduce((s, i: any) => s + (i._sum?.newCustomerRevenue || 0), 0);
+  const attrNewCustomerOrders = insights.reduce((s, i: any) => s + (i._sum?.newCustomerOrders || 0), 0);
+  // Deduplicated new customer count (attribution-based, same as Ad Campaigns)
+  const attrUniqueNewCustomers = attrNewCustomerOrdersRaw.uniqueCount;
   const allTimeMetaSpend = allTimeSpendResult._sum?.spend || 0;
 
   // All-time Meta spend bucketed by acquisition month (YYYY-MM).
@@ -477,9 +513,10 @@ export const loader = async ({ request }) => {
   const organicAvgLtv = organicCount > 0 ? r2(organicRevenue / organicCount) : 0;
   const metaAvgOrders = metaCount > 0 ? r2(metaOrders / metaCount) : 0;
   const organicAvgOrders = organicCount > 0 ? r2(organicOrders / organicCount) : 0;
-  const newInPeriod = metaCount;
+  // Use attribution-based count for CPA (matches Ad Campaigns tab exactly)
+  const newInPeriod = attrUniqueNewCustomers;
   const newCustomerCPA = newInPeriod > 0 ? r2(totalMetaSpend / newInPeriod) : 0;
-  const metaAvgFirstOrder = metaCount > 0 ? r2(metaFirstOrderTotal / metaCount) : 0;
+  const metaAvgFirstOrder = newInPeriod > 0 ? r2(attrNewCustomerRevenue / newInPeriod) : 0;
   const organicAvgFirstOrder = organicCount > 0 ? r2(organicFirstOrderTotal / organicCount) : 0;
   const aovCpaRatio = newCustomerCPA > 0 ? r2(metaAvgFirstOrder / newCustomerCPA) : 0;
   const paybackOrders = metaAvgFirstOrder > 0 ? r2(newCustomerCPA / metaAvgFirstOrder) : 0;
@@ -2899,22 +2936,22 @@ export default function Customers() {
             );
           }},
           { id: "newMetaCustomers", label: "New Meta Customers", render: () => (
-            <SummaryTile label="New Meta Customers" value={metaCount.toLocaleString()}
-              tooltip={{ definition: "Customers whose first-ever order was attributed to a Meta ad within the selected date range" }}
-              subtitle={`${metaCount + organicCount > 0 ? Math.round((metaCount / (metaCount + organicCount)) * 100) : 0}% of all new customers in period`}
-              currentValue={metaCount} previousValue={prevMetaCount}
+            <SummaryTile label="New Meta Customers" value={newInPeriod.toLocaleString()}
+              tooltip={{ definition: "Unique customers whose first-ever order was attributed to a Meta ad within the selected date range (deduplicated by customer ID — same source as Ad Campaigns tab)" }}
+              subtitle={`${newInPeriod + organicCount > 0 ? Math.round((newInPeriod / (newInPeriod + organicCount)) * 100) : 0}% of all new customers in period`}
+              currentValue={newInPeriod} previousValue={prevMetaCount}
               chartData={dailyData} prevChartData={prevDailyData} chartKey="newMetaCustomers" chartColor="#2E7D32" chartFormat={fmtCount} />
           )},
           { id: "newMetaRevenue", label: "New Meta Customer Revenue", render: () => {
             const matchedRevenue = metaNewRevenueInRange + metaRepeatRevenueInRange + metaRetargetedRevenueInRange;
             const totalMetaRevenue = matchedRevenue + unmatchedRevenue;
-            const newRevPct = totalMetaRevenue > 0 ? Math.round((metaNewRevenueInRange / totalMetaRevenue) * 100) : 0;
+            const newRevPct = totalMetaRevenue > 0 ? Math.round((attrNewCustomerRevenue / totalMetaRevenue) * 100) : 0;
             return (
               <SummaryTile label="New Meta Customer Revenue"
-                tooltip={{ definition: "Net Shopify revenue from first orders placed by newly acquired Meta customers in the selected period. Sourced from DailyCustomerRollup (segment-based). Ad Campaigns tab sources from Attribution (order-level) — small differences are normal." }}
-                value={fmtPrice(metaNewRevenueInRange)}
+                tooltip={{ definition: "Net revenue from first-time Meta-acquired customers in the selected period (attribution-based, same source as Ad Campaigns tab)" }}
+                value={fmtPrice(attrNewCustomerRevenue)}
                 subtitle={`${newRevPct}% of all Meta revenue (${fmtPrice(totalMetaRevenue)})`}
-                currentValue={metaNewRevenueInRange} previousValue={prevMetaNewRevenueInRange}
+                currentValue={attrNewCustomerRevenue} previousValue={prevMetaNewRevenueInRange}
                 chartData={dailyData} prevChartData={prevDailyData} chartKey="newMetaRevenue" chartColor="#D4760A" chartFormat={fmtPrice} />
             );
           }},
@@ -2950,7 +2987,7 @@ export default function Customers() {
           )},
           { id: "newCustCpa", label: "Meta CPA", render: () => (
             <SummaryTile label="Meta CPA"
-              tooltip={{ definition: "Cost to acquire one new customer through Meta within the selected date range. Uses segment-based customer count (DailyCustomerRollup). Ad Campaigns tab uses attribution-based count — may differ by 1-2 customers due to deduplication method.", calc: "Meta spend in period ÷ new Meta customers in period" }}
+              tooltip={{ definition: "Cost to acquire one new customer through Meta within the selected date range", calc: "Meta spend in period ÷ new Meta customers in period" }}
               value={newCustomerCPA > 0 ? fmtPrice(newCustomerCPA) : "\u2014"}
               lowerIsBetter
               currentValue={newCustomerCPA} previousValue={prevNewCustomerCPA}
