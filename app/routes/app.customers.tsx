@@ -123,7 +123,7 @@ export const loader = async ({ request }) => {
     // groupBy at DB level: returns one row per day instead of row-per-ad-per-day
     // (365 rows for a year range instead of ~30k rows on vollebak)
     time("insights", queryCached(
-      `${shopDomain}:insightsDaily:${dateFromStr}:${dateToStr}`, DEFAULT_TTL,
+      `${shopDomain}:insightsDailyV2:${dateFromStr}:${dateToStr}`, DEFAULT_TTL,
       () => db.dailyAdRollup.groupBy({
         by: ["date"],
         where: { shopDomain, date: { gte: fromDate, lte: toDate } },
