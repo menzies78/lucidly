@@ -372,28 +372,37 @@ export const action = async ({ request }) => {
     // Bypass the 24h rollup throttle in incrementalSync. Used when a deploy
     // changes the rollup output schema (e.g. new fields on ltvCustomers)
     // and the cached blob needs to refresh before the next forced rebuild.
+    //
+    // Order: campaign rollups FIRST (the heaviest - 622k MetaInsight rows for
+    // Vollebak load into a bucket map and easily push heap past 3GB). Doing
+    // it on a freshly-spawned action keeps headroom; running customer/product
+    // first then campaign was OOM-killing the VM. global.gc() between phases
+    // releases the bucket map before the next rebuild's working set lands.
     runInBackground(async () => {
-      setProgress(taskId, { status: "running", message: "Rebuilding customer rollups..." });
-      const { rebuildCustomerSegments, rebuildCustomerRollups } = await import("../services/customerRollups.server.js");
-      await rebuildCustomerSegments(shopDomain);
-      await rebuildCustomerRollups(shopDomain);
+      try {
+        setProgress(taskId, { status: "running", message: "Rebuilding campaign rollups (this is the slow one - ~5min)..." });
+        const { rebuildCampaignRollups } = await import("../services/campaignRollups.server.js");
+        await rebuildCampaignRollups(shopDomain);
+        if (global.gc) global.gc();
 
-      // Campaign rollups (DailyAdRollup) - the expensive one (~340s for
-      // Vollebak, 622k insight rows). Must be rebuilt here because the
-      // hourly cycle skips it when no new conversions arrive (commit
-      // 92137cd) and the nightly 3am sweep is the only other rebuild path.
-      // Without this, Campaigns + Customers Meta tiles go stale.
-      setProgress(taskId, { status: "running", message: "Rebuilding campaign rollups (this is the slow one - ~5min)..." });
-      const { rebuildCampaignRollups } = await import("../services/campaignRollups.server.js");
-      await rebuildCampaignRollups(shopDomain);
+        setProgress(taskId, { status: "running", message: "Rebuilding customer rollups..." });
+        const { rebuildCustomerSegments, rebuildCustomerRollups } = await import("../services/customerRollups.server.js");
+        await rebuildCustomerSegments(shopDomain);
+        await rebuildCustomerRollups(shopDomain);
+        if (global.gc) global.gc();
 
-      setProgress(taskId, { status: "running", message: "Rebuilding product rollups..." });
-      const { rebuildProductRollups } = await import("../services/productRollups.server.js");
-      await rebuildProductRollups(shopDomain);
+        setProgress(taskId, { status: "running", message: "Rebuilding product rollups..." });
+        const { rebuildProductRollups } = await import("../services/productRollups.server.js");
+        await rebuildProductRollups(shopDomain);
+        if (global.gc) global.gc();
 
-      const { invalidateShop } = await import("../services/queryCache.server.js");
-      invalidateShop(shopDomain);
-      completeProgress(taskId, { ok: true });
+        const { invalidateShop } = await import("../services/queryCache.server.js");
+        invalidateShop(shopDomain);
+        completeProgress(taskId, { ok: true });
+      } catch (err: any) {
+        console.error(`[forceRollups] ${shopDomain} failed: ${err?.message}`);
+        failProgress(taskId, err?.message || String(err));
+      }
     });
     return json({ started: true, task: "forceRollups" });
   }
