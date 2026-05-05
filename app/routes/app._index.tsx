@@ -400,6 +400,17 @@ export const action = async ({ request }) => {
     });
     return json({ started: true, task: "backfillFirstNames" });
   }
+  if (actionType === "refreshAdThumbnails") {
+    runInBackground(async () => {
+      setProgress(taskId, { status: "running", message: "Fetching ad creative URLs from Meta..." });
+      const { refreshAdCreatives } = await import("../services/metaAdCreativeSync.server.js");
+      const result = await refreshAdCreatives(shopDomain);
+      const { invalidateShop } = await import("../services/queryCache.server.js");
+      invalidateShop(shopDomain);
+      completeProgress(taskId, result);
+    });
+    return json({ started: true, task: "refreshAdThumbnails" });
+  }
   return json({ success: false });
 };
 
@@ -1112,6 +1123,15 @@ export default function Index() {
                     {activeTask === "backfillFirstNames" ? "Running..." : "Backfill First Names"}
                   </Button>
                   <Text as="p" variant="bodySm" tone="subdued">Pulls billing first names from Shopify, then re-runs gender inference</Text>
+                </BlockStack>
+              )}
+              {metaConnected && (
+                <BlockStack gap="100">
+                  <Button onClick={() => startTask("refreshAdThumbnails")} disabled={isRunning}
+                    loading={activeTask === "refreshAdThumbnails"}>
+                    {activeTask === "refreshAdThumbnails" ? "Refreshing..." : "Refresh Ad Thumbnails"}
+                  </Button>
+                  <Text as="p" variant="bodySm" tone="subdued">Pulls Meta creative thumbnails for the Ad Explorer. Auto-runs nightly; use this to refresh now.</Text>
                 </BlockStack>
               )}
             </InlineStack>
