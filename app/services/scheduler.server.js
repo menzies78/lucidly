@@ -173,6 +173,17 @@ async function runDailyCycle() {
         } catch (err) {
           console.error(`[Scheduler] Product image refresh failed for ${shop.shopDomain}:`, err.message);
         }
+
+        // Refresh Meta ad creative thumbnails. Meta CDN URLs are signed and
+        // rotate, so this re-pulls every night to keep the Ad Explorer tiles
+        // working.
+        try {
+          const { refreshAdCreatives } = await import("./metaAdCreativeSync.server.js");
+          const creativeResult = await refreshAdCreatives(shop.shopDomain);
+          console.log(`[Scheduler] Ad creatives for ${shop.shopDomain}: ${creativeResult.updated} updated, ${creativeResult.missing} unresolved`);
+        } catch (err) {
+          console.error(`[Scheduler] Ad creative refresh failed for ${shop.shopDomain}:`, err.message);
+        }
       } catch (err) {
         console.error(`[Scheduler] Daily sync failed for ${shop.shopDomain}:`, err.message);
       }

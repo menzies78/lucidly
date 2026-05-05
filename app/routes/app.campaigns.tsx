@@ -419,6 +419,9 @@ export const loader = async ({ request }) => {
           // Needed by AdFunnelTreeTile: live status badge + targeting summary
           // for each ad set, so each ad inherits the right pool description.
           targetingSpec: true, currentStatus: true,
+          // Ad creative thumbnails (entityType='ad' only) - rendered as tiles
+          // in AdExplorerTable.
+          thumbnailUrl: true, imageUrl: true,
         },
       }),
     )),
@@ -495,8 +498,14 @@ export const loader = async ({ request }) => {
 
   // Build entity created_time map from pre-fetched metaEntities
   const entityCreatedMap = {};
+  // Ad creative thumbnails keyed by ad ID - signed Meta CDN URLs refreshed
+  // nightly by metaAdCreativeSync.
+  const adThumbMap: Record<string, { thumbnailUrl: string | null; imageUrl: string | null }> = {};
   for (const e of metaEntities) {
     if (e.createdTime) entityCreatedMap[`${e.entityType}:${e.entityId}`] = e.createdTime;
+    if (e.entityType === "ad" && (e.thumbnailUrl || e.imageUrl)) {
+      adThumbMap[e.entityId] = { thumbnailUrl: e.thumbnailUrl, imageUrl: e.imageUrl };
+    }
   }
 
   const now = new Date();
@@ -556,6 +565,9 @@ export const loader = async ({ request }) => {
       repeatRate: ltv.repeatRate ?? null,
       avgOrders: ltv.avgOrders ?? null,
       ltvCac: (ltv.avgLtv90 != null && r.newCustomerOrders > 0) ? r2g(ltv.avgLtv90 / (r.spend / r.newCustomerOrders)) : null,
+      // Ad creative thumbnail (ad rows only - empty for campaign/adset)
+      thumbnailUrl: entityType === "ad" ? (adThumbMap[r.id]?.thumbnailUrl ?? null) : null,
+      imageUrl: entityType === "ad" ? (adThumbMap[r.id]?.imageUrl ?? null) : null,
     };
   });
 
@@ -2303,6 +2315,55 @@ function RoasHoverPopover({ x, y, state }: {
 // Ad Explorer - full-width table with filters, replacing Best to Worst
 // ═══════════════════════════════════════════════════════════════
 
+// Small 32x32 thumb for the Ad Explorer. Hover reveals the full image_url
+// in a popover so a merchant can spot which creative is which without
+// leaving the table.
+function AdThumbTile({ thumbnailUrl, imageUrl, name }: { thumbnailUrl: string | null; imageUrl: string | null; name: string }) {
+  const [imgFailed, setImgFailed] = useState(false);
+  const [hover, setHover] = useState(false);
+  const initial = (name || "?").trim().charAt(0).toUpperCase();
+  const showImg = thumbnailUrl && !imgFailed;
+  const fullImg = imageUrl || thumbnailUrl;
+
+  return (
+    <span
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      style={{
+        position: "relative", width: "32px", height: "32px", flexShrink: 0,
+        borderRadius: 4, overflow: "visible",
+        background: showImg ? "#f3f4f6" : "#E5E7EB",
+        display: "inline-flex", alignItems: "center", justifyContent: "center",
+        fontSize: "11px", fontWeight: 600, color: "#6B7280",
+        border: "1px solid #E5E7EB",
+      }}
+    >
+      {showImg ? (
+        <img
+          src={thumbnailUrl}
+          alt=""
+          loading="lazy"
+          onError={() => setImgFailed(true)}
+          style={{ width: "100%", height: "100%", objectFit: "cover", borderRadius: 3 }}
+        />
+      ) : (
+        <span>{initial}</span>
+      )}
+      {hover && fullImg && !imgFailed && (
+        <span style={{
+          position: "absolute", left: "40px", top: "-50px", zIndex: 1000,
+          width: "180px", height: "180px", background: "#fff",
+          border: "1px solid #D1D5DB", borderRadius: 6,
+          boxShadow: "0 8px 24px rgba(0,0,0,0.18)",
+          padding: 4, pointerEvents: "none",
+        }}>
+          <img src={fullImg} alt="" style={{ width: "100%", height: "100%", objectFit: "contain" }} />
+        </span>
+      )}
+    </span>
+  );
+}
+
 function AdExplorerTable({ rows, cs, entityType, onEntityClick }: {
   rows: any[]; cs: string;
   entityType: "campaign" | "adset" | "ad";
@@ -2405,6 +2466,7 @@ function AdExplorerTable({ rows, cs, entityType, onEntityClick }: {
       {/* Table header */}
       <div style={{ display: "flex", gap: "10px", alignItems: "center", padding: "0 0 8px 0", borderBottom: "1px solid #e4e5e7", marginBottom: "4px" }}>
         <span style={{ width: "28px", flexShrink: 0 }} />
+        {entityType === "ad" && <span style={{ width: "36px", flexShrink: 0 }} />}
         <span style={{ flex: 1, fontSize: "11px", color: "#8c9196", fontWeight: 600, textTransform: "uppercase" }}>Name</span>
         {COLS.map(c => (
           <SortableHeader key={c.key} col={c.key} label={c.label} width={c.width} sortCol={sortCol} sortDir={sortDir} onSort={toggleSort} />
@@ -2431,6 +2493,13 @@ function AdExplorerTable({ rows, cs, entityType, onEntityClick }: {
               onMouseOut={(e) => { (e.currentTarget as HTMLDivElement).style.background = i % 2 === 0 ? "#fff" : "#f9fafb"; }}
             >
               <span style={{ fontSize: "11px", color: "#9CA3AF", width: "28px", textAlign: "right", flexShrink: 0 }}>{i + 1}</span>
+              {entityType === "ad" && (
+                <AdThumbTile
+                  thumbnailUrl={item.thumbnailUrl}
+                  imageUrl={item.imageUrl}
+                  name={item.name}
+                />
+              )}
               <span style={{
                 flex: 1, fontSize: "13px", fontWeight: 500, overflow: "hidden",
                 textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0,
@@ -2461,6 +2530,7 @@ function AdExplorerTable({ rows, cs, entityType, onEntityClick }: {
         borderTop: "1px solid #e4e5e7", marginTop: "4px", fontWeight: 600, fontSize: "12.5px",
       }}>
         <span style={{ width: "28px", flexShrink: 0 }} />
+        {entityType === "ad" && <span style={{ width: "36px", flexShrink: 0 }} />}
         <span style={{ flex: 1, color: "#374151" }}>{sorted.length} {entityType === "campaign" ? "campaigns" : entityType === "adset" ? "ad sets" : "ads"}</span>
         {COLS.map(c => {
           const total = sorted.reduce((s, r) => s + (r[c.key] || 0), 0);

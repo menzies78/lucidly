@@ -338,6 +338,10 @@ model MetaEntity {
   // Ad set targeting: raw JSON from Meta API targeting_spec + derived funnel stage
   targetingSpec    String?   // JSON blob from Meta targeting field (ad sets only)
   funnelStage      String?   // cold | warm | hot - derived from targetingSpec at sync time
+  // Ad creative thumbnails - signed Meta CDN URLs, refresh nightly (URLs rotate)
+  thumbnailUrl       String?   // 64x64 PNG (creative.thumbnail_url) - ads only
+  imageUrl           String?   // full-size asset (creative.image_url) - ads only
+  thumbnailFetchedAt DateTime?
 
   @@unique([shopDomain, entityType, entityId])
   @@index([shopDomain, entityType])
