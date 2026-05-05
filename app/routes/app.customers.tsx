@@ -3546,14 +3546,12 @@ export default function Customers() {
                                     ? anchorAt12V
                                     : (projection?.to?.avgLtv ?? primaryLast?.avgLtv ?? 0);
                                   const heroLtvSub = targetM === 12 ? "realised by month 12" : "projected at month 12";
-                                  const currentLtvForCac = primaryLast?.avgLtv ?? 0;
-                                  const currentLtvCac = cac > 0 ? currentLtvForCac / cac : 0;
                                   const projectedLtvCac = cac > 0 ? heroLtvVal / cac : 0;
-                                  const ratioColor = currentLtvCac >= 3 ? "#059669" : currentLtvCac >= 2 ? "#1F2937" : currentLtvCac >= 1 ? "#D97706" : "#DC2626";
-                                  const ratioBlurb = currentLtvCac >= 3 ? `Healthy - every ${cs}1 returns ${cs}${currentLtvCac.toFixed(2)}`
-                                    : currentLtvCac >= 2 ? `On track - ${cs}1 returns ${cs}${currentLtvCac.toFixed(2)}`
-                                    : currentLtvCac >= 1 ? "Thin margin - lift repeat rate or lower CAC"
-                                    : currentLtvCac > 0 ? "Unprofitable - CAC outpaces LTV"
+                                  const ratioColor = projectedLtvCac >= 3 ? "#059669" : projectedLtvCac >= 2 ? "#1F2937" : projectedLtvCac >= 1 ? "#D97706" : "#DC2626";
+                                  const ratioBlurb = projectedLtvCac >= 3 ? `Healthy - every ${cs}1 returns ${cs}${projectedLtvCac.toFixed(2)} by month 12`
+                                    : projectedLtvCac >= 2 ? `On track - ${cs}1 returns ${cs}${projectedLtvCac.toFixed(2)} by month 12`
+                                    : projectedLtvCac >= 1 ? "Thin margin - lift repeat rate or lower CAC"
+                                    : projectedLtvCac > 0 ? "Unprofitable - CAC outpaces 12m LTV"
                                     : "Not enough data yet";
                                   return (
                                     <div style={{ display: "grid", gridTemplateColumns: isMeta ? "1.2fr 1fr 1fr" : "1fr", gap: 14, marginBottom: 16 }}>
@@ -3573,17 +3571,12 @@ export default function Customers() {
                                         <div style={{ padding: "20px 24px", background: "#fff", borderRadius: 12, border: "1px solid #E5E7EB" }}>
                                           <div style={{ fontSize: 11, fontWeight: 700, color: "#6366F1", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6 }}>LTV : CAC</div>
                                           <div style={{ fontSize: 38, fontWeight: 800, color: ratioColor, lineHeight: 1.05 }}>
-                                            {currentLtvCac > 0 ? `${currentLtvCac.toFixed(2)}×` : "-"}
+                                            {projectedLtvCac > 0 ? `${projectedLtvCac.toFixed(2)}×` : "-"}
                                           </div>
                                           <div style={{ fontSize: 12, color: "#4B5563", marginTop: 6 }}>{ratioBlurb}</div>
-                                          {targetM !== 12 && projectedLtvCac > 0 && (
-                                            <div style={{ fontSize: 11, color: "#7C3AED", marginTop: 4, fontWeight: 700 }}>
-                                              Projected 12m: {projectedLtvCac.toFixed(2)}×
-                                            </div>
-                                          )}
                                           {cac > 0 && (
                                             <div style={{ fontSize: 11, color: "#9CA3AF", marginTop: 2 }}>
-                                              {cs}{Math.round(currentLtvForCac).toLocaleString()} LTV vs {cs}{Math.round(cac).toLocaleString()} CAC
+                                              {cs}{Math.round(heroLtvVal).toLocaleString()} 12m LTV vs {cs}{Math.round(cac).toLocaleString()} CAC
                                             </div>
                                           )}
                                         </div>
