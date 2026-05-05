@@ -3285,7 +3285,15 @@ export default function Customers() {
                               const elapsed = (NOW_C - acqEnd) / MS_PER_MONTH;
                               return Math.max(-1, Math.floor(elapsed) - 1);
                             };
-                            const allCohortRows = ltvMonthly?.all?.rows || [];
+                            // Pick the per-gender slice when a gender filter
+                            // is active. byGender is keyed female/male/unknown
+                            // and falls back to the parent rows[] if missing
+                            // (older blobs pre-byGender, or empty bucket).
+                            const allByGender = (ltvMonthly?.all as any)?.byGender;
+                            const genderSlice = ltvFilterGender !== "All" && allByGender?.[ltvFilterGender]?.rows
+                              ? allByGender[ltvFilterGender].rows
+                              : null;
+                            const allCohortRows = genderSlice || ltvMonthly?.all?.rows || [];
                             const allMatured = allCohortRows.filter((r: any) => strictMaxMonth(r.month) >= targetM);
                             const allTotalN = allMatured.reduce((s: number, r: any) => s + r.count, 0);
                             fallbackSeries = [{ month: 0, avgLtv: 0, n: allTotalN }];
@@ -3554,11 +3562,19 @@ export default function Customers() {
                                     shows projected (LTV) / current+projected
                                     (LTV:CAC) / margin-aware days (Payback). */}
                                 {(() => {
-                                  const anchorAt12V = anchorSeries.find((p) => p.month === MAX_MONTHS)?.avgLtv ?? 0;
-                                  const heroLtvVal = targetM === 12
-                                    ? anchorAt12V
-                                    : (projection?.to?.avgLtv ?? primaryLast?.avgLtv ?? 0);
-                                  const heroLtvSub = targetM === 12 ? "realised by month 12" : "projected at month 12";
+                                  // On All Customers, all hero values come from
+                                  // fallbackSeries (the cohort-rollup path) - the
+                                  // Meta-only anchor/overlay/projection don't apply.
+                                  const fallbackAt = (m: number) => fallbackSeries.find((p) => p.month === m)?.avgLtv ?? 0;
+                                  const heroLtvVal = isMeta
+                                    ? (targetM === 12
+                                        ? (anchorSeries.find((p) => p.month === MAX_MONTHS)?.avgLtv ?? 0)
+                                        : (projection?.to?.avgLtv ?? primaryLast?.avgLtv ?? 0))
+                                    : (fallbackAt(targetM) || primaryLast?.avgLtv || 0);
+                                  const heroLtvSub = isMeta
+                                    ? (targetM === 12 ? "realised by month 12" : "projected at month 12")
+                                    : `realised by month ${targetM}`;
+                                  const allCohortN = !isMeta ? (primaryLast?.n ?? 0) : 0;
                                   const projectedLtvCac = cac > 0 ? heroLtvVal / cac : 0;
                                   const ratioColor = projectedLtvCac >= 3 ? "#059669" : projectedLtvCac >= 2 ? "#1F2937" : projectedLtvCac >= 1 ? "#D97706" : "#DC2626";
                                   const ratioBlurb = projectedLtvCac >= 3 ? `Healthy - every ${cs}1 returns ${cs}${projectedLtvCac.toFixed(2)} by month 12`
@@ -3575,9 +3591,11 @@ export default function Customers() {
                                         </div>
                                         <div style={{ fontSize: 12, color: "#4B5563", marginTop: 6 }}>{heroLtvSub}</div>
                                         <div style={{ fontSize: 11, color: "#9CA3AF", marginTop: 2 }}>
-                                          {targetM === 12
-                                            ? `${anchorN.toLocaleString()} long-term customer${anchorN === 1 ? "" : "s"}`
-                                            : `${overlayN.toLocaleString()} recent (last ${targetM}m) + ${anchorN.toLocaleString()}-cohort projection`}
+                                          {isMeta
+                                            ? (targetM === 12
+                                                ? `${anchorN.toLocaleString()} long-term customer${anchorN === 1 ? "" : "s"}`
+                                                : `${overlayN.toLocaleString()} recent (last ${targetM}m) + ${anchorN.toLocaleString()}-cohort projection`)
+                                            : `${allCohortN.toLocaleString()} mature cohort (>=${targetM}mo since acquisition)`}
                                         </div>
                                       </div>
                                       <div style={{ padding: "20px 24px", background: "#fff", borderRadius: 12, border: "1px solid #E5E7EB" }}>
@@ -3623,31 +3641,27 @@ export default function Customers() {
                                       { value: "male" as const, label: "Men" },
                                     ]).map((opt) => {
                                       const active = ltvFilterGender === opt.value;
-                                      // Gender filter only changes the curve on
-                                      // the Meta tab (per-customer gender lives
-                                      // on metaNew rollups). On the All tab the
-                                      // data source has no gender split, so
-                                      // Women/Men become disabled visual cues.
-                                      const disabled = !isMeta && opt.value !== "All";
+                                      // Gender filter is fully active on both
+                                      // tabs. On Meta it filters ltvCustomers;
+                                      // on All it picks ltvMonthly.all.byGender
+                                      // (populated by name-inferredGender for
+                                      // every customer in customerRollups).
                                       return (
                                         <button
                                           key={opt.value}
-                                          onClick={() => { if (!disabled) setLtvFilterGender(opt.value); }}
-                                          disabled={disabled}
-                                          title={disabled ? "Gender filter applies to the Meta cohort only" : undefined}
+                                          onClick={() => setLtvFilterGender(opt.value)}
                                           style={{
                                             padding: "8px 16px",
                                             fontSize: 13,
                                             fontWeight: 700,
                                             background: active ? "#fff" : "transparent",
-                                            color: disabled ? "#D1D5DB" : (active ? "#7C3AED" : "#6B7280"),
+                                            color: active ? "#7C3AED" : "#6B7280",
                                             border: active ? "1px solid #DDD6FE" : "1px solid transparent",
                                             borderRadius: 8,
-                                            cursor: disabled ? "not-allowed" : "pointer",
+                                            cursor: "pointer",
                                             boxShadow: active ? "0 1px 2px rgba(124, 58, 237, 0.10)" : "none",
                                             minWidth: 56,
                                             transition: "all 120ms ease",
-                                            opacity: disabled ? 0.5 : 1,
                                           }}
                                         >{opt.label}</button>
                                       );
@@ -3921,8 +3935,17 @@ export default function Customers() {
                                     ltvFiltered when a gender is selected). */}
                                 {(() => {
                                   const realisedAvgLtv = useFiltered ? ltvFiltered.avgLtv : (tile?.avgLtv || 0);
-                                  const tenureDaysVal = isMeta ? (useFiltered ? ltvFiltered.avgTenureDays : ((tile as any)?.avgTenureDays ?? null)) : null;
-                                  const tenureCountVal = isMeta ? (useFiltered ? ltvFiltered.tenuresCount : ((tile as any)?.tenuresCount ?? 0)) : 0;
+                                  // Tenure = days from first to last order, only for
+                                  // customers acquired >=12mo ago with >=2 orders.
+                                  // The "lifetime" we can defensibly call lifetime
+                                  // without forecasting. Available for both Meta
+                                  // and All tabs (filterable on Meta).
+                                  const tenureDaysVal = isMeta
+                                    ? (useFiltered ? ltvFiltered.avgTenureDays : ((tile as any)?.avgTenureDays ?? null))
+                                    : ((tile as any)?.avgTenureDays ?? null);
+                                  const tenureCountVal = isMeta
+                                    ? (useFiltered ? ltvFiltered.tenuresCount : ((tile as any)?.tenuresCount ?? 0))
+                                    : ((tile as any)?.tenuresCount ?? 0);
                                   const tenureLabelVal = tenureDaysVal != null
                                     ? (tenureDaysVal >= 365
                                         ? `${(tenureDaysVal / 365).toFixed(1)}yr`
@@ -3939,7 +3962,7 @@ export default function Customers() {
                                       border: "#A7F3D0",
                                       labelColor: "#047857",
                                     },
-                                    isMeta && {
+                                    {
                                       label: "Avg Customer Lifetime",
                                       value: tenureLabelVal,
                                       sub: tenureCountVal > 0 ? `${tenureCountVal.toLocaleString()} mature repeat (>=12mo)` : "needs >=12mo repeat data",
