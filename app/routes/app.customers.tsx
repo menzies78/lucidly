@@ -1914,8 +1914,6 @@ export default function Customers() {
   const [geoMetric, setGeoMetric] = useState<"rev" | "cpa" | "roas" | "aov">("rev");
   const [journeyScope, setJourneyScope] = useState<"meta" | "all">("meta");
   const [ltvTab, setLtvTab] = useState<"meta" | "all">("meta");
-  const [ltvView, setLtvView] = useState<"progression" | "cohorts">("progression");
-  const [cohortMetric, setCohortMetric] = useState<"ltv" | "retention">("ltv");
 
   // ── LTV exploration state ─────────────────────────────────────────
   // Filters target the metaNew cohort (ltvCustomers) to answer
@@ -3115,23 +3113,7 @@ export default function Customers() {
                       const maxMonthCol = Math.min(monthlyDataObj?.maxMonth || 0, 12);
                       return (
                         <div style={{ borderTop: "1px solid #E5E7EB", paddingTop: 20 }}>
-                          <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 20, gap: 16 }}>
-                            <BlockStack gap="200">
-                              <Text as="h2" variant="headingLg">{ltvView === "progression" ? "LTV Progression" : "Monthly Cohort Table"}</Text>
-                              <Text as="p" variant="bodySm" tone="subdued">
-                                {ltvView === "progression"
-                                  ? "Cumulative spend per customer over time. The grey line is your long-term average across all fully-observed Meta-acquired customers."
-                                  : cohortMetric === "ltv"
-                                    ? "Each row is an acquisition month. Values show cumulative revenue per customer through each 30-day period."
-                                    : "Each row is an acquisition month. Values show % of customers who placed at least one order in each 30-day period."}
-                              </Text>
-                            </BlockStack>
-                            <div className="toggle-group">
-                              <button className={`toggle-btn ${ltvView === "progression" ? "active" : ""}`} onClick={() => setLtvView("progression")}>Progression</button>
-                              <button className={`toggle-btn ${ltvView === "cohorts" ? "active" : ""}`} onClick={() => setLtvView("cohorts")}>Cohort Table</button>
-                            </div>
-                          </div>
-                          {ltvView === "progression" && (() => {
+                          {(() => {
                             // Anchor + recent-overlay LTV progression.
                             //
                             // ANCHOR: long-term average across every Meta-New
@@ -3981,70 +3963,6 @@ export default function Customers() {
                                     </div>
                                   );
                                 })()}
-                              </div>
-                            );
-                          })()}
-                          {ltvView === "cohorts" && monthlyRows.length > 0 && (() => {
-                            const colAvgs: Record<number, number> = {};
-                            for (let m = 0; m <= maxMonthCol; m++) {
-                              const vals = monthlyRows.map((row: any) => { const md = row.months[m]; if (!md?.matured) return null; return cohortMetric === "ltv" ? md.avgLtv : md.retention; }).filter((v: any) => v !== null && v !== undefined) as number[];
-                              colAvgs[m] = vals.length > 0 ? vals.reduce((s: number, v: number) => s + v, 0) / vals.length : 0;
-                            }
-                            const getRetentionColor = (val: number) => {
-                              if (val >= 80) return { bg: "#DCFCE7", text: "#166534" };
-                              if (val >= 50) return { bg: "#ECFDF5", text: "#059669" };
-                              if (val >= 20) return { bg: "#FEF9C3", text: "#854D0E" };
-                              if (val > 0) return { bg: "#FEF2F2", text: "#DC2626" };
-                              return { bg: "transparent", text: "#D1D5DB" };
-                            };
-                            return (
-                              <div>
-                                <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "10px" }}>
-                                  <span style={{ fontSize: "12px", fontWeight: 500, color: "#6B7280" }}>Metric:</span>
-                                  <div className="toggle-group">
-                                    <button className={`toggle-btn ${cohortMetric === "ltv" ? "active" : ""}`} onClick={() => setCohortMetric("ltv")}>LTV</button>
-                                    <button className={`toggle-btn ${cohortMetric === "retention" ? "active" : ""}`} onClick={() => setCohortMetric("retention")}>Retention Rate</button>
-                                  </div>
-                                </div>
-                                <div style={{ overflowX: "auto" }}>
-                                  <table style={{ borderCollapse: "collapse", fontSize: "12px", whiteSpace: "nowrap" }}>
-                                    <thead>
-                                      <tr style={{ borderBottom: "2px solid #E5E7EB" }}>
-                                        <th style={{ padding: "6px 10px", textAlign: "left", fontWeight: 600, color: "#4B5563", fontSize: "11px", textTransform: "uppercase", letterSpacing: "0.5px", position: "sticky", left: 0, background: "#fff", zIndex: 1 }}>Cohort</th>
-                                        <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 600, color: "#4B5563", fontSize: "11px", textTransform: "uppercase", letterSpacing: "0.5px" }}>N</th>
-                                        {Array.from({ length: maxMonthCol + 1 }, (_, i) => (
-                                          <th key={i} style={{ padding: "6px 8px", textAlign: "right", fontWeight: 600, color: "#4B5563", fontSize: "11px", textTransform: "uppercase", letterSpacing: "0.5px", minWidth: "58px" }}>M{i}</th>
-                                        ))}
-                                      </tr>
-                                    </thead>
-                                    <tbody>
-                                      {monthlyRows.map((row: any, ri: number) => {
-                                        const monthLabel = (() => { const [y, m] = row.month.split("-"); return new Date(parseInt(y), parseInt(m) - 1).toLocaleDateString("en-GB", { month: "short", year: "2-digit" }); })();
-                                        return (
-                                          <tr key={row.month} style={{ borderBottom: "1px solid #F3F4F6", background: ri % 2 === 0 ? "#fff" : "#FAFAFA" }}>
-                                            <td style={{ padding: "6px 10px", fontWeight: 600, color: "#1F2937", position: "sticky", left: 0, background: ri % 2 === 0 ? "#fff" : "#FAFAFA", zIndex: 1 }}>{monthLabel}</td>
-                                            <td style={{ padding: "6px 8px", textAlign: "right", color: "#6B7280", fontWeight: 500 }}>{row.count}</td>
-                                            {Array.from({ length: maxMonthCol + 1 }, (_, mi) => {
-                                              const md = row.months[mi];
-                                              if (!md?.matured) return <td key={mi} style={{ padding: "6px 8px", textAlign: "right", color: "#D1D5DB" }}>-</td>;
-                                              const val = cohortMetric === "ltv" ? md.avgLtv : md.retention;
-                                              if (val === null || val === undefined) return <td key={mi} style={{ padding: "6px 8px", textAlign: "right", color: "#D1D5DB" }}>-</td>;
-                                              let cellBg = "transparent", cellText = "#1F2937";
-                                              if (cohortMetric === "retention") { const colors = getRetentionColor(val); cellBg = colors.bg; cellText = colors.text; }
-                                              else { const avg = colAvgs[mi]; if (avg > 0) { const delta = ((val - avg) / avg) * 100; if (delta >= 10) { cellBg = "#ECFDF5"; cellText = "#059669"; } else if (delta <= -10) { cellBg = "#FEF2F2"; cellText = "#DC2626"; } } }
-                                              return <td key={mi} style={{ padding: "6px 8px", textAlign: "right", background: cellBg, fontWeight: 600, color: cellText }}>{cohortMetric === "ltv" ? `${cs}${Math.round(val).toLocaleString()}` : `${val}%`}</td>;
-                                            })}
-                                          </tr>
-                                        );
-                                      })}
-                                    </tbody>
-                                  </table>
-                                </div>
-                                <div style={{ marginTop: "6px" }}>
-                                  <Text as="p" variant="bodySm" tone="subdued">
-                                    {cohortMetric === "ltv" ? "M0 = first 30 days. Values show cumulative spend per customer. Green/red = 10%+ above/below column average." : "M0 = first 30 days. Values show % of cohort who placed an order in that 30-day period. Blank = not yet matured."}
-                                  </Text>
-                                </div>
                               </div>
                             );
                           })()}
