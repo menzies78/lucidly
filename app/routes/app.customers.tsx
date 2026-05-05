@@ -647,23 +647,28 @@ export const loader = async ({ request }) => {
       newAgeAgg[a.metaAge].value += a.metaConversionValue || 0;
     }
   }
-  // Approximate new-customer spend per age/gender via the all-Meta aggregate
-  // breakdown's average CPA × new conversions. We don't have per-attribution
-  // spend (spend lives on MetaBreakdown, not Attribution), so this is the
-  // best signal available until spend is plumbed through the matcher.
+  // New-customer spend per age = the FULL Meta spend allocated to that age
+  // bucket. Dividing by new-only conversions in the chip (spend / conv)
+  // correctly yields a higher CPA than the All Meta scope, because the
+  // same bucket spend is amortised across fewer (new) acquisitions. Using
+  // the all-Meta CPA × new-conv formulation here would make New CPA == All
+  // CPA, which is the bug Andy spotted on 2026-05-05.
   const newAgeBreakdown = AGE_ORDER
     .map(age => {
       const s = newAgeAgg[age];
       const conversions = s?.conversions || 0;
       const allMetaAge = ageBreakdown.find(a => a.label === age);
-      const avgCpa = allMetaAge && allMetaAge.conversions > 0 ? allMetaAge.spend / allMetaAge.conversions : 0;
-      return { label: age, conversions, spend: avgCpa * conversions, revenue: s?.value || 0 };
+      const spend = allMetaAge?.spend || 0;
+      return { label: age, conversions, spend, revenue: s?.value || 0 };
     })
     .filter(a => a.conversions > 0);
   // newGenderBreakdown - uses the per-attribution + COALESCE query so the
   // gender bars populate even when Meta's breakdown enrichment hadn't run
-  // for these orders. Spend per gender uses Meta's per-gender CPA when
-  // available (genderBreakdown), falling back to proportional period spend.
+  // for these orders. Spend per gender = the FULL Meta spend allocated to
+  // that gender bucket (from genderBreakdown, which already encapsulates
+  // Meta's per-gender split with a proportional fallback). Dividing by
+  // new-only conversions in the chip gives a higher CPA than All Meta -
+  // same bucket spend, fewer new acquisitions in the denominator.
   const newMetaCombinedConversionsTotal = (newMetaCombinedGenderRaw as Array<{ conversions: bigint | number }>)
     .reduce((s, r) => s + Number(r.conversions || 0), 0);
   const newGenderBreakdown = (newMetaCombinedGenderRaw as Array<{ gender: string | null; conversions: bigint | number; revenue: number | null }>)
@@ -672,9 +677,12 @@ export const loader = async ({ request }) => {
       const conversions = Number(r.conversions) || 0;
       const allMetaG = genderBreakdown.find(g => g.label === label);
       let spend = 0;
-      if (allMetaG && allMetaG.conversions > 0) {
-        spend = (allMetaG.spend / allMetaG.conversions) * conversions;
+      if (allMetaG && allMetaG.spend > 0) {
+        spend = allMetaG.spend;
       } else if (newMetaCombinedConversionsTotal > 0 && totalMetaSpend > 0) {
+        // No per-gender split available. Fall back to proportional spend
+        // by new-conv share; CPA will be uniform across genders at
+        // totalMetaSpend / totalNew.
         spend = totalMetaSpend * (conversions / newMetaCombinedConversionsTotal);
       }
       return { label, conversions, spend, revenue: Number(r.revenue) || 0 };
