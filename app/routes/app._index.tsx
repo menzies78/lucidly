@@ -377,6 +377,20 @@ export const action = async ({ request }) => {
       const { rebuildCustomerSegments, rebuildCustomerRollups } = await import("../services/customerRollups.server.js");
       await rebuildCustomerSegments(shopDomain);
       await rebuildCustomerRollups(shopDomain);
+
+      // Campaign rollups (DailyAdRollup) - the expensive one (~340s for
+      // Vollebak, 622k insight rows). Must be rebuilt here because the
+      // hourly cycle skips it when no new conversions arrive (commit
+      // 92137cd) and the nightly 3am sweep is the only other rebuild path.
+      // Without this, Campaigns + Customers Meta tiles go stale.
+      setProgress(taskId, { status: "running", message: "Rebuilding campaign rollups (this is the slow one - ~5min)..." });
+      const { rebuildCampaignRollups } = await import("../services/campaignRollups.server.js");
+      await rebuildCampaignRollups(shopDomain);
+
+      setProgress(taskId, { status: "running", message: "Rebuilding product rollups..." });
+      const { rebuildProductRollups } = await import("../services/productRollups.server.js");
+      await rebuildProductRollups(shopDomain);
+
       const { invalidateShop } = await import("../services/queryCache.server.js");
       invalidateShop(shopDomain);
       completeProgress(taskId, { ok: true });
