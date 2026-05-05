@@ -3156,7 +3156,7 @@ export default function Customers() {
                             // calculation. Payback fires when cumulative
                             // gross profit per customer (LTV × margin)
                             // crosses CAC, projected onto the day axis.
-                            const marginFrac = Math.max(0, Math.min(0.9, marginPct / 100));
+                            const marginFrac = Math.max(0, Math.min(1, marginPct / 100));
 
                             // ── Build anchor + overlay from per-customer ──
                             // ltvByMonth (Meta tab only). For "all" tab we
@@ -3225,76 +3225,81 @@ export default function Customers() {
                             // recent-cohort CAC in 6/3/1.
                             let chartCAC = 0;
 
-                            if (isMeta) {
-                              // Filter by gender BEFORE building anchor /
-                              // overlay so the entire chart cohort respects
-                              // the gender selector. ltvCustomers is the
-                              // metaNew-only per-customer slice.
-                              const sourceCustsRaw = ltvCustomers as Array<{ ltvByMonth?: number[]; acqDaysAgo?: number; acqMonth: string; gender?: string | null }>;
-                              const sourceCusts = ltvFilterGender !== "All"
-                                ? sourceCustsRaw.filter((c) => c.gender === ltvFilterGender)
-                                : sourceCustsRaw;
-                              const NOW_DAYS = Date.now();
-                              // Resolve days-since-acquisition. Prefer the
-                              // exact acqDaysAgo from the rollup; fall back
-                              // to deriving from acqMonth (start of that
-                              // month) so the chart still functions on
-                              // pre-existing blobs not yet refreshed.
-                              const daysSince = (c: { acqDaysAgo?: number; acqMonth: string }): number => {
-                                if (c.acqDaysAgo != null) return c.acqDaysAgo;
-                                if (!c.acqMonth) return -1;
-                                const [y, mo] = c.acqMonth.split("-").map(Number);
-                                const acqStart = new Date(y, mo - 1, 1).getTime();
-                                return Math.floor((NOW_DAYS - acqStart) / DAY_MS_C);
-                              };
-                              const anchorCusts = sourceCusts.filter((c) => daysSince(c) >= 365);
-                              anchorN = anchorCusts.length;
-                              anchorSeries = buildSeriesFromCusts(anchorCusts, MAX_MONTHS);
+                            // Meta path: per-customer metaNew records with
+                            // gender filter. Always built so the Y-axis
+                            // ceiling stays stable when toggling Meta ↔
+                            // All Customers (the larger of the two anchor
+                            // values wins regardless of which tab is shown).
+                            const sourceCustsRaw = ltvCustomers as Array<{ ltvByMonth?: number[]; acqDaysAgo?: number; acqMonth: string; gender?: string | null }>;
+                            const sourceCusts = ltvFilterGender !== "All"
+                              ? sourceCustsRaw.filter((c) => c.gender === ltvFilterGender)
+                              : sourceCustsRaw;
+                            const NOW_DAYS = Date.now();
+                            // Resolve days-since-acquisition. Prefer the
+                            // exact acqDaysAgo from the rollup; fall back
+                            // to deriving from acqMonth (start of that
+                            // month) so the chart still functions on
+                            // pre-existing blobs not yet refreshed.
+                            const daysSince = (c: { acqDaysAgo?: number; acqMonth: string }): number => {
+                              if (c.acqDaysAgo != null) return c.acqDaysAgo;
+                              if (!c.acqMonth) return -1;
+                              const [y, mo] = c.acqMonth.split("-").map(Number);
+                              const acqStart = new Date(y, mo - 1, 1).getTime();
+                              return Math.floor((NOW_DAYS - acqStart) / DAY_MS_C);
+                            };
+                            const anchorCusts = sourceCusts.filter((c) => daysSince(c) >= 365);
+                            anchorN = anchorCusts.length;
+                            anchorSeries = buildSeriesFromCusts(anchorCusts, MAX_MONTHS);
 
-                              let overlayCusts: typeof sourceCusts = [];
-                              if (targetM !== 12) {
-                                // Fixed cohort: customers that have FULLY
-                                // observed all targetM months (so every point
-                                // 0..targetM is the same set of customers -
-                                // no composition shift, no dip at the end).
-                                // Bounded above by the long-term group (365d)
-                                // so "recent" stays meaningful.
-                                overlayCusts = sourceCusts.filter((c) => {
-                                  const d = daysSince(c);
-                                  return d >= targetM * 30 && d < 365;
-                                });
-                                overlayN = overlayCusts.length;
-                                overlaySeries = buildSeriesFromCusts(overlayCusts, targetM);
-                              }
-                              chartCAC = cohortCAC(targetM === 12 ? anchorCusts : overlayCusts);
-                            } else {
-                              // "all" tab fallback - reuse existing rollup
-                              // logic (fixed cohort, fully-matured filter).
-                              const NOW_C = Date.now();
-                              const MS_PER_MONTH = 30 * DAY_MS_C;
-                              const strictMaxMonth = (acqMonth: string): number => {
-                                if (!acqMonth) return -1;
-                                const [y, mo] = acqMonth.split("-").map(Number);
-                                const acqEnd = new Date(y, mo, 1).getTime();
-                                const elapsed = (NOW_C - acqEnd) / MS_PER_MONTH;
-                                return Math.max(-1, Math.floor(elapsed) - 1);
-                              };
-                              const cohortRows = monthlyDataObj?.rows || [];
-                              const matured = cohortRows.filter((r: any) => strictMaxMonth(r.month) >= targetM);
-                              const totalN = matured.reduce((s: number, r: any) => s + r.count, 0);
-                              fallbackSeries = [{ month: 0, avgLtv: 0, n: totalN }];
-                              if (totalN > 0) {
-                                for (let m = 1; m <= targetM; m++) {
-                                  let totalRev = 0, totalCust = 0;
-                                  for (const row of matured) {
-                                    const md = row.months[m];
-                                    if (md?.avgLtv != null) {
-                                      totalRev += md.avgLtv * row.count;
-                                      totalCust += row.count;
-                                    }
+                            let overlayCusts: typeof sourceCusts = [];
+                            if (targetM !== 12) {
+                              // Fixed cohort: customers that have FULLY
+                              // observed all targetM months (so every point
+                              // 0..targetM is the same set of customers -
+                              // no composition shift, no dip at the end).
+                              // Bounded above by the long-term group (365d)
+                              // so "recent" stays meaningful.
+                              overlayCusts = sourceCusts.filter((c) => {
+                                const d = daysSince(c);
+                                return d >= targetM * 30 && d < 365;
+                              });
+                              overlayN = overlayCusts.length;
+                              overlaySeries = buildSeriesFromCusts(overlayCusts, targetM);
+                            }
+                            chartCAC = isMeta
+                              ? cohortCAC(targetM === 12 ? anchorCusts : overlayCusts)
+                              : 0;
+
+                            // All-customers path: aggregate cohort rollup.
+                            // Always built so the Meta tab's Y-axis includes
+                            // the All-Customers ceiling. Uses ltvMonthly.all
+                            // unconditionally (NOT monthlyDataObj which
+                            // tracks the active tab) so that toggling tabs
+                            // doesn't shift the Y-axis.
+                            const NOW_C = Date.now();
+                            const MS_PER_MONTH = 30 * DAY_MS_C;
+                            const strictMaxMonth = (acqMonth: string): number => {
+                              if (!acqMonth) return -1;
+                              const [y, mo] = acqMonth.split("-").map(Number);
+                              const acqEnd = new Date(y, mo, 1).getTime();
+                              const elapsed = (NOW_C - acqEnd) / MS_PER_MONTH;
+                              return Math.max(-1, Math.floor(elapsed) - 1);
+                            };
+                            const allCohortRows = ltvMonthly?.all?.rows || [];
+                            const allMatured = allCohortRows.filter((r: any) => strictMaxMonth(r.month) >= targetM);
+                            const allTotalN = allMatured.reduce((s: number, r: any) => s + r.count, 0);
+                            fallbackSeries = [{ month: 0, avgLtv: 0, n: allTotalN }];
+                            if (allTotalN > 0) {
+                              for (let m = 1; m <= targetM; m++) {
+                                let totalRev = 0, totalCust = 0;
+                                for (const row of allMatured) {
+                                  const md = row.months[m];
+                                  if (md?.avgLtv != null) {
+                                    totalRev += md.avgLtv * row.count;
+                                    totalCust += row.count;
                                   }
-                                  if (totalCust > 0) fallbackSeries.push({ month: m, avgLtv: totalRev / totalCust, n: totalCust });
                                 }
+                                if (totalCust > 0) fallbackSeries.push({ month: m, avgLtv: totalRev / totalCust, n: totalCust });
                               }
                             }
 
@@ -3562,7 +3567,7 @@ export default function Customers() {
                                     : projectedLtvCac > 0 ? "Unprofitable - CAC outpaces 12m LTV"
                                     : "Not enough data yet";
                                   return (
-                                    <div style={{ display: "grid", gridTemplateColumns: isMeta ? "1.2fr 1fr 1fr" : "1fr", gap: 14, marginBottom: 16 }}>
+                                    <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1fr 1fr", gap: 14, marginBottom: 16 }}>
                                       <div style={{ padding: "20px 24px", background: "linear-gradient(135deg, #EEF2FF 0%, #F5F3FF 100%)", borderRadius: 12, border: "1px solid #E0E7FF" }}>
                                         <div style={{ fontSize: 11, fontWeight: 700, color: "#6366F1", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6 }}>Lifetime Value</div>
                                         <div style={{ fontSize: 38, fontWeight: 800, color: "#1F2937", lineHeight: 1.05 }}>
@@ -3575,35 +3580,35 @@ export default function Customers() {
                                             : `${overlayN.toLocaleString()} recent (last ${targetM}m) + ${anchorN.toLocaleString()}-cohort projection`}
                                         </div>
                                       </div>
-                                      {isMeta && (
-                                        <div style={{ padding: "20px 24px", background: "#fff", borderRadius: 12, border: "1px solid #E5E7EB" }}>
-                                          <div style={{ fontSize: 11, fontWeight: 700, color: "#6366F1", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6 }}>LTV : CAC</div>
-                                          <div style={{ fontSize: 38, fontWeight: 800, color: ratioColor, lineHeight: 1.05 }}>
-                                            {projectedLtvCac > 0 ? `${projectedLtvCac.toFixed(2)}×` : "-"}
-                                          </div>
-                                          <div style={{ fontSize: 12, color: "#4B5563", marginTop: 6 }}>{ratioBlurb}</div>
-                                          {cac > 0 && (
-                                            <div style={{ fontSize: 11, color: "#9CA3AF", marginTop: 2 }}>
-                                              {cs}{Math.round(heroLtvVal).toLocaleString()} 12m LTV vs {cs}{Math.round(cac).toLocaleString()} CAC
-                                            </div>
-                                          )}
+                                      <div style={{ padding: "20px 24px", background: "#fff", borderRadius: 12, border: "1px solid #E5E7EB" }}>
+                                        <div style={{ fontSize: 11, fontWeight: 700, color: "#6366F1", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6 }}>LTV : CAC</div>
+                                        <div style={{ fontSize: 38, fontWeight: 800, color: isMeta ? ratioColor : "#9CA3AF", lineHeight: 1.05 }}>
+                                          {isMeta && projectedLtvCac > 0 ? `${projectedLtvCac.toFixed(2)}×` : "-"}
                                         </div>
-                                      )}
-                                      {isMeta && (
-                                        <div style={{ padding: "20px 24px", background: "#fff", borderRadius: 12, border: "1px solid #E5E7EB" }}>
-                                          <div style={{ fontSize: 11, fontWeight: 700, color: "#6366F1", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6 }}>Payback</div>
-                                          <div style={{ fontSize: 38, fontWeight: 800, color: "#1F2937", lineHeight: 1.05 }}>
-                                            {paybackDays != null ? `${paybackDays}d` : "-"}
-                                          </div>
-                                          <div style={{ fontSize: 12, color: "#4B5563", marginTop: 6 }}>
-                                            {paybackDays != null
-                                              ? (paybackOnProjection
-                                                  ? `Projected to clear ${cs}${Math.round(cac).toLocaleString()} CAC at ${Math.round(marginFrac * 100)}% margin`
-                                                  : `${Math.round(marginFrac * 100)}% margin recoups ${cs}${Math.round(cac).toLocaleString()} CAC`)
-                                              : (cac > 0 ? "Lift margin or lower CAC to recoup" : "Needs CAC")}
-                                          </div>
+                                        <div style={{ fontSize: 12, color: "#4B5563", marginTop: 6 }}>
+                                          {isMeta ? ratioBlurb : "Meta-only metric"}
                                         </div>
-                                      )}
+                                        {isMeta && cac > 0 && (
+                                          <div style={{ fontSize: 11, color: "#9CA3AF", marginTop: 2 }}>
+                                            {cs}{Math.round(heroLtvVal).toLocaleString()} 12m LTV vs {cs}{Math.round(cac).toLocaleString()} CAC
+                                          </div>
+                                        )}
+                                      </div>
+                                      <div style={{ padding: "20px 24px", background: "#fff", borderRadius: 12, border: "1px solid #E5E7EB" }}>
+                                        <div style={{ fontSize: 11, fontWeight: 700, color: "#6366F1", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6 }}>Payback</div>
+                                        <div style={{ fontSize: 38, fontWeight: 800, color: "#1F2937", lineHeight: 1.05 }}>
+                                          {isMeta && paybackDays != null ? `${paybackDays}d` : "-"}
+                                        </div>
+                                        <div style={{ fontSize: 12, color: "#4B5563", marginTop: 6 }}>
+                                          {!isMeta
+                                            ? "Meta-only metric"
+                                            : (paybackDays != null
+                                                ? (paybackOnProjection
+                                                    ? `Projected to clear ${cs}${Math.round(cac).toLocaleString()} CAC at ${Math.round(marginFrac * 100)}% margin`
+                                                    : `${Math.round(marginFrac * 100)}% margin recoups ${cs}${Math.round(cac).toLocaleString()} CAC`)
+                                                : (cac > 0 ? "Lift margin or lower CAC to recoup" : "Needs CAC"))}
+                                        </div>
+                                      </div>
                                     </div>
                                   );
                                 })()}
@@ -3611,43 +3616,48 @@ export default function Customers() {
                                     All three reshape the chart cohort. */}
                                 <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "center", gap: "10px 18px", marginBottom: 8 }}>
                                   {windowSelector}
-                                  {isMeta && (
-                                    <div style={{ display: "inline-flex", border: "1px solid #E5E7EB", borderRadius: 10, padding: 3, background: "#F9FAFB", gap: 2 }}>
-                                      {([
-                                        { value: "All" as const, label: "All" },
-                                        { value: "female" as const, label: "Women" },
-                                        { value: "male" as const, label: "Men" },
-                                      ]).map((opt) => {
-                                        const active = ltvFilterGender === opt.value;
-                                        return (
-                                          <button
-                                            key={opt.value}
-                                            onClick={() => setLtvFilterGender(opt.value)}
-                                            style={{
-                                              padding: "8px 16px",
-                                              fontSize: 13,
-                                              fontWeight: 700,
-                                              background: active ? "#fff" : "transparent",
-                                              color: active ? "#7C3AED" : "#6B7280",
-                                              border: active ? "1px solid #DDD6FE" : "1px solid transparent",
-                                              borderRadius: 8,
-                                              cursor: "pointer",
-                                              boxShadow: active ? "0 1px 2px rgba(124, 58, 237, 0.10)" : "none",
-                                              minWidth: 56,
-                                              transition: "all 120ms ease",
-                                            }}
-                                          >{opt.label}</button>
-                                        );
-                                      })}
-                                    </div>
-                                  )}
-                                  {isMeta && (
-                                    <div style={{ display: "inline-flex", alignItems: "center", gap: 10, padding: "6px 14px", border: "1px solid #E5E7EB", borderRadius: 10, background: "#F9FAFB" }}>
-                                      <span style={{ fontSize: 11, fontWeight: 700, color: "#6B7280", textTransform: "uppercase", letterSpacing: 0.5 }}>Margin</span>
-                                      <input type="range" min={0} max={90} step={5} value={marginPct} onChange={(e) => setMarginPct(parseInt(e.target.value, 10))} style={{ width: 110 }} />
-                                      <span style={{ fontSize: 13, fontWeight: 700, color: "#1F2937", minWidth: 36 }}>{marginPct}%</span>
-                                    </div>
-                                  )}
+                                  <div style={{ display: "inline-flex", border: "1px solid #E5E7EB", borderRadius: 10, padding: 3, background: "#F9FAFB", gap: 2 }}>
+                                    {([
+                                      { value: "All" as const, label: "All" },
+                                      { value: "female" as const, label: "Women" },
+                                      { value: "male" as const, label: "Men" },
+                                    ]).map((opt) => {
+                                      const active = ltvFilterGender === opt.value;
+                                      // Gender filter only changes the curve on
+                                      // the Meta tab (per-customer gender lives
+                                      // on metaNew rollups). On the All tab the
+                                      // data source has no gender split, so
+                                      // Women/Men become disabled visual cues.
+                                      const disabled = !isMeta && opt.value !== "All";
+                                      return (
+                                        <button
+                                          key={opt.value}
+                                          onClick={() => { if (!disabled) setLtvFilterGender(opt.value); }}
+                                          disabled={disabled}
+                                          title={disabled ? "Gender filter applies to the Meta cohort only" : undefined}
+                                          style={{
+                                            padding: "8px 16px",
+                                            fontSize: 13,
+                                            fontWeight: 700,
+                                            background: active ? "#fff" : "transparent",
+                                            color: disabled ? "#D1D5DB" : (active ? "#7C3AED" : "#6B7280"),
+                                            border: active ? "1px solid #DDD6FE" : "1px solid transparent",
+                                            borderRadius: 8,
+                                            cursor: disabled ? "not-allowed" : "pointer",
+                                            boxShadow: active ? "0 1px 2px rgba(124, 58, 237, 0.10)" : "none",
+                                            minWidth: 56,
+                                            transition: "all 120ms ease",
+                                            opacity: disabled ? 0.5 : 1,
+                                          }}
+                                        >{opt.label}</button>
+                                      );
+                                    })}
+                                  </div>
+                                  <div style={{ display: "inline-flex", alignItems: "center", gap: 10, padding: "6px 14px", border: "1px solid #E5E7EB", borderRadius: 10, background: "#F9FAFB" }}>
+                                    <span style={{ fontSize: 11, fontWeight: 700, color: "#6B7280", textTransform: "uppercase", letterSpacing: 0.5 }}>Margin</span>
+                                    <input type="range" min={0} max={100} step={5} value={marginPct} onChange={(e) => setMarginPct(parseInt(e.target.value, 10))} style={{ width: 110 }} />
+                                    <span style={{ fontSize: 13, fontWeight: 700, color: "#1F2937", minWidth: 36 }}>{marginPct}%</span>
+                                  </div>
                                 </div>
                                 <div style={{ fontSize: 12, color: "#6B7280", textAlign: "center", marginBottom: 14 }}>
                                   Overlay recent cohorts on top to compare against historic performance
