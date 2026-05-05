@@ -3232,7 +3232,7 @@ export default function Customers() {
                               <Text as="h2" variant="headingLg">{ltvView === "progression" ? "LTV Progression" : "Monthly Cohort Table"}</Text>
                               <Text as="p" variant="bodySm" tone="subdued">
                                 {ltvView === "progression"
-                                  ? "Cumulative spend per customer over time. Anchor line is your long-term average across all fully-observed Meta-acquired customers. 6/3/1m views overlay recent cohorts on top, with a dotted projection to month 12."
+                                  ? "Cumulative spend per customer over time. The grey line is your long-term average across all fully-observed Meta-acquired customers."
                                   : cohortMetric === "ltv"
                                     ? "Each row is an acquisition month. Values show cumulative revenue per customer through each 30-day period."
                                     : "Each row is an acquisition month. Values show % of customers who placed at least one order in each 30-day period."}
@@ -3327,10 +3327,15 @@ export default function Customers() {
                               anchorSeries = buildSeriesFromCusts(anchorCusts, MAX_MONTHS);
 
                               if (targetM !== 12) {
-                                const overlayDays = targetM * 30;
+                                // Fixed cohort: customers that have FULLY
+                                // observed all targetM months (so every point
+                                // 0..targetM is the same set of customers -
+                                // no composition shift, no dip at the end).
+                                // Bounded above by the long-term group (365d)
+                                // so "recent" stays meaningful.
                                 const overlayCusts = sourceCusts.filter((c) => {
                                   const d = daysSince(c);
-                                  return d >= 0 && d <= overlayDays;
+                                  return d >= targetM * 30 && d < 365;
                                 });
                                 overlayN = overlayCusts.length;
                                 overlaySeries = buildSeriesFromCusts(overlayCusts, targetM);
@@ -3407,16 +3412,34 @@ export default function Customers() {
                             const padL = 64, padR = 24, padT = 20, padB = 42;
                             const innerW = chartWidth - padL - padR;
                             const innerH = chartHeight - padT - padB;
-                            const allPoints: number[] = [
+                            // Y-axis is locked to the long-term curve (+ CAC
+                            // headroom + projection target if higher) and
+                            // rounded to a "nice" multiple so values don't
+                            // jiggle when the user toggles 6/3/1/12. Keeps
+                            // grid lines on round numbers (e.g. 0/250/500…).
+                            const niceCeil = (raw: number, ticks = 4): number => {
+                              if (!isFinite(raw) || raw <= 0) return 1;
+                              const rough = raw / ticks;
+                              const mag = Math.pow(10, Math.floor(Math.log10(rough)));
+                              const norm = rough / mag;
+                              let stepMult: number;
+                              if (norm <= 1) stepMult = 1;
+                              else if (norm <= 2) stepMult = 2;
+                              else if (norm <= 2.5) stepMult = 2.5;
+                              else if (norm <= 5) stepMult = 5;
+                              else stepMult = 10;
+                              const step = stepMult * mag;
+                              return Math.ceil(raw / step) * step;
+                            };
+                            const stablePoints: number[] = [
                               ...anchorSeries.map((p) => p.avgLtv),
-                              ...overlaySeries.map((p) => p.avgLtv),
                               ...fallbackSeries.map((p) => p.avgLtv),
                               projection?.to?.avgLtv ?? 0,
                               isMeta && cac > 0 ? cac * 1.15 : 0,
                               1,
                             ];
-                            const ltvMaxRaw = Math.max(...allPoints);
-                            const ltvMax = ltvMaxRaw * 1.12;
+                            const ltvMaxRaw = Math.max(...stablePoints) * 1.08;
+                            const ltvMax = niceCeil(ltvMaxRaw, 4);
                             const xPos = (m: number) => padL + (m / Math.max(xMaxAxis, 1)) * innerW;
                             const yPos = (v: number) => padT + innerH - (v / ltvMax) * innerH;
 
@@ -3527,7 +3550,7 @@ export default function Customers() {
                                   <div style={{ display: "flex", justifyContent: "center", marginBottom: 16 }}>{windowSelector}</div>
                                   <div style={{ padding: "20px 12px", textAlign: "center", color: "#9CA3AF", fontSize: 13 }}>
                                     {isMeta
-                                      ? "Not enough Meta-acquired customers with 12+ months of history yet to build the long-term anchor."
+                                      ? "Not enough Meta-acquired customers with 12+ months of history yet to build the long-term average."
                                       : `No cohort has fully observed ${targetM} month${targetM === 1 ? "" : "s"} yet. Try a shorter horizon.`}
                                   </div>
                                 </div>
@@ -3556,7 +3579,7 @@ export default function Customers() {
                                 <div style={{ display: "flex", alignItems: "baseline", gap: 16, flexWrap: "wrap", marginBottom: 10 }}>
                                   <div>
                                     <div style={{ fontSize: 9, fontWeight: 700, color: "#6366F1", textTransform: "uppercase", letterSpacing: 0.5 }}>
-                                      {isMeta && targetM !== 12 ? `Recent (last ${targetM}m) at month ${primaryLast.month}` : `Anchor at month ${primaryLast.month}`}
+                                      {isMeta && targetM !== 12 ? `Recent (last ${targetM}m) at month ${primaryLast.month}` : `Long-term avg at month ${primaryLast.month}`}
                                     </div>
                                     <div style={{ fontSize: 20, fontWeight: 800, color: "#1F2937", lineHeight: 1.1 }}>
                                       {cs}{Math.round(primaryLast.avgLtv).toLocaleString()}
@@ -3569,7 +3592,7 @@ export default function Customers() {
                                       <div style={{ fontSize: 18, fontWeight: 800, color: "#7C3AED", lineHeight: 1.1 }}>
                                         {cs}{Math.round(projection.to.avgLtv).toLocaleString()}
                                       </div>
-                                      <div style={{ fontSize: 10, color: "#9CA3AF" }}>{projection.multiplier.toFixed(2)}× anchor multiplier</div>
+                                      <div style={{ fontSize: 10, color: "#9CA3AF" }}>{projection.multiplier.toFixed(2)}× historic growth</div>
                                     </div>
                                   )}
                                   {isMeta && ltvCacRatioCurve > 0 && (
@@ -3585,12 +3608,12 @@ export default function Customers() {
                                 <div style={{ fontSize: 10, color: "#6B7280", marginBottom: 8 }}>
                                   {isMeta ? (
                                     <>
-                                      <span style={{ fontWeight: 600 }}>Anchor: {anchorN.toLocaleString()} customer{anchorN === 1 ? "" : "s"}</span>
+                                      <span style={{ fontWeight: 600 }}>Long-term: {anchorN.toLocaleString()} customer{anchorN === 1 ? "" : "s"}</span>
                                       <span style={{ color: "#9CA3AF", marginLeft: 6 }}>(acquired 12+ months ago, fully observed)</span>
                                       {targetM !== 12 && (
                                         <span style={{ marginLeft: 12 }}>
                                           <span style={{ fontWeight: 600, color: "#7C3AED" }}>Recent: {overlayN.toLocaleString()}</span>
-                                          <span style={{ color: "#9CA3AF", marginLeft: 6 }}>(acquired in last {targetM} month{targetM === 1 ? "" : "s"})</span>
+                                          <span style={{ color: "#9CA3AF", marginLeft: 6 }}>(matured at {targetM} month{targetM === 1 ? "" : "s"}, acquired &lt;12m ago)</span>
                                         </span>
                                       )}
                                     </>
@@ -3602,7 +3625,10 @@ export default function Customers() {
                                   )}
                                 </div>
                                 {/* Window selector - above the chart */}
-                                <div style={{ display: "flex", justifyContent: "center", marginBottom: 16 }}>{windowSelector}</div>
+                                <div style={{ display: "flex", flexDirection: "column", alignItems: "center", marginBottom: 16, gap: 6 }}>
+                                  {windowSelector}
+                                  <div style={{ fontSize: 12, color: "#6B7280" }}>Overlay recent cohorts on top to compare against historic performance</div>
+                                </div>
                                 {/* Chart */}
                                 <div ref={ltvChartRef} style={{ position: "relative", width: "70vw", margin: "0 auto" }}>
                                   <svg width={chartWidth} height={chartHeight} viewBox={`0 0 ${chartWidth} ${chartHeight}`} style={{ display: "block" }}>
@@ -3688,7 +3714,7 @@ export default function Customers() {
                                         <rect x={xPos(m) - 22} y={padT} width={44} height={innerH} fill="transparent" />
                                       </g>
                                     ))}
-                                    {/* Anchor dots (when 12m view) or recent dots (when overlay) */}
+                                    {/* Long-term-avg dots: purple in 12m view, grey when overlay is active */}
                                     {isMeta && targetM === 12 && anchorSeries.map((p) => {
                                       const isHover = hoverM === p.month;
                                       const isLast = p.month === anchorSeries[anchorSeries.length - 1].month;
@@ -3696,6 +3722,16 @@ export default function Customers() {
                                         <g key={`a-${p.month}`} pointerEvents="none">
                                           {(isHover || isLast) && <circle cx={xPos(p.month)} cy={yPos(p.avgLtv)} r="10" fill="#7C3AED" opacity="0.18" />}
                                           <circle cx={xPos(p.month)} cy={yPos(p.avgLtv)} r={isLast ? 6 : isHover ? 5 : 4} fill="#7C3AED" stroke="#fff" strokeWidth="2" />
+                                        </g>
+                                      );
+                                    })}
+                                    {isMeta && targetM !== 12 && anchorSeries.map((p) => {
+                                      const isHover = hoverM === p.month;
+                                      const isLast = p.month === anchorSeries[anchorSeries.length - 1].month;
+                                      return (
+                                        <g key={`a-grey-${p.month}`} pointerEvents="none">
+                                          {isHover && <circle cx={xPos(p.month)} cy={yPos(p.avgLtv)} r="9" fill="#94A3B8" opacity="0.18" />}
+                                          <circle cx={xPos(p.month)} cy={yPos(p.avgLtv)} r={isLast ? 4.5 : isHover ? 4 : 3} fill="#94A3B8" stroke="#fff" strokeWidth="1.75" />
                                         </g>
                                       );
                                     })}
@@ -3734,22 +3770,26 @@ export default function Customers() {
                                         </g>
                                       );
                                     })()}
-                                    {/* Hover tooltip - shows both anchor +
-                                        overlay values when overlay active */}
+                                    {/* Hover tooltip - shows long-term avg,
+                                        recent overlay, and projected 12m
+                                        value where applicable */}
                                     {chartHover && (() => {
                                       const hx = xPos(chartHover.month);
                                       const showAnchor = isMeta && hoverAnchor != null;
                                       const showOverlay = isMeta && targetM !== 12 && hoverOverlay != null;
                                       const showFallback = !isMeta && hoverFallback != null;
-                                      // Build tooltip rows in priority order
-                                      // (overlay first - it's the headline,
-                                      // anchor underneath as comparator).
-                                      const rows: Array<{ kind: "overlay" | "anchor" | "fallback"; data: { avgLtv: number; n: number } }> = [];
+                                      const showProjected = isMeta && targetM !== 12 && projection != null && chartHover.month === projection.to.month;
+                                      // Recent first (headline), long-term avg
+                                      // beneath as comparator, projected last
+                                      // when terminal point is hovered.
+                                      type Row = { kind: "overlay" | "anchor" | "fallback" | "projected"; data: { avgLtv: number; n: number } };
+                                      const rows: Row[] = [];
                                       if (showOverlay) rows.push({ kind: "overlay", data: hoverOverlay! });
                                       if (showAnchor) rows.push({ kind: "anchor", data: hoverAnchor! });
                                       if (showFallback) rows.push({ kind: "fallback", data: hoverFallback! });
+                                      if (showProjected) rows.push({ kind: "projected", data: { avgLtv: projection!.to.avgLtv, n: 0 } });
                                       if (rows.length === 0) return null;
-                                      const tipW = 220;
+                                      const tipW = 240;
                                       const tipH = 30 + rows.length * 18 + 14;
                                       const leftSide = hx > chartWidth / 2;
                                       const tx = leftSide ? hx - tipW - 12 : hx + 12;
@@ -3765,7 +3805,10 @@ export default function Customers() {
                                               return <text key={idx} x={tx + 12} y={y} fontSize="12" fill="#C4B5FD">Recent {targetM}m: <tspan fontWeight="700" fill="#fff">{cs}{Math.round(r.data.avgLtv).toLocaleString()}</tspan> <tspan fill="#94A3B8">(n={r.data.n})</tspan></text>;
                                             }
                                             if (r.kind === "anchor") {
-                                              return <text key={idx} x={tx + 12} y={y} fontSize="12" fill="#94A3B8">Anchor: <tspan fontWeight="700" fill="#E5E7EB">{cs}{Math.round(r.data.avgLtv).toLocaleString()}</tspan> <tspan fill="#64748B">(n={r.data.n})</tspan></text>;
+                                              return <text key={idx} x={tx + 12} y={y} fontSize="12" fill="#94A3B8">Long-term avg: <tspan fontWeight="700" fill="#E5E7EB">{cs}{Math.round(r.data.avgLtv).toLocaleString()}</tspan> <tspan fill="#64748B">(n={r.data.n})</tspan></text>;
+                                            }
+                                            if (r.kind === "projected") {
+                                              return <text key={idx} x={tx + 12} y={y} fontSize="12" fill="#C4B5FD">Projected 12m: <tspan fontWeight="700" fill="#fff">{cs}{Math.round(r.data.avgLtv).toLocaleString()}</tspan></text>;
                                             }
                                             return <text key={idx} x={tx + 12} y={y} fontSize="12" fill="#C4B5FD">Cumulative: <tspan fontWeight="700" fill="#fff">{cs}{Math.round(r.data.avgLtv).toLocaleString()}</tspan> <tspan fill="#94A3B8">(n={r.data.n})</tspan></text>;
                                           })}
@@ -3777,7 +3820,7 @@ export default function Customers() {
                                 {/* Footnotes / payback callouts */}
                                 {isMeta && targetM !== 12 && projection && (
                                   <div style={{ marginTop: 10, padding: "8px 12px", background: "#F5F3FF", border: "1px solid #DDD6FE", borderRadius: 8, fontSize: 12, color: "#5B21B6" }}>
-                                    <strong>Projection:</strong> recent {targetM}-month cohort is at {cs}{Math.round(projection.from.avgLtv).toLocaleString()} by month {projection.from.month}. Anchor scales {projection.multiplier.toFixed(2)}× from there to month 12, suggesting <strong>{cs}{Math.round(projection.to.avgLtv).toLocaleString()}</strong> projected 12m LTV. Validates only as well as the anchor's pattern holds.
+                                    <strong>Projection:</strong> recent {targetM}-month cohort is at {cs}{Math.round(projection.from.avgLtv).toLocaleString()} by month {projection.from.month}. The long-term average grows {projection.multiplier.toFixed(2)}× from there to month 12, suggesting <strong>{cs}{Math.round(projection.to.avgLtv).toLocaleString()}</strong> projected 12m LTV. Holds only if recent customers follow the same trajectory.
                                   </div>
                                 )}
                                 {isMeta && paybackMonth != null && (
