@@ -1477,12 +1477,14 @@ function metricGradientColor(metricId: string, value: number, allValues: number[
   return `hsl(${Math.round(hue)}, 72%, ${33 + Math.round(score * 12)}%)`;
 }
 
-function SortableHeader({ col, label, width, sortCol, sortDir, onSort }: {
+function SortableHeader({ col, label, width, sortCol, sortDir, onSort, tooltip }: {
   col: string; label: string; width: string; sortCol: string; sortDir: "asc" | "desc"; onSort: (col: string) => void;
+  tooltip?: string;
 }) {
   const active = sortCol === col;
   return (
     <span
+      title={tooltip}
       style={{ fontSize: "10px", fontWeight: 600, textTransform: "uppercase", textAlign: "right", flexShrink: 0,
         width, color: active ? "#7c3aed" : "#8c9196", cursor: "pointer", userSelect: "none" }}
       onClick={() => onSort(col)}
@@ -2374,7 +2376,8 @@ function AdExplorerTable({ rows, cs, entityType, onEntityClick }: {
   // customerFilter resets to "all" on every page load - persisting it
   // between visits caused confusion when the explorer first opened with
   // a stale cut applied.
-  const [customerFilter, setCustomerFilter] = useState<"all" | "new" | "repeat">("all");
+  const [customerFilter, setCustomerFilter] = useState<"all" | "new" | "existing">("all");
+  const [searchQuery, setSearchQuery] = useState("");
 
   const toggleSort = (col: string) => {
     if (sortCol === col) setSortDir(d => d === "desc" ? "asc" : "desc");
@@ -2385,53 +2388,74 @@ function AdExplorerTable({ rows, cs, entityType, onEntityClick }: {
   };
 
   const sorted = useMemo(() => {
-    return [...rows].filter(r => (r.spend || 0) > 0 || (r.attributedOrders || 0) > 0).sort((a, b) => {
-      const aVal = a[sortCol] || 0, bVal = b[sortCol] || 0;
-      if (aVal === 0 && bVal === 0) return (b.spend || 0) - (a.spend || 0);
-      if (aVal === 0) return 1;
-      if (bVal === 0) return -1;
-      return sortDir === "desc" ? bVal - aVal : aVal - bVal;
-    });
-  }, [rows, sortCol, sortDir]);
+    const q = searchQuery.trim().toLowerCase();
+    return [...rows]
+      .filter(r => (r.spend || 0) > 0 || (r.attributedOrders || 0) > 0)
+      .filter(r => !q || (r.name || "").toLowerCase().includes(q))
+      .sort((a, b) => {
+        const aVal = a[sortCol] || 0, bVal = b[sortCol] || 0;
+        if (aVal === 0 && bVal === 0) return (b.spend || 0) - (a.spend || 0);
+        if (aVal === 0) return 1;
+        if (bVal === 0) return -1;
+        return sortDir === "desc" ? bVal - aVal : aVal - bVal;
+      });
+  }, [rows, sortCol, sortDir, searchQuery]);
 
-  type ColDef = { key: string; label: string; width: string; format: (row: any) => string; lowerBetter?: boolean };
+  type ColDef = { key: string; label: string; width: string; format: (row: any) => string; lowerBetter?: boolean; tooltip?: string };
   const COLS: ColDef[] = useMemo(() => {
     if (customerFilter === "new") {
       return [
-        { key: "newCustomerOrders", label: "New Orders", width: "75px", format: (r) => (r.newCustomerOrders || 0).toLocaleString() },
-        { key: "newCustomerRevenue", label: "New Revenue", width: "90px", format: (r) => `${cs}${Math.round(r.newCustomerRevenue || 0).toLocaleString()}` },
-        { key: "spend", label: "Spend", width: "80px", format: (r) => `${cs}${Math.round(r.spend || 0).toLocaleString()}` },
-        { key: "newCustomerCPA", label: "CPA", width: "65px", format: (r) => r.newCustomerCPA > 0 ? `${cs}${Math.round(r.newCustomerCPA).toLocaleString()}` : "\u2014", lowerBetter: true },
+        { key: "newCustomerOrders", label: "New Orders", width: "75px", format: (r) => (r.newCustomerOrders || 0).toLocaleString(),
+          tooltip: "Orders from first-time customers (placing their first ever order in the selected period) attributed to this entity." },
+        { key: "newCustomerRevenue", label: "New Revenue", width: "90px", format: (r) => `${cs}${Math.round(r.newCustomerRevenue || 0).toLocaleString()}`,
+          tooltip: "Revenue from first-time customers attributed to this entity." },
+        { key: "spend", label: "Spend", width: "80px", format: (r) => `${cs}${Math.round(r.spend || 0).toLocaleString()}`,
+          tooltip: "Meta ad spend for this entity in the selected period." },
+        { key: "newCustomerCPA", label: "CPA", width: "65px", format: (r) => r.newCustomerCPA > 0 ? `${cs}${Math.round(r.newCustomerCPA).toLocaleString()}` : "\u2014", lowerBetter: true,
+          tooltip: "Cost to acquire one new customer. Spend ÷ new-customer orders." },
         { key: "newCustomerROAS", label: "ROAS", width: "60px", format: (r) => {
           const v = (r.newCustomerRevenue || 0) > 0 && (r.spend || 0) > 0 ? ((r.newCustomerRevenue) / r.spend) : 0;
           return v > 0 ? `${v.toFixed(2)}x` : "\u2014";
-        }},
+        },
+          tooltip: "Return on ad spend from new customers. New customer revenue ÷ spend." },
       ];
     }
-    if (customerFilter === "repeat") {
+    if (customerFilter === "existing") {
       return [
-        { key: "existingCustomerOrders", label: "Repeat Orders", width: "90px", format: (r) => (r.existingCustomerOrders || 0).toLocaleString() },
-        { key: "existingCustomerRevenue", label: "Repeat Revenue", width: "100px", format: (r) => `${cs}${Math.round(r.existingCustomerRevenue || 0).toLocaleString()}` },
-        { key: "spend", label: "Spend", width: "80px", format: (r) => `${cs}${Math.round(r.spend || 0).toLocaleString()}` },
+        { key: "existingCustomerOrders", label: "Existing Orders", width: "100px", format: (r) => (r.existingCustomerOrders || 0).toLocaleString(),
+          tooltip: "Orders from returning customers (anyone who has previously ordered) attributed to this entity. = All orders − new-customer orders." },
+        { key: "existingCustomerRevenue", label: "Existing Revenue", width: "115px", format: (r) => `${cs}${Math.round(r.existingCustomerRevenue || 0).toLocaleString()}`,
+          tooltip: "Revenue from returning customers attributed to this entity." },
+        { key: "spend", label: "Spend", width: "80px", format: (r) => `${cs}${Math.round(r.spend || 0).toLocaleString()}`,
+          tooltip: "Meta ad spend for this entity in the selected period." },
         { key: "cpa", label: "CPA", width: "65px", format: (r) => {
           const ex = r.existingCustomerOrders || 0;
           return ex > 0 ? `${cs}${Math.round(r.spend / ex).toLocaleString()}` : "\u2014";
-        }, lowerBetter: true },
+        }, lowerBetter: true,
+          tooltip: "Spend ÷ existing-customer orders. Always higher than blended CPA because the same spend is divided by a smaller numerator (a subset of orders)." },
         { key: "blendedROAS", label: "ROAS", width: "60px", format: (r) => {
           const v = (r.existingCustomerRevenue || 0) > 0 && (r.spend || 0) > 0 ? (r.existingCustomerRevenue / r.spend) : 0;
           return v > 0 ? `${v.toFixed(2)}x` : "\u2014";
-        }},
+        },
+          tooltip: "Existing customer revenue ÷ spend." },
       ];
     }
     // "all" view
     return [
-      { key: "attributedOrders", label: "Orders", width: "60px", format: (r) => (r.attributedOrders || 0).toLocaleString() },
-      { key: "newCustomerOrders", label: "New", width: "45px", format: (r) => (r.newCustomerOrders || 0).toLocaleString() },
-      { key: "attributedRevenue", label: "Revenue", width: "85px", format: (r) => `${cs}${Math.round(r.attributedRevenue || 0).toLocaleString()}` },
-      { key: "spend", label: "Spend", width: "80px", format: (r) => `${cs}${Math.round(r.spend || 0).toLocaleString()}` },
-      { key: "blendedCPA", label: "CPA", width: "65px", format: (r) => r.blendedCPA > 0 ? `${cs}${Math.round(r.blendedCPA).toLocaleString()}` : "\u2014", lowerBetter: true },
-      { key: "newCustomerCPA", label: "NC CPA", width: "70px", format: (r) => r.newCustomerCPA > 0 ? `${cs}${Math.round(r.newCustomerCPA).toLocaleString()}` : "\u2014", lowerBetter: true },
-      { key: "blendedROAS", label: "ROAS", width: "60px", format: (r) => (r.blendedROAS || 0) > 0 ? `${r.blendedROAS}x` : "\u2014" },
+      { key: "attributedOrders", label: "Orders", width: "60px", format: (r) => (r.attributedOrders || 0).toLocaleString(),
+        tooltip: "All Meta-attributed orders for this entity in the selected period." },
+      { key: "newCustomerOrders", label: "New", width: "45px", format: (r) => (r.newCustomerOrders || 0).toLocaleString(),
+        tooltip: "How many of the orders were placed by first-time customers." },
+      { key: "attributedRevenue", label: "Revenue", width: "85px", format: (r) => `${cs}${Math.round(r.attributedRevenue || 0).toLocaleString()}`,
+        tooltip: "Revenue from Meta-attributed orders for this entity." },
+      { key: "spend", label: "Spend", width: "80px", format: (r) => `${cs}${Math.round(r.spend || 0).toLocaleString()}`,
+        tooltip: "Meta ad spend for this entity in the selected period." },
+      { key: "blendedCPA", label: "CPA", width: "65px", format: (r) => r.blendedCPA > 0 ? `${cs}${Math.round(r.blendedCPA).toLocaleString()}` : "\u2014", lowerBetter: true,
+        tooltip: "Spend ÷ all attributed orders." },
+      { key: "newCustomerCPA", label: "NC CPA", width: "70px", format: (r) => r.newCustomerCPA > 0 ? `${cs}${Math.round(r.newCustomerCPA).toLocaleString()}` : "\u2014", lowerBetter: true,
+        tooltip: "Cost to acquire one new customer. Spend ÷ new-customer orders." },
+      { key: "blendedROAS", label: "ROAS", width: "60px", format: (r) => (r.blendedROAS || 0) > 0 ? `${r.blendedROAS}x` : "\u2014",
+        tooltip: "Total Meta-attributed revenue ÷ spend." },
     ];
   }, [customerFilter, cs]);
 
@@ -2440,12 +2464,14 @@ function AdExplorerTable({ rows, cs, entityType, onEntityClick }: {
   const LOWER_IS_BETTER = new Set(["cpa", "blendedCPA", "newCustomerCPA"]);
   const higherIsBetter = !LOWER_IS_BETTER.has(sortCol);
 
+  const entityNoun = entityType === "campaign" ? "campaigns" : entityType === "adset" ? "ad sets" : "ads";
+
   return (
     <div>
-      {/* Filter bar */}
-      <div style={{ display: "flex", gap: "6px", marginBottom: "12px", alignItems: "center" }}>
+      {/* Filter + search bar */}
+      <div style={{ display: "flex", gap: "8px", marginBottom: "12px", alignItems: "center", flexWrap: "wrap" }}>
         <span style={{ fontSize: "12px", color: "#6B7280", fontWeight: 500, marginRight: "4px" }}>Show:</span>
-        {(["all", "new", "repeat"] as const).map(f => (
+        {(["all", "new", "existing"] as const).map(f => (
           <button
             key={f}
             onClick={() => setCustomerFilter(f)}
@@ -2458,9 +2484,21 @@ function AdExplorerTable({ rows, cs, entityType, onEntityClick }: {
               cursor: "pointer",
             }}
           >
-            {f === "all" ? "All Customers" : f === "new" ? "New Customers" : "Repeat Customers"}
+            {f === "all" ? "All Customers" : f === "new" ? "New Customers" : "Existing Customers"}
           </button>
         ))}
+        <div style={{ flex: 1 }} />
+        <input
+          type="search"
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+          placeholder={`Search ${entityNoun}...`}
+          style={{
+            fontSize: "12px", padding: "5px 10px", borderRadius: "14px",
+            border: "1px solid #D1D5DB", background: "#fff", color: "#374151",
+            outline: "none", minWidth: "180px",
+          }}
+        />
       </div>
 
       {/* Table header */}
@@ -2469,7 +2507,7 @@ function AdExplorerTable({ rows, cs, entityType, onEntityClick }: {
         {entityType === "ad" && <span style={{ width: "36px", flexShrink: 0 }} />}
         <span style={{ flex: 1, fontSize: "11px", color: "#8c9196", fontWeight: 600, textTransform: "uppercase" }}>Name</span>
         {COLS.map(c => (
-          <SortableHeader key={c.key} col={c.key} label={c.label} width={c.width} sortCol={sortCol} sortDir={sortDir} onSort={toggleSort} />
+          <SortableHeader key={c.key} col={c.key} label={c.label} width={c.width} sortCol={sortCol} sortDir={sortDir} onSort={toggleSort} tooltip={c.tooltip} />
         ))}
       </div>
 
@@ -2536,14 +2574,20 @@ function AdExplorerTable({ rows, cs, entityType, onEntityClick }: {
           const total = sorted.reduce((s, r) => s + (r[c.key] || 0), 0);
           let display: string;
           if (c.key === "blendedROAS" || c.key === "newCustomerROAS") {
-            const totalRev = sorted.reduce((s, r) => s + (r.attributedRevenue || 0), 0);
+            // Use the revenue source that matches the active customer filter so
+            // ROAS in the New / Existing tabs reconciles to the column above.
+            const revKey = customerFilter === "new" ? "newCustomerRevenue"
+              : customerFilter === "existing" ? "existingCustomerRevenue"
+              : "attributedRevenue";
+            const totalRev = sorted.reduce((s, r) => s + (r[revKey] || 0), 0);
             const totalSpend = sorted.reduce((s, r) => s + (r.spend || 0), 0);
             display = totalSpend > 0 ? `${(totalRev / totalSpend).toFixed(2)}x` : "\u2014";
           } else if (c.key === "blendedCPA" || c.key === "cpa" || c.key === "newCustomerCPA") {
             const totalSpend = sorted.reduce((s, r) => s + (r.spend || 0), 0);
-            const totalOrders = c.key === "newCustomerCPA"
-              ? sorted.reduce((s, r) => s + (r.newCustomerOrders || 0), 0)
-              : sorted.reduce((s, r) => s + (r.attributedOrders || 0), 0);
+            const ordersKey = c.key === "newCustomerCPA" ? "newCustomerOrders"
+              : (c.key === "cpa" && customerFilter === "existing") ? "existingCustomerOrders"
+              : "attributedOrders";
+            const totalOrders = sorted.reduce((s, r) => s + (r[ordersKey] || 0), 0);
             display = totalOrders > 0 ? `${cs}${Math.round(totalSpend / totalOrders).toLocaleString()}` : "\u2014";
           } else {
             display = c.key.includes("Revenue") || c.key === "spend"
@@ -3758,6 +3802,23 @@ export default function Campaigns() {
 
           return (
             <>
+            {/* Ad Explorer pinned above summary tiles - the primary entry point
+                for browsing campaigns/ad sets/ads. Lives outside TileGrid so it
+                cannot be reordered below the summary mini-tiles. */}
+            <Card>
+              <BlockStack gap="300">
+                <InlineStack align="space-between" blockAlign="center">
+                  <BlockStack gap="100">
+                    <Text as="h2" variant="headingLg">Ad Explorer</Text>
+                    <Text as="p" variant="bodySm" tone="subdued">
+                      Every {rankLevel === "campaign" ? "campaign" : rankLevel === "adset" ? "ad set" : "ad"} that ran in the selected period - sortable by orders, revenue, spend, ROAS or CPA. Filter by customer type, search by name, click any row to see its full lifecycle and change history.
+                    </Text>
+                  </BlockStack>
+                  <SmallToggle options={LEVEL_OPTIONS} selected={rankLevel} onChange={setRankLevel} />
+                </InlineStack>
+                <AdExplorerTable rows={rankRows} cs={cs} entityType={rankLevel as "campaign" | "adset" | "ad"} onEntityClick={(id, name) => setDrawerEntity({ objectType: rankLevel as any, objectId: id, objectName: name })} />
+              </BlockStack>
+            </Card>
             <TileGrid pageId="campaigns-v2" columns={4} tiles={[
               { id: "totalSpend", label: "Total Ad Spend", render: () => (
                 <SummaryTile label="Meta Ad Spend" value={fmtPrice(effectiveTotals.spend)}
@@ -3813,17 +3874,6 @@ export default function Campaigns() {
                   currentValue={newCustCPA} previousValue={prevNewCustCPA} lowerIsBetter
                   chartData={dailyData} prevChartData={prevDailyData} chartKey={(d) => d.newCustomerOrders > 0 ? d.spend / d.newCustomerOrders : 0}
                   chartColor="#B45309" chartFormat={fmtPrice} />
-              )},
-              { id: "adExplorer", label: "Ad Explorer", span: 4, render: () => (
-                <Card>
-                  <BlockStack gap="300">
-                    <InlineStack align="space-between" blockAlign="center">
-                      <Text as="h2" variant="headingLg">Ad Explorer</Text>
-                      <SmallToggle options={LEVEL_OPTIONS} selected={rankLevel} onChange={setRankLevel} />
-                    </InlineStack>
-                    <AdExplorerTable rows={rankRows} cs={cs} entityType={rankLevel as "campaign" | "adset" | "ad"} onEntityClick={(id, name) => setDrawerEntity({ objectType: rankLevel as any, objectId: id, objectName: name })} />
-                  </BlockStack>
-                </Card>
               )},
               { id: "adFunnel", label: "Ad Funnel", span: 4, render: () => (
                 <Card>

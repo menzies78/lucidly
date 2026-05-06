@@ -71,11 +71,14 @@ export default function EntityTimelineDrawer({ shopDomain, open, entity, onClose
   const [data, setData] = useState<TimelinePayload | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Changes Log starts collapsed - keeps the drawer scannable; expand on demand.
+  const [changesOpen, setChangesOpen] = useState(false);
 
   useEffect(() => {
     if (!open || !entity) return;
     setLoading(true);
     setError(null);
+    setChangesOpen(false); // reset collapse when opening a different entity
     const url = `/app/api/entity-timeline?type=${entity.objectType}&id=${encodeURIComponent(entity.objectId)}`;
     fetch(url)
       .then((r) => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
@@ -164,36 +167,59 @@ export default function EntityTimelineDrawer({ shopDomain, open, entity, onClose
             )}
 
             <section style={{ padding: "14px 20px", flex: 1 }}>
-              <Text as="h3" variant="headingMd">Changes</Text>
-              {groupedEvents.length === 0 && (
-                <Text as="p" variant="bodyMd" tone="subdued">No change log entries for this entity.</Text>
-              )}
-              {groupedEvents.map(([day, evs]) => (
-                <div key={day} style={{ marginTop: 14 }}>
-                  <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5, color: "#6b7280" }}>{fmtDay(day + "T12:00:00Z")}</div>
-                  <ul style={{ listStyle: "none", padding: 0, margin: "6px 0 0", display: "flex", flexDirection: "column", gap: 8 }}>
-                    {evs.map(ev => (
-                      <li key={ev.id} style={{ display: "flex", gap: 8 }}>
-                        <span style={{
-                          display: "inline-flex", alignItems: "center", justifyContent: "center",
-                          width: 22, height: 22, borderRadius: "50%",
-                          background: (CATEGORY_COLOR[ev.category] || CATEGORY_COLOR.other) + "22",
-                          color: CATEGORY_COLOR[ev.category] || CATEGORY_COLOR.other,
-                          fontSize: 12, flexShrink: 0,
-                        }}>{CATEGORY_ICON[ev.category] || "·"}</span>
-                        <div style={{ fontSize: 13, lineHeight: 1.4 }}>
-                          <div>{ev.summary}</div>
-                          <div style={{ color: "#6b7280", fontSize: 11 }}>
-                            {new Date(ev.eventTimeISO).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}
-                            {ev.actor ? ` · ${ev.actor}` : ""}
-                            <span style={{ marginLeft: 6, fontFamily: "monospace" }}>{ev.rawEventType}</span>
-                          </div>
-                        </div>
-                      </li>
-                    ))}
-                  </ul>
+              <button
+                type="button"
+                onClick={() => setChangesOpen((v) => !v)}
+                aria-expanded={changesOpen}
+                style={{
+                  display: "flex", alignItems: "center", gap: 8, width: "100%",
+                  background: "transparent", border: "none", padding: 0, cursor: "pointer",
+                  textAlign: "left",
+                }}
+              >
+                <span style={{
+                  display: "inline-block", width: 12, transition: "transform 0.15s ease",
+                  transform: changesOpen ? "rotate(90deg)" : "rotate(0deg)",
+                  color: "#6b7280", fontSize: 12, lineHeight: 1,
+                }}>▶</span>
+                <Text as="h3" variant="headingMd">Changes Log</Text>
+                <span style={{ color: "#6b7280", fontSize: 12 }}>
+                  {groupedEvents.length === 0 ? "(none)" : `(${data.events.length})`}
+                </span>
+              </button>
+              {changesOpen && (
+                <div style={{ marginTop: 8 }}>
+                  {groupedEvents.length === 0 && (
+                    <Text as="p" variant="bodyMd" tone="subdued">No change log entries for this entity.</Text>
+                  )}
+                  {groupedEvents.map(([day, evs]) => (
+                    <div key={day} style={{ marginTop: 14 }}>
+                      <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5, color: "#6b7280" }}>{fmtDay(day + "T12:00:00Z")}</div>
+                      <ul style={{ listStyle: "none", padding: 0, margin: "6px 0 0", display: "flex", flexDirection: "column", gap: 8 }}>
+                        {evs.map(ev => (
+                          <li key={ev.id} style={{ display: "flex", gap: 8 }}>
+                            <span style={{
+                              display: "inline-flex", alignItems: "center", justifyContent: "center",
+                              width: 22, height: 22, borderRadius: "50%",
+                              background: (CATEGORY_COLOR[ev.category] || CATEGORY_COLOR.other) + "22",
+                              color: CATEGORY_COLOR[ev.category] || CATEGORY_COLOR.other,
+                              fontSize: 12, flexShrink: 0,
+                            }}>{CATEGORY_ICON[ev.category] || "·"}</span>
+                            <div style={{ fontSize: 13, lineHeight: 1.4 }}>
+                              <div>{ev.summary}</div>
+                              <div style={{ color: "#6b7280", fontSize: 11 }}>
+                                {new Date(ev.eventTimeISO).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}
+                                {ev.actor ? ` · ${ev.actor}` : ""}
+                                <span style={{ marginLeft: 6, fontFamily: "monospace" }}>{ev.rawEventType}</span>
+                              </div>
+                            </div>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  ))}
                 </div>
-              ))}
+              )}
             </section>
           </>
         )}
