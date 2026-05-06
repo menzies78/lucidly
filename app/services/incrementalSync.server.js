@@ -49,7 +49,16 @@ async function rebuildAllRollups(shopDomain, { force }) {
     console.log(`[IncrementalSync] Skipping rollup rebuild for ${shopDomain} - last rebuild ${minutes}m ago, no new conversions`);
     return false;
   }
-  setProgress(`incrementalSync:${shopDomain}`, { status: "running", message: "Rebuilding product rollups..." });
+  // NOTE: this function runs fire-and-forget AFTER the user-facing sync has
+  // already called completeProgress on `incrementalSync:${shopDomain}`.
+  // Calling setProgress here would overwrite the "complete" state with
+  // "running", and since rebuildAllRollups never calls completeProgress
+  // itself, the UI would stay stuck at the last "Rebuilding..." message
+  // forever. Background rollup status is tracked via the lastRollupRebuild
+  // DB column, not the in-memory progress map. (Force Rebuild Rollups in
+  // app._index.tsx uses a separate "forceRollups" task with its own
+  // setProgress/completeProgress lifecycle - see actionType === "forceRollups".)
+  console.log(`[IncrementalSync] Rebuilding product rollups for ${shopDomain}...`);
   try {
     const { rebuildProductRollups } = await import("./productRollups.server.js");
     await rebuildProductRollups(shopDomain);
@@ -64,7 +73,7 @@ async function rebuildAllRollups(shopDomain, { force }) {
   // and makes the entire app unresponsive. The nightly 3am sweep (which always has
   // new data from the 7-day lookback) handles the daily refresh.
   if (force) {
-    setProgress(`incrementalSync:${shopDomain}`, { status: "running", message: "Rebuilding campaign rollups..." });
+    console.log(`[IncrementalSync] Rebuilding campaign rollups for ${shopDomain}...`);
     try {
       const { rebuildCampaignRollups } = await import("./campaignRollups.server.js");
       await rebuildCampaignRollups(shopDomain);
@@ -73,7 +82,7 @@ async function rebuildAllRollups(shopDomain, { force }) {
     }
     if (global.gc) global.gc();
 
-    setProgress(`incrementalSync:${shopDomain}`, { status: "running", message: "Rebuilding ad demographic rollups..." });
+    console.log(`[IncrementalSync] Rebuilding ad demographic rollups for ${shopDomain}...`);
     try {
       const { rebuildAdDemographicRollups } = await import("./adDemographicRollups.server.js");
       await rebuildAdDemographicRollups(shopDomain);
@@ -83,7 +92,7 @@ async function rebuildAllRollups(shopDomain, { force }) {
     if (global.gc) global.gc();
   }
 
-  setProgress(`incrementalSync:${shopDomain}`, { status: "running", message: "Rebuilding customer rollups..." });
+  console.log(`[IncrementalSync] Rebuilding customer rollups for ${shopDomain}...`);
   try {
     const { rebuildCustomerSegments, rebuildCustomerRollups } = await import("./customerRollups.server.js");
     await rebuildCustomerSegments(shopDomain);

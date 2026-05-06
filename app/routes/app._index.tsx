@@ -385,6 +385,11 @@ export const action = async ({ request }) => {
         await rebuildCampaignRollups(shopDomain);
         if (global.gc) global.gc();
 
+        setProgress(taskId, { status: "running", message: "Rebuilding ad demographic rollups..." });
+        const { rebuildAdDemographicRollups } = await import("../services/adDemographicRollups.server.js");
+        await rebuildAdDemographicRollups(shopDomain);
+        if (global.gc) global.gc();
+
         setProgress(taskId, { status: "running", message: "Rebuilding customer rollups..." });
         const { rebuildCustomerSegments, rebuildCustomerRollups } = await import("../services/customerRollups.server.js");
         await rebuildCustomerSegments(shopDomain);
