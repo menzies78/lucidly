@@ -72,6 +72,15 @@ async function rebuildAllRollups(shopDomain, { force }) {
       console.error(`[IncrementalSync] Campaign rollup rebuild failed (non-fatal): ${err.message}`);
     }
     if (global.gc) global.gc();
+
+    setProgress(`incrementalSync:${shopDomain}`, { status: "running", message: "Rebuilding ad demographic rollups..." });
+    try {
+      const { rebuildAdDemographicRollups } = await import("./adDemographicRollups.server.js");
+      await rebuildAdDemographicRollups(shopDomain);
+    } catch (err) {
+      console.error(`[IncrementalSync] Ad demographic rollup rebuild failed (non-fatal): ${err.message}`);
+    }
+    if (global.gc) global.gc();
   }
 
   setProgress(`incrementalSync:${shopDomain}`, { status: "running", message: "Rebuilding customer rollups..." });

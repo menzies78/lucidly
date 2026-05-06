@@ -405,7 +405,28 @@ export const loader = async ({ request }) => {
     return r;
   };
 
-  const [currentAggRaw, prevAggRaw, compareAggRaw, metaEntities, ltvSnapshot, dailyChart, windowOrdersRaw, dailyLiveAdsRaw] = await Promise.all([
+  // Per-ad demographic rollup for the current period. Read by AdExplorerTable
+  // when the gender or age filters are active - we recompute the row metrics
+  // from these rows so the filter actually takes effect on order/revenue numbers.
+  // Spend stays from DailyAdRollup (no demographic split - Meta does not attach
+  // customer-resolved demographics to spend).
+  const fetchAdDemographics = async () => {
+    return db.dailyAdDemographicRollup.findMany({
+      where: { shopDomain, date: { gte: fromDate, lte: toDate } },
+      select: {
+        adId: true, gender: true, ageBracket: true,
+        attributedOrders: true, attributedRevenue: true,
+        newCustomerOrders: true, newCustomerRevenue: true,
+        existingCustomerOrders: true, existingCustomerRevenue: true,
+      },
+    });
+  };
+
+  // NB: order in destructure matches Promise.all() order. dailyLiveAds runs
+  // before windowOrders in the array; previously the two variable names were
+  // swapped at positions 7/8, which gave windowOrdersRaw the rows of the live-
+  // ads aggregate and broke every downstream Order lookup. Fixed to match.
+  const [currentAggRaw, prevAggRaw, compareAggRaw, metaEntities, ltvSnapshot, dailyChart, dailyLiveAdsRaw, windowOrdersRaw, adDemographicsRaw] = await Promise.all([
     time("campAgg", queryCached(`${shopDomain}:campAgg:${fromKey}:${toKey}`, DEFAULT_TTL, fetchAndAggregate(fromDate, toDate))),
     time("campAggPrev", queryCached(`${shopDomain}:campAgg:${prevFromKey}:${prevToKey}`, DEFAULT_TTL, fetchAndAggregate(_prevFromRP, _prevToRP))),
     (hasComparison && compareFrom && compareTo)
@@ -460,6 +481,7 @@ export const loader = async ({ request }) => {
         select: orderSelect,
       }),
     )),
+    time("adDemographics", queryCached(`${shopDomain}:campAdDemo:${fromKey}:${toKey}`, DEFAULT_TTL, fetchAdDemographics)),
   ]);
   // insights is now a per-day aggregation (groupBy result); rename for downstream clarity
   const insights = dailyChart as any[];
@@ -1279,6 +1301,48 @@ export const loader = async ({ request }) => {
     worstAd: pickAdSummary(worstAdRow),
   };
 
+  // Roll up the per-day demographic rows into one slice per (adId, gender, age)
+  // for the selected period. AdExplorerTable applies gender + age filters
+  // against this map and recomputes the row's order/revenue numbers from the
+  // matching demographic slices when at least one filter is active.
+  const adDemographicsByAd: Record<string, Array<{
+    gender: string; ageBracket: string;
+    attributedOrders: number; attributedRevenue: number;
+    newCustomerOrders: number; newCustomerRevenue: number;
+    existingCustomerOrders: number; existingCustomerRevenue: number;
+  }>> = {};
+  {
+    const byKey = new Map<string, any>();
+    for (const r of (adDemographicsRaw as any[]) || []) {
+      const key = `${r.adId}|${r.gender}|${r.ageBracket}`;
+      let agg = byKey.get(key);
+      if (!agg) {
+        agg = {
+          adId: r.adId, gender: r.gender, ageBracket: r.ageBracket,
+          attributedOrders: 0, attributedRevenue: 0,
+          newCustomerOrders: 0, newCustomerRevenue: 0,
+          existingCustomerOrders: 0, existingCustomerRevenue: 0,
+        };
+        byKey.set(key, agg);
+      }
+      agg.attributedOrders += r.attributedOrders;
+      agg.attributedRevenue += r.attributedRevenue;
+      agg.newCustomerOrders += r.newCustomerOrders;
+      agg.newCustomerRevenue += r.newCustomerRevenue;
+      agg.existingCustomerOrders += r.existingCustomerOrders;
+      agg.existingCustomerRevenue += r.existingCustomerRevenue;
+    }
+    for (const agg of byKey.values()) {
+      const list = adDemographicsByAd[agg.adId] || (adDemographicsByAd[agg.adId] = []);
+      list.push({
+        gender: agg.gender, ageBracket: agg.ageBracket,
+        attributedOrders: agg.attributedOrders, attributedRevenue: agg.attributedRevenue,
+        newCustomerOrders: agg.newCustomerOrders, newCustomerRevenue: agg.newCustomerRevenue,
+        existingCustomerOrders: agg.existingCustomerOrders, existingCustomerRevenue: agg.existingCustomerRevenue,
+      });
+    }
+  }
+
   console.log(`[campaigns] total ${Date.now() - _t0}ms`);
 
   return json({
@@ -1297,6 +1361,7 @@ export const loader = async ({ request }) => {
     funnelTree,
     stageTotals,
     topTiles,
+    adDemographicsByAd,
   });
 };
 
@@ -2558,9 +2623,17 @@ type TimelinePayload = {
   daily: TimelineDay[];
 };
 
-function AdExplorerTable({ rows, cs, entityType, onEntityClick }: {
+type AdDemographicSlice = {
+  gender: string; ageBracket: string;
+  attributedOrders: number; attributedRevenue: number;
+  newCustomerOrders: number; newCustomerRevenue: number;
+  existingCustomerOrders: number; existingCustomerRevenue: number;
+};
+
+function AdExplorerTable({ rows, cs, entityType, adDemographicsByAd, onEntityClick }: {
   rows: any[]; cs: string;
   entityType: "campaign" | "adset" | "ad";
+  adDemographicsByAd?: Record<string, AdDemographicSlice[]>;
   onEntityClick?: (id: string, name: string) => void;
 }) {
   // Default sort surfaces highest order count - the metric merchants ask
@@ -2573,6 +2646,70 @@ function AdExplorerTable({ rows, cs, entityType, onEntityClick }: {
   // stale cut applied. At least one segment must remain selected at all times.
   const [selectedSegments, setSelectedSegments] = useState<Set<Segment>>(() => new Set<Segment>(["all"]));
   const [searchQuery, setSearchQuery] = useState("");
+  // Demographic filters. Only active when entityType === "ad" - the demographic
+  // rollup is keyed by adId so we can't apply it at campaign/adset level without
+  // an extra rollup. Spend stays unchanged regardless of filter (no demographic
+  // split on spend); the order/revenue numbers are recomputed from the matching
+  // demographic slices.
+  const [genderFilter, setGenderFilter] = useState<"All" | "Female" | "Male">("All");
+  const [ageFilter, setAgeFilter] = useState<string[]>([]);
+  const demoActive = entityType === "ad" && (genderFilter !== "All" || ageFilter.length > 0);
+
+  // Apply demographic filter to a row. If active, swap the order/revenue
+  // numbers for sums from the matching demographic slices. Spend is left as-is
+  // (Meta does not split spend by customer-resolved demographic).
+  const applyDemoFilter = useCallback((row: any): any => {
+    if (!demoActive) return row;
+    const slices = adDemographicsByAd?.[row.id] || [];
+    const wantGender = genderFilter === "All" ? null : (genderFilter === "Female" ? "female" : "male");
+    const ageSet = ageFilter.length === 0 ? null : new Set(ageFilter);
+    let attributedOrders = 0, attributedRevenue = 0;
+    let newCustomerOrders = 0, newCustomerRevenue = 0;
+    let existingCustomerOrders = 0, existingCustomerRevenue = 0;
+    for (const s of slices) {
+      if (wantGender && s.gender !== wantGender) continue;
+      if (ageSet && !ageSet.has(s.ageBracket)) continue;
+      attributedOrders += s.attributedOrders;
+      attributedRevenue += s.attributedRevenue;
+      newCustomerOrders += s.newCustomerOrders;
+      newCustomerRevenue += s.newCustomerRevenue;
+      existingCustomerOrders += s.existingCustomerOrders;
+      existingCustomerRevenue += s.existingCustomerRevenue;
+    }
+    return {
+      ...row,
+      attributedOrders, attributedRevenue,
+      newCustomerOrders, newCustomerRevenue,
+      existingCustomerOrders, existingCustomerRevenue,
+    };
+  }, [demoActive, adDemographicsByAd, genderFilter, ageFilter]);
+
+  const filteredRows = useMemo(() => {
+    if (!demoActive) return rows;
+    return rows.map(applyDemoFilter);
+  }, [rows, demoActive, applyDemoFilter]);
+
+  // Set of age brackets that actually appear in the loaded data, so we don't
+  // render empty pills. Falls back to the canonical Meta brackets when there's
+  // no demographic data yet (first sync, etc.).
+  const META_AGE_BRACKETS = ["13-17", "18-24", "25-34", "35-44", "45-54", "55-64", "65+"];
+  const availableAges = useMemo(() => {
+    const set = new Set<string>();
+    if (entityType === "ad" && adDemographicsByAd) {
+      for (const row of rows) {
+        const slices = adDemographicsByAd[row.id] || [];
+        for (const s of slices) {
+          if (s.ageBracket && s.ageBracket !== "unknown") set.add(s.ageBracket);
+        }
+      }
+    }
+    return set;
+  }, [rows, entityType, adDemographicsByAd]);
+  const ageBracketsToRender = META_AGE_BRACKETS.filter(b => availableAges.has(b) || ageFilter.includes(b));
+
+  const toggleAge = (b: string) => {
+    setAgeFilter(prev => prev.includes(b) ? prev.filter(x => x !== b) : [...prev, b]);
+  };
 
   // Inline row expansion. Replaces the slide-out drawer for explorer rows -
   // the table never greys out, sort/filter still work freely while a row is
@@ -2645,7 +2782,7 @@ function AdExplorerTable({ rows, cs, entityType, onEntityClick }: {
 
   const sorted = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
-    return [...rows]
+    return [...filteredRows]
       .filter(r => (r.spend || 0) > 0 || (r.attributedOrders || 0) > 0)
       .filter(r => !q || (r.name || "").toLowerCase().includes(q))
       .sort((a, b) => {
@@ -2655,7 +2792,7 @@ function AdExplorerTable({ rows, cs, entityType, onEntityClick }: {
         if (bVal === 0) return -1;
         return sortDir === "desc" ? bVal - aVal : aVal - bVal;
       });
-  }, [rows, sortCol, sortDir, searchQuery]);
+  }, [filteredRows, sortCol, sortDir, searchQuery]);
 
   // Bar visualisation under each ad name - length scales with the active
   // sort metric, like the Product Demographics Explorer. CPA is "lower is
@@ -2860,46 +2997,114 @@ function AdExplorerTable({ rows, cs, entityType, onEntityClick }: {
     return prevMetric !== currMetric;
   };
 
+  // Visual style for the Show / Gender / Age filter rows. Pill buttons match
+  // the Product Demographics Explorer aesthetic so the two filter UIs read as
+  // one design language across the app.
+  const labelStyle: React.CSSProperties = {
+    fontSize: "12px", fontWeight: 600, color: "#6B7280",
+    width: "70px", textTransform: "uppercase", letterSpacing: "0.5px",
+  };
+  const pillStyle = (active: boolean): React.CSSProperties => ({
+    padding: "6px 12px", fontSize: "12px", fontWeight: 600,
+    borderRadius: "6px", cursor: "pointer",
+    background: active ? "#7C3AED" : "#fff",
+    color: active ? "#fff" : "#4B5563",
+    border: `1px solid ${active ? "#7C3AED" : "#E5E7EB"}`,
+    transition: "all 0.15s",
+  });
+
+  const showAgeRow = entityType === "ad" && (availableAges.size > 0 || ageFilter.length > 0);
+  const showGenderRow = entityType === "ad";
+
   return (
     <div>
-      {/* Filter + search bar */}
-      <div style={{ display: "flex", gap: "8px", marginBottom: "12px", alignItems: "center", flexWrap: "wrap" }}>
-        <span style={{ fontSize: "12px", color: "#6B7280", fontWeight: 500, marginRight: "4px" }}>Show:</span>
-        {(["all", "new", "existing"] as const).map(s => {
-          const active = selectedSegments.has(s);
-          return (
+      {/* Filter bar - mirrors Product Demographics Explorer:
+          row 1 = Show segments, row 2 = Gender, row 3 = Age, search aligned right. */}
+      <div style={{ display: "flex", flexDirection: "column", gap: "10px", marginBottom: "12px" }}>
+        {/* Show row + search */}
+        <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+          <span style={labelStyle}>Show</span>
+          {(["all", "new", "existing"] as const).map(s => {
+            const active = selectedSegments.has(s);
+            return (
+              <button
+                key={s}
+                onClick={() => toggleSegment(s)}
+                title={active && selectedSegments.size === 1 ? "At least one segment must stay selected" : `${active ? "Hide" : "Show"} ${SEGMENT_NAMES[s]} columns`}
+                style={pillStyle(active)}
+              >
+                {SEGMENT_NAMES[s]}
+              </button>
+            );
+          })}
+          <span style={{ flex: 1 }} />
+          <input
+            type="search"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder={`Search ${entityNoun}...`}
+            style={{
+              fontSize: "12px", padding: "6px 12px", borderRadius: "6px",
+              border: "1px solid #E5E7EB", background: "#fff", color: "#374151",
+              outline: "none", minWidth: "200px", fontWeight: 500,
+            }}
+          />
+        </div>
+
+        {showGenderRow && (
+          <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+            <span style={labelStyle}>Gender</span>
+            {(["All", "Female", "Male"] as const).map((g) => (
+              <button
+                key={g}
+                onClick={() => setGenderFilter(g)}
+                style={pillStyle(genderFilter === g)}
+              >
+                {g}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {showAgeRow && (
+          <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+            <span style={labelStyle}>Age</span>
             <button
-              key={s}
-              onClick={() => toggleSegment(s)}
-              title={active && selectedSegments.size === 1 ? "At least one segment must stay selected" : `${active ? "Hide" : "Show"} ${SEGMENT_NAMES[s]} columns`}
-              style={{
-                fontSize: "12px", padding: "4px 12px", borderRadius: "14px",
-                border: `1px solid ${active ? "#5C6AC4" : "#D1D5DB"}`,
-                background: active ? "#F0F1FF" : "#fff",
-                color: active ? "#4650A8" : "#6B7280",
-                fontWeight: active ? 600 : 400,
-                cursor: "pointer",
-              }}
+              onClick={() => setAgeFilter([])}
+              style={pillStyle(ageFilter.length === 0)}
             >
-              {active ? "✓ " : ""}{SEGMENT_NAMES[s]}
+              All
             </button>
-          );
-        })}
-        {/* Visible gap separates the segment toggles from search so the
-            search field doesn't read as another tab next to the level
-            selector that lives in the Card header above. */}
-        <span style={{ width: "32px", flexShrink: 0 }} />
-        <input
-          type="search"
-          value={searchQuery}
-          onChange={(e) => setSearchQuery(e.target.value)}
-          placeholder={`Search ${entityNoun}...`}
-          style={{
-            fontSize: "12px", padding: "5px 10px", borderRadius: "14px",
-            border: "1px solid #D1D5DB", background: "#fff", color: "#374151",
-            outline: "none", minWidth: "180px",
-          }}
-        />
+            {ageBracketsToRender.map(b => (
+              <button
+                key={b}
+                onClick={() => toggleAge(b)}
+                style={pillStyle(ageFilter.includes(b))}
+              >
+                {b}
+              </button>
+            ))}
+            {(genderFilter !== "All" || ageFilter.length > 0) && (
+              <button
+                onClick={() => { setGenderFilter("All"); setAgeFilter([]); }}
+                style={{
+                  padding: "6px 12px", fontSize: "12px", fontWeight: 500,
+                  borderRadius: "6px", cursor: "pointer",
+                  background: "transparent", color: "#6B7280",
+                  border: "1px solid transparent", textDecoration: "underline",
+                }}
+              >
+                Clear filters
+              </button>
+            )}
+          </div>
+        )}
+
+        {demoActive && (
+          <div style={{ fontSize: "11.5px", color: "#7C3AED", fontWeight: 500 }}>
+            Showing orders/revenue for selected demographic only. Spend is unchanged - Meta does not split spend by customer demographic.
+          </div>
+        )}
       </div>
 
       {/* Table - horizontally scrollable when columns exceed container width
@@ -3862,6 +4067,7 @@ export default function Campaigns() {
     changeEvents, changeCountsByObjectId,
     funnelTree, stageTotals,
     topTiles,
+    adDemographicsByAd,
   } = useLoaderData();
   const cs = currencySymbol || currencySymbolFromCode(null);
   const [searchParams, setSearchParams] = useSearchParams();
@@ -4774,7 +4980,7 @@ export default function Campaigns() {
                   </BlockStack>
                   <BigLevelToggle options={LEVEL_OPTIONS} selected={rankLevel} onChange={setRankLevel} />
                 </InlineStack>
-                <AdExplorerTable rows={rankRows} cs={cs} entityType={rankLevel as "campaign" | "adset" | "ad"} onEntityClick={(id, name) => setDrawerEntity({ objectType: rankLevel as any, objectId: id, objectName: name })} />
+                <AdExplorerTable rows={rankRows} cs={cs} entityType={rankLevel as "campaign" | "adset" | "ad"} adDemographicsByAd={adDemographicsByAd} onEntityClick={(id, name) => setDrawerEntity({ objectType: rankLevel as any, objectId: id, objectName: name })} />
               </BlockStack>
             </Card>
             <TileGrid pageId="campaigns-v2" columns={4} tiles={[

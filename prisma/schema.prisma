@@ -494,6 +494,40 @@ model DailyAdRollup {
   @@index([shopDomain, date])
 }
 
+// Per-ad-per-day attribution split by customer demographics. Reuses the same
+// gender resolution logic as Product Demographics / Customer Map: prefer
+// Attribution.metaGender (Meta breakdown - accurate but sparse), fall back to
+// Customer.inferredGender (name-based - fills the gap for ~70% of orders that
+// Meta didn't carry a demographic on). Age uses Attribution.metaAge with no
+// fallback. Cells with no resolvable signal are bucketed as "unknown" so the
+// UI can still show a filterable "Unknown" group rather than dropping rows.
+//
+// Spend lives in DailyAdRollup (full per-ad-per-day) - it doesn't have a
+// demographic dimension because spend is a fixed cost per ad, not per buyer.
+// When a filter is active, the explorer combines: filtered orders/revenue
+// from this rollup × full spend from DailyAdRollup → ROAS / CAC reflect "this
+// ad's revenue from selected demographics divided by what we paid for the ad".
+model DailyAdDemographicRollup {
+  id                      Int      @id @default(autoincrement())
+  shopDomain              String
+  date                    DateTime
+  adId                    String
+  // Resolved gender: "male" | "female" | "unknown"
+  gender                  String
+  // Meta age bracket (e.g. "25-34") or "unknown"
+  ageBracket              String
+  attributedOrders        Int      @default(0)
+  attributedRevenue       Float    @default(0)
+  newCustomerOrders       Int      @default(0)
+  newCustomerRevenue      Float    @default(0)
+  existingCustomerOrders  Int      @default(0)
+  existingCustomerRevenue Float    @default(0)
+
+  @@unique([shopDomain, date, adId, gender, ageBracket])
+  @@index([shopDomain, date])
+  @@index([shopDomain, adId, date])
+}
+
 model AiInsight {
   id          String   @id @default(uuid())
   shopDomain  String
