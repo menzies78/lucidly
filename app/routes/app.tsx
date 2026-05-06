@@ -148,9 +148,8 @@ export default function App() {
         <Link to="/app/products">Products</Link>
         <Link to="/app/campaigns">Ad Campaigns</Link>
         <Link to="/app/geo">Countries</Link>
-        <Link to="/app/waste">Waste Detector</Link>
-        <Link to="/app/weekly">Weekly Report</Link>
         <Link to="/app/orders">Order Explorer</Link>
+        <Link to="/app/weekly">Weekly Report</Link>
         <Link to="/app/utm">UTM Manager</Link>
       </NavMenu>
       <DateRangeSelector />

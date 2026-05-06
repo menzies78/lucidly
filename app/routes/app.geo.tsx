@@ -801,37 +801,36 @@ export default function GeoPerformance() {
   }, [filteredRows, totalSpend]);
 
   // ── Quick-stat tiles data ──
+  // Four headline stats per country, all gated on a minimum order count
+  // so a single fluke doesn't crown a country. AOV uses attributed orders
+  // (Meta-driven) so it stays consistent with the rest of the page.
   const quickStats = useMemo(() => {
-    // a. Top Country for New Customers (unique customers, not orders)
-    const newCustSorted = [...overallRows].filter((r: any) => r.newCustomers > 0).sort((a: any, b: any) => b.newCustomers - a.newCustomers);
-    const topNewCust = newCustSorted[0] || null;
+    const MIN_ORDERS = 5;
+    const eligible = [...overallRows].filter((r: any) => r.attributedOrders >= MIN_ORDERS);
 
-    // b. Best ROAS Country (min 10 orders)
-    const roasCandidates = [...overallRows].filter((r: any) => r.attributedOrders >= 10 && r.blendedROAS > 0);
-    const bestROAS = roasCandidates.sort((a: any, b: any) => b.blendedROAS - a.blendedROAS)[0] || null;
+    // 1. Highest new-customer revenue (Meta-driven).
+    const highestNewCustRev = [...overallRows]
+      .filter((r: any) => r.newCustomerRevenue > 0)
+      .sort((a: any, b: any) => b.newCustomerRevenue - a.newCustomerRevenue)[0] || null;
 
-    // c. Cheapest CPA Country (min 5 orders)
-    const cpaCandidates = [...overallRows].filter((r: any) => r.attributedOrders >= 5 && r.cpa > 0);
-    const cheapestCPA = cpaCandidates.sort((a: any, b: any) => a.cpa - b.cpa)[0] || null;
+    // 2. Highest blended ROAS (gated by min orders to avoid £5/£100 noise).
+    const highestROAS = eligible
+      .filter((r: any) => r.blendedROAS > 0)
+      .sort((a: any, b: any) => b.blendedROAS - a.blendedROAS)[0] || null;
 
-    // d. Spend Drains - campaigns with highest spend but ROAS < 1x
-    const drainCampaigns = (campaignEntities as any[])
-      .filter(e => {
-        const rev = e.totalAttributedRevenue + e.totalUnverifiedRevenue;
-        const roas = e.totalSpend > 0 ? rev / e.totalSpend : 0;
-        return e.totalSpend > 0 && roas < 1;
-      })
-      .sort((a, b) => b.totalSpend - a.totalSpend);
-    const topDrain = drainCampaigns[0] || null;
-    const topDrainROAS = topDrain && topDrain.totalSpend > 0
-      ? r2((topDrain.totalAttributedRevenue + topDrain.totalUnverifiedRevenue) / topDrain.totalSpend) : 0;
+    // 3. Highest AOV among Meta-attributed orders.
+    const highestAOV = eligible
+      .map((r: any) => ({ ...r, aov: r.attributedOrders > 0 ? r2(r.attributedRevenue / r.attributedOrders) : 0 }))
+      .filter((r: any) => r.aov > 0)
+      .sort((a: any, b: any) => b.aov - a.aov)[0] || null;
 
-    // e. Geo Mismatch - countries with spend but zero conversions
-    const mismatchCountries = overallRows.filter((r: any) => r.spend > 0 && r.attributedOrders === 0 && r.metaConversions === 0);
-    const mismatchSpend = mismatchCountries.reduce((s: number, r: any) => s + r.spend, 0);
+    // 4. Lowest Meta CPA (cheapest cost per attributed order).
+    const lowestCPA = eligible
+      .filter((r: any) => r.cpa > 0)
+      .sort((a: any, b: any) => a.cpa - b.cpa)[0] || null;
 
-    return { topNewCust, bestROAS, cheapestCPA, topDrain, topDrainROAS, mismatchCountries, mismatchSpend };
-  }, [overallRows, campaignEntities]);
+    return { highestNewCustRev, highestROAS, highestAOV, lowestCPA, MIN_ORDERS };
+  }, [overallRows]);
 
   // ── Page summary bullets ──
   // At-a-glance country-level read-out for the selected range. All values
@@ -840,77 +839,53 @@ export default function GeoPerformance() {
   const summaryBullets: SummaryBullet[] = useMemo(() => {
     const out: SummaryBullet[] = [];
 
-    if (quickStats.topNewCust) {
+    if (quickStats.highestNewCustRev) {
+      const c = quickStats.highestNewCustRev;
       out.push({
         tone: "positive",
         text: (
           <>
-            <strong>Top new-customer country:</strong> {countryName(quickStats.topNewCust.country)} - {quickStats.topNewCust.newCustomers} new customers ({fmtCompact(quickStats.topNewCust.newCustomerRevenue, cs)} rev)
+            <strong>Highest new-customer revenue:</strong> {countryName(c.country)} - {fmtCompact(c.newCustomerRevenue, cs)} ({c.newCustomers} new customers)
           </>
         ),
       });
     }
 
-    if (quickStats.bestROAS) {
+    if (quickStats.highestROAS) {
       out.push({
         tone: "positive",
         text: (
           <>
-            <strong>Best Meta ROAS:</strong> {countryName(quickStats.bestROAS.country)} - {quickStats.bestROAS.blendedROAS}x ({quickStats.bestROAS.attributedOrders} orders)
+            <strong>Highest ROAS:</strong> {countryName(quickStats.highestROAS.country)} - {quickStats.highestROAS.blendedROAS}x ({quickStats.highestROAS.attributedOrders} orders)
           </>
         ),
       });
     }
 
-    if (quickStats.cheapestCPA) {
+    if (quickStats.highestAOV) {
       out.push({
         tone: "positive",
         text: (
           <>
-            <strong>Cheapest Meta CPA:</strong> {countryName(quickStats.cheapestCPA.country)} - {cs}{Math.round(quickStats.cheapestCPA.cpa)} per order
+            <strong>Highest AOV:</strong> {countryName(quickStats.highestAOV.country)} - {cs}{Math.round(quickStats.highestAOV.aov).toLocaleString()} per order
           </>
         ),
       });
     }
 
-    if (quickStats.topDrain) {
+    if (quickStats.lowestCPA) {
       out.push({
-        tone: "negative",
+        tone: "positive",
         text: (
           <>
-            <strong>Top spend drain:</strong> {quickStats.topDrain.entityName} - {fmtCompact(quickStats.topDrain.totalSpend, cs)} spent at {quickStats.topDrainROAS}x ROAS
-          </>
-        ),
-      });
-    }
-
-    if (quickStats.mismatchCountries.length > 0) {
-      out.push({
-        tone: "warning",
-        text: (
-          <>
-            <strong>Geo mismatch:</strong> {quickStats.mismatchCountries.length} {quickStats.mismatchCountries.length === 1 ? "country" : "countries"} with Meta spend but zero conversions - {fmtCompact(quickStats.mismatchSpend, cs)} at risk
-          </>
-        ),
-      });
-    }
-
-    // Country concentration - how top-heavy is the Meta spend?
-    const spendRows = [...overallRows].filter((r: any) => r.spend > 0).sort((a: any, b: any) => b.spend - a.spend);
-    if (spendRows.length > 0) {
-      const top = spendRows[0];
-      out.push({
-        tone: "neutral",
-        text: (
-          <>
-            <strong>Spend concentration:</strong> {countryName(top.country)} receives {top.spendPct}% of Meta spend
+            <strong>Lowest CPA:</strong> {countryName(quickStats.lowestCPA.country)} - {cs}{Math.round(quickStats.lowestCPA.cpa)} per order
           </>
         ),
       });
     }
 
     return out;
-  }, [quickStats, overallRows, cs]);
+  }, [quickStats, cs]);
 
   const customerFilterToolbar = (
     <Popover
@@ -971,371 +946,70 @@ export default function GeoPerformance() {
           <CustomerMapExplorer blob={customerMapBlob} cs={cs} protomapsKey={protomapsKey} />
 
           {/* ═══ 0. QUICK-STAT TILES ═══ */}
-          <TileGrid pageId="geo-v2" columns={4} tiles={[
-            { id: "topNewCust", label: "Top New Customers", render: () => (
+          {/* Flags rendered at 36px so the country is the headline of each tile -
+              this is a country-level page, not a metrics-only page. */}
+          <TileGrid pageId="geo-v3" columns={4} tiles={[
+            { id: "highestNewCustRev", label: "Highest New Customer Revenue", render: () => (
               <SummaryTile
-                label="Top Meta New Customers"
-                value={quickStats.topNewCust ? `${countryFlag(quickStats.topNewCust.country)} ${quickStats.topNewCust.newCustomers}` : "-"}
-                subtitle={quickStats.topNewCust ? `${countryName(quickStats.topNewCust.country)} · ${fmtCompact(quickStats.topNewCust.newCustomerRevenue, cs)} rev` : "No data"}
-                tooltip={{ definition: "Country with the most unique first-time Meta-acquired customers within the selected date range" }}
+                label="Highest New Customer Revenue"
+                value={quickStats.highestNewCustRev ? (
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: "10px" }}>
+                    <span style={{ fontSize: "36px", lineHeight: 1 }}>{countryFlag(quickStats.highestNewCustRev.country)}</span>
+                    <span>{fmtCompact(quickStats.highestNewCustRev.newCustomerRevenue, cs)}</span>
+                  </span>
+                ) : "-"}
+                subtitle={quickStats.highestNewCustRev ? `${countryName(quickStats.highestNewCustRev.country)} · ${quickStats.highestNewCustRev.newCustomers} new customers` : "No data"}
+                tooltip={{ definition: "Country generating the most revenue from first-time Meta-acquired customers within the selected date range" }}
               />
             )},
-            { id: "bestRoas", label: "Best Meta ROAS Country", render: () => (
+            { id: "highestROAS", label: "Highest ROAS", render: () => (
               <SummaryTile
-                label="Best Meta ROAS Country"
-                value={quickStats.bestROAS ? `${countryFlag(quickStats.bestROAS.country)} ${quickStats.bestROAS.blendedROAS}x` : "-"}
-                subtitle={quickStats.bestROAS ? `${countryName(quickStats.bestROAS.country)} · ${quickStats.bestROAS.attributedOrders} orders` : "Min 10 orders needed"}
-                tooltip={{ definition: "Country with the highest Meta blended ROAS within the selected date range (min 10 attributed orders)", calc: "(Matched + unverified revenue) ÷ Meta spend per country" }}
+                label="Highest ROAS"
+                value={quickStats.highestROAS ? (
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: "10px" }}>
+                    <span style={{ fontSize: "36px", lineHeight: 1 }}>{countryFlag(quickStats.highestROAS.country)}</span>
+                    <span>{quickStats.highestROAS.blendedROAS}x</span>
+                  </span>
+                ) : "-"}
+                subtitle={quickStats.highestROAS ? `${countryName(quickStats.highestROAS.country)} · ${quickStats.highestROAS.attributedOrders} orders` : `Min ${quickStats.MIN_ORDERS} orders needed`}
+                tooltip={{ definition: `Country with the highest Meta blended ROAS within the selected date range (min ${quickStats.MIN_ORDERS} attributed orders)`, calc: "(Matched + unverified revenue) ÷ Meta spend per country" }}
               />
             )},
-            { id: "cheapestCpa", label: "Cheapest Meta CPA", render: () => (
+            { id: "highestAOV", label: "Highest AOV", render: () => (
               <SummaryTile
-                label="Cheapest Meta CPA"
-                value={quickStats.cheapestCPA ? `${countryFlag(quickStats.cheapestCPA.country)} ${cs}${Math.round(quickStats.cheapestCPA.cpa)}` : "-"}
-                subtitle={quickStats.cheapestCPA ? `${countryName(quickStats.cheapestCPA.country)} · ${quickStats.cheapestCPA.attributedOrders} orders` : "Min 5 orders needed"}
-                tooltip={{ definition: "Country with the lowest Meta cost per attributed order within the selected date range (min 5 orders)" }}
+                label="Highest AOV"
+                value={quickStats.highestAOV ? (
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: "10px" }}>
+                    <span style={{ fontSize: "36px", lineHeight: 1 }}>{countryFlag(quickStats.highestAOV.country)}</span>
+                    <span>{cs}{Math.round(quickStats.highestAOV.aov).toLocaleString()}</span>
+                  </span>
+                ) : "-"}
+                subtitle={quickStats.highestAOV ? `${countryName(quickStats.highestAOV.country)} · ${quickStats.highestAOV.attributedOrders} orders` : `Min ${quickStats.MIN_ORDERS} orders needed`}
+                tooltip={{ definition: `Country with the highest average order value among Meta-attributed orders (min ${quickStats.MIN_ORDERS} orders)`, calc: "Attributed revenue ÷ attributed orders per country" }}
               />
             )},
-            { id: "spendDrains", label: "Meta Spend Drains", render: () => (
+            { id: "lowestCPA", label: "Lowest CPA", render: () => (
               <SummaryTile
-                label="Meta Spend Drains"
-                value={quickStats.topDrain ? fmtCompact(quickStats.topDrain.totalSpend, cs) : "No drains"}
-                subtitle={quickStats.topDrain ? `${quickStats.topDrain.entityName} · ${quickStats.topDrainROAS}x ROAS` : "All campaigns above 1x ROAS"}
-                tooltip={{ definition: "Meta campaign with highest spend that has ROAS below 1x within the selected date range", calc: "Campaigns where (revenue ÷ spend) < 1, sorted by spend" }}
-              />
-            )},
-            { id: "geoMismatch", label: "Meta Geo Mismatch", render: () => (
-              <SummaryTile
-                label="Meta Geo Mismatch"
-                value={quickStats.mismatchCountries.length > 0 ? `${quickStats.mismatchCountries.length} ${quickStats.mismatchCountries.length === 1 ? "country" : "countries"}` : "All clear"}
-                subtitle={quickStats.mismatchCountries.length > 0 ? `${fmtCompact(quickStats.mismatchSpend, cs)} wasted Meta spend` : "No countries with Meta spend but zero conversions"}
-                tooltip={{ definition: "Countries where you're spending on Meta ads but getting zero conversions within the selected date range" }}
+                label="Lowest CPA"
+                value={quickStats.lowestCPA ? (
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: "10px" }}>
+                    <span style={{ fontSize: "36px", lineHeight: 1 }}>{countryFlag(quickStats.lowestCPA.country)}</span>
+                    <span>{cs}{Math.round(quickStats.lowestCPA.cpa)}</span>
+                  </span>
+                ) : "-"}
+                subtitle={quickStats.lowestCPA ? `${countryName(quickStats.lowestCPA.country)} · ${quickStats.lowestCPA.attributedOrders} orders` : `Min ${quickStats.MIN_ORDERS} orders needed`}
+                tooltip={{ definition: `Country with the lowest Meta cost per attributed order within the selected date range (min ${quickStats.MIN_ORDERS} orders)` }}
               />
             )},
           ] as TileDef[]} />
 
-          {/* ═══ 1. GEO PERFORMANCE TABLE ═══ */}
-          <Card>
-            <BlockStack gap="400">
-              {/* Header: Title + Tabs + Customer Filter */}
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: "10px" }}>
-                <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
-                  <Text as="h2" variant="headingLg">Countries</Text>
-                  <div style={{ display: "flex", gap: "4px" }}>
-                    {TAB_LABELS.map((label, i) => (
-                      <button
-                        key={label}
-                        className={`geo-tab ${selectedTab === i ? "geo-tab-active" : "geo-tab-inactive"}`}
-                        onClick={() => {
-                          setSelectedTab(i);
-                          // Pre-expand all entities for entity tabs
-                          const ents = i === 1 ? campaignEntities : i === 2 ? adsetEntities : i === 3 ? adEntities : [];
-                          setExpandedEntities(new Set(ents.map((e: any) => e.entityId)));
-                        }}
-                      >
-                        {label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-                {customerFilterToolbar}
-              </div>
-
-              {/* Spend Concentration Strip */}
-              {totalSpend > 0 && (
-                <div>
-                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "4px" }}>
-                    <span style={{ fontSize: "11px", fontWeight: 600, color: "#6B7280", textTransform: "uppercase", letterSpacing: "0.5px" }}>Spend Distribution</span>
-                    <span style={{ fontSize: "11px", color: "#9CA3AF" }}>{fmtCompact(totalSpend, cs)} total</span>
-                  </div>
-                  <div style={{ height: "8px", borderRadius: "4px", overflow: "hidden", display: "flex", background: "#F3F4F6" }}>
-                    {filteredRows.filter((r: any) => r.spend > 0).sort((a: any, b: any) => b.spend - a.spend).map((r: any, i: number) => {
-                      const pct = (r.spend / totalSpend) * 100;
-                      if (pct < 0.5) return null;
-                      const colors = ["#7C3AED", "#A78BFA", "#C4B5FD", "#DDD6FE", "#EDE9FE", "#F5F3FF"];
-                      return (
-                        <div
-                          key={r.country}
-                          style={{ width: `${pct}%`, background: colors[Math.min(i, colors.length - 1)], height: "100%" }}
-                          title={`${countryName(r.country)}: ${Math.round(pct)}%`}
-                        />
-                      );
-                    })}
-                  </div>
-                  <div style={{ display: "flex", gap: "12px", marginTop: "4px", flexWrap: "wrap" }}>
-                    {filteredRows.filter((r: any) => r.spendPct >= 1).sort((a: any, b: any) => b.spend - a.spend).slice(0, 6).map((r: any, i: number) => {
-                      const colors = ["#7C3AED", "#A78BFA", "#C4B5FD", "#DDD6FE", "#EDE9FE", "#F5F3FF"];
-                      return (
-                        <div key={r.country} style={{ display: "flex", alignItems: "center", gap: "4px", fontSize: "11px", color: "#6B7280" }}>
-                          <div style={{ width: "8px", height: "8px", borderRadius: "2px", background: colors[Math.min(i, colors.length - 1)] }} />
-                          {countryName(r.country)} {Math.round(r.spendPct)}%
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
-
-              {/* ── ALL TAB: Country rows ── */}
-              {level === "all" && (
-                <div style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
-                  {filteredRows.map((row: any, i: number) => {
-                    const rs = roasStyle(row.blendedROAS);
-                    const newPct = row.attributedOrders > 0 ? Math.round((row.newCustomerOrders / row.attributedOrders) * 100) : 0;
-                    const isHovered = hoveredCountry === row.country;
-                    const isUnknown = !row.country || row.country === "XX" || row.country === "unknown";
-
-                    return (
-                      <div
-                        key={row.country}
-                        style={{
-                          display: "flex", alignItems: "center", gap: "14px", padding: "10px 14px",
-                          opacity: isUnknown ? 0.45 : 1,
-                          borderRadius: "10px", background: isHovered ? "#F5F3FF" : i % 2 === 0 ? "#FAFAFA" : "#fff",
-                          transition: "background 0.15s", cursor: "default",
-                        }}
-                        onMouseEnter={() => setHoveredCountry(row.country)}
-                        onMouseLeave={() => setHoveredCountry(null)}
-                      >
-                        {/* Rank */}
-                        <div style={{
-                          width: "26px", height: "26px", borderRadius: "50%", flexShrink: 0,
-                          background: i < 3 ? "#7C3AED" : "#E5E7EB",
-                          color: i < 3 ? "#fff" : "#6B7280",
-                          display: "flex", alignItems: "center", justifyContent: "center",
-                          fontSize: "11px", fontWeight: 700,
-                        }}>
-                          {i + 1}
-                        </div>
-
-                        {/* Flag + Name */}
-                        <div style={{ width: "130px", flexShrink: 0 }}>
-                          <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-                            <span style={{ fontSize: "18px", lineHeight: 1 }}>{countryFlag(row.country)}</span>
-                            <span style={{ fontWeight: 700, fontSize: "13px", color: "#1F2937" }}>{countryName(row.country)}</span>
-                          </div>
-                        </div>
-
-                        {/* Spend bar */}
-                        <div style={{ flex: 1, minWidth: "110px" }}>
-                          <div style={{ display: "flex", justifyContent: "space-between", fontSize: "11px", color: "#6B7280", marginBottom: "3px" }}>
-                            <span style={{ fontWeight: 600 }}>{fmtCompact(row.spend, cs)}</span>
-                            <span>{row.spendPct > 0 ? `${Math.round(row.spendPct)}%` : "\u2014"}</span>
-                          </div>
-                          <div style={{ height: "5px", background: "#EDE9FE", borderRadius: "3px", overflow: "hidden" }}>
-                            <div style={{ height: "100%", width: `${Math.min(row.spendPct, 100)}%`, background: "#7C3AED", borderRadius: "3px", transition: "width 0.3s" }} />
-                          </div>
-                        </div>
-
-                        {/* Revenue */}
-                        <div style={{ textAlign: "right", minWidth: "80px" }}>
-                          <div style={{ fontSize: "10px", color: "#9CA3AF", textTransform: "uppercase", letterSpacing: "0.3px" }}>Revenue</div>
-                          <div style={{ fontWeight: 700, fontSize: "14px", color: "#1F2937" }}>{fmtCompact(row.attributedRevenue, cs)}</div>
-                        </div>
-
-                        {/* ROAS pill */}
-                        <div style={{ minWidth: "58px", textAlign: "center" }}>
-                          {row.blendedROAS > 0 ? (
-                            <div style={{
-                              display: "inline-block", padding: "3px 10px", borderRadius: "12px",
-                              fontSize: "12px", fontWeight: 700, background: rs.bg, color: rs.text,
-                            }}>
-                              {row.blendedROAS}x
-                            </div>
-                          ) : <span style={{ color: "#D1D5DB", fontSize: "12px" }}>{"\u2014"}</span>}
-                        </div>
-
-                        {/* CPA */}
-                        <div style={{ textAlign: "right", minWidth: "62px" }}>
-                          <div style={{ fontSize: "10px", color: "#9CA3AF", textTransform: "uppercase", letterSpacing: "0.3px" }}>CPA</div>
-                          <div style={{ fontWeight: 600, fontSize: "13px", color: "#1F2937" }}>
-                            {row.cpa > 0 ? `${cs}${Math.round(row.cpa)}` : "\u2014"}
-                          </div>
-                        </div>
-
-                        {/* Orders */}
-                        <div style={{ textAlign: "right", minWidth: "55px" }}>
-                          <div style={{ fontSize: "10px", color: "#9CA3AF", textTransform: "uppercase", letterSpacing: "0.3px" }}>Orders</div>
-                          <div style={{ fontWeight: 700, fontSize: "14px", color: "#1F2937" }}>{row.attributedOrders.toLocaleString()}</div>
-                        </div>
-
-                        {/* New/Existing split */}
-                        <div style={{ minWidth: "100px" }}>
-                          <div style={{ display: "flex", justifyContent: "space-between", fontSize: "10px", color: "#9CA3AF", marginBottom: "3px" }}>
-                            <span>{row.newCustomerOrders} new</span>
-                            <span>{row.existingCustomerOrders} ret</span>
-                          </div>
-                          <div style={{ height: "5px", borderRadius: "3px", overflow: "hidden", display: "flex", background: "#F3F4F6" }}>
-                            {row.attributedOrders > 0 && (
-                              <>
-                                <div style={{ height: "100%", width: `${newPct}%`, background: "#7C3AED" }} />
-                                <div style={{ height: "100%", flex: 1, background: "#0891B2" }} />
-                              </>
-                            )}
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  })}
-
-                  {/* Summary footer */}
-                  {filteredRows.length > 0 && (
-                    <div style={{
-                      display: "flex", alignItems: "center", gap: "14px", padding: "10px 14px",
-                      borderRadius: "10px", background: "#F5F3FF", marginTop: "4px",
-                    }}>
-                      <div style={{ width: "26px", height: "26px", flexShrink: 0 }} />
-                      <div style={{ width: "130px", flexShrink: 0, fontWeight: 700, fontSize: "13px", color: "#7C3AED" }}>
-                        {filteredRows.length} countries
-                      </div>
-                      <div style={{ flex: 1, minWidth: "110px", fontWeight: 700, fontSize: "12px", color: "#7C3AED" }}>
-                        {fmtCompact(totalSpend, cs)} total
-                      </div>
-                      <div style={{ textAlign: "right", minWidth: "80px", fontWeight: 700, fontSize: "14px", color: "#7C3AED" }}>
-                        {fmtCompact(totalRevenue, cs)}
-                      </div>
-                      <div style={{ minWidth: "58px", textAlign: "center" }}>
-                        {totalSpend > 0 && (
-                          <div style={{ display: "inline-block", padding: "3px 10px", borderRadius: "12px", fontSize: "12px", fontWeight: 700, background: "#EDE9FE", color: "#7C3AED" }}>
-                            {r2(totalRevenue / totalSpend)}x
-                          </div>
-                        )}
-                      </div>
-                      <div style={{ textAlign: "right", minWidth: "62px", fontWeight: 700, fontSize: "13px", color: "#7C3AED" }}>
-                        {totalOrders > 0 ? `${cs}${Math.round(totalSpend / totalOrders)}` : "\u2014"}
-                      </div>
-                      <div style={{ textAlign: "right", minWidth: "55px", fontWeight: 700, fontSize: "14px", color: "#7C3AED" }}>
-                        {totalOrders.toLocaleString()}
-                      </div>
-                      <div style={{ minWidth: "100px" }} />
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* ── ENTITY TABS: Campaign / Ad Set / Ad ── */}
-              {level !== "all" && (
-                <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-                  {entities.map((entity: any) => {
-                    const isExpanded = expandedEntities.has(entity.entityId);
-                    const totalRev = entity.totalAttributedRevenue + entity.totalUnverifiedRevenue;
-                    const roas = entity.totalSpend > 0 ? r2(totalRev / entity.totalSpend) : 0;
-                    const rs = roasStyle(roas);
-                    const entityCPA = entity.totalAttributedOrders > 0 ? r2(entity.totalSpend / entity.totalAttributedOrders) : 0;
-
-                    return (
-                      <div key={entity.entityId} style={{ borderRadius: "10px", overflow: "hidden", border: "1px solid #E5E7EB" }}>
-                        {/* Entity header */}
-                        <div
-                          onClick={() => toggleEntity(entity.entityId)}
-                          style={{
-                            display: "flex", alignItems: "center", gap: "0",
-                            padding: "12px 14px", background: "#FAFAFA", cursor: "pointer",
-                            borderBottom: isExpanded ? "1px solid #E5E7EB" : "none",
-                          }}
-                        >
-                          <span style={{ fontSize: "12px", color: "#6B7280", transition: "transform 0.2s", transform: isExpanded ? "rotate(90deg)" : "rotate(0deg)", marginRight: "10px", flexShrink: 0 }}>
-                            &#9654;
-                          </span>
-                          <div style={{ flex: 1, minWidth: 0, marginRight: "12px" }}>
-                            <div style={{ fontWeight: 700, fontSize: "13px", color: "#1F2937", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                              {entity.entityName}
-                            </div>
-                            <div style={{ fontSize: "11px", color: "#9CA3AF" }}>
-                              {entity.countries.length} countries
-                            </div>
-                          </div>
-
-                          <div style={{ textAlign: "right", width: "90px", flexShrink: 0 }}>
-                            <div style={{ fontWeight: 700, fontSize: "13px", color: "#1F2937" }}>{fmtCompact(entity.totalSpend, cs)}</div>
-                          </div>
-                          <div style={{ textAlign: "right", width: "90px", flexShrink: 0 }}>
-                            <div style={{ fontWeight: 700, fontSize: "13px", color: "#1F2937" }}>{fmtCompact(entity.totalAttributedRevenue, cs)}</div>
-                          </div>
-                          <div style={{ width: "65px", flexShrink: 0, textAlign: "center" }}>
-                            {roas > 0 ? (
-                              <div style={{ display: "inline-block", padding: "3px 10px", borderRadius: "12px", fontSize: "12px", fontWeight: 700, background: rs.bg, color: rs.text }}>
-                                {roas}x
-                              </div>
-                            ) : <span style={{ color: "#D1D5DB", fontSize: "12px" }}>{"\u2014"}</span>}
-                          </div>
-                          <div style={{ textAlign: "right", width: "70px", flexShrink: 0 }}>
-                            <div style={{ fontWeight: 600, fontSize: "13px", color: "#1F2937" }}>
-                              {entityCPA > 0 ? `${cs}${Math.round(entityCPA)}` : "\u2014"}
-                            </div>
-                          </div>
-                          <div style={{ textAlign: "right", width: "60px", flexShrink: 0 }}>
-                            <div style={{ fontWeight: 700, fontSize: "13px", color: "#1F2937" }}>{entity.totalAttributedOrders.toLocaleString()}</div>
-                          </div>
-                        </div>
-
-                        {/* Column headers */}
-                        {isExpanded && (
-                          <div style={{
-                            display: "flex", alignItems: "center", gap: "0",
-                            padding: "6px 14px 6px 36px", background: "#F9FAFB",
-                            borderBottom: "1px solid #F3F4F6",
-                          }}>
-                            <div style={{ flex: 1, minWidth: 0, fontSize: "10px", fontWeight: 600, color: "#9CA3AF", textTransform: "uppercase", letterSpacing: "0.5px" }}>Country</div>
-                            <div style={{ textAlign: "right", width: "90px", flexShrink: 0, fontSize: "10px", fontWeight: 600, color: "#9CA3AF", textTransform: "uppercase", letterSpacing: "0.5px" }}>Spend</div>
-                            <div style={{ textAlign: "right", width: "90px", flexShrink: 0, fontSize: "10px", fontWeight: 600, color: "#9CA3AF", textTransform: "uppercase", letterSpacing: "0.5px" }}>Revenue</div>
-                            <div style={{ textAlign: "center", width: "65px", flexShrink: 0, fontSize: "10px", fontWeight: 600, color: "#9CA3AF", textTransform: "uppercase", letterSpacing: "0.5px" }}>ROAS</div>
-                            <div style={{ textAlign: "right", width: "70px", flexShrink: 0, fontSize: "10px", fontWeight: 600, color: "#9CA3AF", textTransform: "uppercase", letterSpacing: "0.5px" }}>CPA</div>
-                            <div style={{ textAlign: "right", width: "60px", flexShrink: 0, fontSize: "10px", fontWeight: 600, color: "#9CA3AF", textTransform: "uppercase", letterSpacing: "0.5px" }}>Orders</div>
-                          </div>
-                        )}
-
-                        {/* Country sub-rows - aligned with parent columns */}
-                        {isExpanded && entity.countries.map((c: any, ci: number) => {
-                          const filtered = applyFilter(c);
-                          const crs = roasStyle(filtered.blendedROAS);
-                          const countryCPA = filtered.attributedOrders > 0 ? r2(filtered.spend / filtered.attributedOrders) : 0;
-                          return (
-                            <div key={c.country} style={{
-                              display: "flex", alignItems: "center", gap: "0",
-                              padding: "8px 14px 8px 36px",
-                              background: ci % 2 === 0 ? "#fff" : "#FAFAFA",
-                              borderBottom: ci < entity.countries.length - 1 ? "1px solid #F3F4F6" : "none",
-                            }}>
-                              <div style={{ flex: 1, minWidth: 0, display: "flex", alignItems: "center", gap: "5px" }}>
-                                <span style={{ fontSize: "15px" }}>{countryFlag(c.country)}</span>
-                                <span style={{ fontSize: "12px", fontWeight: 600, color: "#4B5563" }}>{countryName(c.country)}</span>
-                                {filtered.spendPct > 0 && (
-                                  <span style={{ fontSize: "10px", color: "#9CA3AF" }}>({Math.round(filtered.spendPct)}%)</span>
-                                )}
-                              </div>
-                              <div style={{ textAlign: "right", width: "90px", flexShrink: 0, fontSize: "12px", fontWeight: 600, color: "#4B5563" }}>
-                                {fmtCompact(filtered.spend, cs)}
-                              </div>
-                              <div style={{ textAlign: "right", width: "90px", flexShrink: 0, fontSize: "12px", fontWeight: 600, color: "#4B5563" }}>
-                                {fmtCompact(filtered.attributedRevenue, cs)}
-                              </div>
-                              <div style={{ width: "65px", flexShrink: 0, textAlign: "center" }}>
-                                {filtered.blendedROAS > 0 ? (
-                                  <div style={{ display: "inline-block", padding: "2px 8px", borderRadius: "10px", fontSize: "11px", fontWeight: 700, background: crs.bg, color: crs.text }}>
-                                    {filtered.blendedROAS}x
-                                  </div>
-                                ) : <span style={{ color: "#D1D5DB", fontSize: "11px" }}>{"\u2014"}</span>}
-                              </div>
-                              <div style={{ textAlign: "right", width: "70px", flexShrink: 0, fontSize: "12px", fontWeight: 600, color: "#4B5563" }}>
-                                {countryCPA > 0 ? `${cs}${Math.round(countryCPA)}` : "\u2014"}
-                              </div>
-                              <div style={{ textAlign: "right", width: "60px", flexShrink: 0, fontSize: "12px", fontWeight: 600, color: "#4B5563" }}>
-                                {filtered.attributedOrders > 0 ? filtered.attributedOrders.toLocaleString() : "\u2014"}
-                              </div>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </BlockStack>
-          </Card>
-
-          {/* ═══ 2. VISUAL TILES (full width) ═══ */}
-          <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+          {/* ═══ 2. VISUAL TILES (50/50 row) ═══ */}
+          {/* Spend vs Revenue and Untapped Markets read together - one shows
+              where Meta money goes, the other shows where Shopify revenue is
+              already coming from without any Meta investment. Side-by-side
+              makes the "we're not advertising in country X but we're already
+              selling there" comparison obvious. */}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px", alignItems: "start" }}>
 
             {/* ── Spend vs Revenue ── */}
             <Card>
@@ -1345,8 +1019,11 @@ export default function GeoPerformance() {
                 <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
                   {spendVsRevBars.map(b => (
                     <div key={b.cc} style={{ fontSize: "12px" }}>
-                      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "3px" }}>
-                        <span style={{ fontWeight: 600, color: "#1F2937" }}>{countryFlag(b.cc)} {b.name}</span>
+                      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "3px", alignItems: "center" }}>
+                        <span style={{ fontWeight: 600, color: "#1F2937", display: "inline-flex", alignItems: "center", gap: "8px" }}>
+                          <span style={{ fontSize: "22px", lineHeight: 1 }}>{countryFlag(b.cc)}</span>
+                          {b.name}
+                        </span>
                       </div>
                       {/* Spend bar */}
                       <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "2px" }}>
@@ -1374,7 +1051,7 @@ export default function GeoPerformance() {
             <Card>
               <BlockStack gap="300">
                 <Text as="h2" variant="headingSm">Untapped Markets</Text>
-                <Text as="p" variant="bodySm" tone="subdued">Revenue with zero ad spend -- expansion opportunities</Text>
+                <Text as="p" variant="bodySm" tone="subdued">Countries with Shopify sales but zero Meta ad spend -- where you could expand next</Text>
                 {untappedMarkets.length > 0 ? (
                   <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
                     {untappedMarkets.map(m => (
@@ -1382,8 +1059,8 @@ export default function GeoPerformance() {
                         display: "flex", alignItems: "center", justifyContent: "space-between",
                         padding: "8px 10px", borderRadius: "8px", background: "#F0FDF4",
                       }}>
-                        <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-                          <span style={{ fontSize: "16px" }}>{countryFlag(m.cc)}</span>
+                        <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                          <span style={{ fontSize: "26px", lineHeight: 1 }}>{countryFlag(m.cc)}</span>
                           <div>
                             <div style={{ fontSize: "12px", fontWeight: 600, color: "#1F2937" }}>{m.name}</div>
                             <div style={{ fontSize: "10px", color: "#6B7280" }}>{m.orders} orders &middot; {cs}0 ad spend</div>
@@ -1403,81 +1080,7 @@ export default function GeoPerformance() {
               </BlockStack>
             </Card>
 
-            {/* ── Concentration Risk ── */}
-            <Card>
-              <BlockStack gap="300">
-                <Text as="h2" variant="headingSm">Spend Concentration</Text>
-                <Text as="p" variant="bodySm" tone="subdued">How concentrated is your ad spend?</Text>
-                {totalSpend > 0 ? (
-                  <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
-                    {/* Visual bar */}
-                    <div>
-                      <div style={{ height: "28px", borderRadius: "8px", overflow: "hidden", display: "flex", background: "#F3F4F6", position: "relative" }}>
-                        <div style={{ width: `${concentration.top1}%`, background: "#7C3AED", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                          <span style={{ color: "#fff", fontSize: "10px", fontWeight: 700 }}>
-                            {concentration.top1Name} {concentration.top1}%
-                          </span>
-                        </div>
-                        {concentration.top2 > concentration.top1 && (
-                          <div style={{ width: `${concentration.top2 - concentration.top1}%`, background: "#A78BFA", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                            <span style={{ color: "#fff", fontSize: "10px", fontWeight: 600 }}>
-                              {concentration.top2Name.split(" ")[0]}
-                            </span>
-                          </div>
-                        )}
-                        {concentration.top3 > concentration.top2 && (
-                          <div style={{ width: `${concentration.top3 - concentration.top2}%`, background: "#C4B5FD", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                            <span style={{ color: "#4C1D95", fontSize: "10px", fontWeight: 600 }}>
-                              {concentration.top3Name.split(" ")[0]}
-                            </span>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-
-                    {/* Stats */}
-                    <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-                      {[
-                        { label: "Top 1 country", pct: concentration.top1, name: concentration.top1Name },
-                        { label: "Top 2 countries", pct: concentration.top2, name: `${concentration.top1Name} + ${concentration.top2Name}` },
-                        { label: "Top 3 countries", pct: concentration.top3, name: `+ ${concentration.top3Name}` },
-                      ].filter(s => s.pct > 0).map(s => (
-                        <div key={s.label} style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                          <div>
-                            <div style={{ fontSize: "12px", fontWeight: 600, color: "#1F2937" }}>{s.label}</div>
-                            <div style={{ fontSize: "10px", color: "#9CA3AF" }}>{s.name}</div>
-                          </div>
-                          <div style={{
-                            fontSize: "18px", fontWeight: 700,
-                            color: s.pct >= 90 ? "#DC2626" : s.pct >= 70 ? "#D97706" : "#059669",
-                          }}>
-                            {s.pct}%
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-
-                    {/* Verdict */}
-                    <div style={{
-                      padding: "8px 12px", borderRadius: "8px", fontSize: "12px", fontWeight: 600,
-                      background: concentration.top1 >= 70 ? "#FEF2F2" : concentration.top1 >= 50 ? "#FEF9C3" : "#ECFDF5",
-                      color: concentration.top1 >= 70 ? "#DC2626" : concentration.top1 >= 50 ? "#854D0E" : "#059669",
-                    }}>
-                      {concentration.top1 >= 70
-                        ? `High concentration -- ${concentration.top1}% of spend in one country. Consider diversifying.`
-                        : concentration.top1 >= 50
-                          ? `Moderate concentration -- ${concentration.top1}% in top country.`
-                          : `Well diversified -- no single country dominates spend.`}
-                    </div>
-                  </div>
-                ) : (
-                  <div style={{ color: "#9CA3AF", fontSize: "13px", padding: "16px 0", textAlign: "center" }}>
-                    No spend data to analyze
-                  </div>
-                )}
-              </BlockStack>
-            </Card>
-          </div>{/* close visual tiles column */}
+          </div>{/* close visual tiles 50/50 row */}
 
         </BlockStack>
       </ReportTabs>

@@ -405,7 +405,7 @@ export const loader = async ({ request }) => {
     return r;
   };
 
-  const [currentAggRaw, prevAggRaw, compareAggRaw, metaEntities, ltvSnapshot, dailyChart, windowOrdersRaw] = await Promise.all([
+  const [currentAggRaw, prevAggRaw, compareAggRaw, metaEntities, ltvSnapshot, dailyChart, windowOrdersRaw, dailyLiveAdsRaw] = await Promise.all([
     time("campAgg", queryCached(`${shopDomain}:campAgg:${fromKey}:${toKey}`, DEFAULT_TTL, fetchAndAggregate(fromDate, toDate))),
     time("campAggPrev", queryCached(`${shopDomain}:campAgg:${prevFromKey}:${prevToKey}`, DEFAULT_TTL, fetchAndAggregate(_prevFromRP, _prevToRP))),
     (hasComparison && compareFrom && compareTo)
@@ -434,6 +434,25 @@ export const loader = async ({ request }) => {
         where: { shopDomain, date: { gte: fromDate, lte: toDate } },
         _sum: { spend: true, impressions: true },
       }),
+    )),
+    // Daily distinct-ad count: how many ads actually delivered each day,
+    // defined as spend > 0 OR impressions > 0 in DailyAdRollup. Used by the
+    // Live Ads summary tile (its sparkline + headline number) - a behavioural
+    // definition of "live" beats relying on Meta's effective_status field
+    // because that field comes back as PAUSED/IN_PROCESS/CAMPAIGN_PAUSED/etc
+    // and was leaving the Live Ads count stuck at 0 for accounts where no ad
+    // had effective_status="ACTIVE".
+    time("dailyLiveAds", queryCached(`${shopDomain}:campDailyLiveAds:${fromKey}:${toKey}`, DEFAULT_TTL, () =>
+      db.$queryRaw`
+        SELECT date, COUNT(DISTINCT adId) AS liveAds
+        FROM DailyAdRollup
+        WHERE shopDomain = ${shopDomain}
+          AND date >= ${fromDate}
+          AND date <= ${toDate}
+          AND (spend > 0 OR impressions > 0)
+        GROUP BY date
+        ORDER BY date
+      ` as Promise<Array<{ date: Date; liveAds: number | bigint }>>,
     )),
     time("windowOrders", queryCached(`${shopDomain}:campWindowOrders:${windowStartKey}:${windowEndKey}`, DEFAULT_TTL, () =>
       db.order.findMany({
@@ -511,11 +530,16 @@ export const loader = async ({ request }) => {
   for (const e of metaEntities) {
     if (e.createdTime) entityCreatedMap[`${e.entityType}:${e.entityId}`] = e.createdTime;
     if (e.entityType === "ad" && (e.thumbnailUrl || e.imageUrl || e.productSetId)) {
+      // Both URLs route through the proxy. ?size=full asks for the large
+      // image_url asset (Top Ads for New Customers cards render at ~250px
+      // and pixelate on the small thumbnail). The proxy serves cached
+      // bytes preferentially and falls back to a 302 to the live Meta URL
+      // when nothing is on disk yet.
+      const proxyBase = `/app/api/ad-thumbnail/${e.entityId}`;
+      const hasAnyImage = !!(e.thumbnailUrl || e.imageUrl);
       adThumbMap[e.entityId] = {
-        thumbnailUrl: (e.thumbnailUrl || e.imageUrl)
-          ? `/app/api/ad-thumbnail/${e.entityId}`
-          : null,
-        imageUrl: e.imageUrl,
+        thumbnailUrl: hasAnyImage ? proxyBase : null,
+        imageUrl: hasAnyImage ? `${proxyBase}?size=full` : null,
         productSetId: e.productSetId,
       };
     }
@@ -823,7 +847,7 @@ export const loader = async ({ request }) => {
 
   // ── Daily aggregation for summary charts ──
   // Pre-populate with every day in range so charts always show all days
-  const emptyDay = (date: string) => ({ date, spend: 0, impressions: 0, attributedRevenue: 0, unverifiedRevenue: 0, newCustomerOrders: 0, newCustomerRevenue: 0, attributedOrders: 0 });
+  const emptyDay = (date: string) => ({ date, spend: 0, impressions: 0, attributedRevenue: 0, unverifiedRevenue: 0, newCustomerOrders: 0, newCustomerRevenue: 0, attributedOrders: 0, liveAds: 0 });
   const dailyMap: Record<string, any> = {};
   {
     // Iterate shop-local day keys fromKey..toKey inclusive.
@@ -836,9 +860,16 @@ export const loader = async ({ request }) => {
   // insights is now a groupBy result: { date, _sum: { spend, impressions } }
   for (const ins of insights as any[]) {
     const day = shopLocalDayKey(tz, ins.date);
-    if (!dailyMap[day]) dailyMap[day] = { date: day, spend: 0, impressions: 0, attributedRevenue: 0, unverifiedRevenue: 0, newCustomerOrders: 0, newCustomerRevenue: 0, attributedOrders: 0 };
+    if (!dailyMap[day]) dailyMap[day] = { date: day, spend: 0, impressions: 0, attributedRevenue: 0, unverifiedRevenue: 0, newCustomerOrders: 0, newCustomerRevenue: 0, attributedOrders: 0, liveAds: 0 };
     dailyMap[day].spend += (ins._sum?.spend || 0);
     dailyMap[day].impressions += (ins._sum?.impressions || 0);
+  }
+  // Daily distinct live-ad counts. SQLite returns the count column as
+  // BigInt; the chart renderer wants a plain number.
+  for (const row of (dailyLiveAdsRaw as Array<{ date: Date; liveAds: number | bigint }> | null) || []) {
+    const day = shopLocalDayKey(tz, row.date);
+    if (!dailyMap[day]) dailyMap[day] = { date: day, spend: 0, impressions: 0, attributedRevenue: 0, unverifiedRevenue: 0, newCustomerOrders: 0, newCustomerRevenue: 0, attributedOrders: 0, liveAds: 0 };
+    dailyMap[day].liveAds = Number(row.liveAds || 0);
   }
   // Build order lookup by date
   const ordersByDate = {};
@@ -850,7 +881,7 @@ export const loader = async ({ request }) => {
       const order = orderMap[attr.shopifyOrderId];
       if (!order) continue;
       const day = shopLocalDayKey(tz, order.createdAt);
-      if (!dailyMap[day]) dailyMap[day] = { date: day, spend: 0, impressions: 0, attributedRevenue: 0, unverifiedRevenue: 0, newCustomerOrders: 0, newCustomerRevenue: 0, attributedOrders: 0 };
+      if (!dailyMap[day]) dailyMap[day] = { date: day, spend: 0, impressions: 0, attributedRevenue: 0, unverifiedRevenue: 0, newCustomerOrders: 0, newCustomerRevenue: 0, attributedOrders: 0, liveAds: 0 };
       const rev = order.frozenTotalPrice || 0;
       dailyMap[day].attributedRevenue += rev;
       dailyMap[day].attributedOrders += 1;
@@ -862,7 +893,7 @@ export const loader = async ({ request }) => {
       const dateMatch = attr.shopifyOrderId.match(/(\d{4}-\d{2}-\d{2})/);
       if (!dateMatch) continue;
       const day = dateMatch[1];
-      if (!dailyMap[day]) dailyMap[day] = { date: day, spend: 0, impressions: 0, attributedRevenue: 0, unverifiedRevenue: 0, newCustomerOrders: 0, newCustomerRevenue: 0, attributedOrders: 0 };
+      if (!dailyMap[day]) dailyMap[day] = { date: day, spend: 0, impressions: 0, attributedRevenue: 0, unverifiedRevenue: 0, newCustomerOrders: 0, newCustomerRevenue: 0, attributedOrders: 0, liveAds: 0 };
       dailyMap[day].unverifiedRevenue += attr.metaConversionValue || 0;
     }
   }
@@ -1185,13 +1216,17 @@ export const loader = async ({ request }) => {
   // contains everything the page needs. We can't compute the "poorest ad"
   // statistically on the client without re-deriving percentiles, so we do
   // it once on the server.
-  let liveAdCount = 0;
-  for (const e of metaEntities) {
-    if (e.entityType === "ad" && e.currentStatus === "ACTIVE") liveAdCount++;
-  }
-  // Previous-period live ads aren't a meaningful number (status is
-  // "current" only) but we surface a tiny daily activity series so the
-  // tile carries the same chart treatment as the others.
+  // Live ads = distinct ads that delivered (spend>0 OR impressions>0) on
+  // the most recent day in the window. We previously gated on
+  // currentStatus === "ACTIVE" but Meta's effective_status field returns
+  // a long list of "live but qualified" values (CAMPAIGN_PAUSED,
+  // ADSET_PAUSED, IN_PROCESS, WITH_ISSUES, etc) and the tile was stuck
+  // at 0 for accounts where no ad came back as exactly "ACTIVE". The
+  // behavioural definition is more honest and lines up with the
+  // sparkline below.
+  const sortedDailyData = (dailyData as any[]).slice().sort((a, b) => a.date.localeCompare(b.date));
+  const lastDay = sortedDailyData[sortedDailyData.length - 1];
+  const liveAdCount = lastDay ? Number(lastDay.liveAds || 0) : 0;
   const pickAdSummary = (row: any) => row && {
     id: row.id, name: row.name,
     thumbnailUrl: row.thumbnailUrl, imageUrl: row.imageUrl,
@@ -4670,10 +4705,10 @@ export default function Campaigns() {
                 <SummaryTile
                   label="Live Ads"
                   value={String(topTiles?.liveAdCount ?? 0)}
-                  subtitle="Currently active on Meta"
-                  tooltip={{ definition: "Number of ads with status ACTIVE in your Meta ad account right now. The sparkline reflects daily spend across the selected period, a proxy for how much advertising activity there has been." }}
+                  subtitle="Distinct ads that delivered on the most recent day"
+                  tooltip={{ definition: "Number of distinct ads that delivered (spend > 0 or impressions > 0) on the most recent day in the selected period. Sparkline shows the daily count of distinct delivering ads, derived historically from MetaInsight." }}
                   chartData={dailyData} prevChartData={prevDailyData}
-                  chartKey="spend" chartColor="#0E7490" chartFormat={fmtPrice}
+                  chartKey="liveAds" chartColor="#0E7490" chartFormat={(v) => `${Math.round(v)} ads`}
                 />
               )},
               { id: "topRevenueAd", label: "Top Revenue Ad", render: () => topTiles?.topRevenueAd ? (
@@ -4708,8 +4743,14 @@ export default function Campaigns() {
               { id: "worstAd", label: "Poorest Performing Ad", render: () => topTiles?.worstAd ? (
                 <SummaryTile
                   label="Poorest Performing Ad"
-                  value={topTiles.worstAd.newCustomerCPA != null ? `${cs}${Math.round(topTiles.worstAd.newCustomerCPA).toLocaleString()} CAC` : `${(topTiles.worstAd.roas || 0).toFixed(2)}x ROAS`}
-                  subtitle={topTiles.worstAd.name}
+                  // Headline is the most damning stat we have: CAC if there
+                  // are new-customer orders, otherwise blended ROAS. We show
+                  // ROAS to one decimal (Andy's preference - 2dp suggests a
+                  // precision the metric doesn't have at low spend).
+                  value={topTiles.worstAd.newCustomerCPA != null ? `${cs}${Math.round(topTiles.worstAd.newCustomerCPA).toLocaleString()} CAC` : `${(topTiles.worstAd.roas || 0).toFixed(1)}x ROAS`}
+                  // Subtitle pairs ad name with spend so "0.0x ROAS" is read
+                  // alongside the absolute amount being burned.
+                  subtitle={`${topTiles.worstAd.name} · ${cs}${Math.round(topTiles.worstAd.spend).toLocaleString()} spent`}
                   imageUrl={topTiles.worstAd.imageUrl || topTiles.worstAd.thumbnailUrl || undefined}
                   tooltip={{ definition: `Worst-performing ad among those spending in the upper half of the account. Ranked by CAC where new-customer orders exist, otherwise by spend ÷ ROAS so high-spend zero-return ads still surface. Spend in period: ${cs}${Math.round(topTiles.worstAd.spend).toLocaleString()}.` }}
                   valueVariant="headingXl"

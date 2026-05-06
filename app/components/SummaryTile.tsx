@@ -5,7 +5,10 @@ import MiniChart from "./MiniChart";
 
 export interface SummaryTileProps {
   label: string;
-  value: string;
+  // ReactNode (not just string) so callers can inline emoji/flag glyphs at a
+  // larger size than the value text - e.g. the Countries page renders the
+  // country flag at 36px alongside the metric.
+  value: React.ReactNode;
   subtitle?: string;
   tooltip?: { definition: string; calc?: string };
   previousValue?: number;

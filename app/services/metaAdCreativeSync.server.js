@@ -56,39 +56,46 @@ function pathKey(url) {
   }
 }
 
-function thumbFilePath(adId) {
-  return path.join(THUMB_DIR, `${adId}.bin`);
+// Two cached variants per ad:
+//   `${adId}.bin`      - small thumbnail_url (used by Ad Explorer + headline tiles)
+//   `${adId}.full.bin` - full image_url (used by Top Ads for New Customers
+//                        Instagram-style cards). The full asset is bigger
+//                        (~50-200 KB) but visibly nicer when shown at card
+//                        size. Each variant tracks its own path-key sidecar.
+function thumbFilePath(adId, variant) {
+  const suffix = variant === "full" ? "full." : "";
+  return path.join(THUMB_DIR, `${adId}.${suffix}bin`);
 }
 
-function thumbMetaPath(adId) {
-  return path.join(THUMB_DIR, `${adId}.key`);
+function thumbMetaPath(adId, variant) {
+  const suffix = variant === "full" ? "full." : "";
+  return path.join(THUMB_DIR, `${adId}.${suffix}key`);
 }
 
 /**
- * Download thumbnail bytes for adId from `url` if not already cached for that
- * asset path. Stores the path-key alongside as `{adId}.key` so subsequent
- * runs can cheaply skip when the asset is unchanged. Failures are swallowed
- * (and logged) - missing local cache just means the proxy falls back to
- * redirecting to the live Meta URL.
+ * Download bytes for adId from `url` if not already cached for that asset
+ * path. `variant` is "thumb" (default) or "full". Stores the path-key
+ * alongside as `{adId}.{variant}.key` so subsequent runs can cheaply skip
+ * when the asset is unchanged. Failures are swallowed (and logged) -
+ * missing local cache just means the proxy falls back to redirecting to
+ * the live Meta URL.
  */
-async function cacheThumbnailBytes(adId, url) {
+async function cacheBytes(adId, url, variant = "thumb") {
   if (!url) return false;
   const key = pathKey(url);
   if (!key) return false;
   await ensureThumbDir();
-  const filePath = thumbFilePath(adId);
-  const metaPath = thumbMetaPath(adId);
+  const filePath = thumbFilePath(adId, variant);
+  const metaPath = thumbMetaPath(adId, variant);
   try {
     const existing = await fs.readFile(metaPath, "utf8").catch(() => null);
     if (existing === key) {
-      // Same asset, already cached. Confirm the bin file is still there
-      // (volume could have been wiped).
       const stat = await fs.stat(filePath).catch(() => null);
       if (stat && stat.size > 0) return false;
     }
     const res = await fetch(url);
     if (!res.ok) {
-      console.warn(`[MetaAdCreativeSync] thumb download ${adId} HTTP ${res.status}`);
+      console.warn(`[MetaAdCreativeSync] ${variant} download ${adId} HTTP ${res.status}`);
       return false;
     }
     const buf = Buffer.from(await res.arrayBuffer());
@@ -97,9 +104,17 @@ async function cacheThumbnailBytes(adId, url) {
     await fs.writeFile(metaPath, key);
     return true;
   } catch (err) {
-    console.warn(`[MetaAdCreativeSync] thumb cache failed for ${adId}: ${err.message}`);
+    console.warn(`[MetaAdCreativeSync] ${variant} cache failed for ${adId}: ${err.message}`);
     return false;
   }
+}
+
+// Convenience wrapper kept for the existing call sites.
+async function cacheThumbnailBytes(adId, url) {
+  return cacheBytes(adId, url, "thumb");
+}
+async function cacheFullImageBytes(adId, url) {
+  return cacheBytes(adId, url, "full");
 }
 export async function refreshAdCreatives(shopDomain) {
   const shop = await db.shop.findUnique({ where: { shopDomain } });
@@ -193,9 +208,12 @@ export async function refreshAdCreatives(shopDomain) {
       });
       updated++;
       // Persist bytes to the Fly volume so deploys / URL-signature rotations
-      // don't blank out the explorer.
-      const wrote = await cacheThumbnailBytes(ad.entityId, hit.thumbnailUrl);
-      if (wrote) cached++;
+      // don't blank out the explorer. Cache both the small thumb (Ad
+      // Explorer rows + headline tiles) and the full image (Top Ads for
+      // New Customers cards render at ~250px so the small thumb pixelates).
+      const wroteThumb = await cacheThumbnailBytes(ad.entityId, hit.thumbnailUrl);
+      const wroteFull = await cacheFullImageBytes(ad.entityId, hit.imageUrl);
+      if (wroteThumb || wroteFull) cached++;
     } else if (!ad.thumbnailUrl && !ad.productSetId) {
       // Only chase missing ones we've never resolved - avoids hammering the
       // API for permanently-deleted creative every night.
@@ -225,8 +243,9 @@ export async function refreshAdCreatives(shopDomain) {
           },
         });
         updated++;
-        const wrote = await cacheThumbnailBytes(adId, c.thumbnail_url);
-        if (wrote) cached++;
+        const wroteThumb = await cacheThumbnailBytes(adId, c.thumbnail_url);
+        const wroteFull = await cacheFullImageBytes(adId, c.image_url);
+        if (wroteThumb || wroteFull) cached++;
       } else {
         missing++;
         // Stamp fetchedAt so we don't keep retrying every night for ads with
@@ -247,13 +266,14 @@ export async function refreshAdCreatives(shopDomain) {
 }
 
 /**
- * Resolve the on-disk path for a cached thumbnail, or null if not present.
- * Used by the proxy route to decide between streaming local bytes vs
- * redirecting to the live Meta CDN URL.
+ * Resolve the on-disk path for a cached image, or null if not present.
+ * `variant` is "thumb" (default) or "full". Used by the proxy route to
+ * decide between streaming local bytes vs redirecting to the live Meta
+ * CDN URL.
  */
-export async function getCachedThumbnailPath(adId) {
+export async function getCachedThumbnailPath(adId, variant = "thumb") {
   if (!adId) return null;
-  const filePath = thumbFilePath(adId);
+  const filePath = thumbFilePath(adId, variant);
   try {
     const stat = await fs.stat(filePath);
     if (stat.size > 0) return filePath;

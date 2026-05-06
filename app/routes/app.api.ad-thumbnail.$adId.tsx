@@ -25,7 +25,20 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   const adId = params.adId;
   if (!adId) return new Response("missing adId", { status: 400 });
 
-  const cached = await getCachedThumbnailPath(adId);
+  // ?size=full → larger creative.image_url asset (used by the Top Ads for
+  // New Customers Instagram-style cards). Default = small thumbnail_url
+  // (Ad Explorer rows + headline tiles).
+  const url = new URL(request.url);
+  const size = url.searchParams.get("size") === "full" ? "full" : "thumb";
+
+  // Try the requested size first; if that variant isn't cached, fall back
+  // to the other one before going to the network. This means a freshly
+  // synced ad whose `full` bytes haven't downloaded yet still renders the
+  // (already-cached) thumb instead of forcing a 302 round-trip.
+  let cached = await getCachedThumbnailPath(adId, size);
+  if (!cached && size === "full") cached = await getCachedThumbnailPath(adId, "thumb");
+  if (!cached && size === "thumb") cached = await getCachedThumbnailPath(adId, "full");
+
   if (cached) {
     const buf = await fs.readFile(cached);
     return new Response(buf, {
@@ -41,17 +54,21 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   }
 
   // No local copy yet. Fall back to the most recent Meta URL we have on
-  // file - the merchant still gets a thumb until the next nightly run
-  // downloads bytes.
+  // file - the merchant still gets an image until the next nightly run
+  // downloads bytes. For ?size=full prefer image_url; otherwise prefer
+  // thumbnail_url.
   const ent = await db.metaEntity.findFirst({
     where: { entityType: "ad", entityId: adId },
-    select: { thumbnailUrl: true },
+    select: { thumbnailUrl: true, imageUrl: true },
   });
-  if (ent?.thumbnailUrl) {
+  const fallback = size === "full"
+    ? (ent?.imageUrl || ent?.thumbnailUrl)
+    : (ent?.thumbnailUrl || ent?.imageUrl);
+  if (fallback) {
     return new Response(null, {
       status: 302,
       headers: {
-        Location: ent.thumbnailUrl,
+        Location: fallback,
         // Short cache - signature will age out, no point clinging to it.
         "Cache-Control": "private, max-age=300",
       },
