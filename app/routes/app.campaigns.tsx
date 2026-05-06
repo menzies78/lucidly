@@ -1401,6 +1401,42 @@ function SmallToggle({ options, selected, onChange }: {
   );
 }
 
+// Bigger themed toggle for primary tab-style switches (Campaigns/Ad Sets/Ads).
+// Matches the .toggle-group/.toggle-btn cyan accent used elsewhere in the app
+// (Customers, Geo, etc.) so the visual language stays consistent across pages.
+function BigLevelToggle({ options, selected, onChange }: {
+  options: { id: string; label: string }[];
+  selected: string;
+  onChange: (id: string) => void;
+}) {
+  return (
+    <div style={{
+      display: "inline-flex", border: "1px solid #D1D5DB",
+      borderRadius: "8px", overflow: "hidden",
+    }}>
+      {options.map(o => {
+        const active = selected === o.id;
+        return (
+          <button
+            key={o.id}
+            onClick={() => onChange(o.id)}
+            style={{
+              padding: "8px 18px", fontSize: "13px",
+              fontWeight: active ? 600 : 500,
+              background: active ? "#0E7490" : "#fff",
+              color: active ? "#fff" : "#374151",
+              border: "none", cursor: "pointer",
+              transition: "all 0.15s", whiteSpace: "nowrap",
+            }}
+            onMouseEnter={e => { if (!active) e.currentTarget.style.background = "#F3F4F6"; }}
+            onMouseLeave={e => { if (!active) e.currentTarget.style.background = "#fff"; }}
+          >{o.label}</button>
+        );
+      })}
+    </div>
+  );
+}
+
 function SmallLinks({ options, selected, onChange }: {
   options: { id: string; label: string }[];
   selected: string;
@@ -2432,9 +2468,10 @@ function AdExplorerTable({ rows, cs, entityType, onEntityClick }: {
   entityType: "campaign" | "adset" | "ad";
   onEntityClick?: (id: string, name: string) => void;
 }) {
-  // Default sort surfaces highest spenders so the top of the list always shows
-  // the ads that matter most for budget decisions.
-  const [sortCol, setSortCol] = useState("spend");
+  // Default sort surfaces highest order count - the metric merchants ask
+  // about first ("which ads are actually selling?"). Spend sort is one click
+  // away via column header.
+  const [sortCol, setSortCol] = useState("all_orders");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
   // Multi-select segments. Selection always resets to {all} on mount - persisting
   // it between visits caused confusion when the explorer first opened with a
@@ -2712,7 +2749,10 @@ function AdExplorerTable({ rows, cs, entityType, onEntityClick }: {
             </button>
           );
         })}
-        <div style={{ flex: 1 }} />
+        {/* Visible gap separates the segment toggles from search so the
+            search field doesn't read as another tab next to the level
+            selector that lives in the Card header above. */}
+        <span style={{ width: "32px", flexShrink: 0 }} />
         <input
           type="search"
           value={searchQuery}
@@ -3106,6 +3146,210 @@ function statusColor(status: string | null): string {
 
 type SortKey = "spend" | "roas" | "newCustomers";
 type FilterKey = "all" | "active" | "spending";
+
+// "Top Ads for New Customers" - Instagram-style 5×2 grid showing the 10 best
+// ads by either New Customer orders or ROAS within the selected window.
+//
+// Why a min-orders gate on the ROAS tab: a single high-AOV order on £5 of
+// spend produces a 50x+ ROAS that is statistical noise, not a top performer.
+// Requiring ≥3 new customer orders filters those out so the ROAS view
+// surfaces ads that converted *consistently*, not just luckily.
+function TopAdsForNewCustomersTile({ adRows, cs, onAdClick }: {
+  adRows: any[];
+  cs: string;
+  onAdClick?: (id: string, name: string) => void;
+}) {
+  const [sortMode, setSortMode] = useState<"orders" | "roas">("orders");
+  const MIN_ORDERS_FOR_ROAS = 3;
+
+  const topAds = useMemo(() => {
+    const eligible = adRows.filter(a => (a.newCustomerOrders || 0) > 0);
+    if (sortMode === "orders") {
+      return eligible
+        .slice()
+        .sort((a, b) => (b.newCustomerOrders || 0) - (a.newCustomerOrders || 0))
+        .slice(0, 10);
+    }
+    // ROAS - gate by minimum order volume to exclude single-order outliers.
+    return eligible
+      .filter(a => (a.newCustomerOrders || 0) >= MIN_ORDERS_FOR_ROAS)
+      .slice()
+      .sort((a, b) => (b.newCustomerROAS || 0) - (a.newCustomerROAS || 0))
+      .slice(0, 10);
+  }, [adRows, sortMode]);
+
+  const fmtPrice = (v: number) => `${cs}${v.toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
+  const fmtRoas = (v: number) => `${v.toFixed(2)}x`;
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+      {/* Sort tab row - kept simple to match the "Instagram explore" feel. */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
+        <div style={{
+          display: "inline-flex", border: "1px solid #D1D5DB",
+          borderRadius: "8px", overflow: "hidden",
+        }}>
+          {([
+            { id: "orders", label: "Orders" },
+            { id: "roas", label: "ROAS" },
+          ] as const).map(o => {
+            const active = sortMode === o.id;
+            return (
+              <button
+                key={o.id}
+                onClick={() => setSortMode(o.id)}
+                style={{
+                  padding: "8px 18px", fontSize: "13px",
+                  fontWeight: active ? 600 : 500,
+                  background: active ? "#0E7490" : "#fff",
+                  color: active ? "#fff" : "#374151",
+                  border: "none", cursor: "pointer",
+                  transition: "all 0.15s", whiteSpace: "nowrap",
+                }}
+              >{o.label}</button>
+            );
+          })}
+        </div>
+        <div style={{ fontSize: "11px", color: "#6B7280" }}>
+          {sortMode === "roas"
+            ? `Top 10 by New Customer ROAS · min ${MIN_ORDERS_FOR_ROAS} orders to qualify`
+            : "Top 10 by New Customer Orders"}
+        </div>
+      </div>
+
+      {topAds.length === 0 ? (
+        <div style={{ padding: "32px", textAlign: "center", color: "#6B7280", fontSize: "13px" }}>
+          {sortMode === "roas"
+            ? `No ads in this window cleared the ${MIN_ORDERS_FOR_ROAS}-order threshold yet.`
+            : "No new-customer orders attributed to ads in this window."}
+        </div>
+      ) : (
+        <div style={{
+          display: "grid", gap: "16px",
+          gridTemplateColumns: "repeat(5, minmax(0, 1fr))",
+        }}>
+          {topAds.map((ad, i) => (
+            <TopAdCard
+              key={ad.id}
+              rank={i + 1}
+              ad={ad}
+              fmtPrice={fmtPrice}
+              fmtRoas={fmtRoas}
+              onClick={onAdClick ? () => onAdClick(ad.id, ad.name) : undefined}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TopAdCard({ rank, ad, fmtPrice, fmtRoas, onClick }: {
+  rank: number;
+  ad: any;
+  fmtPrice: (v: number) => string;
+  fmtRoas: (v: number) => string;
+  onClick?: () => void;
+}) {
+  const [imgFailed, setImgFailed] = useState(false);
+  const isDpa = !!ad.productSetId && !ad.thumbnailUrl;
+  const imgSrc = ad.imageUrl || ad.thumbnailUrl;
+  const showImg = imgSrc && !imgFailed;
+
+  const cac = ad.newCustomerOrders > 0 ? ad.spend / ad.newCustomerOrders : null;
+  const roas = ad.newCustomerROAS || 0;
+
+  return (
+    <div
+      onClick={onClick}
+      style={{
+        border: "1px solid #E5E7EB", borderRadius: "12px",
+        background: "#fff", overflow: "hidden",
+        cursor: onClick ? "pointer" : "default",
+        transition: "transform 0.15s, box-shadow 0.15s",
+        display: "flex", flexDirection: "column",
+      }}
+      onMouseEnter={e => {
+        if (!onClick) return;
+        e.currentTarget.style.transform = "translateY(-2px)";
+        e.currentTarget.style.boxShadow = "0 4px 12px rgba(0,0,0,0.08)";
+      }}
+      onMouseLeave={e => {
+        if (!onClick) return;
+        e.currentTarget.style.transform = "translateY(0)";
+        e.currentTarget.style.boxShadow = "none";
+      }}
+    >
+      {/* Square image area - dominant visual, mimics IG post aspect. */}
+      <div style={{
+        position: "relative", width: "100%", paddingTop: "100%",
+        background: "#F3F4F6", overflow: "hidden",
+      }}>
+        {/* Rank badge - top-left, always visible. */}
+        <div style={{
+          position: "absolute", top: "8px", left: "8px", zIndex: 2,
+          background: "rgba(0,0,0,0.75)", color: "#fff",
+          width: "26px", height: "26px", borderRadius: "50%",
+          display: "flex", alignItems: "center", justifyContent: "center",
+          fontSize: "12px", fontWeight: 700,
+        }}>{rank}</div>
+        {/* DPA badge - top-right, only when applicable. */}
+        {isDpa && (
+          <div title="Dynamic Product Ad" style={{
+            position: "absolute", top: "8px", right: "8px", zIndex: 2,
+            background: "#7C3AED", color: "#fff",
+            padding: "3px 8px", borderRadius: "10px",
+            fontSize: "10px", fontWeight: 700, letterSpacing: "0.3px",
+          }}>DPA</div>
+        )}
+        {showImg ? (
+          <img
+            src={imgSrc}
+            alt={ad.name}
+            onError={() => setImgFailed(true)}
+            style={{
+              position: "absolute", top: 0, left: 0,
+              width: "100%", height: "100%", objectFit: "cover",
+            }}
+          />
+        ) : (
+          <div style={{
+            position: "absolute", top: 0, left: 0,
+            width: "100%", height: "100%",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            background: "linear-gradient(135deg, #E0E7FF 0%, #F3F4F6 100%)",
+            color: "#6B7280", fontSize: "32px", fontWeight: 700,
+          }}>
+            {(ad.name || "?").charAt(0).toUpperCase()}
+          </div>
+        )}
+      </div>
+
+      {/* Stats panel - 4 numbers + name caption underneath the image. */}
+      <div style={{ padding: "10px 12px", display: "flex", flexDirection: "column", gap: "8px" }}>
+        <div title={ad.name} style={{
+          fontSize: "12px", fontWeight: 600, color: "#1F2937",
+          overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+        }}>{ad.name}</div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "6px 10px" }}>
+          <Stat label="Orders" value={String(ad.newCustomerOrders || 0)} />
+          <Stat label="Revenue" value={fmtPrice(ad.newCustomerRevenue || 0)} />
+          <Stat label="ROAS" value={fmtRoas(roas)} />
+          <Stat label="CAC" value={cac != null ? fmtPrice(cac) : "—"} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Stat({ label, value }: { label: string; value: string }) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: "1px" }}>
+      <span style={{ fontSize: "10px", color: "#6B7280", fontWeight: 500, textTransform: "uppercase", letterSpacing: "0.4px" }}>{label}</span>
+      <span style={{ fontSize: "13px", fontWeight: 700, color: "#111827" }}>{value}</span>
+    </div>
+  );
+}
 
 function AdFunnelTreeTile({ funnelTree, stageTotals, cs, onAdSetClick, onAdClick }: {
   funnelTree: { cold: any[]; warm: any[]; hot: any[] };
@@ -4282,7 +4526,7 @@ export default function Campaigns() {
                       Every {rankLevel === "campaign" ? "campaign" : rankLevel === "adset" ? "ad set" : "ad"} that ran in the selected period - sortable by orders, revenue, spend, ROAS or CPA. Filter by customer type, search by name, click any row to see its full lifecycle and change history.
                     </Text>
                   </BlockStack>
-                  <SmallToggle options={LEVEL_OPTIONS} selected={rankLevel} onChange={setRankLevel} />
+                  <BigLevelToggle options={LEVEL_OPTIONS} selected={rankLevel} onChange={setRankLevel} />
                 </InlineStack>
                 <AdExplorerTable rows={rankRows} cs={cs} entityType={rankLevel as "campaign" | "adset" | "ad"} onEntityClick={(id, name) => setDrawerEntity({ objectType: rankLevel as any, objectId: id, objectName: name })} />
               </BlockStack>
@@ -4343,19 +4587,16 @@ export default function Campaigns() {
                   chartData={dailyData} prevChartData={prevDailyData} chartKey={(d) => d.newCustomerOrders > 0 ? d.spend / d.newCustomerOrders : 0}
                   chartColor="#B45309" chartFormat={fmtPrice} />
               )},
-              { id: "adFunnel", label: "Ad Funnel", span: 4, render: () => (
+              { id: "adFunnel", label: "Top Ads for New Customers", span: 4, render: () => (
                 <Card>
                   <BlockStack gap="300">
-                    <Text as="h2" variant="headingLg">Ad Funnel</Text>
+                    <Text as="h2" variant="headingLg">Top Ads for New Customers</Text>
                     <Text as="p" variant="bodySm" tone="subdued">
-                      Every active ad placed at the funnel stage of its parent ad set, based on targeting data synced nightly from Meta.
-                      Click a stage header to see what audiences qualify, click any ad set or ad to drill in.
+                      The 10 ads driving the most new customers in the selected period. Sort by orders to see your biggest acquisition engines, or by ROAS to see your most efficient. Click any ad to open its lifecycle.
                     </Text>
-                    <AdFunnelTreeTile
-                      funnelTree={funnelTree}
-                      stageTotals={stageTotals}
+                    <TopAdsForNewCustomersTile
+                      adRows={adRows}
                       cs={cs}
-                      onAdSetClick={(id, name) => setDrawerEntity({ objectType: "adset", objectId: id, objectName: name })}
                       onAdClick={(id, name) => setDrawerEntity({ objectType: "ad", objectId: id, objectName: name })}
                     />
                   </BlockStack>

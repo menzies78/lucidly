@@ -253,6 +253,18 @@ export default function DateRangeSelector() {
 
   return (
     <Box paddingBlockEnd="400">
+      <div style={{
+        // Sticky so the date range stays visible while scrolling reports.
+        // top: 0 sits flush below the embedded Shopify navbar; the page
+        // container's own padding handles vertical breathing room.
+        position: "sticky",
+        top: 0,
+        zIndex: 20,
+        background: "#F6F6F7",
+        paddingTop: "8px",
+        paddingBottom: "8px",
+        marginTop: "-8px",
+      }}>
       <Popover
         active={popoverActive}
         activator={activator}
@@ -327,6 +339,7 @@ export default function DateRangeSelector() {
           </div>
         </div>
       </Popover>
+      </div>
     </Box>
   );
 }
