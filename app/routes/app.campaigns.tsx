@@ -2605,18 +2605,32 @@ function AdExplorerTable({ rows, cs, entityType, onEntityClick }: {
             : "ROAS from returning customers only. Existing revenue ÷ spend.",
       });
     }
-    // CPA cluster
-    for (const seg of orderedSegments) {
+    // Cost columns: only show the two that are conceptually meaningful.
+    //   • All Customers → "Cost per Order" (CpO): blended cost per attributed
+    //     order. Useful as a stable benchmark across the entity.
+    //   • New Customers → "Cost per Acquisition" (CAC): the textbook customer
+    //     acquisition cost - the genuinely actionable cost metric.
+    // Existing-customer "CPA" was previously rendered too, but for an existing
+    // customer we don't pay an acquisition cost per repeat order - the spend
+    // bought the *first* order. Dividing total spend by repeat-order count
+    // produces a number that's mathematically valid but interpretively
+    // misleading, so we drop the column entirely.
+    if (selectedSegments.has("all")) {
       out.push({
-        key: `${seg}_cpa`,
-        label: `${SEGMENT_PREFIX[seg]}CPA`,
+        key: `all_cpa`,
+        label: `CpO`,
         width: W.cpa,
-        format: (r) => fmtCpa(getValue(r, `${seg}_cpa`)),
-        tooltip: seg === "all"
-          ? "Cost per attributed order. Spend ÷ all orders."
-          : seg === "new"
-            ? "Cost to acquire one new customer. Spend ÷ new-customer orders."
-            : "Cost per existing-customer order. Spend ÷ existing orders. Always higher than the All-Customers CPA - same spend, smaller numerator.",
+        format: (r) => fmtCpa(getValue(r, `all_cpa`)),
+        tooltip: "Cost per Order. Total spend ÷ all attributed orders. The blended cost of producing any order, new or repeat.",
+      });
+    }
+    if (selectedSegments.has("new")) {
+      out.push({
+        key: `new_cpa`,
+        label: `CAC`,
+        width: W.cpa,
+        format: (r) => fmtCpa(getValue(r, `new_cpa`)),
+        tooltip: "Cost per Acquisition (CAC). Total spend ÷ new-customer orders - what it costs to acquire one first-time customer.",
       });
     }
     // AOV cluster
