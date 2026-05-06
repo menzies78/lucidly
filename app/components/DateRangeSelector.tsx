@@ -252,18 +252,23 @@ export default function DateRangeSelector() {
   );
 
   return (
-    <Box paddingBlockEnd="400">
+    <>
+      {/* Spacer reserves the page-flow real estate the floating selector
+          would otherwise occupy. Polaris Frame has no scroll container we
+          can attach `position: sticky` to (the embedded Shopify iframe is
+          the actual scroller), so we use position: fixed and a layout-flow
+          spacer to keep page content from sliding underneath it. */}
+      <div style={{ height: "52px" }} aria-hidden="true" />
       <div style={{
-        // Sticky so the date range stays visible while scrolling reports.
-        // top: 0 sits flush below the embedded Shopify navbar; the page
-        // container's own padding handles vertical breathing room.
-        position: "sticky",
+        position: "fixed",
         top: 0,
-        zIndex: 20,
+        left: 0,
+        right: 0,
+        zIndex: 30,
         background: "#F6F6F7",
-        paddingTop: "8px",
-        paddingBottom: "8px",
-        marginTop: "-8px",
+        padding: "10px 16px",
+        borderBottom: "1px solid #E4E5E7",
+        boxShadow: "0 1px 3px rgba(0,0,0,0.04)",
       }}>
       <Popover
         active={popoverActive}
@@ -340,6 +345,6 @@ export default function DateRangeSelector() {
         </div>
       </Popover>
       </div>
-    </Box>
+    </>
   );
 }

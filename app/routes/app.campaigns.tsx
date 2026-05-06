@@ -15,6 +15,7 @@ import SummaryTile from "../components/SummaryTile";
 import ChangesAnnotationStrip from "../components/ChangesAnnotationStrip";
 import EntityTimelineDrawer, { type EntityRef } from "../components/EntityTimelineDrawer";
 import { useState, useMemo, useCallback, useRef, useEffect } from "react";
+import { createPortal } from "react-dom";
 import { type ColumnDef } from "@tanstack/react-table";
 import { authenticate } from "../shopify.server";
 import db from "../db.server";
@@ -1172,6 +1173,70 @@ export const loader = async ({ request }) => {
     };
   }
 
+  // ── Top-of-page summary tiles ──
+  // Pre-compute the 4 headline tile values here so the loader payload
+  // contains everything the page needs. We can't compute the "poorest ad"
+  // statistically on the client without re-deriving percentiles, so we do
+  // it once on the server.
+  let liveAdCount = 0;
+  for (const e of metaEntities) {
+    if (e.entityType === "ad" && e.currentStatus === "ACTIVE") liveAdCount++;
+  }
+  // Previous-period live ads aren't a meaningful number (status is
+  // "current" only) but we surface a tiny daily activity series so the
+  // tile carries the same chart treatment as the others.
+  const pickAdSummary = (row: any) => row && {
+    id: row.id, name: row.name,
+    thumbnailUrl: row.thumbnailUrl, imageUrl: row.imageUrl,
+    spend: row.spend, revenue: (row.attributedRevenue || 0) + (row.unverifiedRevenue || 0),
+    newCustomerOrders: row.newCustomerOrders || 0,
+    newCustomerRevenue: row.newCustomerRevenue || 0,
+    newCustomerCPA: row.newCustomerCPA, newCustomerROAS: row.newCustomerROAS,
+    roas: row.spend > 0 ? ((row.attributedRevenue || 0) + (row.unverifiedRevenue || 0)) / row.spend : 0,
+  };
+  // Top revenue ad: blended (matched + unverified) - matches what
+  // Total Ad Revenue tile reports, so the headline number is consistent.
+  const topRevenueAdRow = (adRows as any[]).slice().sort((a, b) =>
+    ((b.attributedRevenue || 0) + (b.unverifiedRevenue || 0)) -
+    ((a.attributedRevenue || 0) + (a.unverifiedRevenue || 0))
+  )[0] || null;
+  const topNewCustAdRow = (adRows as any[]).slice().sort((a, b) =>
+    (b.newCustomerOrders || 0) - (a.newCustomerOrders || 0)
+  )[0] || null;
+  // Worst-performing ad: must be statistically significant - require
+  // spend in the upper half of all spending ads (so a £5 dud doesn't
+  // top the list). Among those, pick the highest CPA, falling back to
+  // worst ROAS if no new-customer orders.
+  const spendingAds = (adRows as any[]).filter(r => (r.spend || 0) > 0);
+  const sortedSpend = spendingAds.map(r => r.spend).sort((a, b) => a - b);
+  const spendThreshold = sortedSpend.length > 0
+    ? sortedSpend[Math.floor(sortedSpend.length / 2)]
+    : 0;
+  const worstAdCandidates = spendingAds.filter(r => (r.spend || 0) >= spendThreshold);
+  let worstAdRow: any = null;
+  let worstAdScore = -Infinity;
+  for (const r of worstAdCandidates) {
+    // Higher score = worse. CPA dominates when there are orders, otherwise
+    // we score by spend × (1 / max(roas, 0.01)) so high-spend zero-return
+    // ads still rank.
+    const cpa = r.newCustomerCPA;
+    const roas = r.spend > 0 ? ((r.attributedRevenue || 0) + (r.unverifiedRevenue || 0)) / r.spend : 0;
+    const score = cpa != null
+      ? cpa * Math.log(1 + r.spend)
+      : r.spend / Math.max(roas, 0.01);
+    if (score > worstAdScore) {
+      worstAdScore = score;
+      worstAdRow = r;
+    }
+  }
+
+  const topTiles = {
+    liveAdCount,
+    topRevenueAd: pickAdSummary(topRevenueAdRow),
+    topNewCustomerAd: pickAdSummary(topNewCustAdRow),
+    worstAd: pickAdSummary(worstAdRow),
+  };
+
   console.log(`[campaigns] total ${Date.now() - _t0}ms`);
 
   return json({
@@ -1189,6 +1254,7 @@ export const loader = async ({ request }) => {
     changeCountsByObjectId,
     funnelTree,
     stageTotals,
+    topTiles,
   });
 };
 
@@ -1721,17 +1787,23 @@ function SortMetricSparklinePopover({ x, y, state, metric }: {
       );
     }
   }
-  return (
+  // Portal to document.body so the popover escapes any parent stacking
+  // context (e.g. a sibling tile's Card) that would otherwise pin it
+  // behind the next tile in the grid - that's why hover tooltips were
+  // appearing under the Platform Performance tile.
+  if (typeof document === "undefined") return null;
+  return createPortal(
     <div style={{
       position: "fixed", left: x, top: y,
       transform: "translate(0, -50%)",
       background: "#fff", border: "1px solid #E5E7EB", borderRadius: 8,
       boxShadow: "0 6px 20px rgba(0,0,0,0.12)",
-      zIndex: 9999, pointerEvents: "none",
+      zIndex: 99999, pointerEvents: "none",
       minWidth: w,
     }}>
       {body}
-    </div>
+    </div>,
+    document.body,
   );
 }
 
@@ -2218,10 +2290,6 @@ function AdAgeTile({ adRows, cs, onAdClick }: { adRows: any[]; cs: string; onAdC
             const days = r.adAgeDays;
             const colour = ageColor(days);
             const ageLabel = days == null ? "-" : days === 0 ? "Today" : `${days}d`;
-            const roas = r.spend > 0 ? ((r.attributedRevenue + (r.unverifiedRevenue || 0)) / r.spend) : 0;
-            const newCust = r.newCustomerOrders || 0;
-            const freq = r.avgFrequency || 0;
-            const freqHigh = freq >= 3;
             const adId = r.id;
             const interactive = !!adId;
             return (
@@ -2257,36 +2325,15 @@ function AdAgeTile({ adRows, cs, onAdClick }: { adRows: any[]; cs: string; onAdC
                 onMouseOver={(e) => { if (interactive) (e.currentTarget as HTMLDivElement).style.background = "#f1f5f9"; }}
                 onMouseOut={(e) => { (e.currentTarget as HTMLDivElement).style.background = idx % 2 === 0 ? "#fafafa" : "#fff"; }}
               >
+                {/* Two-column row: name fills available space on the left,
+                    age sits flush right. Spend / ROAS / new customers and
+                    frequency badge intentionally removed - the table below
+                    is the right place for stats. */}
+                <div style={{ flex: 1, minWidth: 0, fontSize: 12, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={r.name}>{r.name}</div>
                 <div style={{
                   fontSize: 11, fontWeight: 700, color: colour,
-                  minWidth: 44, textAlign: "right", fontVariantNumeric: "tabular-nums",
+                  flexShrink: 0, fontVariantNumeric: "tabular-nums",
                 }}>{ageLabel}</div>
-                {/* Title takes whatever room the metrics don't claim */}
-                <div style={{ flex: 1, minWidth: 0, fontSize: 12, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={r.name}>{r.name}</div>
-                {/* All metrics inline-right of the title - no second line. */}
-                <div style={{ display: "flex", gap: 12, alignItems: "center", flexShrink: 0, fontVariantNumeric: "tabular-nums" }}>
-                  <span style={{ fontSize: 11, color: "#6B7280" }}>{cs}{Math.round(r.spend || 0).toLocaleString()}</span>
-                  <span style={{ fontSize: 11, color: roas >= 2 ? "#059669" : roas > 0 ? "#6B7280" : "#9CA3AF", fontWeight: 600 }}>{roas > 0 ? `${roas.toFixed(2)}x` : "0x"}</span>
-                  <span style={{ fontSize: 11, color: "#6B7280" }} title="New customers in period">+{newCust}</span>
-                  {freq > 0 && (
-                    <span style={{
-                      fontSize: 10, fontWeight: 700,
-                      padding: "1px 6px", borderRadius: 8,
-                      background: freqHigh ? "#FEE2E2" : "#E5E7EB",
-                      color: freqHigh ? "#B91C1C" : "#374151",
-                    }} title={freqHigh ? "Average frequency ≥ 3 - fatigue likely" : "Average impressions per unique reach in period"}>
-                      ƒ {freq.toFixed(1)}{freqHigh ? "⚠" : ""}
-                    </span>
-                  )}
-                  {/* Click affordance - chevron, brightens on row hover */}
-                  {interactive && (
-                    <span aria-hidden="true" style={{
-                      fontSize: 14, color: "#94A3B8",
-                      transition: "color 0.12s ease, transform 0.12s ease",
-                      width: 12, textAlign: "center",
-                    }} className="ad-age-chevron">›</span>
-                  )}
-                </div>
               </div>
             );
           })}
@@ -2343,17 +2390,23 @@ function RoasHoverPopover({ x, y, state }: {
       );
     }
   }
-  return (
+  // Portal to document.body so the popover escapes any parent stacking
+  // context (e.g. a sibling tile's Card) that would otherwise pin it
+  // behind the next tile in the grid - that's why hover tooltips were
+  // appearing under the Platform Performance tile.
+  if (typeof document === "undefined") return null;
+  return createPortal(
     <div style={{
       position: "fixed", left: x, top: y,
       transform: "translate(0, -50%)",
       background: "#fff", border: "1px solid #E5E7EB", borderRadius: 8,
       boxShadow: "0 6px 20px rgba(0,0,0,0.12)",
-      zIndex: 9999, pointerEvents: "none",
+      zIndex: 99999, pointerEvents: "none",
       minWidth: w,
     }}>
       {body}
-    </div>
+    </div>,
+    document.body,
   );
 }
 
@@ -2561,6 +2614,47 @@ function AdExplorerTable({ rows, cs, entityType, onEntityClick }: {
         return sortDir === "desc" ? bVal - aVal : aVal - bVal;
       });
   }, [rows, sortCol, sortDir, searchQuery]);
+
+  // Bar visualisation under each ad name - length scales with the active
+  // sort metric, like the Product Demographics Explorer. CPA is "lower is
+  // better" so we invert the bar (long bar = low CPA = good); for every
+  // other metric, longer bars = higher values.
+  const sortMeta = useMemo(() => {
+    const isCpa = sortCol.endsWith("_cpa");
+    let maxVal = 0, minVal = Infinity;
+    for (const r of sorted) {
+      const v = getValue(r, sortCol);
+      if (v > maxVal) maxVal = v;
+      if (v > 0 && v < minVal) minVal = v;
+    }
+    if (!isFinite(minVal)) minVal = 0;
+    return { isCpa, maxVal, minVal };
+  }, [sorted, sortCol]);
+
+  const widthPctFor = (item: any): number => {
+    const v = getValue(item, sortCol);
+    if (v <= 0) return 0;
+    const { isCpa, maxVal, minVal } = sortMeta;
+    if (maxVal <= 0) return 0;
+    if (isCpa) {
+      // Invert: lowest CPA = full bar, highest = shortest. Min 8% so the
+      // bar stays visible for the worst rows too.
+      if (maxVal === minVal) return 100;
+      const t = (maxVal - v) / (maxVal - minVal);
+      return Math.max(8, Math.round(t * 100));
+    }
+    return Math.max(4, Math.round((v / maxVal) * 100));
+  };
+  // Bar colour echoes the segment so the visual reinforces what's being
+  // sorted: blue for All, violet for New, teal for Existing, slate for
+  // plain Spend.
+  const barColors = useMemo(() => {
+    if (sortCol === "spend") return { from: "#475569", to: "#94A3B8" };
+    const seg = sortCol.split("_")[0];
+    if (seg === "new") return { from: "#7C3AED", to: "#C4B5FD" };
+    if (seg === "existing") return { from: "#0D9488", to: "#99F6E4" };
+    return { from: "#2563EB", to: "#93C5FD" };
+  }, [sortCol]);
 
   type ColDef = {
     key: string; label: string; width: string;
@@ -2820,11 +2914,35 @@ function AdExplorerTable({ rows, cs, entityType, onEntityClick }: {
                         isDpa={!!item.productSetId}
                       />
                     )}
+                    {/* Name + sort-driven bar stacked vertically. The bar
+                        sits within the name's flex region so it never runs
+                        behind the stat columns - those remain on the right
+                        with their fixed widths. Bar length is a percentage
+                        of the row's value relative to the visible max for
+                        the active sort column. */}
                     <span style={{
-                      flex: 1, fontSize: "13px", fontWeight: 500, overflow: "hidden",
-                      textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: W.name,
-                    }} title={item.name}>
-                      {item.name}
+                      flex: 1, minWidth: W.name,
+                      display: "flex", flexDirection: "column", gap: "3px",
+                      overflow: "hidden",
+                    }}>
+                      <span style={{
+                        fontSize: "13px", fontWeight: 500,
+                        overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                      }} title={item.name}>
+                        {item.name}
+                      </span>
+                      <span style={{
+                        position: "relative", height: "5px",
+                        background: "#F1F5F9", borderRadius: "3px",
+                        overflow: "hidden",
+                      }}>
+                        <span style={{
+                          display: "block", height: "100%",
+                          width: `${widthPctFor(item)}%`,
+                          background: `linear-gradient(90deg, ${barColors.from}, ${barColors.to})`,
+                          borderRadius: "3px", transition: "width 0.4s ease",
+                        }} />
+                      </span>
                     </span>
                     {COLS.map((c, idx) => {
                       const numVal = getValue(item, c.key);
@@ -3159,8 +3277,11 @@ function TopAdsForNewCustomersTile({ adRows, cs, onAdClick }: {
   cs: string;
   onAdClick?: (id: string, name: string) => void;
 }) {
-  const [sortMode, setSortMode] = useState<"orders" | "roas">("orders");
-  const MIN_ORDERS_FOR_ROAS = 3;
+  const [sortMode, setSortMode] = useState<"orders" | "roas" | "revenue" | "cac">("orders");
+  // Min-order gate for ratio metrics (ROAS / CAC). A single order at low spend
+  // produces statistically meaningless extremes; the gate ensures the
+  // leaderboard reflects ads that converted *consistently*, not just luckily.
+  const MIN_ORDERS_FOR_RATIO = 3;
 
   const topAds = useMemo(() => {
     const eligible = adRows.filter(a => (a.newCustomerOrders || 0) > 0);
@@ -3170,9 +3291,23 @@ function TopAdsForNewCustomersTile({ adRows, cs, onAdClick }: {
         .sort((a, b) => (b.newCustomerOrders || 0) - (a.newCustomerOrders || 0))
         .slice(0, 10);
     }
+    if (sortMode === "revenue") {
+      return eligible
+        .slice()
+        .sort((a, b) => (b.newCustomerRevenue || 0) - (a.newCustomerRevenue || 0))
+        .slice(0, 10);
+    }
+    if (sortMode === "cac") {
+      return eligible
+        .filter(a => (a.newCustomerOrders || 0) >= MIN_ORDERS_FOR_RATIO && a.newCustomerCPA != null)
+        .slice()
+        // Lower CAC is better - ascending sort.
+        .sort((a, b) => (a.newCustomerCPA || Infinity) - (b.newCustomerCPA || Infinity))
+        .slice(0, 10);
+    }
     // ROAS - gate by minimum order volume to exclude single-order outliers.
     return eligible
-      .filter(a => (a.newCustomerOrders || 0) >= MIN_ORDERS_FOR_ROAS)
+      .filter(a => (a.newCustomerOrders || 0) >= MIN_ORDERS_FOR_RATIO)
       .slice()
       .sort((a, b) => (b.newCustomerROAS || 0) - (a.newCustomerROAS || 0))
       .slice(0, 10);
@@ -3192,6 +3327,8 @@ function TopAdsForNewCustomersTile({ adRows, cs, onAdClick }: {
           {([
             { id: "orders", label: "Orders" },
             { id: "roas", label: "ROAS" },
+            { id: "revenue", label: "Revenue" },
+            { id: "cac", label: "CAC" },
           ] as const).map(o => {
             const active = sortMode === o.id;
             return (
@@ -3211,16 +3348,17 @@ function TopAdsForNewCustomersTile({ adRows, cs, onAdClick }: {
           })}
         </div>
         <div style={{ fontSize: "11px", color: "#6B7280" }}>
-          {sortMode === "roas"
-            ? `Top 10 by New Customer ROAS · min ${MIN_ORDERS_FOR_ROAS} orders to qualify`
-            : "Top 10 by New Customer Orders"}
+          {sortMode === "roas" && `Top 10 by New Customer ROAS · min ${MIN_ORDERS_FOR_RATIO} orders to qualify`}
+          {sortMode === "cac" && `Top 10 lowest New Customer CAC · min ${MIN_ORDERS_FOR_RATIO} orders to qualify`}
+          {sortMode === "orders" && "Top 10 by New Customer Orders"}
+          {sortMode === "revenue" && "Top 10 by New Customer Revenue"}
         </div>
       </div>
 
       {topAds.length === 0 ? (
         <div style={{ padding: "32px", textAlign: "center", color: "#6B7280", fontSize: "13px" }}>
-          {sortMode === "roas"
-            ? `No ads in this window cleared the ${MIN_ORDERS_FOR_ROAS}-order threshold yet.`
+          {(sortMode === "roas" || sortMode === "cac")
+            ? `No ads in this window cleared the ${MIN_ORDERS_FOR_RATIO}-order threshold yet.`
             : "No new-customer orders attributed to ads in this window."}
         </div>
       ) : (
@@ -3263,7 +3401,7 @@ function TopAdCard({ rank, ad, fmtPrice, fmtRoas, onClick }: {
     <div
       onClick={onClick}
       style={{
-        border: "1px solid #E5E7EB", borderRadius: "12px",
+        border: "1px solid #E5E7EB",
         background: "#fff", overflow: "hidden",
         cursor: onClick ? "pointer" : "default",
         transition: "transform 0.15s, box-shadow 0.15s",
@@ -3681,6 +3819,7 @@ export default function Campaigns() {
     shopDomain, fromKey, toKey, preset,
     changeEvents, changeCountsByObjectId,
     funnelTree, stageTotals,
+    topTiles,
   } = useLoaderData();
   const cs = currencySymbol || currencySymbolFromCode(null);
   const [searchParams, setSearchParams] = useSearchParams();
@@ -4514,6 +4653,65 @@ export default function Campaigns() {
 
           return (
             <>
+            {/* Headline tiles: a glanceable scoreboard for the ad account.
+                Live count + the standout ads in the period (best revenue,
+                best new-customer engine, worst spender). Sparklines come
+                from the aggregate dailyData since we don't preload per-ad
+                daily series at the loader level (would multiply queries). */}
+            <TileGrid pageId="campaigns-top" columns={4} tiles={[
+              { id: "topLiveAds", label: "Live Ads", render: () => (
+                <SummaryTile
+                  label="Live Ads"
+                  value={String(topTiles?.liveAdCount ?? 0)}
+                  subtitle="Currently active on Meta"
+                  tooltip={{ definition: "Number of ads with status ACTIVE in your Meta ad account right now. The sparkline reflects daily spend across the selected period, a proxy for how much advertising activity there has been." }}
+                  chartData={dailyData} prevChartData={prevDailyData}
+                  chartKey="spend" chartColor="#0E7490" chartFormat={fmtPrice}
+                />
+              )},
+              { id: "topRevenueAd", label: "Top Revenue Ad", render: () => topTiles?.topRevenueAd ? (
+                <SummaryTile
+                  label="Top Revenue Ad"
+                  value={fmtPrice(topTiles.topRevenueAd.revenue || 0)}
+                  subtitle={topTiles.topRevenueAd.name}
+                  imageUrl={topTiles.topRevenueAd.imageUrl || topTiles.topRevenueAd.thumbnailUrl || undefined}
+                  tooltip={{ definition: `Highest revenue ad in the period: ${topTiles.topRevenueAd.name}. Sparkline shows total Meta-attributed revenue per day.` }}
+                  chartData={dailyData} prevChartData={prevDailyData}
+                  chartKey={(d) => (d.attributedRevenue || 0) + (d.unverifiedRevenue || 0)}
+                  chartColor="#2E7D32" chartFormat={fmtPrice}
+                  valueVariant="headingXl"
+                />
+              ) : (
+                <SummaryTile label="Top Revenue Ad" value="—" subtitle="No ad revenue in period" />
+              )},
+              { id: "topNewCustAd", label: "Top New Customer Ad", render: () => topTiles?.topNewCustomerAd ? (
+                <SummaryTile
+                  label="Top New Customer Ad"
+                  value={`${topTiles.topNewCustomerAd.newCustomerOrders} orders`}
+                  subtitle={topTiles.topNewCustomerAd.name}
+                  imageUrl={topTiles.topNewCustomerAd.imageUrl || topTiles.topNewCustomerAd.thumbnailUrl || undefined}
+                  tooltip={{ definition: `Ad that brought in the most new customers in the period: ${topTiles.topNewCustomerAd.name}. Sparkline shows daily new-customer orders.` }}
+                  chartData={dailyData} prevChartData={prevDailyData}
+                  chartKey="newCustomerOrders" chartColor="#7C3AED" chartFormat={(v) => `${Math.round(v)} orders`}
+                  valueVariant="headingXl"
+                />
+              ) : (
+                <SummaryTile label="Top New Customer Ad" value="—" subtitle="No new-customer orders attributed" />
+              )},
+              { id: "worstAd", label: "Poorest Performing Ad", render: () => topTiles?.worstAd ? (
+                <SummaryTile
+                  label="Poorest Performing Ad"
+                  value={topTiles.worstAd.newCustomerCPA != null ? `${cs}${Math.round(topTiles.worstAd.newCustomerCPA).toLocaleString()} CAC` : `${(topTiles.worstAd.roas || 0).toFixed(2)}x ROAS`}
+                  subtitle={topTiles.worstAd.name}
+                  imageUrl={topTiles.worstAd.imageUrl || topTiles.worstAd.thumbnailUrl || undefined}
+                  tooltip={{ definition: `Worst-performing ad among those spending in the upper half of the account. Ranked by CAC where new-customer orders exist, otherwise by spend ÷ ROAS so high-spend zero-return ads still surface. Spend in period: ${cs}${Math.round(topTiles.worstAd.spend).toLocaleString()}.` }}
+                  valueVariant="headingXl"
+                />
+              ) : (
+                <SummaryTile label="Poorest Performing Ad" value="—" subtitle="Not enough spend to identify" />
+              )},
+            ] as TileDef[]} />
+
             {/* Ad Explorer pinned above summary tiles - the primary entry point
                 for browsing campaigns/ad sets/ads. Lives outside TileGrid so it
                 cannot be reordered below the summary mini-tiles. */}
@@ -4602,30 +4800,15 @@ export default function Campaigns() {
                   </BlockStack>
                 </Card>
               )},
+              { id: "platformPerf", label: "Platform Performance", span: 4, render: () => (
+                <BreakdownPerfTile title="Platform Performance" data={platformPerf} cs={cs} defaultLevel="campaign" defaultSort="roas" />
+              )},
+              { id: "placementPerf", label: "Placement Performance", span: 4, render: () => (
+                <BreakdownPerfTile title="Placement Performance" data={placementPerf} cs={cs} type="placement" />
+              )},
               { id: "adAge", label: "Ad Age", span: 2, render: () => (
                 <Card>
                   <AdAgeTile adRows={adRows} cs={cs} onAdClick={(id, name) => setDrawerEntity({ objectType: "ad", objectId: id, objectName: name })} />
-                </Card>
-              )},
-              { id: "platformPerf", label: "Platform Performance", span: 2, render: () => (
-                <BreakdownPerfTile title="Platform Performance" data={platformPerf} cs={cs} defaultLevel="campaign" defaultSort="roas" />
-              )},
-              { id: "placementPerf", label: "Placement Performance", span: 2, render: () => (
-                <BreakdownPerfTile title="Placement Performance" data={placementPerf} cs={cs} type="placement" />
-              )},
-              { id: "funnelHealth", label: "Funnel Health", span: 2, render: () => (
-                <Card>
-                  <BlockStack gap="300">
-                    <InlineStack align="space-between" blockAlign="center">
-                      <Text as="h3" variant="headingSm">Funnel Health</Text>
-                      <SmallToggle
-                        options={[{ id: "counts", label: "Drop-off" }, { id: "rates", label: "Conversion" }]}
-                        selected={funnelMode}
-                        onChange={(v) => setFunnelMode(v as "counts" | "rates")}
-                      />
-                    </InlineStack>
-                    <FunnelFlow totals={funnelTotals} mode={funnelMode} />
-                  </BlockStack>
                 </Card>
               )},
               { id: "wastedSpend", label: "Wasted Spend?", span: 2, render: () => (
