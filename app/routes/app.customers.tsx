@@ -1327,12 +1327,12 @@ export const action = async ({ request }) => {
 // ═══════════════════════════════════════════════════════════════
 
 // ── Donut Chart ──
-// `pathLength="1"` makes each arc render in 0–1 space rather than
-// `fraction * circumference`, eliminating the floating-point rounding that
-// previously caused adjacent segments to overlap by a fraction of a pixel.
-// `hovered` / `onHoverChange` allow the parent to link legend-row hover to
-// segment hover bidirectionally; if omitted, the component falls back to
-// internal hover state so drop-in callers still work.
+// Each segment is rendered as a discrete SVG <path> arc (rather than a
+// dasharray-on-circle). Path arcs have explicit start/end points, so
+// adjacent segments share an exact pixel-aligned boundary — no sub-pixel
+// stroke bleed at the junction. `hovered` / `onHoverChange` link legend-row
+// hover to segment hover; if omitted, internal state is used so drop-in
+// callers still work.
 function DonutChart({ segments, size = 180, thickness = 28, centerLabel, centerValue, hovered: hoveredProp, onHoverChange, formatValue }: {
   segments: { label: string; value: number; color: string }[];
   size?: number;
@@ -1355,21 +1355,54 @@ function DonutChart({ segments, size = 180, thickness = 28, centerLabel, centerV
 
   const radius = (size - thickness) / 2;
   const center = size / 2;
+  const pad = 8;
+  const svgSize = size + pad * 2;
+  const cx = center + pad;
+  const cy = center + pad;
 
   let cumulativeFraction = 0;
   const arcs = segments.filter(s => s.value > 0).map((seg, i) => {
+    const startFrac = cumulativeFraction;
     const fraction = seg.value / total;
-    const offset = -cumulativeFraction;
     cumulativeFraction += fraction;
-    return { ...seg, offset, fraction, index: i };
+    const endFrac = cumulativeFraction;
+    return { ...seg, startFrac, endFrac, fraction, index: i };
   });
 
-  // Pad the SVG so the hover-expanded stroke (thickness + 6) isn't cropped
-  // by the viewBox. The outer box grows by `pad` on every side; the wrapper
-  // div keeps its nominal `size` so layout (and the centred label overlay)
-  // stay put, and we offset the SVG with negative top/left to re-centre it.
-  const pad = 8;
-  const svgSize = size + pad * 2;
+  // Polar offset: -90° so the path starts at 12 o'clock.
+  const arcPath = (startFrac: number, endFrac: number, r: number) => {
+    const f = endFrac - startFrac;
+    // A single-segment full circle can't be expressed as one SVG arc, so
+    // split into two halves.
+    if (f >= 0.999) {
+      return `M ${cx} ${cy - r} A ${r} ${r} 0 1 1 ${cx} ${cy + r} A ${r} ${r} 0 1 1 ${cx} ${cy - r}`;
+    }
+    const a0 = (startFrac * 2 - 0.5) * Math.PI;
+    const a1 = (endFrac * 2 - 0.5) * Math.PI;
+    const x0 = cx + r * Math.cos(a0);
+    const y0 = cy + r * Math.sin(a0);
+    const x1 = cx + r * Math.cos(a1);
+    const y1 = cy + r * Math.sin(a1);
+    const largeArc = f > 0.5 ? 1 : 0;
+    return `M ${x0} ${y0} A ${r} ${r} 0 ${largeArc} 1 ${x1} ${y1}`;
+  };
+
+  // Auto-shrink the centre value when it's long (e.g. "£260,940") so the
+  // text doesn't overflow the donut hole. Inner hole diameter is
+  // `size - 2*thickness`; for the default 170/26 that's 118px.
+  const innerD = size - 2 * thickness;
+  const sizeFontFor = (text: string | undefined, base: number) => {
+    if (!text) return base;
+    // Rough cap: keep the rendered text under ~85% of the inner diameter.
+    const maxPx = innerD * 0.85;
+    const charW = base * 0.55; // bold sans-serif average
+    const estW = text.length * charW;
+    if (estW <= maxPx) return base;
+    return Math.max(14, Math.floor(base * (maxPx / estW)));
+  };
+  const centerFontSize = sizeFontFor(centerValue, 26);
+  const hoverFontSize = hovered !== null && arcs[hovered] ? sizeFontFor(fmt(arcs[hovered].value), 22) : 22;
+
   return (
     <div style={{ position: "relative", width: size, height: size }}>
       <svg
@@ -1377,18 +1410,16 @@ function DonutChart({ segments, size = 180, thickness = 28, centerLabel, centerV
         height={svgSize}
         viewBox={`0 0 ${svgSize} ${svgSize}`}
         style={{ position: "absolute", top: -pad, left: -pad, overflow: "visible" }}
+        shapeRendering="geometricPrecision"
       >
         {arcs.map((arc) => (
-          <circle
+          <path
             key={arc.label}
-            cx={center + pad} cy={center + pad} r={radius}
+            d={arcPath(arc.startFrac, arc.endFrac, radius)}
             fill="none"
             stroke={arc.color}
             strokeWidth={hovered === arc.index ? thickness + 6 : thickness}
-            pathLength={1}
-            strokeDasharray={`${arc.fraction} ${1 - arc.fraction}`}
-            strokeDashoffset={arc.offset}
-            transform={`rotate(-90 ${center + pad} ${center + pad})`}
+            strokeLinecap="butt"
             style={{ transition: "stroke-width 0.2s", cursor: "pointer", opacity: hovered !== null && hovered !== arc.index ? 0.5 : 1 }}
             onMouseEnter={() => setHovered(arc.index)}
             onMouseLeave={() => setHovered(null)}
@@ -1402,13 +1433,13 @@ function DonutChart({ segments, size = 180, thickness = 28, centerLabel, centerV
       }}>
         {hovered !== null && arcs[hovered] ? (
           <>
-            <div style={{ fontSize: "22px", fontWeight: 800, color: arcs[hovered].color }}>{fmt(arcs[hovered].value)}</div>
+            <div style={{ fontSize: `${hoverFontSize}px`, fontWeight: 800, color: arcs[hovered].color }}>{fmt(arcs[hovered].value)}</div>
             <div style={{ fontSize: "11px", color: "#6B7280", fontWeight: 500 }}>{arcs[hovered].label}</div>
             <div style={{ fontSize: "11px", color: "#9CA3AF" }}>{Math.round(arcs[hovered].fraction * 100)}%</div>
           </>
         ) : (
           <>
-            <div style={{ fontSize: "26px", fontWeight: 800, color: "#1F2937" }}>{centerValue}</div>
+            <div style={{ fontSize: `${centerFontSize}px`, fontWeight: 800, color: "#1F2937" }}>{centerValue}</div>
             <div style={{ fontSize: "11px", color: "#6B7280", fontWeight: 500 }}>{centerLabel}</div>
           </>
         )}
@@ -3919,7 +3950,7 @@ export default function Customers() {
                                 )}
                                 {isMeta && paybackMonth != null && (
                                   <div style={{ marginTop: 10, padding: "8px 12px", background: "#ECFDF5", border: "1px solid #A7F3D0", borderRadius: 8, fontSize: 12, color: "#065F46" }}>
-                                    <strong>Payback:</strong> Meta customers recoup their {cs}{Math.round(cac).toLocaleString()} acquisition cost around month {paybackMonth.toFixed(1)}. By month {primaryLast.month}, cumulative spend reaches {cs}{Math.round(primaryLast.avgLtv).toLocaleString()} per customer ({ltvCacRatioCurve.toFixed(2)}× CAC).
+                                    <strong>Payback:</strong> Meta customers recoup their {cs}{Math.round(cac).toLocaleString()} acquisition cost {paybackDays != null ? `around day ${paybackDays}` : `around month ${paybackMonth.toFixed(1)}`}. By month {primaryLast.month}, cumulative spend reaches {cs}{Math.round(primaryLast.avgLtv).toLocaleString()} per customer ({ltvCacRatioCurve.toFixed(2)}× CAC).
                                   </div>
                                 )}
                                 {isMeta && paybackMonth == null && cac > 0 && primaryLast.avgLtv > 0 && (
@@ -3927,78 +3958,6 @@ export default function Customers() {
                                     <strong>Payback:</strong> by month {primaryLast.month}, cumulative LTV ({cs}{Math.round(primaryLast.avgLtv).toLocaleString()}) hasn&apos;t yet crossed CAC ({cs}{Math.round(cac).toLocaleString()}). Lift repeat rate or lower CAC to close the gap.
                                   </div>
                                 )}
-                                {/* SECONDARY STATS - colourful tiles below the
-                                    chart. Avg Lifetime Value · Avg Customer
-                                    Lifetime · Days to 2nd Order · Repeat
-                                    Rate. Pulled from the cohort that the
-                                    chart is showing (gender-aware via
-                                    ltvFiltered when a gender is selected). */}
-                                {(() => {
-                                  const realisedAvgLtv = useFiltered ? ltvFiltered.avgLtv : (tile?.avgLtv || 0);
-                                  // Tenure = days from first to last order, only for
-                                  // customers acquired >=12mo ago with >=2 orders.
-                                  // The "lifetime" we can defensibly call lifetime
-                                  // without forecasting. Available for both Meta
-                                  // and All tabs (filterable on Meta).
-                                  const tenureDaysVal = isMeta
-                                    ? (useFiltered ? ltvFiltered.avgTenureDays : ((tile as any)?.avgTenureDays ?? null))
-                                    : ((tile as any)?.avgTenureDays ?? null);
-                                  const tenureCountVal = isMeta
-                                    ? (useFiltered ? ltvFiltered.tenuresCount : ((tile as any)?.tenuresCount ?? 0))
-                                    : ((tile as any)?.tenuresCount ?? 0);
-                                  const tenureLabelVal = tenureDaysVal != null
-                                    ? (tenureDaysVal >= 365
-                                        ? `${(tenureDaysVal / 365).toFixed(1)}yr`
-                                        : tenureDaysVal >= 60
-                                          ? `${(tenureDaysVal / 30).toFixed(1)} mo`
-                                          : `${tenureDaysVal}d`)
-                                    : "-";
-                                  const tiles = [
-                                    {
-                                      label: "Avg Lifetime Value",
-                                      value: realisedAvgLtv > 0 ? `${cs}${Math.round(realisedAvgLtv).toLocaleString()}` : "-",
-                                      sub: "realised spend / customer",
-                                      bg: "linear-gradient(135deg, #ECFDF5 0%, #D1FAE5 100%)",
-                                      border: "#A7F3D0",
-                                      labelColor: "#047857",
-                                    },
-                                    {
-                                      label: "Avg Customer Lifetime",
-                                      value: tenureLabelVal,
-                                      sub: tenureCountVal > 0 ? `${tenureCountVal.toLocaleString()} mature repeat (>=12mo)` : "needs >=12mo repeat data",
-                                      bg: "linear-gradient(135deg, #F5F3FF 0%, #EDE9FE 100%)",
-                                      border: "#DDD6FE",
-                                      labelColor: "#6D28D9",
-                                    },
-                                    {
-                                      label: "Days to 2nd Order",
-                                      value: medT2 != null ? `${medT2}d` : "-",
-                                      sub: "median across cohort",
-                                      bg: "linear-gradient(135deg, #FFFBEB 0%, #FEF3C7 100%)",
-                                      border: "#FDE68A",
-                                      labelColor: "#B45309",
-                                    },
-                                    {
-                                      label: "Repeat Rate",
-                                      value: `${repeatRate}%`,
-                                      sub: `${count.toLocaleString()} customer${count !== 1 ? "s" : ""}`,
-                                      bg: "linear-gradient(135deg, #FFF1F2 0%, #FFE4E6 100%)",
-                                      border: "#FECDD3",
-                                      labelColor: "#BE123C",
-                                    },
-                                  ].filter(Boolean) as Array<{ label: string; value: string; sub: string; bg: string; border: string; labelColor: string }>;
-                                  return (
-                                    <div style={{ display: "grid", gridTemplateColumns: `repeat(${tiles.length}, 1fr)`, gap: 12, marginTop: 18 }}>
-                                      {tiles.map((t, idx) => (
-                                        <div key={idx} style={{ padding: "16px 18px", background: t.bg, border: `1px solid ${t.border}`, borderRadius: 10 }}>
-                                          <div style={{ fontSize: 11, fontWeight: 700, color: t.labelColor, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6 }}>{t.label}</div>
-                                          <div style={{ fontSize: 24, fontWeight: 800, color: "#1F2937", lineHeight: 1.05 }}>{t.value}</div>
-                                          <div style={{ fontSize: 11, color: "#6B7280", marginTop: 4 }}>{t.sub}</div>
-                                        </div>
-                                      ))}
-                                    </div>
-                                  );
-                                })()}
                               </div>
                             );
                           })()}

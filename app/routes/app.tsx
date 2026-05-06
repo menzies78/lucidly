@@ -67,9 +67,11 @@ function LoadingIndicator() {
     };
   }, []);
 
-  // The two pill triggers can overlap. Sync is the more informative
-  // message, so it wins when both are true.
-  const showPill = syncRunning || showLoadingPill;
+  // Only surface the pill while a navigation is actually pending. If a
+  // background sync happens to be running at the same time, upgrade the
+  // copy so the merchant knows why the load is sluggish - but never show
+  // the pill purely because sync is running in the background.
+  const showPill = showLoadingPill;
   const pillText = syncRunning
     ? "Hourly sync running - your data may take a moment"
     : "Loading your data...";
@@ -91,8 +93,8 @@ function LoadingIndicator() {
         }
       `}</style>
 
-      {/* Slim shimmer bar - visible during nav loads or while sync runs */}
-      {(isLoading || syncRunning) && (
+      {/* Slim shimmer bar - only while a navigation is pending */}
+      {isLoading && (
         <div style={{
           position: "fixed", top: 0, left: 0, right: 0, height: "3px", zIndex: 99999,
           background: "linear-gradient(90deg, transparent, #7c3aed, #a78bfa, #7c3aed, transparent)",
