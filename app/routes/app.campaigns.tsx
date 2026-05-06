@@ -2532,6 +2532,21 @@ function AdExplorerTable({ rows, cs, entityType, onEntityClick }: {
     isRevenue?: boolean;
   };
 
+  // When more than one segment is on, the table grows from 6 columns to as
+  // many as 16. We tighten column widths + inter-column gap to keep the grid
+  // dense rather than letting horizontal scroll dominate.
+  const compact = orderedSegments.length > 1;
+  const W = {
+    orders: compact ? "60px" : "70px",
+    revenue: compact ? "78px" : "90px",
+    spend: compact ? "72px" : "80px",
+    roas: compact ? "56px" : "65px",
+    cpa: compact ? "62px" : "65px",
+    aov: compact ? "62px" : "70px",
+    name: compact ? "200px" : "240px",
+  };
+  const ROW_GAP = compact ? "5px" : "10px";
+
   const COLS: ColDef[] = useMemo(() => {
     const out: ColDef[] = [];
     const fmtMoney = (v: number) => `${cs}${Math.round(v).toLocaleString()}`;
@@ -2544,7 +2559,7 @@ function AdExplorerTable({ rows, cs, entityType, onEntityClick }: {
       out.push({
         key: `${seg}_orders`,
         label: `${SEGMENT_PREFIX[seg]}Orders`,
-        width: "70px",
+        width: W.orders,
         format: (r) => fmtCount(segOrders(r, seg)),
         tooltip: seg === "all"
           ? "All Meta-attributed orders for this entity in the selected period."
@@ -2558,7 +2573,7 @@ function AdExplorerTable({ rows, cs, entityType, onEntityClick }: {
       out.push({
         key: `${seg}_revenue`,
         label: `${SEGMENT_PREFIX[seg]}Revenue`,
-        width: "90px",
+        width: W.revenue,
         format: (r) => fmtMoney(segRevenue(r, seg)),
         isRevenue: true,
         tooltip: seg === "all"
@@ -2572,7 +2587,7 @@ function AdExplorerTable({ rows, cs, entityType, onEntityClick }: {
     out.push({
       key: "spend",
       label: "Spend",
-      width: "80px",
+      width: W.spend,
       format: (r) => fmtMoney(r.spend || 0),
       tooltip: "Meta ad spend for this entity in the selected period.",
     });
@@ -2581,7 +2596,7 @@ function AdExplorerTable({ rows, cs, entityType, onEntityClick }: {
       out.push({
         key: `${seg}_roas`,
         label: `${SEGMENT_PREFIX[seg]}ROAS`,
-        width: "65px",
+        width: W.roas,
         format: (r) => fmtRoas(getValue(r, `${seg}_roas`)),
         tooltip: seg === "all"
           ? "Return on ad spend. All revenue ÷ spend."
@@ -2595,7 +2610,7 @@ function AdExplorerTable({ rows, cs, entityType, onEntityClick }: {
       out.push({
         key: `${seg}_cpa`,
         label: `${SEGMENT_PREFIX[seg]}CPA`,
-        width: "65px",
+        width: W.cpa,
         format: (r) => fmtCpa(getValue(r, `${seg}_cpa`)),
         tooltip: seg === "all"
           ? "Cost per attributed order. Spend ÷ all orders."
@@ -2609,7 +2624,7 @@ function AdExplorerTable({ rows, cs, entityType, onEntityClick }: {
       out.push({
         key: `${seg}_aov`,
         label: `${SEGMENT_PREFIX[seg]}AOV`,
-        width: "70px",
+        width: W.aov,
         format: (r) => {
           const v = getValue(r, `${seg}_aov`);
           return v > 0 ? fmtMoney(v) : "\u2014";
@@ -2703,10 +2718,10 @@ function AdExplorerTable({ rows, cs, entityType, onEntityClick }: {
       <div style={{ overflowX: "auto" }}>
         <div style={{ minWidth: "fit-content" }}>
           {/* Table header */}
-          <div style={{ display: "flex", gap: "10px", alignItems: "center", padding: "0 0 8px 0", borderBottom: "1px solid #e4e5e7", marginBottom: "4px" }}>
+          <div style={{ display: "flex", gap: ROW_GAP, alignItems: "center", padding: "0 0 8px 0", borderBottom: "1px solid #e4e5e7", marginBottom: "4px" }}>
             <span style={{ width: "28px", flexShrink: 0 }} />
             {entityType === "ad" && <span style={{ width: "36px", flexShrink: 0 }} />}
-            <span style={{ flex: 1, fontSize: "11px", color: "#8c9196", fontWeight: 600, textTransform: "uppercase", minWidth: "240px" }}>Name</span>
+            <span style={{ flex: 1, fontSize: "11px", color: "#8c9196", fontWeight: 600, textTransform: "uppercase", minWidth: W.name }}>Name</span>
             {COLS.map((c, idx) => (
               <span key={c.key} style={{ display: "flex", alignItems: "center", flexShrink: 0 }}>
                 {isClusterBoundary(idx) && (
@@ -2731,7 +2746,7 @@ function AdExplorerTable({ rows, cs, entityType, onEntityClick }: {
                     }}
                     title={interactive ? (isExpanded ? "Click to collapse" : "Click to expand timeline") : undefined}
                     style={{
-                      display: "flex", alignItems: "center", gap: "10px",
+                      display: "flex", alignItems: "center", gap: ROW_GAP,
                       cursor: interactive ? "pointer" : "default",
                       padding: "6px 4px", borderRadius: 4,
                       background: isExpanded ? "#EEF2FF" : (i % 2 === 0 ? "#fff" : "#f9fafb"),
@@ -2753,7 +2768,7 @@ function AdExplorerTable({ rows, cs, entityType, onEntityClick }: {
                     )}
                     <span style={{
                       flex: 1, fontSize: "13px", fontWeight: 500, overflow: "hidden",
-                      textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: "240px",
+                      textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: W.name,
                     }} title={item.name}>
                       {item.name}
                     </span>
@@ -2791,12 +2806,12 @@ function AdExplorerTable({ rows, cs, entityType, onEntityClick }: {
 
           {/* Footer summary */}
           <div style={{
-            display: "flex", gap: "10px", alignItems: "center", padding: "8px 4px 0",
+            display: "flex", gap: ROW_GAP, alignItems: "center", padding: "8px 4px 0",
             borderTop: "1px solid #e4e5e7", marginTop: "4px", fontWeight: 600, fontSize: "12.5px",
           }}>
             <span style={{ width: "28px", flexShrink: 0 }} />
             {entityType === "ad" && <span style={{ width: "36px", flexShrink: 0 }} />}
-            <span style={{ flex: 1, color: "#374151", minWidth: "240px" }}>{sorted.length} {entityNoun}</span>
+            <span style={{ flex: 1, color: "#374151", minWidth: W.name }}>{sorted.length} {entityNoun}</span>
             {COLS.map((c, idx) => (
               <span key={c.key} style={{ display: "flex", alignItems: "center", flexShrink: 0 }}>
                 {isClusterBoundary(idx) && (
