@@ -246,10 +246,22 @@ async function warmShop(shopDomain) {
     db.dailyAdRollup.aggregate({ where: { shopDomain }, _sum: { spend: true } }),
   ));
 
+  // CRITICAL: must match the select used by app/routes/app.campaigns.tsx
+  // loader (the cache-key consumer). The warmer runs first on boot, so a
+  // narrower select here populates the cache with stripped-down rows; the
+  // loader then gets a cache hit on partial data and silently loses the
+  // missing fields. Symptom: ad thumbnails never render in Ad Explorer or
+  // top-tile cards because thumbnailUrl/imageUrl/productSetId never make it
+  // through. Keep this select in lock-step with the loader's select.
   tasks.push(() => queryCached(`${shopDomain}:metaEntities`, TTL, () =>
     db.metaEntity.findMany({
       where: { shopDomain },
-      select: { entityType: true, entityId: true, createdTime: true },
+      select: {
+        entityType: true, entityId: true, entityName: true,
+        createdTime: true, funnelStage: true,
+        targetingSpec: true, currentStatus: true,
+        thumbnailUrl: true, imageUrl: true, productSetId: true,
+      },
     }),
   ));
 
