@@ -1254,6 +1254,7 @@ export const loader = async ({ request }) => {
   const pickAdSummary = (row: any) => row && {
     id: row.id, name: row.name,
     thumbnailUrl: row.thumbnailUrl, imageUrl: row.imageUrl,
+    productSetId: row.productSetId || null,
     spend: row.spend, revenue: (row.attributedRevenue || 0) + (row.unverifiedRevenue || 0),
     newCustomerOrders: row.newCustomerOrders || 0,
     newCustomerRevenue: row.newCustomerRevenue || 0,
@@ -4911,7 +4912,14 @@ export default function Campaigns() {
                   label="Top Revenue Ad"
                   value={fmtPrice(topTiles.topRevenueAd.revenue || 0)}
                   subtitle={topTiles.topRevenueAd.name}
-                  imageUrl={topTiles.topRevenueAd.imageUrl || topTiles.topRevenueAd.thumbnailUrl || undefined}
+                  // For DPA ads Meta only returns a 64x64 grey placeholder
+                  // PNG, which reads as a blank tile at this size - so we
+                  // suppress the image and let SummaryTile paint a "D"
+                  // badge via isDpa instead.
+                  imageUrl={topTiles.topRevenueAd.productSetId
+                    ? undefined
+                    : (topTiles.topRevenueAd.imageUrl || topTiles.topRevenueAd.thumbnailUrl || undefined)}
+                  isDpa={!!topTiles.topRevenueAd.productSetId}
                   tooltip={{ definition: `Highest revenue ad in the period: ${topTiles.topRevenueAd.name}. Sparkline shows total Meta-attributed revenue per day.` }}
                   chartData={dailyData} prevChartData={prevDailyData}
                   chartKey={(d) => (d.attributedRevenue || 0) + (d.unverifiedRevenue || 0)}
@@ -4926,7 +4934,10 @@ export default function Campaigns() {
                   label="Top New Customer Ad"
                   value={`${topTiles.topNewCustomerAd.newCustomerOrders} orders`}
                   subtitle={topTiles.topNewCustomerAd.name}
-                  imageUrl={topTiles.topNewCustomerAd.imageUrl || topTiles.topNewCustomerAd.thumbnailUrl || undefined}
+                  imageUrl={topTiles.topNewCustomerAd.productSetId
+                    ? undefined
+                    : (topTiles.topNewCustomerAd.imageUrl || topTiles.topNewCustomerAd.thumbnailUrl || undefined)}
+                  isDpa={!!topTiles.topNewCustomerAd.productSetId}
                   tooltip={{ definition: `Ad that brought in the most new customers in the period: ${topTiles.topNewCustomerAd.name}. Sparkline shows daily new-customer orders.` }}
                   chartData={dailyData} prevChartData={prevDailyData}
                   chartKey="newCustomerOrders" chartColor="#7C3AED" chartFormat={(v) => `${Math.round(v)} orders`}
@@ -4958,7 +4969,10 @@ export default function Campaigns() {
                     </span>
                   }
                   subtitle={topTiles.worstAd.name}
-                  imageUrl={topTiles.worstAd.imageUrl || topTiles.worstAd.thumbnailUrl || undefined}
+                  imageUrl={topTiles.worstAd.productSetId
+                    ? undefined
+                    : (topTiles.worstAd.imageUrl || topTiles.worstAd.thumbnailUrl || undefined)}
+                  isDpa={!!topTiles.worstAd.productSetId}
                   tooltip={{ definition: `Worst-performing ad among those spending in the upper half of the account. Ranked by CAC where new-customer orders exist, otherwise by spend ÷ ROAS so high-spend zero-return ads still surface. Spend in period: ${cs}${Math.round(topTiles.worstAd.spend).toLocaleString()}.` }}
                   valueVariant="headingXl"
                 />

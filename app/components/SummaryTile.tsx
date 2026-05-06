@@ -20,6 +20,11 @@ export interface SummaryTileProps {
   chartColor?: string;
   chartFormat?: (v: number) => string;
   imageUrl?: string;
+  // For ad tiles backed by a Dynamic Product Ad (Advantage+ catalog) where
+  // there is no single creative image - Meta hands back a 64x64 placeholder
+  // for these and it reads as a blank grey blob at tile size. When isDpa
+  // is true and there is no usable imageUrl, we paint a "D" badge instead.
+  isDpa?: boolean;
   // Optional override for tiles whose "value" is a long product name
   // that would overflow the default 2xl heading (e.g. Best Gateway Product).
   valueVariant?: "headingXl" | "headingLg" | "headingMd" | "heading2xl";
@@ -39,6 +44,25 @@ function ProductThumb({ url, size = 44 }: { url: string; size?: number }) {
         objectFit: "cover", border: "1px solid #E5E7EB", flexShrink: 0,
       }}
     />
+  );
+}
+
+// Visual stand-in for Dynamic Product Ads, which don't have a single
+// creative thumbnail (Meta returns a 64x64 placeholder PNG that reads as a
+// blank grey blob at tile size). Same colour treatment as the "D" badge
+// in AdThumbTile so the visual language stays consistent across the page.
+function DpaBadge({ size = 44 }: { size?: number }) {
+  return (
+    <div
+      title="Dynamic Product Ad - thumbnails come from the product catalogue, not a single creative."
+      style={{
+        width: size, height: size, borderRadius: 6,
+        background: "#EEF2FF", border: "1px solid #C7D2FE",
+        color: "#4338CA", fontWeight: 700, fontSize: size * 0.45,
+        display: "inline-flex", alignItems: "center", justifyContent: "center",
+        flexShrink: 0,
+      }}
+    >D</div>
   );
 }
 
@@ -110,7 +134,7 @@ function DeltaBadge({ currentValue, previousValue, lowerIsBetter, onHoverChange 
 
 export default function SummaryTile({
   label, value, subtitle, tooltip, previousValue, currentValue, lowerIsBetter,
-  chartData, prevChartData, chartKey, chartColor, chartFormat, imageUrl,
+  chartData, prevChartData, chartKey, chartColor, chartFormat, imageUrl, isDpa,
   valueVariant = "heading2xl", centered = false,
 }: SummaryTileProps) {
   const [showTip, setShowTip] = useState(false);
@@ -162,7 +186,7 @@ export default function SummaryTile({
           justifyContent: centered ? "center" : "flex-start",
           textAlign: centered ? "center" : "left",
         }}>
-          {imageUrl && <ProductThumb url={imageUrl} />}
+          {imageUrl ? <ProductThumb url={imageUrl} /> : isDpa ? <DpaBadge /> : null}
           <Text as="p" variant={valueVariant}>{value}</Text>
         </div>
 

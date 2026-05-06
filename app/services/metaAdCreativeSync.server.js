@@ -116,6 +116,43 @@ async function cacheThumbnailBytes(adId, url) {
 async function cacheFullImageBytes(adId, url) {
   return cacheBytes(adId, url, "full");
 }
+
+// Resolve image hashes to the originally-uploaded full-resolution asset URL.
+//
+// Meta's creative.thumbnail_url is a 64x64 PNG (visibly pixelated above
+// ~80px) and creative.image_url is frequently empty or also a small
+// CDN-resized variant. The /act_{id}/adimages?hashes=[...] endpoint, in
+// contrast, returns the original upload URL (typically 1080x1080 or
+// larger) keyed by image_hash. This is what powers the "Top Ads for New
+// Customers" cards and the Ad Explorer hover-zoom — both render at
+// 180-300px and pixelate badly off the 64x64 thumb.
+//
+// Batched up to 50 hashes per call (Meta's documented limit). Failures
+// per chunk are logged and swallowed — the caller falls back to
+// image_url / thumbnail_url, so a chunk failure just means lower-res
+// images for the affected ads, not a hard failure.
+async function resolveImageHashUrls(hashes, accountId, token) {
+  const out = new Map();
+  if (!hashes.size) return out;
+  const arr = [...hashes];
+  for (let i = 0; i < arr.length; i += 50) {
+    const chunk = arr.slice(i, i + 50);
+    const url = `https://graph.facebook.com/v21.0/${accountId}/adimages`
+      + `?hashes=${encodeURIComponent(JSON.stringify(chunk))}`
+      + `&fields=hash,url,permalink_url,width,height`
+      + `&access_token=${token}`;
+    try {
+      const data = await fetchWithRetry(url, "MetaAdCreativeSync");
+      for (const img of data?.data || []) {
+        if (img.hash && img.url) out.set(img.hash, img.url);
+      }
+    } catch (err) {
+      console.warn(`[MetaAdCreativeSync] adimages chunk failed (${chunk.length} hashes): ${err.message}`);
+    }
+  }
+  return out;
+}
+
 export async function refreshAdCreatives(shopDomain) {
   const shop = await db.shop.findUnique({ where: { shopDomain } });
   if (!shop?.metaAccessToken || !shop?.metaAdAccountId) {
@@ -167,6 +204,20 @@ export async function refreshAdCreatives(shopDomain) {
   }
   console.log(`[MetaAdCreativeSync] ${shopDomain}: bulk fetched ${bulkAds.length} ads across ${pages} pages${pageError ? ` (stopped: ${pageError.name})` : ""}`);
 
+  // Resolve image_hash -> full-resolution upload URL for every creative we
+  // saw. This is what the "full" variant cache + the proxy fallback hand
+  // back to the Top Ads / hover-zoom UI; without it those would render the
+  // 64x64 thumbnail_url scaled up. DPA ads typically have no image_hash
+  // (catalog-driven), so they fall through to thumbnail_url and the
+  // explorer paints a "D" badge instead.
+  const imageHashes = new Set();
+  for (const a of bulkAds) {
+    const h = a.creative?.image_hash;
+    if (h) imageHashes.add(h);
+  }
+  const hashUrlMap = await resolveImageHashUrls(imageHashes, accountId, token);
+  console.log(`[MetaAdCreativeSync] ${shopDomain}: resolved ${hashUrlMap.size}/${imageHashes.size} image hashes to full-res URLs`);
+
   const bulkMap = new Map(); // adId -> { thumbnail_url, image_url, productSetId }
   for (const a of bulkAds) {
     const c = a.creative || {};
@@ -174,9 +225,12 @@ export async function refreshAdCreatives(shopDomain) {
     // still want the explorer to know they're DPAs so it can render the
     // distinctive "D" badge.
     if (c.thumbnail_url || c.image_url || c.product_set_id) {
+      // Prefer the resolved full-res URL (from /adimages) over the
+      // CDN-resized image_url Meta returned with the creative bulk fetch.
+      const fullResUrl = c.image_hash ? hashUrlMap.get(c.image_hash) : null;
       bulkMap.set(a.id, {
         thumbnailUrl: c.thumbnail_url || null,
-        imageUrl: c.image_url || null,
+        imageUrl: fullResUrl || c.image_url || null,
         productSetId: c.product_set_id || null,
       });
     }
@@ -233,18 +287,26 @@ export async function refreshAdCreatives(shopDomain) {
       );
       const c = data.creative || {};
       if (c.thumbnail_url || c.image_url || c.product_set_id) {
+        // Resolve this single hash inline. Per-ad fallback runs only for
+        // ads missing from the bulk listing (small N) so a one-off lookup
+        // here is cheaper than wiring it into the outer batch.
+        let fullResUrl = c.image_url || null;
+        if (c.image_hash) {
+          const m = await resolveImageHashUrls(new Set([c.image_hash]), accountId, token);
+          fullResUrl = m.get(c.image_hash) || fullResUrl;
+        }
         await db.metaEntity.update({
           where: { shopDomain_entityType_entityId: { shopDomain, entityType: "ad", entityId: adId } },
           data: {
             thumbnailUrl: c.thumbnail_url || null,
-            imageUrl: c.image_url || null,
+            imageUrl: fullResUrl,
             productSetId: c.product_set_id || null,
             thumbnailFetchedAt: now,
           },
         });
         updated++;
         const wroteThumb = await cacheThumbnailBytes(adId, c.thumbnail_url);
-        const wroteFull = await cacheFullImageBytes(adId, c.image_url);
+        const wroteFull = await cacheFullImageBytes(adId, fullResUrl);
         if (wroteThumb || wroteFull) cached++;
       } else {
         missing++;
