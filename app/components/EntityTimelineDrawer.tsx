@@ -42,7 +42,7 @@ interface TimelinePayload {
     newValue: string | null;
     rawEventType: string;
   }>;
-  daily: Array<{ date: string; spend: number; revenue: number; orders: number }>;
+  daily: Array<{ date: string; spend: number; revenue: number; orders: number; newCustomerOrders?: number; newCustomerRevenue?: number; existingCustomerOrders?: number; existingCustomerRevenue?: number }>;
 }
 
 const CATEGORY_COLOR: Record<string, string> = {

@@ -51,18 +51,31 @@ export const loader = async ({ request }: { request: Request }) => {
     where: rollupWhere,
     select: {
       date: true, spend: true, attributedRevenue: true, unverifiedRevenue: true,
-      attributedOrders: true, newCustomerOrders: true,
+      attributedOrders: true, newCustomerOrders: true, newCustomerRevenue: true,
+      existingCustomerOrders: true, existingCustomerRevenue: true,
     },
   });
 
-  const byDay = new Map<string, { spend: number; revenue: number; orders: number; newCustomerOrders: number }>();
+  type DayAgg = {
+    spend: number; revenue: number; orders: number;
+    newCustomerOrders: number; newCustomerRevenue: number;
+    existingCustomerOrders: number; existingCustomerRevenue: number;
+  };
+  const byDay = new Map<string, DayAgg>();
   for (const r of rollups) {
     const key = shopLocalDayKey(tz, r.date);
-    const agg = byDay.get(key) || { spend: 0, revenue: 0, orders: 0, newCustomerOrders: 0 };
+    const agg = byDay.get(key) || {
+      spend: 0, revenue: 0, orders: 0,
+      newCustomerOrders: 0, newCustomerRevenue: 0,
+      existingCustomerOrders: 0, existingCustomerRevenue: 0,
+    };
     agg.spend += r.spend || 0;
     agg.revenue += (r.attributedRevenue || 0) + (r.unverifiedRevenue || 0);
     agg.orders += r.attributedOrders || 0;
     agg.newCustomerOrders += r.newCustomerOrders || 0;
+    agg.newCustomerRevenue += r.newCustomerRevenue || 0;
+    agg.existingCustomerOrders += r.existingCustomerOrders || 0;
+    agg.existingCustomerRevenue += r.existingCustomerRevenue || 0;
     byDay.set(key, agg);
   }
   const daily = [...byDay.entries()]

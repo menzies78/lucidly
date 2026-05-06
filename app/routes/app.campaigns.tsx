@@ -2409,6 +2409,24 @@ function segRevenue(r: any, seg: Segment): number {
   return r.attributedRevenue || 0;
 }
 
+// Daily payload returned by /app/api/entity-timeline (inline expansion uses
+// the same endpoint as the slide-out drawer - one cache hit, two consumers).
+type TimelineDay = {
+  date: string; spend: number; revenue: number; orders: number;
+  newCustomerOrders?: number; newCustomerRevenue?: number;
+  existingCustomerOrders?: number; existingCustomerRevenue?: number;
+};
+type TimelineEvent = {
+  id: string; eventTimeISO: string; category: string; summary: string;
+  actor: string | null; rawEventType: string;
+};
+type TimelinePayload = {
+  entity: { objectName: string | null; currentStatus: string | null;
+    createdTime: string | null; effectiveStartAt: string | null; effectiveEndAt: string | null; };
+  events: TimelineEvent[];
+  daily: TimelineDay[];
+};
+
 function AdExplorerTable({ rows, cs, entityType, onEntityClick }: {
   rows: any[]; cs: string;
   entityType: "campaign" | "adset" | "ad";
@@ -2423,6 +2441,32 @@ function AdExplorerTable({ rows, cs, entityType, onEntityClick }: {
   // stale cut applied. At least one segment must remain selected at all times.
   const [selectedSegments, setSelectedSegments] = useState<Set<Segment>>(() => new Set<Segment>(["all"]));
   const [searchQuery, setSearchQuery] = useState("");
+
+  // Inline row expansion. Replaces the slide-out drawer for explorer rows -
+  // the table never greys out, sort/filter still work freely while a row is
+  // open, and the embedded sparkline updates in-place when the active sort
+  // metric changes (no re-fetch - daily payload carries every metric).
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [timelineCache, setTimelineCache] = useState<Map<string, TimelinePayload>>(() => new Map());
+  const [loadingIds, setLoadingIds] = useState<Set<string>>(() => new Set());
+  const [errorIds, setErrorIds] = useState<Map<string, string>>(() => new Map());
+
+  const toggleExpand = useCallback((id: string, type: "campaign" | "adset" | "ad") => {
+    setExpandedId(prev => prev === id ? null : id);
+    if (timelineCache.has(id)) return;
+    setLoadingIds(prev => { const n = new Set(prev); n.add(id); return n; });
+    fetch(`/app/api/entity-timeline?type=${type}&id=${encodeURIComponent(id)}`)
+      .then(r => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
+      .then((d: TimelinePayload) => {
+        setTimelineCache(prev => { const n = new Map(prev); n.set(id, d); return n; });
+      })
+      .catch((e) => {
+        setErrorIds(prev => { const n = new Map(prev); n.set(id, e.message); return n; });
+      })
+      .finally(() => {
+        setLoadingIds(prev => { const n = new Set(prev); n.delete(id); return n; });
+      });
+  }, [timelineCache]);
 
   const toggleSegment = (s: Segment) => {
     setSelectedSegments(prev => {
@@ -2677,53 +2721,69 @@ function AdExplorerTable({ rows, cs, entityType, onEntityClick }: {
           <div style={{ maxHeight: "480px", overflowY: "auto", display: "flex", flexDirection: "column", gap: "2px", paddingRight: "4px" }}>
             {sorted.map((item, i) => {
               const interactive = !!item.id && !!entityType;
+              const isExpanded = expandedId === item.id;
               return (
-                <div
-                  key={item.id || i}
-                  onClick={() => interactive && onEntityClick?.(item.id, item.name)}
-                  title={interactive ? "Click for full timeline" : undefined}
-                  style={{
-                    display: "flex", alignItems: "center", gap: "10px",
-                    cursor: interactive ? "pointer" : "default",
-                    padding: "6px 4px", borderRadius: 4,
-                    background: i % 2 === 0 ? "#fff" : "#f9fafb",
-                    transition: "background 0.12s ease",
-                  }}
-                  onMouseOver={(e) => { if (interactive) (e.currentTarget as HTMLDivElement).style.background = "#f1f5f9"; }}
-                  onMouseOut={(e) => { (e.currentTarget as HTMLDivElement).style.background = i % 2 === 0 ? "#fff" : "#f9fafb"; }}
-                >
-                  <span style={{ fontSize: "11px", color: "#9CA3AF", width: "28px", textAlign: "right", flexShrink: 0 }}>{i + 1}</span>
-                  {entityType === "ad" && (
-                    <AdThumbTile
-                      thumbnailUrl={item.thumbnailUrl}
-                      imageUrl={item.imageUrl}
-                      name={item.name}
-                      isDpa={!!item.productSetId}
+                <div key={item.id || i}>
+                  <div
+                    onClick={() => {
+                      if (!interactive) return;
+                      toggleExpand(item.id, entityType);
+                    }}
+                    title={interactive ? (isExpanded ? "Click to collapse" : "Click to expand timeline") : undefined}
+                    style={{
+                      display: "flex", alignItems: "center", gap: "10px",
+                      cursor: interactive ? "pointer" : "default",
+                      padding: "6px 4px", borderRadius: 4,
+                      background: isExpanded ? "#EEF2FF" : (i % 2 === 0 ? "#fff" : "#f9fafb"),
+                      transition: "background 0.12s ease",
+                    }}
+                    onMouseOver={(e) => { if (interactive && !isExpanded) (e.currentTarget as HTMLDivElement).style.background = "#f1f5f9"; }}
+                    onMouseOut={(e) => { if (!isExpanded) (e.currentTarget as HTMLDivElement).style.background = i % 2 === 0 ? "#fff" : "#f9fafb"; }}
+                  >
+                    <span style={{ fontSize: "11px", color: isExpanded ? "#4338CA" : "#9CA3AF", width: "28px", textAlign: "right", flexShrink: 0 }}>
+                      {isExpanded ? "▾" : i + 1}
+                    </span>
+                    {entityType === "ad" && (
+                      <AdThumbTile
+                        thumbnailUrl={item.thumbnailUrl}
+                        imageUrl={item.imageUrl}
+                        name={item.name}
+                        isDpa={!!item.productSetId}
+                      />
+                    )}
+                    <span style={{
+                      flex: 1, fontSize: "13px", fontWeight: 500, overflow: "hidden",
+                      textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: "240px",
+                    }} title={item.name}>
+                      {item.name}
+                    </span>
+                    {COLS.map((c, idx) => {
+                      const numVal = getValue(item, c.key);
+                      return (
+                        <span key={c.key} style={{ display: "flex", alignItems: "center", flexShrink: 0 }}>
+                          {isClusterBoundary(idx) && (
+                            <span style={{ width: "1px", height: "14px", background: "#f1f2f4", marginRight: "6px", marginLeft: "-2px" }} />
+                          )}
+                          <span style={{
+                            fontSize: "12.5px", textAlign: "right", flexShrink: 0,
+                            width: c.width, color: numVal > 0 ? "#374151" : "#bbb",
+                            fontWeight: c.isRevenue ? 600 : 400,
+                          }}>
+                            {c.format(item)}
+                          </span>
+                        </span>
+                      );
+                    })}
+                  </div>
+                  {isExpanded && (
+                    <ExpandedRow
+                      cs={cs}
+                      sortCol={sortCol}
+                      payload={timelineCache.get(item.id) || null}
+                      loading={loadingIds.has(item.id)}
+                      error={errorIds.get(item.id) || null}
                     />
                   )}
-                  <span style={{
-                    flex: 1, fontSize: "13px", fontWeight: 500, overflow: "hidden",
-                    textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: "240px",
-                  }} title={item.name}>
-                    {item.name}
-                  </span>
-                  {COLS.map((c, idx) => {
-                    const numVal = getValue(item, c.key);
-                    return (
-                      <span key={c.key} style={{ display: "flex", alignItems: "center", flexShrink: 0 }}>
-                        {isClusterBoundary(idx) && (
-                          <span style={{ width: "1px", height: "14px", background: "#f1f2f4", marginRight: "6px", marginLeft: "-2px" }} />
-                        )}
-                        <span style={{
-                          fontSize: "12.5px", textAlign: "right", flexShrink: 0,
-                          width: c.width, color: numVal > 0 ? "#374151" : "#bbb",
-                          fontWeight: c.isRevenue ? 600 : 400,
-                        }}>
-                          {c.format(item)}
-                        </span>
-                      </span>
-                    );
-                  })}
                 </div>
               );
             })}
@@ -2750,6 +2810,232 @@ function AdExplorerTable({ rows, cs, entityType, onEntityClick }: {
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+// ── ExpandedRow ─────────────────────────────────────────────────────────
+// Inline expansion under a clicked Ad Explorer row. Replaces the slide-out
+// drawer for explorer interactions: the table stays interactive, sort/search
+// keep working while a row is open, and the embedded sparkline live-updates
+// when the active sort metric changes (no re-fetch - daily payload carries
+// every metric).
+//
+// Data shape mirrors /app/api/entity-timeline. Sparkline plots two series:
+//   • Spend (always, light line so the user sees cost context)
+//   • Active sort metric (bold line) - derived from sortCol on the parent
+// Hovering the chart shows a vertical guide + tooltip with date/value.
+function ExpandedRow({ cs, sortCol, payload, loading, error }: {
+  cs: string;
+  sortCol: string;
+  payload: TimelinePayload | null;
+  loading: boolean;
+  error: string | null;
+}) {
+  if (loading) {
+    return (
+      <div style={{ padding: "16px 20px", background: "#F9FAFB", borderLeft: "3px solid #5C6AC4", color: "#6B7280", fontSize: 12 }}>
+        Loading timeline…
+      </div>
+    );
+  }
+  if (error) {
+    return (
+      <div style={{ padding: "16px 20px", background: "#FEF2F2", borderLeft: "3px solid #B91C1C", color: "#B91C1C", fontSize: 12 }}>
+        Couldn't load timeline: {error}
+      </div>
+    );
+  }
+  if (!payload) return null;
+
+  const { entity, daily, events } = payload;
+  // Derive the active metric series from sortCol. sortCol is one of:
+  //   "spend"               → daily.spend
+  //   "{seg}_{metric}"      → see mapping below
+  // Falls back to spend when the sort key isn't representable per-day
+  // (defensive - all current sort keys are representable).
+  const metricSeries = useMemo<{ label: string; values: number[]; isMoney: boolean }>(() => {
+    const seg = sortCol === "spend" ? null : (sortCol.split("_")[0] as Segment);
+    const metric = sortCol === "spend" ? "spend" : sortCol.split("_")[1];
+
+    const dayOrders = (d: TimelineDay): number => {
+      if (seg === "new") return d.newCustomerOrders || 0;
+      if (seg === "existing") return d.existingCustomerOrders || 0;
+      return d.orders || 0;
+    };
+    const dayRevenue = (d: TimelineDay): number => {
+      if (seg === "new") return d.newCustomerRevenue || 0;
+      if (seg === "existing") return d.existingCustomerRevenue || 0;
+      return d.revenue || 0;
+    };
+
+    const segLabel = seg === "new" ? "New " : seg === "existing" ? "Existing " : (seg === "all" ? "All " : "");
+
+    if (metric === "spend") {
+      return { label: "Spend", values: daily.map(d => d.spend), isMoney: true };
+    }
+    if (metric === "orders") {
+      return { label: `${segLabel}Orders`, values: daily.map(dayOrders), isMoney: false };
+    }
+    if (metric === "revenue") {
+      return { label: `${segLabel}Revenue`, values: daily.map(dayRevenue), isMoney: true };
+    }
+    if (metric === "roas") {
+      return {
+        label: `${segLabel}ROAS`, isMoney: false,
+        values: daily.map(d => d.spend > 0 ? dayRevenue(d) / d.spend : 0),
+      };
+    }
+    if (metric === "cpa") {
+      return {
+        label: `${segLabel}CPA`, isMoney: true,
+        values: daily.map(d => dayOrders(d) > 0 ? d.spend / dayOrders(d) : 0),
+      };
+    }
+    if (metric === "aov") {
+      return {
+        label: `${segLabel}AOV`, isMoney: true,
+        values: daily.map(d => dayOrders(d) > 0 ? dayRevenue(d) / dayOrders(d) : 0),
+      };
+    }
+    return { label: "Spend", values: daily.map(d => d.spend), isMoney: true };
+  }, [sortCol, daily]);
+
+  const fmtMoney = (v: number) => `${cs}${Math.round(v).toLocaleString()}`;
+  const fmtNum = (v: number) => v >= 100 ? Math.round(v).toLocaleString() : v.toFixed(2);
+  const fmtVal = (v: number, isMoney: boolean) => isMoney ? fmtMoney(v) : fmtNum(v);
+
+  const fmtDate = (iso: string | null) => {
+    if (!iso) return "—";
+    return new Date(iso).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
+  };
+
+  const recentEvents = events.slice(0, 5);
+
+  return (
+    <div style={{
+      padding: "12px 16px 16px", background: "#F9FAFB",
+      borderLeft: "3px solid #5C6AC4", borderBottomLeftRadius: 4, borderBottomRightRadius: 4,
+      marginBottom: 4,
+    }}>
+      {/* Lifecycle strip */}
+      <div style={{ display: "flex", gap: 18, fontSize: 12, color: "#374151", flexWrap: "wrap", marginBottom: 10 }}>
+        <span><span style={{ color: "#6B7280" }}>Status: </span><b>{entity.currentStatus || "—"}</b></span>
+        <span><span style={{ color: "#6B7280" }}>Created: </span>{fmtDate(entity.createdTime)}</span>
+        <span><span style={{ color: "#6B7280" }}>First delivery: </span>{fmtDate(entity.effectiveStartAt)}</span>
+        <span><span style={{ color: "#6B7280" }}>Last delivery: </span>{fmtDate(entity.effectiveEndAt)}</span>
+      </div>
+
+      {/* Sparkline */}
+      <ExpandedSparkline
+        daily={daily}
+        spendSeries={daily.map(d => d.spend)}
+        metricSeries={metricSeries.values}
+        metricLabel={metricSeries.label}
+        metricIsMoney={metricSeries.isMoney}
+        fmtVal={fmtVal}
+      />
+
+      {/* Recent change events */}
+      {recentEvents.length > 0 && (
+        <div style={{ marginTop: 12 }}>
+          <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5, color: "#6B7280", marginBottom: 6 }}>
+            Recent changes ({events.length})
+          </div>
+          <ul style={{ listStyle: "none", padding: 0, margin: 0, display: "flex", flexDirection: "column", gap: 4 }}>
+            {recentEvents.map(ev => (
+              <li key={ev.id} style={{ fontSize: 12, color: "#374151", display: "flex", gap: 8 }}>
+                <span style={{ color: "#9CA3AF", fontFamily: "monospace", fontSize: 11, flexShrink: 0, width: 90 }}>
+                  {new Date(ev.eventTimeISO).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "2-digit" })}
+                </span>
+                <span style={{ flex: 1 }}>{ev.summary}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ExpandedSparkline({
+  daily, spendSeries, metricSeries, metricLabel, metricIsMoney, fmtVal,
+}: {
+  daily: TimelineDay[];
+  spendSeries: number[];
+  metricSeries: number[];
+  metricLabel: string;
+  metricIsMoney: boolean;
+  fmtVal: (v: number, isMoney: boolean) => string;
+}) {
+  const [hoverIdx, setHoverIdx] = useState<number | null>(null);
+
+  if (daily.length === 0) {
+    return <div style={{ fontSize: 12, color: "#6B7280", padding: "8px 0" }}>No daily data in the last 90 days.</div>;
+  }
+
+  const w = 720, h = 110, padX = 8, padTop = 14, padBottom = 18;
+  const innerH = h - padTop - padBottom;
+  const stepX = (w - padX * 2) / Math.max(1, daily.length - 1);
+
+  const maxSpend = Math.max(...spendSeries, 1);
+  const maxMetric = Math.max(...metricSeries, 1e-9);
+
+  const yFor = (v: number, max: number) => padTop + innerH - (v / max) * innerH;
+
+  const spendPath = spendSeries.map((v, i) =>
+    `${i === 0 ? "M" : "L"}${padX + i * stepX},${yFor(v, maxSpend)}`).join(" ");
+  const metricPath = metricSeries.map((v, i) =>
+    `${i === 0 ? "M" : "L"}${padX + i * stepX},${yFor(v, maxMetric)}`).join(" ");
+
+  // Mouse → nearest data index. SVG is responsive (preserveAspectRatio=none),
+  // so we work in viewBox units by mapping clientX through getBoundingClientRect.
+  const onMove = (e: React.MouseEvent<SVGSVGElement>) => {
+    const rect = (e.currentTarget as SVGSVGElement).getBoundingClientRect();
+    const xVB = ((e.clientX - rect.left) / rect.width) * w;
+    const idx = Math.max(0, Math.min(daily.length - 1, Math.round((xVB - padX) / stepX)));
+    setHoverIdx(idx);
+  };
+
+  const hover = hoverIdx != null ? daily[hoverIdx] : null;
+  const hoverX = hoverIdx != null ? padX + hoverIdx * stepX : 0;
+
+  return (
+    <div style={{ position: "relative" }}>
+      <div style={{ display: "flex", gap: 16, fontSize: 11, color: "#6B7280", marginBottom: 4 }}>
+        <span><span style={{ display: "inline-block", width: 10, height: 2, background: "#94A3B8", verticalAlign: "middle", marginRight: 4 }} />Spend</span>
+        <span><span style={{ display: "inline-block", width: 10, height: 2, background: "#5C6AC4", verticalAlign: "middle", marginRight: 4 }} /><b style={{ color: "#374151" }}>{metricLabel}</b></span>
+        <span style={{ marginLeft: "auto", color: "#9CA3AF" }}>last {daily.length} days</span>
+      </div>
+      <svg
+        width="100%" height={h} viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none"
+        onMouseMove={onMove}
+        onMouseLeave={() => setHoverIdx(null)}
+        style={{ display: "block", background: "#fff", border: "1px solid #E5E7EB", borderRadius: 4, cursor: "crosshair" }}
+      >
+        <path d={spendPath} stroke="#94A3B8" strokeWidth="1" fill="none" />
+        <path d={metricPath} stroke="#5C6AC4" strokeWidth="1.6" fill="none" />
+        {hoverIdx != null && (
+          <>
+            <line x1={hoverX} y1={padTop} x2={hoverX} y2={h - padBottom} stroke="#9CA3AF" strokeDasharray="2 3" />
+            <circle cx={hoverX} cy={yFor(spendSeries[hoverIdx], maxSpend)} r={3} fill="#94A3B8" />
+            <circle cx={hoverX} cy={yFor(metricSeries[hoverIdx], maxMetric)} r={3.5} fill="#5C6AC4" />
+          </>
+        )}
+      </svg>
+      {hover && (
+        <div style={{
+          position: "absolute", top: 22, left: `${Math.min(85, Math.max(2, (hoverX / w) * 100))}%`,
+          transform: "translateX(-50%)",
+          background: "#111827", color: "#fff", padding: "6px 8px", borderRadius: 4,
+          fontSize: 11, lineHeight: 1.4, pointerEvents: "none", whiteSpace: "nowrap",
+          boxShadow: "0 4px 12px rgba(0,0,0,0.15)",
+        }}>
+          <div style={{ fontWeight: 600 }}>{new Date(hover.date + "T12:00:00Z").toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" })}</div>
+          <div>Spend: {fmtVal(spendSeries[hoverIdx!], true)}</div>
+          <div>{metricLabel}: {fmtVal(metricSeries[hoverIdx!], metricIsMoney)}</div>
+        </div>
+      )}
     </div>
   );
 }
