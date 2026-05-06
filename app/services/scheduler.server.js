@@ -180,7 +180,7 @@ async function runDailyCycle() {
         try {
           const { refreshAdCreatives } = await import("./metaAdCreativeSync.server.js");
           const creativeResult = await refreshAdCreatives(shop.shopDomain);
-          console.log(`[Scheduler] Ad creatives for ${shop.shopDomain}: ${creativeResult.updated} updated, ${creativeResult.missing} unresolved`);
+          console.log(`[Scheduler] Ad creatives for ${shop.shopDomain}: ${creativeResult.updated} updated, ${creativeResult.cached || 0} bytes cached, ${creativeResult.missing} unresolved`);
         } catch (err) {
           console.error(`[Scheduler] Ad creative refresh failed for ${shop.shopDomain}:`, err.message);
         }

@@ -500,14 +500,21 @@ export const loader = async ({ request }) => {
 
   // Build entity created_time map from pre-fetched metaEntities
   const entityCreatedMap = {};
-  // Ad creative thumbnails keyed by ad ID - signed Meta CDN URLs refreshed
-  // nightly by metaAdCreativeSync.
+  // Ad creative thumbnails keyed by ad ID. Thumbnails go through our proxy
+  // (/app/api/ad-thumbnail/:adId) so the explorer can serve cached bytes
+  // from the Fly volume - the raw Meta CDN URLs rotate every few hours and
+  // were leaving the explorer with empty tiles between nightly refreshes
+  // and immediately after deploys. The proxy falls back to a 302 to the
+  // current Meta URL when local bytes aren't yet cached. imageUrl (full-
+  // size) keeps the direct Meta URL since we don't proxy it.
   const adThumbMap: Record<string, { thumbnailUrl: string | null; imageUrl: string | null; productSetId: string | null }> = {};
   for (const e of metaEntities) {
     if (e.createdTime) entityCreatedMap[`${e.entityType}:${e.entityId}`] = e.createdTime;
     if (e.entityType === "ad" && (e.thumbnailUrl || e.imageUrl || e.productSetId)) {
       adThumbMap[e.entityId] = {
-        thumbnailUrl: e.thumbnailUrl,
+        thumbnailUrl: (e.thumbnailUrl || e.imageUrl)
+          ? `/app/api/ad-thumbnail/${e.entityId}`
+          : null,
         imageUrl: e.imageUrl,
         productSetId: e.productSetId,
       };
