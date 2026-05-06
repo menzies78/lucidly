@@ -420,8 +420,9 @@ export const loader = async ({ request }) => {
           // for each ad set, so each ad inherits the right pool description.
           targetingSpec: true, currentStatus: true,
           // Ad creative thumbnails (entityType='ad' only) - rendered as tiles
-          // in AdExplorerTable.
-          thumbnailUrl: true, imageUrl: true,
+          // in AdExplorerTable. productSetId is non-null for Dynamic Product
+          // Ads / Advantage+ catalog so the explorer can render a "D" badge.
+          thumbnailUrl: true, imageUrl: true, productSetId: true,
         },
       }),
     )),
@@ -500,11 +501,15 @@ export const loader = async ({ request }) => {
   const entityCreatedMap = {};
   // Ad creative thumbnails keyed by ad ID - signed Meta CDN URLs refreshed
   // nightly by metaAdCreativeSync.
-  const adThumbMap: Record<string, { thumbnailUrl: string | null; imageUrl: string | null }> = {};
+  const adThumbMap: Record<string, { thumbnailUrl: string | null; imageUrl: string | null; productSetId: string | null }> = {};
   for (const e of metaEntities) {
     if (e.createdTime) entityCreatedMap[`${e.entityType}:${e.entityId}`] = e.createdTime;
-    if (e.entityType === "ad" && (e.thumbnailUrl || e.imageUrl)) {
-      adThumbMap[e.entityId] = { thumbnailUrl: e.thumbnailUrl, imageUrl: e.imageUrl };
+    if (e.entityType === "ad" && (e.thumbnailUrl || e.imageUrl || e.productSetId)) {
+      adThumbMap[e.entityId] = {
+        thumbnailUrl: e.thumbnailUrl,
+        imageUrl: e.imageUrl,
+        productSetId: e.productSetId,
+      };
     }
   }
 
@@ -565,9 +570,13 @@ export const loader = async ({ request }) => {
       repeatRate: ltv.repeatRate ?? null,
       avgOrders: ltv.avgOrders ?? null,
       ltvCac: (ltv.avgLtv90 != null && r.newCustomerOrders > 0) ? r2g(ltv.avgLtv90 / (r.spend / r.newCustomerOrders)) : null,
-      // Ad creative thumbnail (ad rows only - empty for campaign/adset)
+      // Ad creative thumbnail (ad rows only - empty for campaign/adset).
+      // productSetId tells the explorer this ad is a Dynamic Product Ad
+      // so it can render a "D" badge in the thumbnail spot instead of the
+      // generic initial-letter placeholder.
       thumbnailUrl: entityType === "ad" ? (adThumbMap[r.id]?.thumbnailUrl ?? null) : null,
       imageUrl: entityType === "ad" ? (adThumbMap[r.id]?.imageUrl ?? null) : null,
+      productSetId: entityType === "ad" ? (adThumbMap[r.id]?.productSetId ?? null) : null,
     };
   });
 
@@ -2320,24 +2329,30 @@ function RoasHoverPopover({ x, y, state }: {
 // Small 32x32 thumb for the Ad Explorer. Hover reveals the full image_url
 // in a popover so a merchant can spot which creative is which without
 // leaving the table.
-function AdThumbTile({ thumbnailUrl, imageUrl, name }: { thumbnailUrl: string | null; imageUrl: string | null; name: string }) {
+function AdThumbTile({ thumbnailUrl, imageUrl, name, isDpa }: { thumbnailUrl: string | null; imageUrl: string | null; name: string; isDpa?: boolean }) {
   const [imgFailed, setImgFailed] = useState(false);
   const [hover, setHover] = useState(false);
   const initial = (name || "?").trim().charAt(0).toUpperCase();
   const showImg = thumbnailUrl && !imgFailed;
   const fullImg = imageUrl || thumbnailUrl;
+  // DPA badge takes precedence over the initial-letter fallback - those ads
+  // never have a single creative thumbnail because they pull from a product
+  // catalogue. Coloured badge so they're visually distinct in a long list.
+  const showDpaBadge = !showImg && !!isDpa;
 
   return (
     <span
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
+      title={showDpaBadge ? "Dynamic Product Ad - thumbnails come from the product catalogue, not a single creative." : undefined}
       style={{
         position: "relative", width: "32px", height: "32px", flexShrink: 0,
         borderRadius: 4, overflow: "visible",
-        background: showImg ? "#f3f4f6" : "#E5E7EB",
+        background: showImg ? "#f3f4f6" : showDpaBadge ? "#EEF2FF" : "#E5E7EB",
         display: "inline-flex", alignItems: "center", justifyContent: "center",
-        fontSize: "11px", fontWeight: 600, color: "#6B7280",
-        border: "1px solid #E5E7EB",
+        fontSize: "12px", fontWeight: 700,
+        color: showDpaBadge ? "#4338CA" : "#6B7280",
+        border: `1px solid ${showDpaBadge ? "#C7D2FE" : "#E5E7EB"}`,
       }}
     >
       {showImg ? (
@@ -2348,10 +2363,12 @@ function AdThumbTile({ thumbnailUrl, imageUrl, name }: { thumbnailUrl: string | 
           onError={() => setImgFailed(true)}
           style={{ width: "100%", height: "100%", objectFit: "cover", borderRadius: 3 }}
         />
+      ) : showDpaBadge ? (
+        <span>D</span>
       ) : (
         <span>{initial}</span>
       )}
-      {hover && fullImg && !imgFailed && (
+      {hover && fullImg && !imgFailed && !showDpaBadge && (
         <span style={{
           position: "absolute", left: "40px", top: "-50px", zIndex: 1000,
           width: "180px", height: "180px", background: "#fff",
@@ -2536,6 +2553,7 @@ function AdExplorerTable({ rows, cs, entityType, onEntityClick }: {
                   thumbnailUrl={item.thumbnailUrl}
                   imageUrl={item.imageUrl}
                   name={item.name}
+                  isDpa={!!item.productSetId}
                 />
               )}
               <span style={{

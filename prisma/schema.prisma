@@ -342,6 +342,11 @@ model MetaEntity {
   thumbnailUrl       String?   // 64x64 PNG (creative.thumbnail_url) - ads only
   imageUrl           String?   // full-size asset (creative.image_url) - ads only
   thumbnailFetchedAt DateTime?
+  // Dynamic Product Ads (DPA / Advantage+ catalog) reference a product set
+  // rather than a single creative asset - they don't have a thumbnail. We
+  // store the product_set_id so the explorer can render a "D" badge
+  // instead of the generic initial-letter placeholder.
+  productSetId       String?
 
   @@unique([shopDomain, entityType, entityId])
   @@index([shopDomain, entityType])

@@ -35,7 +35,10 @@ export async function refreshAdCreatives(shopDomain) {
   // pages once the creative{...} expansion gets too heavy at limit=500. Empirically
   // limit=100 paginates cleanly across thousands of ads. Don't raise without
   // testing - a single ReduceDataError used to nuke the whole bulk fetch.
-  const fields = "id,creative{thumbnail_url,image_url,image_hash}";
+  // product_set_id is set on Dynamic Product Ad creative (DPA / Advantage+
+  // catalog) - the explorer renders a "D" badge instead of an empty thumb
+  // when this is non-null.
+  const fields = "id,creative{thumbnail_url,image_url,image_hash,product_set_id}";
   const initialUrl = `https://graph.facebook.com/v21.0/${accountId}/ads?fields=${fields}&limit=100&access_token=${token}`;
   // Inline paging so a mid-walk failure preserves whatever pages already
   // succeeded. fetchAllPages would discard the partial set on throw - which
@@ -65,13 +68,17 @@ export async function refreshAdCreatives(shopDomain) {
   }
   console.log(`[MetaAdCreativeSync] ${shopDomain}: bulk fetched ${bulkAds.length} ads across ${pages} pages${pageError ? ` (stopped: ${pageError.name})` : ""}`);
 
-  const bulkMap = new Map(); // adId -> { thumbnail_url, image_url }
+  const bulkMap = new Map(); // adId -> { thumbnail_url, image_url, productSetId }
   for (const a of bulkAds) {
     const c = a.creative || {};
-    if (c.thumbnail_url || c.image_url) {
+    // Always record DPA ads even when they lack thumbnail / image_url - we
+    // still want the explorer to know they're DPAs so it can render the
+    // distinctive "D" badge.
+    if (c.thumbnail_url || c.image_url || c.product_set_id) {
       bulkMap.set(a.id, {
         thumbnailUrl: c.thumbnail_url || null,
         imageUrl: c.image_url || null,
+        productSetId: c.product_set_id || null,
       });
     }
   }
@@ -80,7 +87,7 @@ export async function refreshAdCreatives(shopDomain) {
   // already tracked - syncMetaEntities is responsible for inserting new rows.
   const knownAds = await db.metaEntity.findMany({
     where: { shopDomain, entityType: "ad" },
-    select: { entityId: true, thumbnailUrl: true, thumbnailFetchedAt: true },
+    select: { entityId: true, thumbnailUrl: true, thumbnailFetchedAt: true, productSetId: true },
   });
 
   let updated = 0;
@@ -95,11 +102,12 @@ export async function refreshAdCreatives(shopDomain) {
         data: {
           thumbnailUrl: hit.thumbnailUrl,
           imageUrl: hit.imageUrl,
+          productSetId: hit.productSetId,
           thumbnailFetchedAt: now,
         },
       });
       updated++;
-    } else if (!ad.thumbnailUrl) {
+    } else if (!ad.thumbnailUrl && !ad.productSetId) {
       // Only chase missing ones we've never resolved - avoids hammering the
       // API for permanently-deleted creative every night.
       missingFromBulk.push(ad.entityId);
@@ -117,12 +125,13 @@ export async function refreshAdCreatives(shopDomain) {
         "MetaAdCreativeSync",
       );
       const c = data.creative || {};
-      if (c.thumbnail_url || c.image_url) {
+      if (c.thumbnail_url || c.image_url || c.product_set_id) {
         await db.metaEntity.update({
           where: { shopDomain_entityType_entityId: { shopDomain, entityType: "ad", entityId: adId } },
           data: {
             thumbnailUrl: c.thumbnail_url || null,
             imageUrl: c.image_url || null,
+            productSetId: c.product_set_id || null,
             thumbnailFetchedAt: now,
           },
         });
