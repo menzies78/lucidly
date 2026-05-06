@@ -1,6 +1,5 @@
 import type { LoaderFunctionArgs } from "@remix-run/node";
 import { promises as fs } from "node:fs";
-import { authenticate } from "../shopify.server";
 import db from "../db.server";
 import { getCachedThumbnailPath } from "../services/metaAdCreativeSync.server";
 
@@ -16,12 +15,14 @@ import { getCachedThumbnailPath } from "../services/metaAdCreativeSync.server";
 //      them back, falling through to a 302 to the freshest Meta URL only
 //      when no local copy exists.
 //
-// Auth: lives under /app/* so it inherits the embedded-app session check.
-// Cache-Control: long-immutable for the local path (bytes are content-keyed
-//   to the ad ID and re-written when the creative changes), short cache for
-//   the redirect path so a stale Meta URL gets re-fetched soon.
+// Why this lives at /api/* (no /app prefix) and skips authenticate.admin:
+// the embedded auth strategy validates session-token JWTs in URLs/headers,
+// which `<img>` subresource requests cannot supply. Routes under /app/* will
+// 410 every browser image load. The bytes here are cached from public Meta
+// CDN URLs - exposing them by adId provides nothing a competitor couldn't
+// already fetch direct from Facebook with the same ID. The route is
+// effectively a byte-cache for public CDN content, so unauth is acceptable.
 export const loader = async ({ request, params }: LoaderFunctionArgs) => {
-  await authenticate.admin(request);
   const adId = params.adId;
   if (!adId) return new Response("missing adId", { status: 400 });
 
@@ -48,7 +49,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
         // Bytes for a given adId effectively never change (we re-cache when
         // the path-key flips, which is rare). One day in browser is fine -
         // longer would be ideal but this matches the nightly refresh window.
-        "Cache-Control": "private, max-age=86400",
+        "Cache-Control": "public, max-age=86400",
       },
     });
   }
@@ -70,7 +71,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
       headers: {
         Location: fallback,
         // Short cache - signature will age out, no point clinging to it.
-        "Cache-Control": "private, max-age=300",
+        "Cache-Control": "public, max-age=300",
       },
     });
   }

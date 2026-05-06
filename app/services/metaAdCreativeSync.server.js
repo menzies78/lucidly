@@ -11,7 +11,7 @@ import path from "node:path";
  * itself every night. To survive deploys and stop the explorer flickering empty
  * tiles when the latest URL signature has aged out before our next run, we
  * also download the bytes once and persist them to a Fly volume at THUMB_DIR.
- * The /app/api/ad-thumbnail/$adId proxy serves those bytes preferentially and
+ * The /api/ad-thumbnail/$adId proxy serves those bytes preferentially and
  * only falls back to a 302 to the freshest Meta URL when the local copy is
  * missing.
  *

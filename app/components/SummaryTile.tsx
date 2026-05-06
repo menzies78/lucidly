@@ -23,6 +23,10 @@ export interface SummaryTileProps {
   // Optional override for tiles whose "value" is a long product name
   // that would overflow the default 2xl heading (e.g. Best Gateway Product).
   valueVariant?: "headingXl" | "headingLg" | "headingMd" | "heading2xl";
+  // When true, centres the value row + subtitle horizontally. Used by the
+  // Countries quick-stat tiles where the country flag is the star and the
+  // metric reads as a poster, not a left-aligned label.
+  centered?: boolean;
 }
 
 function ProductThumb({ url, size = 44 }: { url: string; size?: number }) {
@@ -107,7 +111,7 @@ function DeltaBadge({ currentValue, previousValue, lowerIsBetter, onHoverChange 
 export default function SummaryTile({
   label, value, subtitle, tooltip, previousValue, currentValue, lowerIsBetter,
   chartData, prevChartData, chartKey, chartColor, chartFormat, imageUrl,
-  valueVariant = "heading2xl",
+  valueVariant = "heading2xl", centered = false,
 }: SummaryTileProps) {
   const [showTip, setShowTip] = useState(false);
   const [showPrevOverlay, setShowPrevOverlay] = useState(false);
@@ -153,14 +157,18 @@ export default function SummaryTile({
         )}
 
         {/* Value + optional product image */}
-        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 2 }}>
+        <div style={{
+          display: "flex", alignItems: "center", gap: 10, marginBottom: 2,
+          justifyContent: centered ? "center" : "flex-start",
+          textAlign: centered ? "center" : "left",
+        }}>
           {imageUrl && <ProductThumb url={imageUrl} />}
           <Text as="p" variant={valueVariant}>{value}</Text>
         </div>
 
         {/* Subtitle */}
         {subtitle && (
-          <div style={{ marginBottom: 4 }}>
+          <div style={{ marginBottom: 4, textAlign: centered ? "center" : "left" }}>
             <Text as="p" variant="bodySm" tone="subdued">{subtitle}</Text>
           </div>
         )}

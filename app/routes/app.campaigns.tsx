@@ -542,7 +542,9 @@ export const loader = async ({ request }) => {
   // Build entity created_time map from pre-fetched metaEntities
   const entityCreatedMap = {};
   // Ad creative thumbnails keyed by ad ID. Thumbnails go through our proxy
-  // (/app/api/ad-thumbnail/:adId) so the explorer can serve cached bytes
+  // (/api/ad-thumbnail/:adId — top-level path, not /app/*, so browser <img>
+  // requests don't trip the embedded-app session-token auth) so the explorer
+  // can serve cached bytes
   // from the Fly volume - the raw Meta CDN URLs rotate every few hours and
   // were leaving the explorer with empty tiles between nightly refreshes
   // and immediately after deploys. The proxy falls back to a 302 to the
@@ -557,7 +559,7 @@ export const loader = async ({ request }) => {
       // and pixelate on the small thumbnail). The proxy serves cached
       // bytes preferentially and falls back to a 302 to the live Meta URL
       // when nothing is on disk yet.
-      const proxyBase = `/app/api/ad-thumbnail/${e.entityId}`;
+      const proxyBase = `/api/ad-thumbnail/${e.entityId}`;
       const hasAnyImage = !!(e.thumbnailUrl || e.imageUrl);
       adThumbMap[e.entityId] = {
         thumbnailUrl: hasAnyImage ? proxyBase : null,
@@ -2298,26 +2300,6 @@ function FunnelFlow({ totals, mode }: { totals: Record<string, number>; mode: "c
   );
 }
 
-function WastedSpendList({ items, cs }: { items: { name: string; spend: number; orders: number; roas: number }[]; cs: string }) {
-  if (items.length === 0) return <div style={{ color: "#999", fontSize: "13px", padding: "8px 0" }}>No wasted spend detected</div>;
-  return (
-    <div style={{ maxHeight: "240px", overflowY: "auto", display: "flex", flexDirection: "column", gap: "6px" }}>
-      {items.map((item, i) => (
-        <div key={i} style={{ display: "flex", alignItems: "center", gap: "8px", padding: "6px 8px", background: "#fef2f2", borderRadius: "6px", borderLeft: "3px solid #C62828" }}>
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontSize: "12px", fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={item.name}>{item.name}</div>
-            <div style={{ display: "flex", gap: "12px", marginTop: "2px" }}>
-              <span style={{ fontSize: "11px", color: "#C62828" }}>Spend: <strong>{cs}{Math.round(item.spend).toLocaleString()}</strong></span>
-              <span style={{ fontSize: "11px", color: "#6d7175" }}>Orders: <strong>{item.orders}</strong></span>
-              <span style={{ fontSize: "11px", color: "#6d7175" }}>ROAS: <strong>{item.roas > 0 ? `${item.roas}x` : "0x"}</strong></span>
-            </div>
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-}
-
 // Scrollable list of every ad with its age, spend, ROAS, and creative-fatigue
 // flag. Header shows a colour-coded "X days since last new ad launched"
 // callout - green if recent, amber if drifting, red if it's been a while.
@@ -2965,7 +2947,12 @@ function AdExplorerTable({ rows, cs, entityType, adDemographicsByAd, onEntityCli
 
   const entityNoun = entityType === "campaign" ? "campaigns" : entityType === "adset" ? "ad sets" : "ads";
 
-  if (sorted.length === 0) return <div style={{ color: "#999", fontSize: "13px", padding: "8px 0" }}>No data for selected period</div>;
+  // Note: we don't early-return on sorted.length === 0. Doing so collapses the
+  // entire filter bar, which means a user who typed a term that matches
+  // nothing loses the search box itself and can't recover without clicking
+  // away. Instead, render the filter UI normally and show an inline empty
+  // state inside the table body below.
+  const hasActiveFilter = !!searchQuery.trim() || demoActive || selectedSegments.size < 3;
 
   // Footer aggregates: orders/revenue sum directly; ROAS/CPA/AOV are recomputed
   // from group totals (correct weighted average, not arithmetic mean of rows).
@@ -3129,6 +3116,15 @@ function AdExplorerTable({ rows, cs, entityType, adDemographicsByAd, onEntityCli
 
           {/* Table body */}
           <div style={{ maxHeight: "480px", overflowY: "auto", display: "flex", flexDirection: "column", gap: "2px", paddingRight: "4px" }}>
+            {sorted.length === 0 && (
+              <div style={{
+                padding: "32px 16px", textAlign: "center", color: "#6B7280", fontSize: "13px",
+              }}>
+                {hasActiveFilter
+                  ? `No ${entityNoun} match the current filters${searchQuery.trim() ? ` and search "${searchQuery.trim()}"` : ""}.`
+                  : "No data for selected period."}
+              </div>
+            )}
             {sorted.map((item, i) => {
               const interactive = !!item.id && !!entityType;
               const isExpanded = expandedId === item.id;
@@ -4866,13 +4862,6 @@ export default function Campaigns() {
             metaConversions: funnelSum("metaConversions"),
           };
 
-          // Wasted Spend: entities with spend but ROAS below 2.5
-          const wastedItems = [...campaignRows, ...adsetRows, ...adRows]
-            .filter(r => r.spend > 20 && r.blendedROAS < 2.5)
-            .sort((a, b) => b.spend - a.spend)
-            .slice(0, 8)
-            .map(r => ({ name: r.name, spend: r.spend, orders: r.attributedOrders, roas: r.blendedROAS }));
-
           const newCustRows = rowsByLevel[newCustLevel] || [];
 
           const fmtPrice = (v: number) => `${cs}${Math.round(v).toLocaleString()}`;
@@ -4949,14 +4938,26 @@ export default function Campaigns() {
               { id: "worstAd", label: "Poorest Performing Ad", render: () => topTiles?.worstAd ? (
                 <SummaryTile
                   label="Poorest Performing Ad"
-                  // Headline is the most damning stat we have: CAC if there
-                  // are new-customer orders, otherwise blended ROAS. We show
-                  // ROAS to one decimal (Andy's preference - 2dp suggests a
-                  // precision the metric doesn't have at low spend).
-                  value={topTiles.worstAd.newCustomerCPA != null ? `${cs}${Math.round(topTiles.worstAd.newCustomerCPA).toLocaleString()} CAC` : `${(topTiles.worstAd.roas || 0).toFixed(1)}x ROAS`}
-                  // Subtitle pairs ad name with spend so "0.0x ROAS" is read
-                  // alongside the absolute amount being burned.
-                  subtitle={`${topTiles.worstAd.name} · ${cs}${Math.round(topTiles.worstAd.spend).toLocaleString()} spent`}
+                  // Headline stacks two large values: the most damning ratio
+                  // (CAC if there are new-customer orders, otherwise blended
+                  // ROAS) on top, with the absolute spend in large directly
+                  // below so "0.0x ROAS" is read against the cash being
+                  // burned. Spend is the actionable number ("how much am I
+                  // wasting?") and Andy wants it as a co-primary value, not
+                  // a small subtitle aside.
+                  value={
+                    <span style={{ display: "flex", flexDirection: "column", lineHeight: 1.1 }}>
+                      <span>
+                        {topTiles.worstAd.newCustomerCPA != null
+                          ? `${cs}${Math.round(topTiles.worstAd.newCustomerCPA).toLocaleString()} CAC`
+                          : `${(topTiles.worstAd.roas || 0).toFixed(1)}x ROAS`}
+                      </span>
+                      <span style={{ fontSize: "22px", fontWeight: 700, color: "#DC2626", marginTop: "4px" }}>
+                        {cs}{Math.round(topTiles.worstAd.spend).toLocaleString()} spent
+                      </span>
+                    </span>
+                  }
+                  subtitle={topTiles.worstAd.name}
                   imageUrl={topTiles.worstAd.imageUrl || topTiles.worstAd.thumbnailUrl || undefined}
                   tooltip={{ definition: `Worst-performing ad among those spending in the upper half of the account. Ranked by CAC where new-customer orders exist, otherwise by spend ÷ ROAS so high-spend zero-return ads still surface. Spend in period: ${cs}${Math.round(topTiles.worstAd.spend).toLocaleString()}.` }}
                   valueVariant="headingXl"
@@ -5063,15 +5064,6 @@ export default function Campaigns() {
               { id: "adAge", label: "Ad Age", span: 2, render: () => (
                 <Card>
                   <AdAgeTile adRows={adRows} cs={cs} onAdClick={(id, name) => setDrawerEntity({ objectType: "ad", objectId: id, objectName: name })} />
-                </Card>
-              )},
-              { id: "wastedSpend", label: "Wasted Spend?", span: 2, render: () => (
-                <Card>
-                  <BlockStack gap="300">
-                    <Text as="h3" variant="headingSm">Wasted Spend?</Text>
-                    <Text as="p" variant="bodySm" tone="subdued">Ads with ROAS below 2.5x - sorted by spend</Text>
-                    <WastedSpendList items={wastedItems} cs={cs} />
-                  </BlockStack>
                 </Card>
               )},
             ] as TileDef[]} />

@@ -946,15 +946,18 @@ export default function GeoPerformance() {
           <CustomerMapExplorer blob={customerMapBlob} cs={cs} protomapsKey={protomapsKey} />
 
           {/* ═══ 0. QUICK-STAT TILES ═══ */}
-          {/* Flags rendered at 36px so the country is the headline of each tile -
-              this is a country-level page, not a metrics-only page. */}
+          {/* Flag is the hero - rendered at 80px (poster-sized) on its own line
+              above the metric, with everything centred so the tile reads as
+              "country, then number". This is a country-level page; the flag
+              is the takeaway, not a decoration. */}
           <TileGrid pageId="geo-v3" columns={4} tiles={[
             { id: "highestNewCustRev", label: "Highest New Customer Revenue", render: () => (
               <SummaryTile
                 label="Highest New Customer Revenue"
+                centered
                 value={quickStats.highestNewCustRev ? (
-                  <span style={{ display: "inline-flex", alignItems: "center", gap: "10px" }}>
-                    <span style={{ fontSize: "36px", lineHeight: 1 }}>{countryFlag(quickStats.highestNewCustRev.country)}</span>
+                  <span style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "10px" }}>
+                    <span style={{ fontSize: "80px", lineHeight: 1 }}>{countryFlag(quickStats.highestNewCustRev.country)}</span>
                     <span>{fmtCompact(quickStats.highestNewCustRev.newCustomerRevenue, cs)}</span>
                   </span>
                 ) : "-"}
@@ -965,9 +968,10 @@ export default function GeoPerformance() {
             { id: "highestROAS", label: "Highest ROAS", render: () => (
               <SummaryTile
                 label="Highest ROAS"
+                centered
                 value={quickStats.highestROAS ? (
-                  <span style={{ display: "inline-flex", alignItems: "center", gap: "10px" }}>
-                    <span style={{ fontSize: "36px", lineHeight: 1 }}>{countryFlag(quickStats.highestROAS.country)}</span>
+                  <span style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "10px" }}>
+                    <span style={{ fontSize: "80px", lineHeight: 1 }}>{countryFlag(quickStats.highestROAS.country)}</span>
                     <span>{quickStats.highestROAS.blendedROAS}x</span>
                   </span>
                 ) : "-"}
@@ -978,9 +982,10 @@ export default function GeoPerformance() {
             { id: "highestAOV", label: "Highest AOV", render: () => (
               <SummaryTile
                 label="Highest AOV"
+                centered
                 value={quickStats.highestAOV ? (
-                  <span style={{ display: "inline-flex", alignItems: "center", gap: "10px" }}>
-                    <span style={{ fontSize: "36px", lineHeight: 1 }}>{countryFlag(quickStats.highestAOV.country)}</span>
+                  <span style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "10px" }}>
+                    <span style={{ fontSize: "80px", lineHeight: 1 }}>{countryFlag(quickStats.highestAOV.country)}</span>
                     <span>{cs}{Math.round(quickStats.highestAOV.aov).toLocaleString()}</span>
                   </span>
                 ) : "-"}
@@ -991,9 +996,10 @@ export default function GeoPerformance() {
             { id: "lowestCPA", label: "Lowest CPA", render: () => (
               <SummaryTile
                 label="Lowest CPA"
+                centered
                 value={quickStats.lowestCPA ? (
-                  <span style={{ display: "inline-flex", alignItems: "center", gap: "10px" }}>
-                    <span style={{ fontSize: "36px", lineHeight: 1 }}>{countryFlag(quickStats.lowestCPA.country)}</span>
+                  <span style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "10px" }}>
+                    <span style={{ fontSize: "80px", lineHeight: 1 }}>{countryFlag(quickStats.lowestCPA.country)}</span>
                     <span>{cs}{Math.round(quickStats.lowestCPA.cpa)}</span>
                   </span>
                 ) : "-"}
