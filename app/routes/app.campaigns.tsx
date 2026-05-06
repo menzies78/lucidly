@@ -2383,24 +2383,87 @@ function AdThumbTile({ thumbnailUrl, imageUrl, name, isDpa }: { thumbnailUrl: st
   );
 }
 
+// ── Ad Explorer (additive customer columns) ─────────────────────────────
+// All Customers / New Customers / Existing Customers act as additive toggles.
+// Selecting more than one segment widens the table by adding NC- and EC-
+// prefixed columns alongside the All-Customers columns for each metric.
+// Spend is segment-independent so it appears once.
+type Segment = "all" | "new" | "existing";
+
+const SEGMENT_NAMES: Record<Segment, string> = {
+  all: "All Customers",
+  new: "New Customers",
+  existing: "Existing Customers",
+};
+
+const SEGMENT_PREFIX: Record<Segment, string> = { all: "", new: "NC ", existing: "EC " };
+
+function segOrders(r: any, seg: Segment): number {
+  if (seg === "new") return r.newCustomerOrders || 0;
+  if (seg === "existing") return r.existingCustomerOrders || 0;
+  return r.attributedOrders || 0;
+}
+function segRevenue(r: any, seg: Segment): number {
+  if (seg === "new") return r.newCustomerRevenue || 0;
+  if (seg === "existing") return r.existingCustomerRevenue || 0;
+  return r.attributedRevenue || 0;
+}
+
 function AdExplorerTable({ rows, cs, entityType, onEntityClick }: {
   rows: any[]; cs: string;
   entityType: "campaign" | "adset" | "ad";
   onEntityClick?: (id: string, name: string) => void;
 }) {
+  // Default sort surfaces highest spenders so the top of the list always shows
+  // the ads that matter most for budget decisions.
   const [sortCol, setSortCol] = useState("spend");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
-  // customerFilter resets to "all" on every page load - persisting it
-  // between visits caused confusion when the explorer first opened with
-  // a stale cut applied.
-  const [customerFilter, setCustomerFilter] = useState<"all" | "new" | "existing">("all");
+  // Multi-select segments. Selection always resets to {all} on mount - persisting
+  // it between visits caused confusion when the explorer first opened with a
+  // stale cut applied. At least one segment must remain selected at all times.
+  const [selectedSegments, setSelectedSegments] = useState<Set<Segment>>(() => new Set<Segment>(["all"]));
   const [searchQuery, setSearchQuery] = useState("");
+
+  const toggleSegment = (s: Segment) => {
+    setSelectedSegments(prev => {
+      const next = new Set(prev);
+      if (next.has(s)) {
+        if (next.size === 1) return prev; // can't deselect the last one
+        next.delete(s);
+      } else {
+        next.add(s);
+      }
+      return next;
+    });
+  };
+
+  // Stable order: All → New → Existing, regardless of click order.
+  const orderedSegments: Segment[] = useMemo(() => (
+    (["all", "new", "existing"] as Segment[]).filter(s => selectedSegments.has(s))
+  ), [selectedSegments]);
+
+  // Lookup for the numeric value behind any sort key (segment_metric).
+  const getValue = (r: any, key: string): number => {
+    if (key === "spend") return r.spend || 0;
+    const [seg, metric] = key.split("_") as [Segment, string];
+    if (!seg || !metric) return r[key] || 0;
+    const o = segOrders(r, seg);
+    const rev = segRevenue(r, seg);
+    if (metric === "orders") return o;
+    if (metric === "revenue") return rev;
+    if (metric === "roas") return o > 0 && (r.spend || 0) > 0 ? rev / r.spend : 0;
+    if (metric === "cpa") return o > 0 && (r.spend || 0) > 0 ? r.spend / o : 0;
+    if (metric === "aov") return o > 0 ? rev / o : 0;
+    return 0;
+  };
 
   const toggleSort = (col: string) => {
     if (sortCol === col) setSortDir(d => d === "desc" ? "asc" : "desc");
     else {
       setSortCol(col);
-      setSortDir(["cpa", "newCustomerCPA", "blendedCPA"].includes(col) ? "asc" : "desc");
+      // CPA is "lower is better" - invert the default direction so the worst
+      // CPA isn't pinned at the top when the user clicks the header.
+      setSortDir(col.endsWith("_cpa") ? "asc" : "desc");
     }
   };
 
@@ -2410,7 +2473,7 @@ function AdExplorerTable({ rows, cs, entityType, onEntityClick }: {
       .filter(r => (r.spend || 0) > 0 || (r.attributedOrders || 0) > 0)
       .filter(r => !q || (r.name || "").toLowerCase().includes(q))
       .sort((a, b) => {
-        const aVal = a[sortCol] || 0, bVal = b[sortCol] || 0;
+        const aVal = getValue(a, sortCol), bVal = getValue(b, sortCol);
         if (aVal === 0 && bVal === 0) return (b.spend || 0) - (a.spend || 0);
         if (aVal === 0) return 1;
         if (bVal === 0) return -1;
@@ -2418,92 +2481,164 @@ function AdExplorerTable({ rows, cs, entityType, onEntityClick }: {
       });
   }, [rows, sortCol, sortDir, searchQuery]);
 
-  type ColDef = { key: string; label: string; width: string; format: (row: any) => string; lowerBetter?: boolean; tooltip?: string };
+  type ColDef = {
+    key: string; label: string; width: string;
+    format: (row: any) => string;
+    tooltip?: string;
+    isRevenue?: boolean;
+  };
+
   const COLS: ColDef[] = useMemo(() => {
-    if (customerFilter === "new") {
-      return [
-        { key: "newCustomerOrders", label: "New Orders", width: "75px", format: (r) => (r.newCustomerOrders || 0).toLocaleString(),
-          tooltip: "Orders from first-time customers (placing their first ever order in the selected period) attributed to this entity." },
-        { key: "newCustomerRevenue", label: "New Revenue", width: "90px", format: (r) => `${cs}${Math.round(r.newCustomerRevenue || 0).toLocaleString()}`,
-          tooltip: "Revenue from first-time customers attributed to this entity." },
-        { key: "spend", label: "Spend", width: "80px", format: (r) => `${cs}${Math.round(r.spend || 0).toLocaleString()}`,
-          tooltip: "Meta ad spend for this entity in the selected period." },
-        { key: "newCustomerCPA", label: "CPA", width: "65px", format: (r) => r.newCustomerCPA > 0 ? `${cs}${Math.round(r.newCustomerCPA).toLocaleString()}` : "\u2014", lowerBetter: true,
-          tooltip: "Cost to acquire one new customer. Spend ÷ new-customer orders." },
-        { key: "newCustomerROAS", label: "ROAS", width: "60px", format: (r) => {
-          const v = (r.newCustomerRevenue || 0) > 0 && (r.spend || 0) > 0 ? ((r.newCustomerRevenue) / r.spend) : 0;
-          return v > 0 ? `${v.toFixed(2)}x` : "\u2014";
-        },
-          tooltip: "Return on ad spend from new customers. New customer revenue ÷ spend." },
-      ];
+    const out: ColDef[] = [];
+    const fmtMoney = (v: number) => `${cs}${Math.round(v).toLocaleString()}`;
+    const fmtCount = (v: number) => v.toLocaleString();
+    const fmtRoas = (v: number) => v > 0 ? `${v.toFixed(2)}x` : "\u2014";
+    const fmtCpa = (v: number) => v > 0 ? fmtMoney(v) : "\u2014";
+
+    // Orders cluster
+    for (const seg of orderedSegments) {
+      out.push({
+        key: `${seg}_orders`,
+        label: `${SEGMENT_PREFIX[seg]}Orders`,
+        width: "70px",
+        format: (r) => fmtCount(segOrders(r, seg)),
+        tooltip: seg === "all"
+          ? "All Meta-attributed orders for this entity in the selected period."
+          : seg === "new"
+            ? "Orders placed by first-time customers (their first ever order in this period)."
+            : "Orders from returning customers - everyone who had ordered before. = All − New.",
+      });
     }
-    if (customerFilter === "existing") {
-      return [
-        { key: "existingCustomerOrders", label: "Existing Orders", width: "100px", format: (r) => (r.existingCustomerOrders || 0).toLocaleString(),
-          tooltip: "Orders from returning customers (anyone who has previously ordered) attributed to this entity. = All orders − new-customer orders." },
-        { key: "existingCustomerRevenue", label: "Existing Revenue", width: "115px", format: (r) => `${cs}${Math.round(r.existingCustomerRevenue || 0).toLocaleString()}`,
-          tooltip: "Revenue from returning customers attributed to this entity." },
-        { key: "spend", label: "Spend", width: "80px", format: (r) => `${cs}${Math.round(r.spend || 0).toLocaleString()}`,
-          tooltip: "Meta ad spend for this entity in the selected period." },
-        { key: "cpa", label: "CPA", width: "65px", format: (r) => {
-          const ex = r.existingCustomerOrders || 0;
-          return ex > 0 ? `${cs}${Math.round(r.spend / ex).toLocaleString()}` : "\u2014";
-        }, lowerBetter: true,
-          tooltip: "Spend ÷ existing-customer orders. Always higher than blended CPA because the same spend is divided by a smaller numerator (a subset of orders)." },
-        { key: "blendedROAS", label: "ROAS", width: "60px", format: (r) => {
-          const v = (r.existingCustomerRevenue || 0) > 0 && (r.spend || 0) > 0 ? (r.existingCustomerRevenue / r.spend) : 0;
-          return v > 0 ? `${v.toFixed(2)}x` : "\u2014";
-        },
-          tooltip: "Existing customer revenue ÷ spend." },
-      ];
+    // Revenue cluster
+    for (const seg of orderedSegments) {
+      out.push({
+        key: `${seg}_revenue`,
+        label: `${SEGMENT_PREFIX[seg]}Revenue`,
+        width: "90px",
+        format: (r) => fmtMoney(segRevenue(r, seg)),
+        isRevenue: true,
+        tooltip: seg === "all"
+          ? "Total Meta-attributed revenue."
+          : seg === "new"
+            ? "Revenue from new customers acquired by this entity."
+            : "Revenue from returning customers attributed to this entity.",
+      });
     }
-    // "all" view
-    return [
-      { key: "attributedOrders", label: "Orders", width: "60px", format: (r) => (r.attributedOrders || 0).toLocaleString(),
-        tooltip: "All Meta-attributed orders for this entity in the selected period." },
-      { key: "newCustomerOrders", label: "New", width: "45px", format: (r) => (r.newCustomerOrders || 0).toLocaleString(),
-        tooltip: "How many of the orders were placed by first-time customers." },
-      { key: "attributedRevenue", label: "Revenue", width: "85px", format: (r) => `${cs}${Math.round(r.attributedRevenue || 0).toLocaleString()}`,
-        tooltip: "Revenue from Meta-attributed orders for this entity." },
-      { key: "spend", label: "Spend", width: "80px", format: (r) => `${cs}${Math.round(r.spend || 0).toLocaleString()}`,
-        tooltip: "Meta ad spend for this entity in the selected period." },
-      { key: "blendedCPA", label: "CPA", width: "65px", format: (r) => r.blendedCPA > 0 ? `${cs}${Math.round(r.blendedCPA).toLocaleString()}` : "\u2014", lowerBetter: true,
-        tooltip: "Spend ÷ all attributed orders." },
-      { key: "newCustomerCPA", label: "NC CPA", width: "70px", format: (r) => r.newCustomerCPA > 0 ? `${cs}${Math.round(r.newCustomerCPA).toLocaleString()}` : "\u2014", lowerBetter: true,
-        tooltip: "Cost to acquire one new customer. Spend ÷ new-customer orders." },
-      { key: "blendedROAS", label: "ROAS", width: "60px", format: (r) => (r.blendedROAS || 0) > 0 ? `${r.blendedROAS}x` : "\u2014",
-        tooltip: "Total Meta-attributed revenue ÷ spend." },
-    ];
-  }, [customerFilter, cs]);
+    // Spend (segment-independent - same ad spend whoever placed the order)
+    out.push({
+      key: "spend",
+      label: "Spend",
+      width: "80px",
+      format: (r) => fmtMoney(r.spend || 0),
+      tooltip: "Meta ad spend for this entity in the selected period.",
+    });
+    // ROAS cluster
+    for (const seg of orderedSegments) {
+      out.push({
+        key: `${seg}_roas`,
+        label: `${SEGMENT_PREFIX[seg]}ROAS`,
+        width: "65px",
+        format: (r) => fmtRoas(getValue(r, `${seg}_roas`)),
+        tooltip: seg === "all"
+          ? "Return on ad spend. All revenue ÷ spend."
+          : seg === "new"
+            ? "ROAS from new customers only. New revenue ÷ spend."
+            : "ROAS from returning customers only. Existing revenue ÷ spend.",
+      });
+    }
+    // CPA cluster
+    for (const seg of orderedSegments) {
+      out.push({
+        key: `${seg}_cpa`,
+        label: `${SEGMENT_PREFIX[seg]}CPA`,
+        width: "65px",
+        format: (r) => fmtCpa(getValue(r, `${seg}_cpa`)),
+        tooltip: seg === "all"
+          ? "Cost per attributed order. Spend ÷ all orders."
+          : seg === "new"
+            ? "Cost to acquire one new customer. Spend ÷ new-customer orders."
+            : "Cost per existing-customer order. Spend ÷ existing orders. Always higher than the All-Customers CPA - same spend, smaller numerator.",
+      });
+    }
+    // AOV cluster
+    for (const seg of orderedSegments) {
+      out.push({
+        key: `${seg}_aov`,
+        label: `${SEGMENT_PREFIX[seg]}AOV`,
+        width: "70px",
+        format: (r) => {
+          const v = getValue(r, `${seg}_aov`);
+          return v > 0 ? fmtMoney(v) : "\u2014";
+        },
+        tooltip: seg === "all"
+          ? "Average order value across all attributed orders. Revenue ÷ orders."
+          : seg === "new"
+            ? "Average order value of new customers' first order."
+            : "Average order value of returning customers in this period.",
+      });
+    }
+    return out;
+  }, [orderedSegments, cs]);
+
+  const entityNoun = entityType === "campaign" ? "campaigns" : entityType === "adset" ? "ad sets" : "ads";
 
   if (sorted.length === 0) return <div style={{ color: "#999", fontSize: "13px", padding: "8px 0" }}>No data for selected period</div>;
 
-  const LOWER_IS_BETTER = new Set(["cpa", "blendedCPA", "newCustomerCPA"]);
-  const higherIsBetter = !LOWER_IS_BETTER.has(sortCol);
+  // Footer aggregates: orders/revenue sum directly; ROAS/CPA/AOV are recomputed
+  // from group totals (correct weighted average, not arithmetic mean of rows).
+  const aggregateFor = (col: ColDef): string => {
+    const fmtMoney = (v: number) => `${cs}${Math.round(v).toLocaleString()}`;
+    const totalSpend = sorted.reduce((s, r) => s + (r.spend || 0), 0);
 
-  const entityNoun = entityType === "campaign" ? "campaigns" : entityType === "adset" ? "ad sets" : "ads";
+    if (col.key === "spend") return fmtMoney(totalSpend);
+
+    const [seg, metric] = col.key.split("_") as [Segment, string];
+    const totalOrders = sorted.reduce((s, r) => s + segOrders(r, seg), 0);
+    const totalRev = sorted.reduce((s, r) => s + segRevenue(r, seg), 0);
+
+    if (metric === "orders") return totalOrders.toLocaleString();
+    if (metric === "revenue") return fmtMoney(totalRev);
+    if (metric === "roas") return totalSpend > 0 && totalRev > 0 ? `${(totalRev / totalSpend).toFixed(2)}x` : "\u2014";
+    if (metric === "cpa") return totalOrders > 0 ? fmtMoney(totalSpend / totalOrders) : "\u2014";
+    if (metric === "aov") return totalOrders > 0 ? fmtMoney(totalRev / totalOrders) : "\u2014";
+    return "";
+  };
+
+  // Cluster boundaries (for thin separator lines between metric groups).
+  const isClusterBoundary = (idx: number): boolean => {
+    if (idx === 0) return false;
+    const prev = COLS[idx - 1].key;
+    const curr = COLS[idx].key;
+    const prevMetric = prev === "spend" ? "spend" : prev.split("_")[1];
+    const currMetric = curr === "spend" ? "spend" : curr.split("_")[1];
+    return prevMetric !== currMetric;
+  };
 
   return (
     <div>
       {/* Filter + search bar */}
       <div style={{ display: "flex", gap: "8px", marginBottom: "12px", alignItems: "center", flexWrap: "wrap" }}>
         <span style={{ fontSize: "12px", color: "#6B7280", fontWeight: 500, marginRight: "4px" }}>Show:</span>
-        {(["all", "new", "existing"] as const).map(f => (
-          <button
-            key={f}
-            onClick={() => setCustomerFilter(f)}
-            style={{
-              fontSize: "12px", padding: "4px 12px", borderRadius: "14px",
-              border: `1px solid ${customerFilter === f ? "#5C6AC4" : "#D1D5DB"}`,
-              background: customerFilter === f ? "#F0F1FF" : "#fff",
-              color: customerFilter === f ? "#4650A8" : "#6B7280",
-              fontWeight: customerFilter === f ? 600 : 400,
-              cursor: "pointer",
-            }}
-          >
-            {f === "all" ? "All Customers" : f === "new" ? "New Customers" : "Existing Customers"}
-          </button>
-        ))}
+        {(["all", "new", "existing"] as const).map(s => {
+          const active = selectedSegments.has(s);
+          return (
+            <button
+              key={s}
+              onClick={() => toggleSegment(s)}
+              title={active && selectedSegments.size === 1 ? "At least one segment must stay selected" : `${active ? "Hide" : "Show"} ${SEGMENT_NAMES[s]} columns`}
+              style={{
+                fontSize: "12px", padding: "4px 12px", borderRadius: "14px",
+                border: `1px solid ${active ? "#5C6AC4" : "#D1D5DB"}`,
+                background: active ? "#F0F1FF" : "#fff",
+                color: active ? "#4650A8" : "#6B7280",
+                fontWeight: active ? 600 : 400,
+                cursor: "pointer",
+              }}
+            >
+              {active ? "✓ " : ""}{SEGMENT_NAMES[s]}
+            </button>
+          );
+        })}
         <div style={{ flex: 1 }} />
         <input
           type="search"
@@ -2518,102 +2653,102 @@ function AdExplorerTable({ rows, cs, entityType, onEntityClick }: {
         />
       </div>
 
-      {/* Table header */}
-      <div style={{ display: "flex", gap: "10px", alignItems: "center", padding: "0 0 8px 0", borderBottom: "1px solid #e4e5e7", marginBottom: "4px" }}>
-        <span style={{ width: "28px", flexShrink: 0 }} />
-        {entityType === "ad" && <span style={{ width: "36px", flexShrink: 0 }} />}
-        <span style={{ flex: 1, fontSize: "11px", color: "#8c9196", fontWeight: 600, textTransform: "uppercase" }}>Name</span>
-        {COLS.map(c => (
-          <SortableHeader key={c.key} col={c.key} label={c.label} width={c.width} sortCol={sortCol} sortDir={sortDir} onSort={toggleSort} tooltip={c.tooltip} />
-        ))}
-      </div>
-
-      {/* Table body */}
-      <div style={{ maxHeight: "480px", overflowY: "auto", display: "flex", flexDirection: "column", gap: "2px", paddingRight: "4px" }}>
-        {sorted.map((item, i) => {
-          const interactive = !!item.id && !!entityType;
-          return (
-            <div
-              key={item.id || i}
-              onClick={() => interactive && onEntityClick?.(item.id, item.name)}
-              title={interactive ? "Click for full timeline" : undefined}
-              style={{
-                display: "flex", alignItems: "center", gap: "10px",
-                cursor: interactive ? "pointer" : "default",
-                padding: "6px 4px", borderRadius: 4,
-                background: i % 2 === 0 ? "#fff" : "#f9fafb",
-                transition: "background 0.12s ease",
-              }}
-              onMouseOver={(e) => { if (interactive) (e.currentTarget as HTMLDivElement).style.background = "#f1f5f9"; }}
-              onMouseOut={(e) => { (e.currentTarget as HTMLDivElement).style.background = i % 2 === 0 ? "#fff" : "#f9fafb"; }}
-            >
-              <span style={{ fontSize: "11px", color: "#9CA3AF", width: "28px", textAlign: "right", flexShrink: 0 }}>{i + 1}</span>
-              {entityType === "ad" && (
-                <AdThumbTile
-                  thumbnailUrl={item.thumbnailUrl}
-                  imageUrl={item.imageUrl}
-                  name={item.name}
-                  isDpa={!!item.productSetId}
-                />
-              )}
-              <span style={{
-                flex: 1, fontSize: "13px", fontWeight: 500, overflow: "hidden",
-                textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0,
-              }} title={item.name}>
-                {item.name}
+      {/* Table - horizontally scrollable when columns exceed container width
+          (selecting all 3 segments produces 16 columns, more than fits at
+          standard widths). */}
+      <div style={{ overflowX: "auto" }}>
+        <div style={{ minWidth: "fit-content" }}>
+          {/* Table header */}
+          <div style={{ display: "flex", gap: "10px", alignItems: "center", padding: "0 0 8px 0", borderBottom: "1px solid #e4e5e7", marginBottom: "4px" }}>
+            <span style={{ width: "28px", flexShrink: 0 }} />
+            {entityType === "ad" && <span style={{ width: "36px", flexShrink: 0 }} />}
+            <span style={{ flex: 1, fontSize: "11px", color: "#8c9196", fontWeight: 600, textTransform: "uppercase", minWidth: "240px" }}>Name</span>
+            {COLS.map((c, idx) => (
+              <span key={c.key} style={{ display: "flex", alignItems: "center", flexShrink: 0 }}>
+                {isClusterBoundary(idx) && (
+                  <span style={{ width: "1px", height: "14px", background: "#e4e5e7", marginRight: "6px", marginLeft: "-2px" }} />
+                )}
+                <SortableHeader col={c.key} label={c.label} width={c.width} sortCol={sortCol} sortDir={sortDir} onSort={toggleSort} tooltip={c.tooltip} />
               </span>
-              {COLS.map(c => {
-                const val = c.format(item);
-                const numVal = item[c.key] || 0;
-                return (
-                  <span key={c.key} style={{
-                    fontSize: "12.5px", textAlign: "right", flexShrink: 0,
-                    width: c.width, color: numVal > 0 ? "#374151" : "#bbb",
-                    fontWeight: c.key === "blendedROAS" || c.key === "attributedRevenue" || c.key === "newCustomerRevenue" || c.key === "existingCustomerRevenue" ? 600 : 400,
-                  }}>
-                    {val}
-                  </span>
-                );
-              })}
-            </div>
-          );
-        })}
-      </div>
+            ))}
+          </div>
 
-      {/* Footer summary */}
-      <div style={{
-        display: "flex", gap: "10px", alignItems: "center", padding: "8px 4px 0",
-        borderTop: "1px solid #e4e5e7", marginTop: "4px", fontWeight: 600, fontSize: "12.5px",
-      }}>
-        <span style={{ width: "28px", flexShrink: 0 }} />
-        {entityType === "ad" && <span style={{ width: "36px", flexShrink: 0 }} />}
-        <span style={{ flex: 1, color: "#374151" }}>{sorted.length} {entityType === "campaign" ? "campaigns" : entityType === "adset" ? "ad sets" : "ads"}</span>
-        {COLS.map(c => {
-          const total = sorted.reduce((s, r) => s + (r[c.key] || 0), 0);
-          let display: string;
-          if (c.key === "blendedROAS" || c.key === "newCustomerROAS") {
-            // Use the revenue source that matches the active customer filter so
-            // ROAS in the New / Existing tabs reconciles to the column above.
-            const revKey = customerFilter === "new" ? "newCustomerRevenue"
-              : customerFilter === "existing" ? "existingCustomerRevenue"
-              : "attributedRevenue";
-            const totalRev = sorted.reduce((s, r) => s + (r[revKey] || 0), 0);
-            const totalSpend = sorted.reduce((s, r) => s + (r.spend || 0), 0);
-            display = totalSpend > 0 ? `${(totalRev / totalSpend).toFixed(2)}x` : "\u2014";
-          } else if (c.key === "blendedCPA" || c.key === "cpa" || c.key === "newCustomerCPA") {
-            const totalSpend = sorted.reduce((s, r) => s + (r.spend || 0), 0);
-            const ordersKey = c.key === "newCustomerCPA" ? "newCustomerOrders"
-              : (c.key === "cpa" && customerFilter === "existing") ? "existingCustomerOrders"
-              : "attributedOrders";
-            const totalOrders = sorted.reduce((s, r) => s + (r[ordersKey] || 0), 0);
-            display = totalOrders > 0 ? `${cs}${Math.round(totalSpend / totalOrders).toLocaleString()}` : "\u2014";
-          } else {
-            display = c.key.includes("Revenue") || c.key === "spend"
-              ? `${cs}${Math.round(total).toLocaleString()}`
-              : total.toLocaleString();
-          }
-          return <span key={c.key} style={{ width: c.width, textAlign: "right", flexShrink: 0, color: "#374151" }}>{display}</span>;
-        })}
+          {/* Table body */}
+          <div style={{ maxHeight: "480px", overflowY: "auto", display: "flex", flexDirection: "column", gap: "2px", paddingRight: "4px" }}>
+            {sorted.map((item, i) => {
+              const interactive = !!item.id && !!entityType;
+              return (
+                <div
+                  key={item.id || i}
+                  onClick={() => interactive && onEntityClick?.(item.id, item.name)}
+                  title={interactive ? "Click for full timeline" : undefined}
+                  style={{
+                    display: "flex", alignItems: "center", gap: "10px",
+                    cursor: interactive ? "pointer" : "default",
+                    padding: "6px 4px", borderRadius: 4,
+                    background: i % 2 === 0 ? "#fff" : "#f9fafb",
+                    transition: "background 0.12s ease",
+                  }}
+                  onMouseOver={(e) => { if (interactive) (e.currentTarget as HTMLDivElement).style.background = "#f1f5f9"; }}
+                  onMouseOut={(e) => { (e.currentTarget as HTMLDivElement).style.background = i % 2 === 0 ? "#fff" : "#f9fafb"; }}
+                >
+                  <span style={{ fontSize: "11px", color: "#9CA3AF", width: "28px", textAlign: "right", flexShrink: 0 }}>{i + 1}</span>
+                  {entityType === "ad" && (
+                    <AdThumbTile
+                      thumbnailUrl={item.thumbnailUrl}
+                      imageUrl={item.imageUrl}
+                      name={item.name}
+                      isDpa={!!item.productSetId}
+                    />
+                  )}
+                  <span style={{
+                    flex: 1, fontSize: "13px", fontWeight: 500, overflow: "hidden",
+                    textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: "240px",
+                  }} title={item.name}>
+                    {item.name}
+                  </span>
+                  {COLS.map((c, idx) => {
+                    const numVal = getValue(item, c.key);
+                    return (
+                      <span key={c.key} style={{ display: "flex", alignItems: "center", flexShrink: 0 }}>
+                        {isClusterBoundary(idx) && (
+                          <span style={{ width: "1px", height: "14px", background: "#f1f2f4", marginRight: "6px", marginLeft: "-2px" }} />
+                        )}
+                        <span style={{
+                          fontSize: "12.5px", textAlign: "right", flexShrink: 0,
+                          width: c.width, color: numVal > 0 ? "#374151" : "#bbb",
+                          fontWeight: c.isRevenue ? 600 : 400,
+                        }}>
+                          {c.format(item)}
+                        </span>
+                      </span>
+                    );
+                  })}
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Footer summary */}
+          <div style={{
+            display: "flex", gap: "10px", alignItems: "center", padding: "8px 4px 0",
+            borderTop: "1px solid #e4e5e7", marginTop: "4px", fontWeight: 600, fontSize: "12.5px",
+          }}>
+            <span style={{ width: "28px", flexShrink: 0 }} />
+            {entityType === "ad" && <span style={{ width: "36px", flexShrink: 0 }} />}
+            <span style={{ flex: 1, color: "#374151", minWidth: "240px" }}>{sorted.length} {entityNoun}</span>
+            {COLS.map((c, idx) => (
+              <span key={c.key} style={{ display: "flex", alignItems: "center", flexShrink: 0 }}>
+                {isClusterBoundary(idx) && (
+                  <span style={{ width: "1px", height: "14px", background: "#e4e5e7", marginRight: "6px", marginLeft: "-2px" }} />
+                )}
+                <span style={{ width: c.width, textAlign: "right", flexShrink: 0, color: "#374151" }}>
+                  {aggregateFor(c)}
+                </span>
+              </span>
+            ))}
+          </div>
+        </div>
       </div>
     </div>
   );
