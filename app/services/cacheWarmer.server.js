@@ -261,6 +261,7 @@ async function warmShop(shopDomain) {
         createdTime: true, funnelStage: true,
         targetingSpec: true, currentStatus: true,
         thumbnailUrl: true, imageUrl: true, productSetId: true,
+        thumbnailFetchedAt: true,
       },
     }),
   ));

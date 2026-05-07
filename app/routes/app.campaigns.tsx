@@ -444,7 +444,13 @@ export const loader = async ({ request }) => {
           // Ad creative thumbnails (entityType='ad' only) - rendered as tiles
           // in AdExplorerTable. productSetId is non-null for Dynamic Product
           // Ads / Advantage+ catalog so the explorer can render a "D" badge.
+          // thumbnailFetchedAt is appended as a cache-busting query param to
+          // the proxy URL so browsers don't keep serving stale cached bytes
+          // (e.g. the 64x64 placeholder cached before /adimages full-res
+          // resolution landed). Without this, max-age=86400 on the proxy
+          // means a refresh isn't visible to merchants for up to a day.
           thumbnailUrl: true, imageUrl: true, productSetId: true,
+          thumbnailFetchedAt: true,
         },
       }),
     )),
@@ -559,11 +565,19 @@ export const loader = async ({ request }) => {
       // and pixelate on the small thumbnail). The proxy serves cached
       // bytes preferentially and falls back to a 302 to the live Meta URL
       // when nothing is on disk yet.
+      //
+      // ?v=<thumbnailFetchedAt> is a cache-buster: the proxy sets
+      // Cache-Control: max-age=86400, so without a versioned URL the
+      // browser keeps serving stale bytes (e.g. the 64x64 placeholder it
+      // grabbed before /adimages full-res resolution shipped) for up to a
+      // day after a refresh. Bumping fetchedAt on each refreshAdCreatives
+      // run forces a fresh GET.
       const proxyBase = `/api/ad-thumbnail/${e.entityId}`;
       const hasAnyImage = !!(e.thumbnailUrl || e.imageUrl);
+      const v = e.thumbnailFetchedAt ? e.thumbnailFetchedAt.getTime() : 0;
       adThumbMap[e.entityId] = {
-        thumbnailUrl: hasAnyImage ? proxyBase : null,
-        imageUrl: hasAnyImage ? `${proxyBase}?size=full` : null,
+        thumbnailUrl: hasAnyImage ? `${proxyBase}?v=${v}` : null,
+        imageUrl: hasAnyImage ? `${proxyBase}?size=full&v=${v}` : null,
         productSetId: e.productSetId,
       };
     }
