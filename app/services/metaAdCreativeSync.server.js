@@ -163,24 +163,32 @@ function extractCreativeAssets(creative) {
 // Customers" cards and the Ad Explorer hover-zoom — both render at
 // 180-300px and pixelate badly off the 64x64 thumb.
 //
-// Batched up to 50 hashes per call (Meta's documented limit). Failures
-// per chunk are logged and swallowed — the caller falls back to
-// image_url / thumbnail_url, so a chunk failure just means lower-res
-// images for the affected ads, not a hard failure.
+// Batched up to 50 hashes per call. /adimages itself paginates at 25 rows
+// per page, so we MUST walk paging.next inside every chunk — otherwise
+// half the hashes silently fall through to the 64x64 thumbnail fallback
+// and merchant-side image ads render pixelated. (Diagnosed 2026-05-07
+// against Vollebak: 450/889 hashes resolving was the symptom.)
 async function resolveImageHashUrls(hashes, accountId, token) {
   const out = new Map();
   if (!hashes.size) return out;
   const arr = [...hashes];
   for (let i = 0; i < arr.length; i += 50) {
     const chunk = arr.slice(i, i + 50);
-    const url = `https://graph.facebook.com/v21.0/${accountId}/adimages`
+    let nextUrl = `https://graph.facebook.com/v21.0/${accountId}/adimages`
       + `?hashes=${encodeURIComponent(JSON.stringify(chunk))}`
       + `&fields=hash,url,permalink_url,width,height`
       + `&access_token=${token}`;
     try {
-      const data = await fetchWithRetry(url, "MetaAdCreativeSync");
-      for (const img of data?.data || []) {
-        if (img.hash && img.url) out.set(img.hash, img.url);
+      // Page through this chunk's results. /adimages caps at ~25/page even
+      // when 50 hashes are requested, so without paging we'd only see half.
+      let pages = 0;
+      while (nextUrl && pages < 5) {
+        const data = await fetchWithRetry(nextUrl, "MetaAdCreativeSync");
+        for (const img of data?.data || []) {
+          if (img.hash && img.url) out.set(img.hash, img.url);
+        }
+        nextUrl = data?.paging?.next || null;
+        pages++;
       }
     } catch (err) {
       console.warn(`[MetaAdCreativeSync] adimages chunk failed (${chunk.length} hashes): ${err.message}`);
