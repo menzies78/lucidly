@@ -2512,26 +2512,26 @@ function AdThumbTile({ thumbnailUrl, imageUrl, name, isDpa }: { thumbnailUrl: st
   const [imgFailed, setImgFailed] = useState(false);
   const [hover, setHover] = useState(false);
   const initial = (name || "?").trim().charAt(0).toUpperCase();
-  const showImg = thumbnailUrl && !imgFailed;
+  // DPA ads have no useful single creative thumbnail - Meta returns a 64x64
+  // placeholder PNG that reads as a blank grey blob. Suppress the image
+  // entirely for DPAs and let the initial-letter fallback render (their
+  // names start with "DPA_" so this naturally surfaces as "D").
+  const showImg = thumbnailUrl && !imgFailed && !isDpa;
   const fullImg = imageUrl || thumbnailUrl;
-  // DPA badge takes precedence over the initial-letter fallback - those ads
-  // never have a single creative thumbnail because they pull from a product
-  // catalogue. Coloured badge so they're visually distinct in a long list.
-  const showDpaBadge = !showImg && !!isDpa;
 
   return (
     <span
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
-      title={showDpaBadge ? "Dynamic Product Ad - thumbnails come from the product catalogue, not a single creative." : undefined}
+      title={isDpa ? "Dynamic Product Ad - thumbnails come from the product catalogue, not a single creative." : undefined}
       style={{
         position: "relative", width: "32px", height: "32px", flexShrink: 0,
         borderRadius: 4, overflow: "visible",
-        background: showImg ? "#f3f4f6" : showDpaBadge ? "#EEF2FF" : "#E5E7EB",
+        background: showImg ? "#f3f4f6" : "#E5E7EB",
         display: "inline-flex", alignItems: "center", justifyContent: "center",
         fontSize: "12px", fontWeight: 700,
-        color: showDpaBadge ? "#4338CA" : "#6B7280",
-        border: `1px solid ${showDpaBadge ? "#C7D2FE" : "#E5E7EB"}`,
+        color: "#6B7280",
+        border: "1px solid #E5E7EB",
       }}
     >
       {showImg ? (
@@ -2542,12 +2542,10 @@ function AdThumbTile({ thumbnailUrl, imageUrl, name, isDpa }: { thumbnailUrl: st
           onError={() => setImgFailed(true)}
           style={{ width: "100%", height: "100%", objectFit: "cover", borderRadius: 3 }}
         />
-      ) : showDpaBadge ? (
-        <span>D</span>
       ) : (
         <span>{initial}</span>
       )}
-      {hover && fullImg && !imgFailed && !showDpaBadge && (
+      {hover && fullImg && !imgFailed && !isDpa && (
         <span style={{
           position: "absolute", left: "40px", top: "-50px", zIndex: 1000,
           width: "180px", height: "180px", background: "#fff",

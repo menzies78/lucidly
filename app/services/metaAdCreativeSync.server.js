@@ -117,6 +117,42 @@ async function cacheFullImageBytes(adId, url) {
   return cacheBytes(adId, url, "full");
 }
 
+// Pull image_hash candidates and a video-thumbnail fallback URL out of a
+// creative object. Meta nests these in different places depending on ad
+// format:
+//   - top-level creative.image_hash             (legacy single-image ads)
+//   - asset_feed_spec.images[].hash             (Advantage+ creative,
+//                                                most modern image ads)
+//   - object_story_spec.link_data.image_hash    (link ads)
+//   - object_story_spec.link_data.child_attachments[].image_hash
+//                                               (carousel ads)
+//   - asset_feed_spec.videos[].thumbnail_url    (video ads - 160x160 still,
+//                                                used as fallback when no
+//                                                image hash is available)
+function extractCreativeAssets(creative) {
+  const hashes = new Set();
+  const videoThumbs = [];
+  if (!creative) return { hashes, videoThumbs };
+  if (creative.image_hash) hashes.add(creative.image_hash);
+  const afs = creative.asset_feed_spec;
+  if (afs) {
+    for (const img of afs.images || []) {
+      if (img?.hash) hashes.add(img.hash);
+    }
+    for (const vid of afs.videos || []) {
+      if (vid?.thumbnail_url) videoThumbs.push(vid.thumbnail_url);
+    }
+  }
+  const oss = creative.object_story_spec;
+  if (oss?.link_data) {
+    if (oss.link_data.image_hash) hashes.add(oss.link_data.image_hash);
+    for (const c of oss.link_data.child_attachments || []) {
+      if (c?.image_hash) hashes.add(c.image_hash);
+    }
+  }
+  return { hashes, videoThumbs };
+}
+
 // Resolve image hashes to the originally-uploaded full-resolution asset URL.
 //
 // Meta's creative.thumbnail_url is a 64x64 PNG (visibly pixelated above
@@ -174,7 +210,17 @@ export async function refreshAdCreatives(shopDomain) {
   // product_set_id is set on Dynamic Product Ad creative (DPA / Advantage+
   // catalog) - the explorer renders a "D" badge instead of an empty thumb
   // when this is non-null.
-  const fields = "id,creative{thumbnail_url,image_url,image_hash,product_set_id}";
+  //
+  // asset_feed_spec / object_story_spec: Vollebak-style ads usually leave
+  // creative.image_hash unset and store the real hash inside
+  // asset_feed_spec.images[].hash (image creatives) or
+  // object_story_spec.link_data.image_hash (link ads). Without walking
+  // those, the /adimages resolver finds nothing and the proxy falls back
+  // to the 64x64 thumbnail_url - which pixelates badly above ~80px.
+  // asset_feed_spec.videos[].thumbnail_url gives us a 160x160 still for
+  // video ads when no image hash is available (better than 64x64, still
+  // not full-res - permissions block /{video}/picture).
+  const fields = "id,creative{thumbnail_url,image_url,image_hash,product_set_id,asset_feed_spec,object_story_spec}";
   const initialUrl = `https://graph.facebook.com/v21.0/${accountId}/ads?fields=${fields}&limit=100&access_token=${token}`;
   // Inline paging so a mid-walk failure preserves whatever pages already
   // succeeded. fetchAllPages would discard the partial set on throw - which
@@ -211,9 +257,13 @@ export async function refreshAdCreatives(shopDomain) {
   // (catalog-driven), so they fall through to thumbnail_url and the
   // explorer paints a "D" badge instead.
   const imageHashes = new Set();
+  // First pass: walk every creative shape (top-level, asset_feed_spec,
+  // object_story_spec) and union all hashes for one big /adimages resolve.
+  const perAdAssets = new Map(); // adId -> { hashes: Set, videoThumbs: string[] }
   for (const a of bulkAds) {
-    const h = a.creative?.image_hash;
-    if (h) imageHashes.add(h);
+    const assets = extractCreativeAssets(a.creative);
+    perAdAssets.set(a.id, assets);
+    for (const h of assets.hashes) imageHashes.add(h);
   }
   const hashUrlMap = await resolveImageHashUrls(imageHashes, accountId, token);
   console.log(`[MetaAdCreativeSync] ${shopDomain}: resolved ${hashUrlMap.size}/${imageHashes.size} image hashes to full-res URLs`);
@@ -224,13 +274,23 @@ export async function refreshAdCreatives(shopDomain) {
     // Always record DPA ads even when they lack thumbnail / image_url - we
     // still want the explorer to know they're DPAs so it can render the
     // distinctive "D" badge.
-    if (c.thumbnail_url || c.image_url || c.product_set_id) {
-      // Prefer the resolved full-res URL (from /adimages) over the
-      // CDN-resized image_url Meta returned with the creative bulk fetch.
-      const fullResUrl = c.image_hash ? hashUrlMap.get(c.image_hash) : null;
+    const assets = perAdAssets.get(a.id) || { hashes: new Set(), videoThumbs: [] };
+    const hasAnyAsset = c.thumbnail_url || c.image_url || c.product_set_id
+      || assets.hashes.size > 0 || assets.videoThumbs.length > 0;
+    if (hasAnyAsset) {
+      // Pick the first hash that resolved to a full-res URL.
+      let fullResUrl = null;
+      for (const h of assets.hashes) {
+        const u = hashUrlMap.get(h);
+        if (u) { fullResUrl = u; break; }
+      }
+      // Fallback chain: resolved hash > Meta's image_url > 160x160 video
+      // still > thumbnail_url. Video stills are 160x160 (better than 64x64
+      // for the hover-zoom + Top Ads cards) when no image hash exists.
+      const imageUrl = fullResUrl || c.image_url || assets.videoThumbs[0] || null;
       bulkMap.set(a.id, {
-        thumbnailUrl: c.thumbnail_url || null,
-        imageUrl: fullResUrl || c.image_url || null,
+        thumbnailUrl: c.thumbnail_url || assets.videoThumbs[0] || null,
+        imageUrl,
         productSetId: c.product_set_id || null,
       });
     }
@@ -286,27 +346,35 @@ export async function refreshAdCreatives(shopDomain) {
         "MetaAdCreativeSync",
       );
       const c = data.creative || {};
-      if (c.thumbnail_url || c.image_url || c.product_set_id) {
-        // Resolve this single hash inline. Per-ad fallback runs only for
-        // ads missing from the bulk listing (small N) so a one-off lookup
-        // here is cheaper than wiring it into the outer batch.
-        let fullResUrl = c.image_url || null;
-        if (c.image_hash) {
-          const m = await resolveImageHashUrls(new Set([c.image_hash]), accountId, token);
-          fullResUrl = m.get(c.image_hash) || fullResUrl;
+      const assets = extractCreativeAssets(c);
+      const hasAnyAsset = c.thumbnail_url || c.image_url || c.product_set_id
+        || assets.hashes.size > 0 || assets.videoThumbs.length > 0;
+      if (hasAnyAsset) {
+        // Resolve hashes inline. Per-ad fallback runs only for ads missing
+        // from the bulk listing (small N) so a one-off lookup here is
+        // cheaper than wiring it into the outer batch.
+        let fullResUrl = null;
+        if (assets.hashes.size > 0) {
+          const m = await resolveImageHashUrls(assets.hashes, accountId, token);
+          for (const h of assets.hashes) {
+            const u = m.get(h);
+            if (u) { fullResUrl = u; break; }
+          }
         }
+        const imageUrl = fullResUrl || c.image_url || assets.videoThumbs[0] || null;
+        const thumbnailUrl = c.thumbnail_url || assets.videoThumbs[0] || null;
         await db.metaEntity.update({
           where: { shopDomain_entityType_entityId: { shopDomain, entityType: "ad", entityId: adId } },
           data: {
-            thumbnailUrl: c.thumbnail_url || null,
-            imageUrl: fullResUrl,
+            thumbnailUrl,
+            imageUrl,
             productSetId: c.product_set_id || null,
             thumbnailFetchedAt: now,
           },
         });
         updated++;
-        const wroteThumb = await cacheThumbnailBytes(adId, c.thumbnail_url);
-        const wroteFull = await cacheFullImageBytes(adId, fullResUrl);
+        const wroteThumb = await cacheThumbnailBytes(adId, thumbnailUrl);
+        const wroteFull = await cacheFullImageBytes(adId, imageUrl);
         if (wroteThumb || wroteFull) cached++;
       } else {
         missing++;
