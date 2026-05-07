@@ -2116,8 +2116,8 @@ function inferPlatform(breakdownValue: string): string {
   return breakdownValue;
 }
 
-function BreakdownPerfTile({ title, data, cs, defaultLevel = "overall", defaultSort = "spend", type = "platform" }: {
-  title: string; data: Record<string, any[]>; cs: string; defaultLevel?: string; defaultSort?: string; type?: "platform" | "placement";
+function BreakdownPerfTile({ title, subtitle, data, cs, defaultLevel = "overall", defaultSort = "spend", type = "platform" }: {
+  title: string; subtitle?: string; data: Record<string, any[]>; cs: string; defaultLevel?: string; defaultSort?: string; type?: "platform" | "placement";
 }) {
   const [level, setLevel] = useState(defaultLevel);
   const [sortCol, setSortCol] = useState(defaultSort);
@@ -2163,13 +2163,16 @@ function BreakdownPerfTile({ title, data, cs, defaultLevel = "overall", defaultS
 
   // 10 rows visible, rest scrollable (each row ~37px with gap)
   const ROW_HEIGHT = 37;
-  const VISIBLE_ROWS = 6;
+  const VISIBLE_ROWS = 10;
 
   return (
     <Card>
       <BlockStack gap="300">
         <InlineStack align="space-between" blockAlign="center">
-          <Text as="h3" variant="headingSm">{title}</Text>
+          <BlockStack gap="050">
+            <Text as="h3" variant="headingSm">{title}</Text>
+            {subtitle && <Text as="p" variant="bodySm" tone="subdued">{subtitle}</Text>}
+          </BlockStack>
           <div style={{ display: "inline-flex", border: "1px solid #D1D5DB", borderRadius: "8px", overflow: "hidden" }}>
             {BREAKDOWN_LEVELS.map(o => (
               <button
@@ -3039,18 +3042,22 @@ function AdExplorerTable({ rows, cs, entityType, adDemographicsByAd, onEntityCli
               </button>
             );
           })}
-          <span style={{ flex: 1 }} />
-          <input
-            type="search"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder={`Search ${entityNoun}...`}
-            style={{
-              fontSize: "12px", padding: "6px 12px", borderRadius: "6px",
-              border: "1px solid #E5E7EB", background: "#fff", color: "#374151",
-              outline: "none", minWidth: "200px", fontWeight: 500,
-            }}
-          />
+          {!showAgeRow && (
+            <>
+              <span style={{ flex: 1 }} />
+              <input
+                type="search"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder={`Search ${entityNoun}...`}
+                style={{
+                  fontSize: "12px", padding: "6px 12px", borderRadius: "6px",
+                  border: "1px solid #E5E7EB", background: "#fff", color: "#374151",
+                  outline: "none", minWidth: "200px", fontWeight: 500,
+                }}
+              />
+            </>
+          )}
         </div>
 
         {showGenderRow && (
@@ -3099,6 +3106,18 @@ function AdExplorerTable({ rows, cs, entityType, adDemographicsByAd, onEntityCli
                 Clear filters
               </button>
             )}
+            <span style={{ flex: 1, minWidth: "40px" }} />
+            <input
+              type="search"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder={`Search ${entityNoun}...`}
+              style={{
+                fontSize: "12px", padding: "6px 12px", borderRadius: "6px",
+                border: "1px solid #E5E7EB", background: "#fff", color: "#374151",
+                outline: "none", minWidth: "200px", fontWeight: 500,
+              }}
+            />
           </div>
         )}
 
@@ -5088,10 +5107,23 @@ export default function Campaigns() {
                 </Card>
               )},
               { id: "platformPerf", label: "Platform Performance", span: 4, render: () => (
-                <BreakdownPerfTile title="Platform Performance" data={platformPerf} cs={cs} defaultLevel="campaign" defaultSort="roas" />
+                <BreakdownPerfTile
+                  title="Platform Performance"
+                  subtitle="Which platforms (Instagram, Facebook, Messenger, Audience Network) are pulling their weight - spot the platforms to scale and the ones to cut."
+                  data={platformPerf}
+                  cs={cs}
+                  defaultLevel="campaign"
+                  defaultSort="roas"
+                />
               )},
               { id: "placementPerf", label: "Placement Performance", span: 4, render: () => (
-                <BreakdownPerfTile title="Placement Performance" data={placementPerf} cs={cs} type="placement" />
+                <BreakdownPerfTile
+                  title="Placement Performance"
+                  subtitle="Where your ads are actually showing up - feeds, stories, reels, marketplace - so you can see which placements convert and which are wasting spend."
+                  data={placementPerf}
+                  cs={cs}
+                  type="placement"
+                />
               )},
               { id: "adAge", label: "Ad Age", span: 2, render: () => (
                 <Card>

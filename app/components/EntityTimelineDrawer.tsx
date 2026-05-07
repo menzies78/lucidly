@@ -31,6 +31,9 @@ interface TimelinePayload {
     effectiveStartAt: string | null;
     effectiveEndAt: string | null;
     createdTime: string | null;
+    productSetId: string | null;
+    proxyImageUrl: string | null;
+    proxyThumbUrl: string | null;
   };
   events: Array<{
     id: string;
@@ -65,6 +68,11 @@ function fmtDate(iso: string | null) {
 }
 function fmtDay(iso: string) {
   return new Date(iso).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
+}
+function fmtMoney(v: number) {
+  if (!v && v !== 0) return "-";
+  if (v >= 1000) return `${(v / 1000).toFixed(1)}k`;
+  return Math.round(v).toLocaleString();
 }
 
 export default function EntityTimelineDrawer({ shopDomain, open, entity, onClose }: Props) {
@@ -101,6 +109,15 @@ export default function EntityTimelineDrawer({ shopDomain, open, entity, onClose
 
   if (!open || !entity) return null;
 
+  // Image source for the hero panel. Prefer the full-res proxy URL the API
+  // hands back; fall back to the small thumb proxy URL; if the entity is a
+  // DPA (productSetId set) and there's no usable creative image, render the
+  // branded DPA tile so the drawer always has a visual.
+  const isDpa = !!data?.entity.productSetId;
+  const heroImage = isDpa
+    ? "/dpa-thumbnail.jpg"
+    : (data?.entity.proxyImageUrl || data?.entity.proxyThumbUrl || null);
+
   return (
     <>
       {/* Backdrop */}
@@ -115,23 +132,49 @@ export default function EntityTimelineDrawer({ shopDomain, open, entity, onClose
       <aside
         style={{
           position: "fixed", top: 0, right: 0, bottom: 0,
-          width: "min(520px, 100vw)", background: "#fff",
+          width: "min(560px, 100vw)", background: "#fff",
           boxShadow: "-8px 0 24px rgba(0,0,0,0.12)",
           zIndex: 9999, overflowY: "auto",
           display: "flex", flexDirection: "column",
         }}
       >
-        <header style={{ padding: "16px 20px", borderBottom: "1px solid #e5e7eb", display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5, color: "#6b7280" }}>
-              {entity.objectType}
-            </div>
-            <div style={{ fontWeight: 700, fontSize: 16, marginTop: 2, overflow: "hidden", textOverflow: "ellipsis" }}>
-              {entity.objectName || entity.objectId}
-            </div>
+        {/* Close button floats top-right above the hero image */}
+        <button onClick={onClose} aria-label="Close"
+          style={{
+            position: "absolute", top: 10, right: 12, zIndex: 10,
+            width: 32, height: 32, borderRadius: "50%",
+            background: "rgba(255,255,255,0.92)", border: "1px solid #e5e7eb",
+            cursor: "pointer", fontSize: 20, lineHeight: 1, color: "#374151",
+            display: "inline-flex", alignItems: "center", justifyContent: "center",
+            boxShadow: "0 2px 6px rgba(0,0,0,0.08)",
+          }}>×</button>
+
+        {/* Hero image - only for ads (campaigns/ad sets have no per-entity creative). */}
+        {entity.objectType === "ad" && heroImage && (
+          <div style={{
+            width: "100%", aspectRatio: "1 / 1",
+            background: "#F3F4F6",
+            borderBottom: "1px solid #e5e7eb",
+            position: "relative", overflow: "hidden",
+          }}>
+            <img
+              src={heroImage}
+              alt={entity.objectName}
+              style={{ width: "100%", height: "100%", objectFit: "cover" }}
+            />
           </div>
-          <button onClick={onClose} aria-label="Close"
-            style={{ background: "transparent", border: "none", cursor: "pointer", fontSize: 22, lineHeight: 1, color: "#6b7280" }}>×</button>
+        )}
+
+        <header style={{
+          padding: "14px 20px", borderBottom: "1px solid #e5e7eb",
+          display: "flex", flexDirection: "column", gap: 2,
+        }}>
+          <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5, color: "#6b7280" }}>
+            {entity.objectType}
+          </div>
+          <div style={{ fontWeight: 700, fontSize: 16, overflow: "hidden", textOverflow: "ellipsis" }}>
+            {entity.objectName || entity.objectId}
+          </div>
         </header>
 
         {loading && (
@@ -161,7 +204,7 @@ export default function EntityTimelineDrawer({ shopDomain, open, entity, onClose
             </section>
 
             {data.daily.length > 0 && (
-              <section style={{ padding: "14px 20px", borderBottom: "1px solid #e5e7eb" }}>
+              <section style={{ padding: "16px 20px", borderBottom: "1px solid #e5e7eb" }}>
                 <MiniSeries daily={data.daily} events={data.events.map(e => ({ day: e.eventTimeISO.slice(0, 10), category: e.category }))} />
               </section>
             )}
@@ -228,21 +271,28 @@ export default function EntityTimelineDrawer({ shopDomain, open, entity, onClose
   );
 }
 
-// Small inline sparkline for spend + annotation markers.
+// Daily Spend & Revenue chart for the side drawer.
+//
+// Renders two stacked lines (spend, revenue) over the last 90 days with:
+//   - section title + subtitle (so the user knows what they're looking at)
+//   - left/right Y-axis labels (spend on the left, revenue on the right)
+//   - hover crosshair + tooltip showing the date and both values
+//   - vertical event markers in a dedicated strip above the chart so the
+//     change-log dots don't sit on top of the data lines
 function MiniSeries({ daily, events }: {
   daily: Array<{ date: string; spend: number; revenue: number }>;
   events: Array<{ day: string; category: string }>;
 }) {
-  const w = 480, h = 70, padX = 4;
-  if (!daily.length) return null;
-  const maxSpend = Math.max(...daily.map(d => d.spend), 1);
-  const stepX = (w - padX * 2) / Math.max(1, daily.length - 1);
+  const w = 520, padX = 36, padR = 36, padTop = 28, padBottom = 22, h = 160;
+  const chartTop = padTop, chartBottom = h - padBottom;
+  const chartH = chartBottom - chartTop;
+  const [hoverIdx, setHoverIdx] = useState<number | null>(null);
 
-  const spendPath = daily.map((d, i) => {
-    const x = padX + i * stepX;
-    const y = h - 8 - ((d.spend / maxSpend) * (h - 18));
-    return `${i === 0 ? "M" : "L"}${x},${y}`;
-  }).join(" ");
+  if (!daily.length) return null;
+
+  const maxSpend = Math.max(...daily.map(d => d.spend), 1);
+  const maxRev = Math.max(...daily.map(d => d.revenue), 1);
+  const stepX = (w - padX - padR) / Math.max(1, daily.length - 1);
 
   const eventsByDay = new Map<string, string[]>();
   for (const e of events) {
@@ -250,24 +300,133 @@ function MiniSeries({ daily, events }: {
     eventsByDay.get(e.day)!.push(e.category);
   }
 
+  const toX = (i: number) => padX + i * stepX;
+  const ySpend = (v: number) => chartBottom - (v / maxSpend) * chartH;
+  const yRev = (v: number) => chartBottom - (v / maxRev) * chartH;
+
+  const spendPath = daily.map((d, i) => `${i === 0 ? "M" : "L"}${toX(i)},${ySpend(d.spend)}`).join(" ");
+  const revPath = daily.map((d, i) => `${i === 0 ? "M" : "L"}${toX(i)},${yRev(d.revenue)}`).join(" ");
+
+  const totalSpend = daily.reduce((s, d) => s + d.spend, 0);
+  const totalRev = daily.reduce((s, d) => s + d.revenue, 0);
+
+  // First / mid / last date label for the X-axis (avoids visual clutter).
+  const labelIdx = [0, Math.floor((daily.length - 1) / 2), daily.length - 1];
+  function fmtAxisDay(iso: string) {
+    return new Date(iso + "T12:00:00Z").toLocaleDateString("en-GB", { day: "2-digit", month: "short" });
+  }
+
+  const onMouseMove = (e: React.MouseEvent<SVGSVGElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const px = ((e.clientX - rect.left) / rect.width) * w;
+    const i = Math.round((px - padX) / stepX);
+    if (i >= 0 && i < daily.length) setHoverIdx(i);
+    else setHoverIdx(null);
+  };
+
+  const hover = hoverIdx != null ? daily[hoverIdx] : null;
+  const hoverEvents = hover ? eventsByDay.get(hover.date) : null;
+
   return (
-    <svg width={w} height={h} style={{ display: "block" }} preserveAspectRatio="none" viewBox={`0 0 ${w} ${h}`}>
-      <path d={spendPath} stroke="#5C6AC4" strokeWidth="1.5" fill="none" />
-      {daily.map((d, i) => {
-        const cats = eventsByDay.get(d.date);
-        if (!cats) return null;
-        const x = padX + i * stepX;
-        return (
-          <g key={d.date}>
-            <line x1={x} y1={0} x2={x} y2={h - 2} stroke="#e5e7eb" strokeDasharray="2 3" />
-            {cats.slice(0, 3).map((cat, j) => (
-              <circle key={j}
-                cx={x} cy={2 + j * 5} r={2.2}
-                fill={CATEGORY_COLOR[cat] || CATEGORY_COLOR.other} />
-            ))}
+    <div>
+      {/* Title + 90-day totals legend */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 4 }}>
+        <Text as="h3" variant="headingSm">Daily Spend &amp; Revenue</Text>
+        <span style={{ fontSize: 11, color: "#6b7280" }}>Last 90 days</span>
+      </div>
+      <div style={{ display: "flex", gap: 16, marginBottom: 8, fontSize: 12 }}>
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 6, color: "#6b7280" }}>
+          <span style={{ display: "inline-block", width: 10, height: 2, background: "#5C6AC4" }} />
+          Spend <strong style={{ color: "#111827" }}>{fmtMoney(totalSpend)}</strong>
+        </span>
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 6, color: "#6b7280" }}>
+          <span style={{ display: "inline-block", width: 10, height: 2, background: "#059669" }} />
+          Revenue <strong style={{ color: "#111827" }}>{fmtMoney(totalRev)}</strong>
+        </span>
+      </div>
+
+      <svg
+        width="100%"
+        height={h}
+        viewBox={`0 0 ${w} ${h}`}
+        preserveAspectRatio="none"
+        style={{ display: "block", cursor: "crosshair" }}
+        onMouseMove={onMouseMove}
+        onMouseLeave={() => setHoverIdx(null)}
+      >
+        {/* Y-axis grid lines (3 horizontal rules) */}
+        {[0.25, 0.5, 0.75].map((p, i) => {
+          const y = chartTop + chartH * (1 - p);
+          return <line key={i} x1={padX} y1={y} x2={w - padR} y2={y} stroke="#f1f5f9" strokeWidth="1" />;
+        })}
+        {/* Y-axis labels - left = spend max, right = revenue max */}
+        <text x={padX - 6} y={chartTop + 4} fontSize="10" textAnchor="end" fill="#6b7280">{fmtMoney(maxSpend)}</text>
+        <text x={padX - 6} y={chartBottom + 4} fontSize="10" textAnchor="end" fill="#6b7280">0</text>
+        <text x={w - padR + 6} y={chartTop + 4} fontSize="10" textAnchor="start" fill="#6b7280">{fmtMoney(maxRev)}</text>
+        <text x={w - padR + 6} y={chartBottom + 4} fontSize="10" textAnchor="start" fill="#6b7280">0</text>
+
+        {/* X-axis baseline */}
+        <line x1={padX} y1={chartBottom} x2={w - padR} y2={chartBottom} stroke="#e5e7eb" strokeWidth="1" />
+        {/* X-axis labels */}
+        {labelIdx.map(i => (
+          <text key={i} x={toX(i)} y={h - 6} fontSize="10" textAnchor="middle" fill="#6b7280">
+            {fmtAxisDay(daily[i].date)}
+          </text>
+        ))}
+
+        {/* Event markers - vertical dotted lines above the chart in the
+            event strip (rows 4-22 of the padTop) so they read as separate
+            from the data lines. */}
+        {daily.map((d, i) => {
+          const cats = eventsByDay.get(d.date);
+          if (!cats) return null;
+          const x = toX(i);
+          return (
+            <g key={`ev-${d.date}`}>
+              <line x1={x} y1={4} x2={x} y2={chartBottom} stroke="#e5e7eb" strokeDasharray="2 3" strokeWidth="1" />
+              {cats.slice(0, 3).map((cat, j) => (
+                <circle key={j}
+                  cx={x} cy={6 + j * 6} r={2.5}
+                  fill={CATEGORY_COLOR[cat] || CATEGORY_COLOR.other} />
+              ))}
+            </g>
+          );
+        })}
+
+        {/* Data lines */}
+        <path d={spendPath} stroke="#5C6AC4" strokeWidth="1.8" fill="none" />
+        <path d={revPath} stroke="#059669" strokeWidth="1.8" fill="none" />
+
+        {/* Hover crosshair + dots */}
+        {hover && hoverIdx != null && (
+          <g>
+            <line x1={toX(hoverIdx)} y1={chartTop} x2={toX(hoverIdx)} y2={chartBottom} stroke="#6b7280" strokeWidth="1" strokeDasharray="2 2" />
+            <circle cx={toX(hoverIdx)} cy={ySpend(hover.spend)} r={3.5} fill="#5C6AC4" stroke="#fff" strokeWidth="1.5" />
+            <circle cx={toX(hoverIdx)} cy={yRev(hover.revenue)} r={3.5} fill="#059669" stroke="#fff" strokeWidth="1.5" />
           </g>
-        );
-      })}
-    </svg>
+        )}
+      </svg>
+
+      {/* Tooltip card under the chart so it never overlaps cursor or clips
+          out of the SVG viewport. Fixed slot keeps the layout stable. */}
+      <div style={{
+        marginTop: 6, minHeight: 38, fontSize: 12, color: "#374151",
+        background: "#F9FAFB", border: "1px solid #E5E7EB", borderRadius: 6,
+        padding: "6px 10px", display: "flex", alignItems: "center", gap: 14,
+      }}>
+        {hover ? (
+          <>
+            <span style={{ fontWeight: 600 }}>{fmtAxisDay(hover.date)}</span>
+            <span style={{ color: "#5C6AC4" }}>Spend <strong>{fmtMoney(hover.spend)}</strong></span>
+            <span style={{ color: "#059669" }}>Revenue <strong>{fmtMoney(hover.revenue)}</strong></span>
+            {hoverEvents && hoverEvents.length > 0 && (
+              <span style={{ color: "#6b7280" }}>{hoverEvents.length} change{hoverEvents.length === 1 ? "" : "s"}</span>
+            )}
+          </>
+        ) : (
+          <span style={{ color: "#9ca3af" }}>Hover the chart to inspect a day</span>
+        )}
+      </div>
+    </div>
   );
 }

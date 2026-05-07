@@ -84,6 +84,13 @@ export const loader = async ({ request }: { request: Request }) => {
 
   const fallbackName = events[0]?.objectName || null;
 
+  // For ad entities, expose enough metadata for the drawer to render the
+  // creative thumbnail at the top. We hand back thumbnailFetchedAt so the
+  // client can build a cache-busted proxy URL (see ad_thumbnail_browser_cache).
+  const isAd = type === "ad";
+  const hasAnyImage = isAd && (entity?.thumbnailUrl || entity?.imageUrl || entity?.productSetId);
+  const thumbnailFetchedAtMs = entity?.thumbnailFetchedAt ? entity.thumbnailFetchedAt.getTime() : 0;
+
   return json({
     entity: {
       objectType: type,
@@ -95,6 +102,11 @@ export const loader = async ({ request }: { request: Request }) => {
       effectiveStartAt: entity?.effectiveStartAt?.toISOString() || null,
       effectiveEndAt: entity?.effectiveEndAt?.toISOString() || null,
       createdTime: entity?.createdTime?.toISOString() || null,
+      // Drawer-only image metadata. proxyImageUrl/proxyThumbUrl are the
+      // cache-busted /api/ad-thumbnail URLs - drawer just renders them.
+      productSetId: entity?.productSetId || null,
+      proxyImageUrl: hasAnyImage ? `/api/ad-thumbnail/${id}?size=full&v=${thumbnailFetchedAtMs}` : null,
+      proxyThumbUrl: hasAnyImage ? `/api/ad-thumbnail/${id}?v=${thumbnailFetchedAtMs}` : null,
     },
     events: events.map((e) => ({
       id: e.id,
