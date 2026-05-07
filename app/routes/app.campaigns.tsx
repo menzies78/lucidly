@@ -3648,9 +3648,11 @@ function TopAdCard({ rank, ad, fmtPrice, fmtRoas, onClick }: {
   onClick?: () => void;
 }) {
   const [imgFailed, setImgFailed] = useState(false);
-  const isDpa = !!ad.productSetId && !ad.thumbnailUrl;
-  // DPA ads have no per-ad creative image - render the branded DPA tile so
-  // the card has a recognisable visual instead of an initial-letter gradient.
+  // DPA ads have no per-ad creative image - Meta hands back a 64x64 grey
+  // placeholder PNG which reads as a blank tile at card size. Treat any ad
+  // with productSetId as DPA regardless of whether thumbnailUrl is set, so
+  // the branded DPA tile renders consistently.
+  const isDpa = !!ad.productSetId;
   const imgSrc = isDpa ? "/dpa-thumbnail.jpg" : (ad.imageUrl || ad.thumbnailUrl);
   const showImg = imgSrc && !imgFailed;
 
