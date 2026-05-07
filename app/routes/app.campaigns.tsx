@@ -2527,11 +2527,13 @@ function AdThumbTile({ thumbnailUrl, imageUrl, name, isDpa }: { thumbnailUrl: st
   const [hover, setHover] = useState(false);
   const initial = (name || "?").trim().charAt(0).toUpperCase();
   // DPA ads have no useful single creative thumbnail - Meta returns a 64x64
-  // placeholder PNG that reads as a blank grey blob. Suppress the image
-  // entirely for DPAs and let the initial-letter fallback render (their
-  // names start with "DPA_" so this naturally surfaces as "D").
-  const showImg = thumbnailUrl && !imgFailed && !isDpa;
-  const fullImg = imageUrl || thumbnailUrl;
+  // placeholder PNG that reads as a blank grey blob. We swap in a branded
+  // "DPA" tile (public/dpa-thumbnail.jpg) so the explorer surfaces them
+  // visibly instead of falling through to a generic initial letter.
+  const dpaSrc = "/dpa-thumbnail.jpg";
+  const showImg = (isDpa) || (thumbnailUrl && !imgFailed);
+  const smallSrc = isDpa ? dpaSrc : thumbnailUrl;
+  const fullImg = isDpa ? dpaSrc : (imageUrl || thumbnailUrl);
 
   return (
     <span
@@ -2550,7 +2552,7 @@ function AdThumbTile({ thumbnailUrl, imageUrl, name, isDpa }: { thumbnailUrl: st
     >
       {showImg ? (
         <img
-          src={thumbnailUrl}
+          src={smallSrc as string}
           alt=""
           loading="lazy"
           onError={() => setImgFailed(true)}
@@ -2559,7 +2561,7 @@ function AdThumbTile({ thumbnailUrl, imageUrl, name, isDpa }: { thumbnailUrl: st
       ) : (
         <span>{initial}</span>
       )}
-      {hover && fullImg && !imgFailed && !isDpa && (
+      {hover && fullImg && !imgFailed && (
         <span style={{
           position: "absolute", left: "40px", top: "-50px", zIndex: 1000,
           width: "180px", height: "180px", background: "#fff",
@@ -3647,7 +3649,9 @@ function TopAdCard({ rank, ad, fmtPrice, fmtRoas, onClick }: {
 }) {
   const [imgFailed, setImgFailed] = useState(false);
   const isDpa = !!ad.productSetId && !ad.thumbnailUrl;
-  const imgSrc = ad.imageUrl || ad.thumbnailUrl;
+  // DPA ads have no per-ad creative image - render the branded DPA tile so
+  // the card has a recognisable visual instead of an initial-letter gradient.
+  const imgSrc = isDpa ? "/dpa-thumbnail.jpg" : (ad.imageUrl || ad.thumbnailUrl);
   const showImg = imgSrc && !imgFailed;
 
   const cac = ad.newCustomerOrders > 0 ? ad.spend / ad.newCustomerOrders : null;

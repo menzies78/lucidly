@@ -53,16 +53,16 @@ function ProductThumb({ url, size = 44 }: { url: string; size?: number }) {
 // in AdThumbTile so the visual language stays consistent across the page.
 function DpaBadge({ size = 44 }: { size?: number }) {
   return (
-    <div
+    <img
+      src="/dpa-thumbnail.jpg"
+      alt="DPA"
       title="Dynamic Product Ad - thumbnails come from the product catalogue, not a single creative."
       style={{
         width: size, height: size, borderRadius: 6,
-        background: "#EEF2FF", border: "1px solid #C7D2FE",
-        color: "#4338CA", fontWeight: 700, fontSize: size * 0.45,
-        display: "inline-flex", alignItems: "center", justifyContent: "center",
-        flexShrink: 0,
+        objectFit: "cover", flexShrink: 0,
+        border: "1px solid #C7D2FE",
       }}
-    >D</div>
+    />
   );
 }
 
