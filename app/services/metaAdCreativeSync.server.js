@@ -172,27 +172,40 @@ async function resolveImageHashUrls(hashes, accountId, token) {
   const out = new Map();
   if (!hashes.size) return out;
   const arr = [...hashes];
+
+  // Build chunks first, then fan out. Each chunk's pagination is independent,
+  // so we can run them in parallel - the metaGovernor's per-account slot
+  // budget keeps us from overwhelming the BUC limit. Concurrency=4 is
+  // conservative; the governor will throttle further if util climbs.
+  const chunks = [];
   for (let i = 0; i < arr.length; i += 50) {
-    const chunk = arr.slice(i, i + 50);
-    let nextUrl = `https://graph.facebook.com/v21.0/${accountId}/adimages`
-      + `?hashes=${encodeURIComponent(JSON.stringify(chunk))}`
-      + `&fields=hash,url,permalink_url,width,height`
-      + `&access_token=${token}`;
-    try {
-      // Page through this chunk's results. /adimages caps at ~25/page even
-      // when 50 hashes are requested, so without paging we'd only see half.
-      let pages = 0;
-      while (nextUrl && pages < 5) {
-        const data = await fetchWithRetry(nextUrl, "MetaAdCreativeSync");
-        for (const img of data?.data || []) {
-          if (img.hash && img.url) out.set(img.hash, img.url);
+    chunks.push(arr.slice(i, i + 50));
+  }
+
+  const CHUNK_CONCURRENCY = 4;
+  for (let b = 0; b < chunks.length; b += CHUNK_CONCURRENCY) {
+    const batch = chunks.slice(b, b + CHUNK_CONCURRENCY);
+    await Promise.all(batch.map(async (chunk) => {
+      let nextUrl = `https://graph.facebook.com/v21.0/${accountId}/adimages`
+        + `?hashes=${encodeURIComponent(JSON.stringify(chunk))}`
+        + `&fields=hash,url,permalink_url,width,height`
+        + `&access_token=${token}`;
+      try {
+        // Page through this chunk's results. /adimages caps at ~25/page even
+        // when 50 hashes are requested, so without paging we'd only see half.
+        let pages = 0;
+        while (nextUrl && pages < 5) {
+          const data = await fetchWithRetry(nextUrl, "MetaAdCreativeSync");
+          for (const img of data?.data || []) {
+            if (img.hash && img.url) out.set(img.hash, img.url);
+          }
+          nextUrl = data?.paging?.next || null;
+          pages++;
         }
-        nextUrl = data?.paging?.next || null;
-        pages++;
+      } catch (err) {
+        console.warn(`[MetaAdCreativeSync] adimages chunk failed (${chunk.length} hashes): ${err.message}`);
       }
-    } catch (err) {
-      console.warn(`[MetaAdCreativeSync] adimages chunk failed (${chunk.length} hashes): ${err.message}`);
-    }
+    }));
   }
   return out;
 }

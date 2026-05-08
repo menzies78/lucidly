@@ -60,6 +60,41 @@ model Shop {
   // every 24h via the Products loader. Avoids 4-5s GraphQL cold-load cost.
   productImagesJson           String?
   productImagesUpdatedAt      DateTime?
+  // Onboarding feasibility test - statistical readout of order rival
+  // density. Computed once after Shopify connect, before Meta connect.
+  // Score 0-100; data is JSON snapshot of histogram + worst hours.
+  fitTestScore        Int?
+  fitTestData         String?    // JSON
+  fitTestComputedAt   DateTime?
+  // Phased onboarding ingest tracking. onboardingPhase = "shopify" | "fit"
+  // | "meta" | "ingesting" | "complete". Drives the progress card on the
+  // dashboard during the 24h backfill.
+  onboardingPhase     String     @default("shopify")
+  onboardingStartedAt DateTime?
+}
+
+// Persistent record of every async ingest unit so we can resume on
+// process restart, surface progress to the merchant, and reconcile
+// missing data without re-pulling everything. One row per (phase,
+// chunk) - e.g. one IngestJob per week of ad-hourly insights.
+model IngestJob {
+  id              String    @id @default(uuid())
+  shopDomain      String
+  phase           String    // "account" | "campaign" | "ad-hourly" | "breakdowns" | "creatives"
+  chunkLabel      String    // human-readable slice e.g. "2025-W42" or "country-2025-12"
+  fromDate        DateTime?
+  toDate          DateTime?
+  status          String    @default("pending") // "pending" | "running" | "completed" | "failed"
+  attempts        Int       @default(0)
+  rowsWritten     Int       @default(0)
+  errorMessage    String?
+  reportRunId     String?   // Meta async report_run_id (when we move to async)
+  createdAt       DateTime  @default(now())
+  startedAt       DateTime?
+  completedAt     DateTime?
+
+  @@index([shopDomain, phase, status])
+  @@index([shopDomain, status])
 }
 
 model Customer {

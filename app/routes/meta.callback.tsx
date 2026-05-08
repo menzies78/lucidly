@@ -1,6 +1,7 @@
 import "dotenv/config";
 import db from "../db.server";
 import { exchangeMetaCode, getMetaAdAccounts, getMetaAttributionWindow } from "../services/metaAuth.server";
+import { startOnboardingIngest } from "../services/ingestOrchestrator.server";
 
 function htmlResponse(body) {
   return new Response(`<html><head><meta charset="utf-8"><style>
@@ -115,6 +116,9 @@ export const loader = async ({ request }) => {
       });
 
       console.log(`[Meta OAuth] Connected ${shopDomain} to ${adAccount.id} (${adAccount.currency})`);
+      // Fire-and-forget the phased ingest. HTTP returns immediately; the
+      // dashboard's progress card polls /app/api/ingest-status for updates.
+      startOnboardingIngest(shopDomain);
       return successResponse(adAccount, attributionWindow);
     } catch (err) {
       console.error("[Meta OAuth] Account selection error:", err);
@@ -171,6 +175,8 @@ export const loader = async ({ request }) => {
       });
 
       console.log(`[Meta OAuth] Connected ${shopDomain} to ${adAccount.id}`);
+      // Single-account auto-select path - kick off the phased ingest too.
+      startOnboardingIngest(shopDomain);
       return successResponse(adAccount, attributionWindow);
     }
 

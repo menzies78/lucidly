@@ -271,12 +271,12 @@ export async function syncMetaInsights(shopDomain, daysBack = 7, progressKey = n
         batch.map(range => fetchDailyRange(metaAccessToken, metaAdAccountId, range.since, range.until, fields))
       );
 
-      // Write all batch results to DB (sequential to avoid SQLite contention)
-      for (let i = 0; i < results.length; i++) {
-        await batchUpsertInsights(shopDomain, results[i], ratesByDate);
-        totalRows += results[i].length;
-        rangesCompleted++;
-      }
+      // Parallel writes - SQLite WAL + the Prisma connection pool (8) absorb
+      // the contention; sequential writes were leaving the next fetch batch
+      // blocked for tens of seconds.
+      await Promise.all(results.map(rows => batchUpsertInsights(shopDomain, rows, ratesByDate)));
+      for (const rows of results) totalRows += rows.length;
+      rangesCompleted += results.length;
       updateProgress("daily", `${batch[batch.length - 1].since} → ${batch[batch.length - 1].until}`);
     }
   }
@@ -292,11 +292,9 @@ export async function syncMetaInsights(shopDomain, daysBack = 7, progressKey = n
         batch.map(range => fetchHourlyRange(metaAccessToken, metaAdAccountId, range.since, range.until, fields))
       );
 
-      for (let i = 0; i < results.length; i++) {
-        await batchUpsertInsights(shopDomain, results[i], ratesByDate);
-        totalRows += results[i].length;
-        rangesCompleted++;
-      }
+      await Promise.all(results.map(rows => batchUpsertInsights(shopDomain, rows, ratesByDate)));
+      for (const rows of results) totalRows += rows.length;
+      rangesCompleted += results.length;
       updateProgress("hourly", `${batch[batch.length - 1].since} → ${batch[batch.length - 1].until}`);
     }
   }

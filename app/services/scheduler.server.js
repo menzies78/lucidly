@@ -217,6 +217,21 @@ export function startScheduler() {
     }
   }, 30_000);
 
+  // Reap orphaned ingest jobs and resume any shop that was mid-onboarding
+  // when the previous process died. Runs once on boot, slightly delayed so
+  // the DB connection pool is fully warm.
+  if (global.__lucidlyIngestResume) clearTimeout(global.__lucidlyIngestResume);
+  global.__lucidlyIngestResume = setTimeout(async () => {
+    try {
+      const { reapOrphanedJobs, resumePendingIngests } = await import("./ingestOrchestrator.server.js");
+      await reapOrphanedJobs();
+      const resumed = await resumePendingIngests();
+      if (resumed > 0) console.log(`[Scheduler] Resumed ingest for ${resumed} shop(s)`);
+    } catch (err) {
+      console.error("[Scheduler] Ingest resume failed (non-fatal):", err.message);
+    }
+  }, 15_000);
+
   // Run first hourly cycle after 5 minutes (let rate limits recover after deploys)
   global.__lucidlySchedulerBoot = setTimeout(() => {
     runHourlyCycle();

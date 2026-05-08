@@ -1,20 +1,28 @@
-// Shared Meta API fetch layer with rate limit awareness.
-// Used by metaSync, metaBreakdownSync, and metaEntitySync.
+// Shared Meta API fetch layer. Sits on top of metaGovernor.server.js
+// which does all per-(app, ad_account, BUC) tracking, pacing, and
+// concurrency. This file owns retry semantics + error classification
+// only.
 //
 // Key principles:
-// 1. Read x-app-usage header to know current rate limit consumption
-// 2. Proactively slow down when usage is high (don't wait for the wall)
-// 3. NEVER silently drop data - rate limits retry indefinitely, only real errors bail
-// 4. Error code 1 ("reduce data") throws ReduceDataError so callers can split ranges
+//  1. Reads X-App-Usage, X-Business-Use-Case-Usage, X-FB-Ads-Insights-Throttle
+//     via metaGovernor on every response.
+//  2. Proactively paces against the highest util % across all signals
+//     for the targeted ad account.
+//  3. NEVER silently drops data on rate limits - retries indefinitely.
+//  4. Error code 1 ("reduce data") throws ReduceDataError so callers
+//     can split ranges.
 
-// Tracks current API usage across all callers (singleton in-process)
-let currentUsage = 0; // 0-100, from x-app-usage header
+import {
+  reportHeaders,
+  paceBeforeRequest,
+  accountKeyFromUrl,
+  markBlocked,
+  getEffectiveUtil,
+  withSlot,
+} from "./metaGovernor.server.js";
 
-export function getMetaApiUsage() {
-  return currentUsage;
-}
-
-// Special error class for "reduce the amount of data" - callers can catch and retry with smaller range
+// Special error class for "reduce the amount of data" - callers can catch
+// and retry with smaller range.
 export class ReduceDataError extends Error {
   constructor(message) {
     super(message);
@@ -22,123 +30,115 @@ export class ReduceDataError extends Error {
   }
 }
 
-function updateUsageFromHeaders(res) {
-  try {
-    // Meta returns: x-app-usage: {"call_count":28,"total_cputime":5,"total_time":12}
-    const header = res.headers.get("x-app-usage");
-    if (header) {
-      const usage = JSON.parse(header);
-      // The highest of the three percentages is the effective usage
-      currentUsage = Math.max(usage.call_count || 0, usage.total_cputime || 0, usage.total_time || 0);
-    }
-  } catch {
-    // Ignore parse errors on usage header
-  }
-}
-
-// Proactive throttle: if usage is high, wait before making the next call.
-// This prevents us from slamming into the wall.
-async function throttleIfNeeded(label) {
-  if (currentUsage >= 90) {
-    // Very close to limit - pause 30s to let window roll
-    console.warn(`[${label}] API usage at ${currentUsage}%, pausing 30s to let window roll...`);
-    await new Promise(r => setTimeout(r, 30000));
-  } else if (currentUsage >= 75) {
-    // Getting warm - slow down with 10s pause
-    console.warn(`[${label}] API usage at ${currentUsage}%, slowing down (10s)...`);
-    await new Promise(r => setTimeout(r, 10000));
-  } else if (currentUsage >= 50) {
-    // Moderate - small pause
-    await new Promise(r => setTimeout(r, 2000));
-  }
-  // Under 50% - full speed
+// Back-compat shim. Old callers asked for getMetaApiUsage() to display a
+// single number; we surface the worst observed util across all accounts
+// so the meaning is consistent.
+export function getMetaApiUsage() {
+  return getEffectiveUtil();
 }
 
 // Resilient fetch that NEVER silently drops data on rate limits.
-// - Rate limits: retries indefinitely with exponential backoff (capped at 120s waits)
-// - Error code 1 ("reduce data"): throws ReduceDataError immediately (caller should split range)
-// - Real errors (bad token, invalid params): retries 3 times then throws
-// - Network errors: retries 5 times then throws
-export async function fetchWithRetry(url, label = "MetaAPI") {
+//  - Rate limits: retries indefinitely with exponential backoff (cap 120s)
+//  - Error subcode 1504022: parks the account via the governor, then retries
+//  - Error code 1 ("reduce data"): throws ReduceDataError immediately
+//  - Real errors (bad token, invalid params): retries 3 times then throws
+//  - Network errors: retries 5 times then throws
+//
+// The accountKey argument lets callers explicitly bind a request to an
+// ad account that wouldn't be parseable from the URL (rare). When omitted
+// we infer from the URL (/act_xxx/...).
+export async function fetchWithRetry(url, label = "MetaAPI", accountKey = null) {
   const MAX_REAL_ERROR_RETRIES = 3;
   const MAX_NETWORK_RETRIES = 5;
+  const acctKey = accountKey || accountKeyFromUrl(url);
+
   let realErrorCount = 0;
   let networkErrorCount = 0;
   let rateLimitRetries = 0;
 
-  while (true) {
-    // Proactive throttle based on known usage
-    await throttleIfNeeded(label);
+  // Slot acquisition wraps the whole retry loop so we don't release the
+  // slot just to immediately re-acquire it on backoff. The slot caps
+  // *parallelism per account*, not total requests.
+  return withSlot(acctKey, async () => {
+    while (true) {
+      // Pace against current util before issuing the request.
+      await paceBeforeRequest(acctKey);
 
-    try {
-      const res = await fetch(url);
-      updateUsageFromHeaders(res);
-
-      let data;
       try {
-        data = await res.json();
-      } catch (e) {
-        networkErrorCount++;
-        console.error(`[${label}] JSON parse error (attempt ${networkErrorCount}/${MAX_NETWORK_RETRIES})`);
-        if (networkErrorCount >= MAX_NETWORK_RETRIES) {
-          throw new Error(`${label}: JSON parse failed after ${MAX_NETWORK_RETRIES} attempts`);
+        const res = await fetch(url);
+        reportHeaders(res, acctKey);
+
+        let data;
+        try {
+          data = await res.json();
+        } catch {
+          networkErrorCount++;
+          console.error(`[${label}] JSON parse error (${networkErrorCount}/${MAX_NETWORK_RETRIES})`);
+          if (networkErrorCount >= MAX_NETWORK_RETRIES) {
+            throw new Error(`${label}: JSON parse failed after ${MAX_NETWORK_RETRIES} attempts`);
+          }
+          await new Promise(r => setTimeout(r, 3000));
+          continue;
+        }
+
+        if (!data.error) return data;
+
+        const errMsg = data.error.message || "";
+        const errCode = data.error.code;
+        const errSubcode = data.error.error_subcode;
+        const isRateLimit = errCode === 4 || errCode === 17
+          || errMsg.includes("request limit") || errMsg.includes("too many calls");
+        const isReduceData = errCode === 1 && errMsg.includes("reduce the amount of data");
+        const isAccountThrottled = errSubcode === 1504022;
+
+        if (isReduceData) {
+          throw new ReduceDataError(`${label}: ${errMsg}`);
+        }
+
+        if (isAccountThrottled) {
+          // Meta has explicitly blocked the account. Park it for 60s and
+          // let the governor's blockedUntil gate hold off the next call.
+          markBlocked(acctKey, 60);
+          rateLimitRetries++;
+          console.warn(`[${label}] Account throttled (subcode 1504022) on ${acctKey}, parked 60s`);
+          continue;
+        }
+
+        if (isRateLimit) {
+          rateLimitRetries++;
+          const wait = Math.min(3000 * Math.pow(2, rateLimitRetries - 1), 120000);
+          console.warn(`[${label}] Rate limited (retry #${rateLimitRetries}) on ${acctKey}, util=${getEffectiveUtil(acctKey)}%, waiting ${Math.round(wait/1000)}s`);
+          await new Promise(r => setTimeout(r, wait));
+          continue;
+        }
+
+        realErrorCount++;
+        console.error(`[${label}] API error (${realErrorCount}/${MAX_REAL_ERROR_RETRIES}): [${errCode}] ${errMsg}`);
+        if (realErrorCount >= MAX_REAL_ERROR_RETRIES) {
+          throw new Error(`${label}: API error after ${MAX_REAL_ERROR_RETRIES} retries: [${errCode}] ${errMsg}`);
         }
         await new Promise(r => setTimeout(r, 3000));
-        continue;
+      } catch (err) {
+        if (err instanceof ReduceDataError) throw err;
+        if (err.message && err.message.startsWith(`${label}:`)) throw err;
+        networkErrorCount++;
+        console.error(`[${label}] Network error (${networkErrorCount}/${MAX_NETWORK_RETRIES}): ${err.message}`);
+        if (networkErrorCount >= MAX_NETWORK_RETRIES) {
+          throw new Error(`${label}: Network error after ${MAX_NETWORK_RETRIES} retries: ${err.message}`);
+        }
+        await new Promise(r => setTimeout(r, 3000));
       }
-
-      if (!data.error) {
-        return data; // Success
-      }
-
-      // Error response from Meta
-      const errMsg = data.error.message || "";
-      const errCode = data.error.code;
-      const isRateLimit = errCode === 4 || errCode === 17 ||
-        errMsg.includes("request limit") || errMsg.includes("too many calls");
-      const isReduceData = errCode === 1 && errMsg.includes("reduce the amount of data");
-
-      if (isReduceData) {
-        // Don't retry - throw immediately so caller can split the range
-        throw new ReduceDataError(`${label}: ${errMsg}`);
-      }
-
-      if (isRateLimit) {
-        rateLimitRetries++;
-        // Exponential backoff: 6s, 12s, 24s, 48s, 60s, 90s, 120s, 120s...
-        const wait = Math.min(3000 * Math.pow(2, rateLimitRetries - 1), 120000);
-        console.warn(`[${label}] Rate limited (retry #${rateLimitRetries}), usage=${currentUsage}%, waiting ${Math.round(wait/1000)}s...`);
-        await new Promise(r => setTimeout(r, wait));
-        continue; // NEVER give up on rate limits
-      }
-
-      // Real API error (bad token, invalid field, etc)
-      realErrorCount++;
-      console.error(`[${label}] API error (${realErrorCount}/${MAX_REAL_ERROR_RETRIES}): [${errCode}] ${errMsg}`);
-      if (realErrorCount >= MAX_REAL_ERROR_RETRIES) {
-        throw new Error(`${label}: API error after ${MAX_REAL_ERROR_RETRIES} retries: [${errCode}] ${errMsg}`);
-      }
-      await new Promise(r => setTimeout(r, 3000));
-
-    } catch (err) {
-      if (err instanceof ReduceDataError) throw err; // Pass through
-      if (err.message.startsWith(`${label}:`)) throw err; // Re-throw our own errors
-      networkErrorCount++;
-      console.error(`[${label}] Network error (${networkErrorCount}/${MAX_NETWORK_RETRIES}): ${err.message}`);
-      if (networkErrorCount >= MAX_NETWORK_RETRIES) {
-        throw new Error(`${label}: Network error after ${MAX_NETWORK_RETRIES} retries: ${err.message}`);
-      }
-      await new Promise(r => setTimeout(r, 3000));
     }
-  }
+  });
 }
 
-// Fetch all pages from a paginated Meta API response
-export async function fetchAllPages(initialUrl, label = "MetaAPI") {
+// Fetch all pages from a paginated Meta response. Each page goes through
+// fetchWithRetry which handles slot/governor on its own.
+export async function fetchAllPages(initialUrl, label = "MetaAPI", accountKey = null) {
   const allRows = [];
   let url = initialUrl;
   while (url) {
-    const data = await fetchWithRetry(url, label);
+    const data = await fetchWithRetry(url, label, accountKey);
     if (!data.data) break;
     allRows.push(...(data.data || []));
     url = data.paging?.next || null;
