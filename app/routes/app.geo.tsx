@@ -839,13 +839,8 @@ const GENDER_PILLS = [
   { value: "M",   label: "Male" },
 ] as const;
 
-function pillClass(active: boolean) {
-  return {
-    padding: "5px 11px", fontSize: "12px", fontWeight: 500, borderRadius: "999px",
-    cursor: "pointer", border: active ? "1px solid #059669" : "1px solid #D1D5DB",
-    background: active ? "#059669" : "#fff", color: active ? "#fff" : "#374151",
-    transition: "all 0.12s", whiteSpace: "nowrap" as const,
-  };
+function geoPillClassName(active: boolean) {
+  return `l-pill${active ? " l-pill--active" : ""}`;
 }
 
 function ProductInitial({ title, size }: { title: string; size: number }) {
@@ -912,13 +907,13 @@ function TopProductsByCountryTile({
           <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
             <span style={{ fontSize: 11, color: "#6B7280", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.4 }}>Customers</span>
             {SEGMENT_PILLS.map(p => (
-              <button key={p.value} onClick={() => setSeg(p.value)} style={pillClass(seg === p.value)}>{p.label}</button>
+              <button key={p.value} onClick={() => setSeg(p.value)} className={geoPillClassName(seg === p.value)}>{p.label}</button>
             ))}
           </div>
           <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
             <span style={{ fontSize: 11, color: "#6B7280", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.4 }}>Gender</span>
             {GENDER_PILLS.map(p => (
-              <button key={p.value} onClick={() => setGen(p.value)} style={pillClass(gen === p.value)}>{p.label}</button>
+              <button key={p.value} onClick={() => setGen(p.value)} className={geoPillClassName(gen === p.value)}>{p.label}</button>
             ))}
           </div>
         </div>

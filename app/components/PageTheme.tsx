@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useEffect, useCallback } from "react";
+import { createContext, useContext } from "react";
 
 export interface PageTheme {
   accent: string;
@@ -32,19 +32,3 @@ export function getThemeForPath(_pathname: string): PageTheme {
   return THEME;
 }
 
-// Dark mode hook — persists to localStorage, applies data-theme attribute
-export function useDarkMode(): [boolean, () => void] {
-  const [dark, setDark] = useState(() => {
-    if (typeof window === "undefined") return false;
-    return window.localStorage.getItem("lucidly.darkMode") === "1";
-  });
-
-  useEffect(() => {
-    if (typeof document === "undefined") return;
-    document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
-    window.localStorage.setItem("lucidly.darkMode", dark ? "1" : "0");
-  }, [dark]);
-
-  const toggle = useCallback(() => setDark(d => !d), []);
-  return [dark, toggle];
-}

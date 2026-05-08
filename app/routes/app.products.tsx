@@ -1242,11 +1242,10 @@ const pageStyles = `
 .product-list-row .stat { text-align: right; font-size: 13px; min-width: 50px; margin-left: 12px; }
 .product-list-header { display: flex; justify-content: space-between; padding: 6px 12px; border-bottom: 2px solid #E5E7EB; }
 .product-list-header span { font-size: 11px; font-weight: 600; color: #6B7280; text-transform: uppercase; }
-.segment-toggle { display: inline-flex; gap: 0; border: 1px solid #D1D5DB; border-radius: 5px; overflow: hidden; }
-.segment-toggle button { padding: 4px 10px; font-size: 11px; font-weight: 500; border: none; cursor: pointer; transition: background 0.15s, color 0.15s; text-align: center; white-space: nowrap; }
-.segment-toggle button.active { background: #7C3AED; color: white; }
-.segment-toggle button:not(.active) { background: white; color: #374151; }
-.segment-toggle button:not(.active):hover { background: #F3F4F6; }
+.segment-toggle { display: inline-flex; gap: 4px; }
+.segment-toggle button { padding: 5px 14px; font-size: 12px; font-weight: 500; border: 1px solid var(--l-border); border-radius: var(--l-radius-pill); cursor: pointer; transition: all 0.15s; text-align: center; white-space: nowrap; background: var(--l-bg); color: var(--l-text); }
+.segment-toggle button.active { background: var(--l-accent); color: #fff; border-color: var(--l-accent); font-weight: 600; }
+.segment-toggle button:not(.active):hover { border-color: var(--l-accent); color: var(--l-accent-dark); }
 .tile-header-row { display: flex; justify-content: space-between; align-items: flex-start; }
 .tile-header-row .segment-toggle { margin: 0; }
 .combo-table { width: 100%; border-collapse: collapse; }

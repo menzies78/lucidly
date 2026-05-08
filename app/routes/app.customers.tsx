@@ -1861,11 +1861,10 @@ const layoutStyles = `
 .segment-legend-item { display: flex; align-items: center; gap: 6px; font-size: 12px; color: #4B5563; }
 .segment-legend-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
 
-.toggle-group { display: inline-flex; border: 1px solid #D1D5DB; border-radius: 5px; overflow: hidden; }
-.toggle-btn { padding: 4px 10px; font-size: 11px; font-weight: 500; border: none; cursor: pointer; transition: all 0.15s; white-space: nowrap; }
-.toggle-btn.active { background: #0E7490; color: #fff; }
-.toggle-btn:not(.active) { background: #fff; color: #374151; }
-.toggle-btn:not(.active):hover { background: #F3F4F6; }
+.toggle-group { display: inline-flex; gap: 4px; }
+.toggle-btn { padding: 5px 14px; font-size: 12px; font-weight: 500; border: 1px solid var(--l-border); border-radius: var(--l-radius-pill); cursor: pointer; transition: all 0.15s; white-space: nowrap; background: var(--l-bg); color: var(--l-text); }
+.toggle-btn.active { background: var(--l-accent); color: #fff; border-color: var(--l-accent); font-weight: 600; }
+.toggle-btn:not(.active):hover { border-color: var(--l-accent); color: var(--l-accent-dark); }
 
 .metric-selector { display: flex; gap: 16px; justify-content: flex-end; padding-top: 6px; }
 .metric-link { font-size: 11px; font-weight: 500; color: #9CA3AF; cursor: pointer; border: none; background: none; padding: 0 0 3px 0; border-bottom: 2px solid transparent; transition: all 0.15s; letter-spacing: 0.3px; text-transform: uppercase; }

@@ -1573,18 +1573,13 @@ function SmallToggle({ options, selected, onChange }: {
   onChange: (id: string) => void;
 }) {
   return (
-    <div style={{ display: "inline-flex", gap: "1px", background: "#e4e5e7", borderRadius: "6px", padding: "2px" }}>
+    <div style={{ display: "inline-flex", gap: "4px" }}>
       {options.map(o => (
         <button
           key={o.id}
           onClick={() => onChange(o.id)}
-          style={{
-            padding: "3px 8px", fontSize: "11px", fontWeight: selected === o.id ? 600 : 400,
-            background: selected === o.id ? "#fff" : "transparent",
-            border: "none", borderRadius: "4px", cursor: "pointer",
-            color: selected === o.id ? "#1a1a1a" : "#6d7175",
-            boxShadow: selected === o.id ? "0 1px 2px rgba(0,0,0,0.08)" : "none",
-          }}
+          className={`l-pill${selected === o.id ? " l-pill--active" : ""}`}
+          style={{ padding: "4px 10px", fontSize: "11px" }}
         >{o.label}</button>
       ))}
     </div>
@@ -1600,29 +1595,15 @@ function BigLevelToggle({ options, selected, onChange }: {
   onChange: (id: string) => void;
 }) {
   return (
-    <div style={{
-      display: "inline-flex", border: "1px solid #D1D5DB",
-      borderRadius: "8px", overflow: "hidden",
-    }}>
-      {options.map(o => {
-        const active = selected === o.id;
-        return (
-          <button
-            key={o.id}
-            onClick={() => onChange(o.id)}
-            style={{
-              padding: "8px 18px", fontSize: "13px",
-              fontWeight: active ? 600 : 500,
-              background: active ? "#0E7490" : "#fff",
-              color: active ? "#fff" : "#374151",
-              border: "none", cursor: "pointer",
-              transition: "all 0.15s", whiteSpace: "nowrap",
-            }}
-            onMouseEnter={e => { if (!active) e.currentTarget.style.background = "#F3F4F6"; }}
-            onMouseLeave={e => { if (!active) e.currentTarget.style.background = "#fff"; }}
-          >{o.label}</button>
-        );
-      })}
+    <div style={{ display: "inline-flex", gap: "4px" }}>
+      {options.map(o => (
+        <button
+          key={o.id}
+          onClick={() => onChange(o.id)}
+          className={`l-pill${selected === o.id ? " l-pill--active" : ""}`}
+          style={{ padding: "7px 16px", fontSize: "var(--l-font-base)" }}
+        >{o.label}</button>
+      ))}
     </div>
   );
 }
@@ -3006,17 +2987,10 @@ function AdExplorerTable({ rows, cs, entityType, adDemographicsByAd, onEntityCli
   // the Product Demographics Explorer aesthetic so the two filter UIs read as
   // one design language across the app.
   const labelStyle: React.CSSProperties = {
-    fontSize: "12px", fontWeight: 600, color: "#6B7280",
+    fontSize: "var(--l-font-sm)", fontWeight: 600, color: "var(--l-text-secondary)",
     width: "70px", textTransform: "uppercase", letterSpacing: "0.5px",
   };
-  const pillStyle = (active: boolean): React.CSSProperties => ({
-    padding: "6px 12px", fontSize: "12px", fontWeight: 600,
-    borderRadius: "6px", cursor: "pointer",
-    background: active ? "#7C3AED" : "#fff",
-    color: active ? "#fff" : "#4B5563",
-    border: `1px solid ${active ? "#7C3AED" : "#E5E7EB"}`,
-    transition: "all 0.15s",
-  });
+  const pillClass = (active: boolean) => `l-pill${active ? " l-pill--active" : ""}`;
 
   const showAgeRow = entityType === "ad" && (availableAges.size > 0 || ageFilter.length > 0);
   const showGenderRow = entityType === "ad";
@@ -3036,7 +3010,7 @@ function AdExplorerTable({ rows, cs, entityType, adDemographicsByAd, onEntityCli
                 key={s}
                 onClick={() => toggleSegment(s)}
                 title={active && selectedSegments.size === 1 ? "At least one segment must stay selected" : `${active ? "Hide" : "Show"} ${SEGMENT_NAMES[s]} columns`}
-                style={pillStyle(active)}
+                className={pillClass(active)}
               >
                 {SEGMENT_NAMES[s]}
               </button>
@@ -3067,7 +3041,7 @@ function AdExplorerTable({ rows, cs, entityType, adDemographicsByAd, onEntityCli
               <button
                 key={g}
                 onClick={() => setGenderFilter(g)}
-                style={pillStyle(genderFilter === g)}
+                className={pillClass(genderFilter === g)}
               >
                 {g}
               </button>
@@ -3080,7 +3054,7 @@ function AdExplorerTable({ rows, cs, entityType, adDemographicsByAd, onEntityCli
             <span style={labelStyle}>Age</span>
             <button
               onClick={() => setAgeFilter([])}
-              style={pillStyle(ageFilter.length === 0)}
+              className={pillClass(ageFilter.length === 0)}
             >
               All
             </button>
@@ -3088,7 +3062,7 @@ function AdExplorerTable({ rows, cs, entityType, adDemographicsByAd, onEntityCli
               <button
                 key={b}
                 onClick={() => toggleAge(b)}
-                style={pillStyle(ageFilter.includes(b))}
+                className={pillClass(ageFilter.includes(b))}
               >
                 {b}
               </button>
@@ -3871,18 +3845,14 @@ function ToolbarToggle({ label, value, options, onChange }: {
 }) {
   return (
     <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-      <span style={{ fontSize: "11px", color: "#6B7280", fontWeight: 500, textTransform: "uppercase", letterSpacing: "0.5px" }}>{label}</span>
-      <div style={{ display: "flex", border: "1px solid #D1D5DB", borderRadius: "6px", overflow: "hidden", background: "#fff" }}>
+      <span style={{ fontSize: "var(--l-font-sm)", color: "var(--l-text-secondary)", fontWeight: 500, textTransform: "uppercase", letterSpacing: "0.5px" }}>{label}</span>
+      <div style={{ display: "flex", gap: "4px" }}>
         {options.map((o) => (
           <button
             key={o.id}
             onClick={() => onChange(o.id)}
-            style={{
-              border: "none", padding: "4px 10px", fontSize: "12px",
-              background: value === o.id ? "#111827" : "transparent",
-              color: value === o.id ? "#fff" : "#374151",
-              cursor: "pointer", fontWeight: value === o.id ? 600 : 500,
-            }}
+            className={`l-pill${value === o.id ? " l-pill--active" : ""}`}
+            style={{ padding: "4px 10px" }}
           >{o.label}</button>
         ))}
       </div>

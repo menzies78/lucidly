@@ -1,14 +1,12 @@
 import { useLocation, useNavigate, useSearchParams } from "@remix-run/react";
 import type { ReactNode } from "react";
-import { PAGE_TABS, PageThemeContext, getThemeForPath, useDarkMode } from "./PageTheme";
+import { PAGE_TABS, PageThemeContext, getThemeForPath } from "./PageTheme";
 
 export default function ReportTabs({ children }: { children?: ReactNode }) {
   const location = useLocation();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const theme = getThemeForPath(location.pathname);
-  const [dark, toggleDark] = useDarkMode();
-
   const dateQuery = () => {
     const params = new URLSearchParams();
     for (const key of ["from", "to", "preset", "compare"]) {
@@ -79,26 +77,6 @@ export default function ReportTabs({ children }: { children?: ReactNode }) {
               </button>
             );
           })}
-          {/* Dark mode toggle */}
-          <button
-            onClick={toggleDark}
-            title={dark ? "Switch to light mode" : "Switch to dark mode"}
-            style={{
-              padding: "6px 10px",
-              fontSize: "16px",
-              background: "transparent",
-              border: "none",
-              cursor: "pointer",
-              marginLeft: "auto",
-              marginBottom: "-1px",
-              color: "var(--l-text-secondary)",
-              transition: "color 0.15s ease",
-            }}
-            onMouseEnter={e => { e.currentTarget.style.color = "var(--l-text)"; }}
-            onMouseLeave={e => { e.currentTarget.style.color = "var(--l-text-secondary)"; }}
-          >
-            {dark ? "\u2600\uFE0F" : "\uD83C\uDF19"}
-          </button>
           <div style={{ flex: 1, borderBottom: "1px solid var(--l-border)" }} />
         </div>
         {children && (
