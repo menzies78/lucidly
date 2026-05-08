@@ -2154,20 +2154,9 @@ function BreakdownPerfTile({ title, subtitle, data, cs, defaultLevel = "overall"
             <Text as="h3" variant="headingSm">{title}</Text>
             {subtitle && <Text as="p" variant="bodySm" tone="subdued">{subtitle}</Text>}
           </BlockStack>
-          <div style={{ display: "inline-flex", border: "1px solid #D1D5DB", borderRadius: "8px", overflow: "hidden" }}>
+          <div style={{ display: "inline-flex", gap: "4px" }}>
             {BREAKDOWN_LEVELS.map(o => (
-              <button
-                key={o.id}
-                onClick={() => setLevel(o.id)}
-                style={{
-                  padding: "6px 14px", fontSize: "13px", fontWeight: 600, border: "none", cursor: "pointer",
-                  transition: "all 0.15s",
-                  background: level === o.id ? "#7C3AED" : "#fff",
-                  color: level === o.id ? "#fff" : "#6B7280",
-                }}
-                onMouseEnter={(e) => { if (level !== o.id) (e.target as HTMLElement).style.background = "#F3F4F6"; }}
-                onMouseLeave={(e) => { if (level !== o.id) (e.target as HTMLElement).style.background = "#fff"; }}
-              >{o.label}</button>
+              <button key={o.id} onClick={() => setLevel(o.id)} className={`l-pill${level === o.id ? " l-pill--active" : ""}`}>{o.label}</button>
             ))}
           </div>
         </InlineStack>
@@ -3571,32 +3560,15 @@ function TopAdsForNewCustomersTile({ adRows, cs, onAdClick }: {
     <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
       {/* Sort tab row - kept simple to match the "Instagram explore" feel. */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
-        <div style={{
-          display: "inline-flex", border: "1px solid #D1D5DB",
-          borderRadius: "8px", overflow: "hidden",
-        }}>
+        <div style={{ display: "inline-flex", gap: "4px" }}>
           {([
             { id: "orders", label: "Orders" },
             { id: "roas", label: "ROAS" },
             { id: "revenue", label: "Revenue" },
             { id: "cac", label: "CAC" },
-          ] as const).map(o => {
-            const active = sortMode === o.id;
-            return (
-              <button
-                key={o.id}
-                onClick={() => setSortMode(o.id)}
-                style={{
-                  padding: "8px 18px", fontSize: "13px",
-                  fontWeight: active ? 600 : 500,
-                  background: active ? "#0E7490" : "#fff",
-                  color: active ? "#fff" : "#374151",
-                  border: "none", cursor: "pointer",
-                  transition: "all 0.15s", whiteSpace: "nowrap",
-                }}
-              >{o.label}</button>
-            );
-          })}
+          ] as const).map(o => (
+            <button key={o.id} onClick={() => setSortMode(o.id)} className={`l-pill${sortMode === o.id ? " l-pill--active" : ""}`}>{o.label}</button>
+          ))}
         </div>
         <div style={{ fontSize: "11px", color: "#6B7280" }}>
           {sortMode === "roas" && `Top 10 by New Customer ROAS · min ${MIN_ORDERS_FOR_RATIO} orders to qualify`}

@@ -3528,29 +3528,15 @@ export default function Customers() {
                             // Big, central button group - this is the
                             // headline interaction.
                             const windowSelector = (
-                              <div style={{ display: "inline-flex", border: "1px solid #E5E7EB", borderRadius: 10, padding: 3, background: "#F9FAFB", gap: 2 }}>
-                                {windowOptions.map((opt) => {
-                                  const active = ltvChartWindow === opt.value;
-                                  return (
-                                    <button
-                                      key={opt.value}
-                                      onClick={() => setLtvChartWindow(opt.value)}
-                                      style={{
-                                        padding: "8px 18px",
-                                        fontSize: 14,
-                                        fontWeight: 700,
-                                        background: active ? "#fff" : "transparent",
-                                        color: active ? "#7C3AED" : "#6B7280",
-                                        border: active ? "1px solid #DDD6FE" : "1px solid transparent",
-                                        borderRadius: 8,
-                                        cursor: "pointer",
-                                        boxShadow: active ? "0 1px 2px rgba(124, 58, 237, 0.10)" : "none",
-                                        minWidth: 56,
-                                        transition: "all 120ms ease",
-                                      }}
-                                    >{opt.label}</button>
-                                  );
-                                })}
+                              <div style={{ display: "inline-flex", gap: "4px" }}>
+                                {windowOptions.map((opt) => (
+                                  <button
+                                    key={opt.value}
+                                    onClick={() => setLtvChartWindow(opt.value)}
+                                    className={`l-pill${ltvChartWindow === opt.value ? " l-pill--active" : ""}`}
+                                    style={{ padding: "7px 16px", fontSize: "13px" }}
+                                  >{opt.label}</button>
+                                ))}
                               </div>
                             );
 
@@ -3680,19 +3666,8 @@ export default function Customers() {
                                         <button
                                           key={opt.value}
                                           onClick={() => setLtvFilterGender(opt.value)}
-                                          style={{
-                                            padding: "8px 16px",
-                                            fontSize: 13,
-                                            fontWeight: 700,
-                                            background: active ? "#fff" : "transparent",
-                                            color: active ? "#7C3AED" : "#6B7280",
-                                            border: active ? "1px solid #DDD6FE" : "1px solid transparent",
-                                            borderRadius: 8,
-                                            cursor: "pointer",
-                                            boxShadow: active ? "0 1px 2px rgba(124, 58, 237, 0.10)" : "none",
-                                            minWidth: 56,
-                                            transition: "all 120ms ease",
-                                          }}
+                                          className={`l-pill${active ? " l-pill--active" : ""}`}
+                                          style={{ padding: "7px 16px", fontSize: "13px" }}
                                         >{opt.label}</button>
                                       );
                                     })}

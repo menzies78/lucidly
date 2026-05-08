@@ -311,15 +311,8 @@ export default function CustomerMapExplorer({ blob, cs, protomapsKey = null }: P
     width: "92px", textTransform: "uppercase", letterSpacing: "0.5px",
   };
 
-  const pillStyle = (active: boolean, disabled = false): React.CSSProperties => ({
-    padding: "6px 12px", fontSize: "12px", fontWeight: 600,
-    borderRadius: "6px", cursor: disabled ? "not-allowed" : "pointer",
-    background: active ? "#7C3AED" : "#fff",
-    color: active ? "#fff" : disabled ? "#D1D5DB" : "#4B5563",
-    border: `1px solid ${active ? "#7C3AED" : "#E5E7EB"}`,
-    opacity: disabled ? 0.55 : 1,
-    transition: "all 0.15s",
-  });
+  const mapPillClass = (active: boolean, disabled = false) =>
+    `l-pill${active ? " l-pill--active" : ""}${disabled ? " l-pill--disabled" : ""}`;
 
   const baseSubtitle = scope === "metaAcquired"
     ? "Where your Meta-acquired customers live. Drill into cities, filter by demographics, spotlight VIPs and discount-only buyers."
@@ -337,13 +330,7 @@ export default function CustomerMapExplorer({ blob, cs, protomapsKey = null }: P
           .toggle-group / .toggle-btn pattern used on app.customers.tsx
           (Customer Geography tile) but uses the Countries-page green
           (#059669) for the active state to match the page palette. */}
-      <style dangerouslySetInnerHTML={{ __html: `
-        .cme-toggle-group { display: inline-flex; border: 1px solid #D1D5DB; border-radius: 5px; overflow: hidden; }
-        .cme-toggle-btn { padding: 4px 10px; font-size: 11px; font-weight: 500; border: none; cursor: pointer; transition: all 0.15s; white-space: nowrap; }
-        .cme-toggle-btn.active { background: #059669; color: #fff; }
-        .cme-toggle-btn:not(.active) { background: #fff; color: #374151; }
-        .cme-toggle-btn:not(.active):hover { background: #F3F4F6; }
-      `}} />
+      {/* Toggle styles now handled by global .l-pill classes in tokens.css */}
       <BlockStack gap="400">
         <BlockStack gap="100">
           <Text as="h2" variant="headingLg">Customer Map Explorer</Text>
@@ -354,23 +341,23 @@ export default function CustomerMapExplorer({ blob, cs, protomapsKey = null }: P
             to it. */}
         <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-start", gap: 12, flexWrap: "wrap" }}>
           <div
-            className="cme-toggle-group"
+            style={{ display: "inline-flex", gap: "4px" }}
             title="Filter by recency of last order. All time is the default - narrower windows highlight customers who've ordered recently."
           >
             {TIME_WINDOWS.map((w) => (
               <button
                 key={String(w.key)}
-                className={`cme-toggle-btn ${timeWindow === w.key ? "active" : ""}`}
+                className={`l-pill${timeWindow === w.key ? " l-pill--active" : ""}`}
                 onClick={() => setTimeWindow(w.key)}
               >
                 {w.label}
               </button>
             ))}
           </div>
-          <div className="cme-toggle-group">
-            <button className={`cme-toggle-btn ${scope === "metaAcquired" ? "active" : ""}`} onClick={() => setScope("metaAcquired")}>Meta Acquired</button>
-            <button className={`cme-toggle-btn ${scope === "allMeta" ? "active" : ""}`} onClick={() => setScope("allMeta")}>All Meta</button>
-            <button className={`cme-toggle-btn ${scope === "all" ? "active" : ""}`} onClick={() => setScope("all")}>All Customers</button>
+          <div style={{ display: "inline-flex", gap: "4px" }}>
+            <button className={`l-pill${scope === "metaAcquired" ? " l-pill--active" : ""}`} onClick={() => setScope("metaAcquired")}>Meta Acquired</button>
+            <button className={`l-pill${scope === "allMeta" ? " l-pill--active" : ""}`} onClick={() => setScope("allMeta")}>All Meta</button>
+            <button className={`l-pill${scope === "all" ? " l-pill--active" : ""}`} onClick={() => setScope("all")}>All Customers</button>
           </div>
         </div>
 
@@ -468,7 +455,7 @@ export default function CustomerMapExplorer({ blob, cs, protomapsKey = null }: P
               <button
                 key={g}
                 onClick={() => setGender(g)}
-                style={pillStyle(gender === g)}
+                className={mapPillClass(gender === g)}
               >
                 {g}
               </button>
@@ -481,7 +468,7 @@ export default function CustomerMapExplorer({ blob, cs, protomapsKey = null }: P
             <button
               onClick={() => isMetaAcquired && setAges([])}
               disabled={!isMetaAcquired}
-              style={pillStyle(ages.length === 0 && isMetaAcquired, !isMetaAcquired)}
+              className={mapPillClass(ages.length === 0 && isMetaAcquired, !isMetaAcquired)}
             >
               All
             </button>
@@ -490,7 +477,7 @@ export default function CustomerMapExplorer({ blob, cs, protomapsKey = null }: P
                 key={b}
                 onClick={() => isMetaAcquired && toggleAge(b)}
                 disabled={!isMetaAcquired}
-                style={pillStyle(ages.includes(b) && isMetaAcquired, !isMetaAcquired)}
+                className={mapPillClass(ages.includes(b) && isMetaAcquired, !isMetaAcquired)}
               >
                 {b}
               </button>
@@ -511,7 +498,7 @@ export default function CustomerMapExplorer({ blob, cs, protomapsKey = null }: P
               ["top10", "Top 10%"],
               ["top20", "Top 20%"],
             ] as const).map(([v, l]) => (
-              <button key={v} onClick={() => setVip(v)} style={pillStyle(vip === v)}>{l}</button>
+              <button key={v} onClick={() => setVip(v)} className={mapPillClass(vip === v)}>{l}</button>
             ))}
             {blob && vip !== "any" && (
               <span style={{ fontSize: "11px", color: "#9CA3AF" }}>
@@ -528,11 +515,11 @@ export default function CustomerMapExplorer({ blob, cs, protomapsKey = null }: P
               ["discount", "Discount buyers"],
               ["fullPrice", "Full price only"],
             ] as const).map(([v, l]) => (
-              <button key={v} onClick={() => setPricing(v)} style={pillStyle(pricing === v)}>{l}</button>
+              <button key={v} onClick={() => setPricing(v)} className={mapPillClass(pricing === v)}>{l}</button>
             ))}
             <button
               onClick={() => setRefundsTop((b) => !b)}
-              style={pillStyle(refundsTop)}
+              className={mapPillClass(refundsTop)}
               title="Top 10% by refund rate among customers who have any refund"
             >
               Highest refunds
@@ -548,7 +535,7 @@ export default function CustomerMapExplorer({ blob, cs, protomapsKey = null }: P
               ["2-3", "2-3"],
               ["4+", "4+"],
             ] as const).map(([v, l]) => (
-              <button key={v} onClick={() => setOrderBand(v)} style={pillStyle(orderBand === v)}>{l}</button>
+              <button key={v} onClick={() => setOrderBand(v)} className={mapPillClass(orderBand === v)}>{l}</button>
             ))}
           </div>
 
@@ -562,7 +549,7 @@ export default function CustomerMapExplorer({ blob, cs, protomapsKey = null }: P
               ["dormant", "Dormant 90-365d"],
               ["lapsed", "Lapsed 365d+"],
             ] as const).map(([v, l]) => (
-              <button key={v} onClick={() => setRecency(v)} style={pillStyle(recency === v)}>{l}</button>
+              <button key={v} onClick={() => setRecency(v)} className={mapPillClass(recency === v)}>{l}</button>
             ))}
           </div>
 
@@ -968,18 +955,9 @@ function TopCitiesPanel({ cities, cs }: { cities: TopCity[]; cs: string }) {
     <div style={{ border: "1px solid #E5E7EB", borderRadius: "8px", padding: "12px 14px", display: "flex", flexDirection: "column", height: 540, minHeight: 0 }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
         <Text as="h3" variant="headingSm">Top cities</Text>
-        <div style={{ display: "inline-flex", borderRadius: "6px", border: "1px solid #E5E7EB", overflow: "hidden" }}>
+        <div style={{ display: "inline-flex", gap: "4px" }}>
           {(["customers", "revenue"] as const).map((s) => (
-            <button
-              key={s}
-              onClick={() => setSort(s)}
-              style={{
-                padding: "4px 10px", fontSize: "11px", fontWeight: 600,
-                background: sort === s ? "#7C3AED" : "#fff",
-                color: sort === s ? "#fff" : "#4B5563",
-                border: "none", cursor: "pointer",
-              }}
-            >
+            <button key={s} onClick={() => setSort(s)} className={`l-pill${sort === s ? " l-pill--active" : ""}`} style={{ padding: "4px 10px", fontSize: "11px" }}>
               {s === "customers" ? "Customers" : "Revenue"}
             </button>
           ))}

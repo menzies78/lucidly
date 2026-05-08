@@ -1499,20 +1499,7 @@ function ProductDemographicsExplorer({ records, countries, gems, nonMetaRecords,
           <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
             <span style={{ fontSize: "12px", fontWeight: 600, color: "#6B7280", width: "70px", textTransform: "uppercase", letterSpacing: "0.5px" }}>Gender</span>
             {(["All", "Female", "Male"] as const).map((g) => (
-              <button
-                key={g}
-                onClick={() => setGender(g)}
-                style={{
-                  padding: "6px 12px", fontSize: "12px", fontWeight: 600,
-                  borderRadius: "6px", cursor: "pointer",
-                  background: gender === g ? "#7C3AED" : "#fff",
-                  color: gender === g ? "#fff" : "#4B5563",
-                  border: `1px solid ${gender === g ? "#7C3AED" : "#E5E7EB"}`,
-                  transition: "all 0.15s",
-                }}
-              >
-                {g}
-              </button>
+              <button key={g} onClick={() => setGender(g)} className={`l-pill${gender === g ? " l-pill--active" : ""}`}>{g}</button>
             ))}
           </div>
 
@@ -1520,36 +1507,10 @@ function ProductDemographicsExplorer({ records, countries, gems, nonMetaRecords,
           {segment !== "nonMeta" && (
           <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
             <span style={{ fontSize: "12px", fontWeight: 600, color: "#6B7280", width: "70px", textTransform: "uppercase", letterSpacing: "0.5px" }}>Age</span>
-            <button
-              onClick={() => setAges([])}
-              style={{
-                padding: "6px 12px", fontSize: "12px", fontWeight: 600,
-                borderRadius: "6px", cursor: "pointer",
-                background: ages.length === 0 ? "#7C3AED" : "#fff",
-                color: ages.length === 0 ? "#fff" : "#4B5563",
-                border: `1px solid ${ages.length === 0 ? "#7C3AED" : "#E5E7EB"}`,
-              }}
-            >
-              All
-            </button>
-            {AGE_BRACKETS.filter((b) => availableAges.has(b) || ages.includes(b)).map((b) => {
-              const selected = ages.includes(b);
-              return (
-                <button
-                  key={b}
-                  onClick={() => toggleAge(b)}
-                  style={{
-                    padding: "6px 12px", fontSize: "12px", fontWeight: 600,
-                    borderRadius: "6px", cursor: "pointer",
-                    background: selected ? "#7C3AED" : "#fff",
-                    color: selected ? "#fff" : "#4B5563",
-                    border: `1px solid ${selected ? "#7C3AED" : "#E5E7EB"}`,
-                  }}
-                >
-                  {b}
-                </button>
-              );
-            })}
+            <button onClick={() => setAges([])} className={`l-pill${ages.length === 0 ? " l-pill--active" : ""}`}>All</button>
+            {AGE_BRACKETS.filter((b) => availableAges.has(b) || ages.includes(b)).map((b) => (
+              <button key={b} onClick={() => toggleAge(b)} className={`l-pill${ages.includes(b) ? " l-pill--active" : ""}`}>{b}</button>
+            ))}
           </div>
           )}
 
@@ -1588,18 +1549,9 @@ function ProductDemographicsExplorer({ records, countries, gems, nonMetaRecords,
         {/* Sort toggle */}
         <div style={{ display: "flex", alignItems: "center", gap: "10px", marginTop: 12 }}>
           <span style={{ fontSize: "12px", fontWeight: 600, color: "#6B7280", textTransform: "uppercase", letterSpacing: "0.5px" }}>Sort by</span>
-          <div style={{ display: "inline-flex", borderRadius: "6px", border: "1px solid #E5E7EB", overflow: "hidden" }}>
+          <div style={{ display: "inline-flex", gap: "4px" }}>
             {(["units", "revenue"] as const).map((s) => (
-              <button
-                key={s}
-                onClick={() => setSortBy(s)}
-                style={{
-                  padding: "6px 14px", fontSize: "12px", fontWeight: 600,
-                  background: sortBy === s ? "#7C3AED" : "#fff",
-                  color: sortBy === s ? "#fff" : "#4B5563",
-                  border: "none", cursor: "pointer",
-                }}
-              >
+              <button key={s} onClick={() => setSortBy(s)} className={`l-pill${sortBy === s ? " l-pill--active" : ""}`}>
                 {s === "units" ? "Units" : "Revenue"}
               </button>
             ))}

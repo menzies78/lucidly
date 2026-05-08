@@ -139,6 +139,10 @@
   border-color: var(--l-accent-dark);
   color: #fff;
 }
+.l-pill--disabled {
+  opacity: 0.55;
+  cursor: not-allowed !important;
+}
 
 /* ── Badge (delta +/- indicators) ── */
 .l-badge {
