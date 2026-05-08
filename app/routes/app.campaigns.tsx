@@ -4726,8 +4726,8 @@ export default function Campaigns() {
     fontWeight: isActive ? 700 : 500,
     color: isActive ? "var(--l-accent-dark)" : "var(--l-text-secondary)",
     background: isActive ? "var(--l-bg)" : "var(--l-bg-subtle)",
-    border: `1px solid ${isActive ? theme.accent + "44" : "#c9cccf"}`,
-    borderBottom: isActive ? "1px solid #fff" : `2px solid ${theme.accent}33`,
+    border: `1px solid ${isActive ? "var(--l-accent-40)" : "var(--l-border)"}`,
+    borderBottom: isActive ? "1px solid var(--l-bg)" : "2px solid var(--l-accent-20)",
     borderRadius: "8px 8px 0 0",
     cursor: "pointer",
     marginRight: "-1px",
@@ -5154,12 +5154,12 @@ export default function Campaigns() {
                   {label}
                 </button>
               ))}
-              <div style={{ flex: 1, borderBottom: `1px solid ${theme.accent}44` }} />
+              <div style={{ flex: 1, borderBottom: "1px solid var(--l-accent-40)" }} />
             </div>
           </div>
           <div style={{
-            background: "#fff",
-            border: `1px solid ${theme.accent}44`,
+            background: "var(--l-bg)",
+            border: "1px solid var(--l-accent-40)",
             borderTop: "none",
             borderRadius: "0 0 12px 12px",
             padding: "16px",
