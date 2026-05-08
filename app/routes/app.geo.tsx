@@ -485,6 +485,117 @@ export const loader = async ({ request }) => {
     shopifyByCountry[cc].revenue += (o.frozenTotalPrice || 0) - (o.totalRefunded || 0);
   }
 
+  // ── Top Products per Country ──
+  // Cross-tab of (countryCode × parent product title × segment × gender),
+  // limited to 8 products per country. Client filters live without going
+  // back to the loader. Aggregating to the parent-product level (via
+  // toParentProduct) collapses Vollebak's "Foo." / "Foo" duplicate listings
+  // and Acid Wash colour variants - same logic productRollups uses.
+  const { toParentProduct } = await import("../services/productRollups.server.js");
+
+  const orderIdsList = ordersInRange.map(o => o.shopifyOrderId);
+  const customerIdsList = [...new Set(ordersInRange.map(o => o.shopifyCustomerId).filter(Boolean) as string[])];
+
+  const [lineItems, customers] = await Promise.all([
+    queryCached(`${shopDomain}:geoLineItems:${fromKey}:${toKey}`, DEFAULT_TTL, () =>
+      db.orderLineItem.findMany({
+        where: { shopDomain, shopifyOrderId: { in: orderIdsList } },
+        select: { shopifyOrderId: true, title: true, quantity: true, totalPrice: true, refundedQuantity: true, refundedAmount: true },
+      })
+    ),
+    queryCached(`${shopDomain}:geoCustomers:${fromKey}:${toKey}`, DEFAULT_TTL, () =>
+      db.customer.findMany({
+        where: { shopDomain, shopifyCustomerId: { in: customerIdsList } },
+        select: { shopifyCustomerId: true, metaSegment: true, inferredGender: true },
+      })
+    ),
+  ]);
+
+  const custBySid: Record<string, { seg: string | null; g: string | null }> = {};
+  for (const c of customers) {
+    custBySid[c.shopifyCustomerId] = {
+      seg: c.metaSegment,
+      g: c.inferredGender, // "male" | "female" | null
+    };
+  }
+
+  // Attribution metaGender (more accurate than name inference) - sparse,
+  // but where present overrides the name-inferred value.
+  const attrGenderById: Record<string, string> = {};
+  for (const a of attributions) {
+    if ((a as any).metaGender && (a as any).metaGender !== "unknown") {
+      attrGenderById[a.shopifyOrderId] = (a as any).metaGender;
+    }
+  }
+
+  type ProductCell = {
+    mn_F: number; mn_M: number; mn_U: number;     // metaNew × gender
+    mr_F: number; mr_M: number; mr_U: number;     // metaRetargeted × gender
+    o_F: number;  o_M: number;  o_U: number;      // organic × gender
+    totalUnits: number; totalRevenue: number;
+  };
+  const emptyCell = (): ProductCell => ({
+    mn_F: 0, mn_M: 0, mn_U: 0, mr_F: 0, mr_M: 0, mr_U: 0, o_F: 0, o_M: 0, o_U: 0,
+    totalUnits: 0, totalRevenue: 0,
+  });
+
+  const productsByCountry: Record<string, Record<string, ProductCell>> = {};
+
+  for (const li of lineItems) {
+    const ord = orderMap[li.shopifyOrderId];
+    if (!ord) continue;
+    const cc = ord.countryCode;
+    if (!cc) continue;
+
+    const cust = ord.shopifyCustomerId ? custBySid[ord.shopifyCustomerId] : null;
+    const segPrefix = cust?.seg === "metaNew" ? "mn"
+                    : cust?.seg === "metaRetargeted" ? "mr"
+                    : "o";
+
+    const metaG = attrGenderById[li.shopifyOrderId];
+    const g = metaG === "female" ? "F"
+            : metaG === "male" ? "M"
+            : cust?.g === "female" ? "F"
+            : cust?.g === "male" ? "M"
+            : "U";
+
+    const cellKey = `${segPrefix}_${g}` as keyof ProductCell;
+    const title = toParentProduct(li.title);
+    if (!title) continue;
+
+    const netUnits = (li.quantity || 0) - (li.refundedQuantity || 0);
+    if (netUnits <= 0) continue;
+    const netRev = (li.totalPrice || 0) - (li.refundedAmount || 0);
+
+    if (!productsByCountry[cc]) productsByCountry[cc] = {};
+    if (!productsByCountry[cc][title]) productsByCountry[cc][title] = emptyCell();
+
+    const row = productsByCountry[cc][title];
+    (row as any)[cellKey] += netUnits;
+    row.totalUnits += netUnits;
+    row.totalRevenue += netRev;
+  }
+
+  const productImagesMap: Record<string, string> = (() => {
+    try { return shop?.productImagesJson ? JSON.parse(shop.productImagesJson) : {}; } catch { return {}; }
+  })();
+
+  const topProductsByCountry = Object.entries(productsByCountry)
+    .map(([cc, products]) => {
+      const sorted = Object.entries(products)
+        .map(([title, cell]) => ({
+          title,
+          image: productImagesMap[title] || productImagesMap[toParentProduct(title)] || null,
+          ...cell,
+        }))
+        .sort((a, b) => b.totalUnits - a.totalUnits)
+        .slice(0, 8);
+      const totalCountryUnits = sorted.reduce((s, p) => s + p.totalUnits, 0);
+      return { cc, products: sorted, totalCountryUnits };
+    })
+    .filter(c => c.totalCountryUnits >= 3) // suppress noisy 1-2 order tail
+    .sort((a, b) => b.totalCountryUnits - a.totalCountryUnits);
+
   // ── Customer Map Explorer blob (computed at rollup time) ──
   // The blob is all-time. The tile has its own time-window control (default
   // All time - page-level date filter intentionally NOT applied here so the
@@ -517,6 +628,7 @@ export const loader = async ({ request }) => {
     adEntities,
     shopifyByCountry,
     customerMapBlob,
+    topProductsByCountry,
     currencySymbol,
     protomapsKey,
     hasData: breakdownData.length > 0,
@@ -697,13 +809,177 @@ const PAGE_STYLES = `
 `;
 
 // ═══════════════════════════════════════════════════════════════
+// Top Products per Country tile
+// Visual grid - flag header + ranked product thumbnails. Filters by
+// customer segment (Meta New / Meta Returning / All) and gender.
+// Loader emits a (cc x parent product) crosstab with segment×gender
+// cells; this tile re-aggregates client-side using the active filters
+// so toggling pills doesn't go back to the server.
+// ═══════════════════════════════════════════════════════════════
+
+type ProductCell = {
+  title: string;
+  image: string | null;
+  mn_F: number; mn_M: number; mn_U: number;
+  mr_F: number; mr_M: number; mr_U: number;
+  o_F: number;  o_M: number;  o_U: number;
+  totalUnits: number; totalRevenue: number;
+};
+type CountryProducts = { cc: string; products: ProductCell[]; totalCountryUnits: number };
+
+const SEGMENT_PILLS = [
+  { value: "all",     label: "All Customers" },
+  { value: "metaNew", label: "Meta New" },
+  { value: "metaRet", label: "Meta Returning" },
+] as const;
+
+const GENDER_PILLS = [
+  { value: "all", label: "All" },
+  { value: "F",   label: "Female" },
+  { value: "M",   label: "Male" },
+] as const;
+
+function pillClass(active: boolean) {
+  return {
+    padding: "5px 11px", fontSize: "12px", fontWeight: 500, borderRadius: "999px",
+    cursor: "pointer", border: active ? "1px solid #059669" : "1px solid #D1D5DB",
+    background: active ? "#059669" : "#fff", color: active ? "#fff" : "#374151",
+    transition: "all 0.12s", whiteSpace: "nowrap" as const,
+  };
+}
+
+function ProductInitial({ title, size }: { title: string; size: number }) {
+  // Stable hue from title hash so each product reads as its own colour
+  // when the catalogue image cache hasn't reached it yet.
+  let h = 0;
+  for (let i = 0; i < title.length; i++) h = (h * 31 + title.charCodeAt(i)) >>> 0;
+  const hue = h % 360;
+  return (
+    <div style={{
+      width: size, height: size, borderRadius: 8,
+      background: `linear-gradient(135deg, hsl(${hue} 60% 70%), hsl(${(hue + 40) % 360} 60% 55%))`,
+      display: "flex", alignItems: "center", justifyContent: "center",
+      color: "#fff", fontWeight: 700, fontSize: Math.round(size * 0.42),
+      flexShrink: 0,
+    }}>
+      {(title[0] || "?").toUpperCase()}
+    </div>
+  );
+}
+
+function unitsForFilters(p: ProductCell, seg: string, gen: string): number {
+  const segs = seg === "all" ? ["mn", "mr", "o"] : seg === "metaNew" ? ["mn"] : ["mr"];
+  const gens = gen === "all" ? ["F", "M", "U"] : [gen];
+  let n = 0;
+  for (const s of segs) for (const g of gens) n += (p as any)[`${s}_${g}`] as number;
+  return n;
+}
+
+function TopProductsByCountryTile({
+  data, cs,
+}: {
+  data: CountryProducts[]; cs: string;
+}) {
+  const [seg, setSeg] = useState<string>("all");
+  const [gen, setGen] = useState<string>("all");
+
+  const filtered = useMemo(() => {
+    return data
+      .map(c => {
+        const products = c.products
+          .map(p => ({ ...p, filteredUnits: unitsForFilters(p, seg, gen) }))
+          .filter(p => p.filteredUnits > 0)
+          .sort((a, b) => b.filteredUnits - a.filteredUnits)
+          .slice(0, 5);
+        const totalFiltered = products.reduce((s, p) => s + p.filteredUnits, 0);
+        return { cc: c.cc, products, totalFiltered };
+      })
+      .filter(c => c.products.length > 0)
+      .sort((a, b) => b.totalFiltered - a.totalFiltered)
+      .slice(0, 12); // 12 countries max - keeps the grid tidy on a 1440 viewport
+  }, [data, seg, gen]);
+
+  return (
+    <Card>
+      <BlockStack gap="300">
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 12 }}>
+          <BlockStack gap="050">
+            <Text as="h2" variant="headingMd">Top Products per Country</Text>
+            <Text as="p" variant="bodySm" tone="subdued">
+              Best-selling products by country in this period. Filter by customer segment and gender to see what each audience is buying where.
+            </Text>
+          </BlockStack>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6, alignItems: "flex-end" }}>
+            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+              <span style={{ fontSize: 11, color: "#6B7280", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.4 }}>Customers</span>
+              {SEGMENT_PILLS.map(p => (
+                <button key={p.value} onClick={() => setSeg(p.value)} style={pillClass(seg === p.value)}>{p.label}</button>
+              ))}
+            </div>
+            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+              <span style={{ fontSize: 11, color: "#6B7280", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.4 }}>Gender</span>
+              {GENDER_PILLS.map(p => (
+                <button key={p.value} onClick={() => setGen(p.value)} style={pillClass(gen === p.value)}>{p.label}</button>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {filtered.length === 0 ? (
+          <div style={{ padding: 28, textAlign: "center", color: "#6B7280", fontSize: 13, background: "#F9FAFB", borderRadius: 8 }}>
+            No product orders match these filters in this period.
+          </div>
+        ) : (
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 14 }}>
+            {filtered.map(c => (
+              <div key={c.cc} style={{ border: "1px solid #E5E7EB", borderRadius: 12, padding: 14, background: "#fff" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12, paddingBottom: 10, borderBottom: "1px solid #F3F4F6" }}>
+                  <span style={{ fontSize: 32, lineHeight: 1 }}>{countryFlag(c.cc)}</span>
+                  <BlockStack gap="050">
+                    <Text as="p" variant="headingSm">{countryName(c.cc)}</Text>
+                    <Text as="p" variant="bodySm" tone="subdued">{c.totalFiltered.toLocaleString()} units sold</Text>
+                  </BlockStack>
+                </div>
+                <BlockStack gap="200">
+                  {c.products.map((p, idx) => (
+                    <div key={p.title} style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                      <span style={{
+                        width: 18, fontSize: 13, fontWeight: 700, color: "#9CA3AF", flexShrink: 0, textAlign: "center" as const,
+                      }}>{idx + 1}</span>
+                      {p.image ? (
+                        <img
+                          src={p.image} alt=""
+                          style={{ width: 44, height: 44, borderRadius: 8, objectFit: "cover", border: "1px solid #E5E7EB", flexShrink: 0 }}
+                        />
+                      ) : (
+                        <ProductInitial title={p.title} size={44} />
+                      )}
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 13, fontWeight: 600, color: "#1F2937", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }} title={p.title}>{p.title}</div>
+                        <div style={{ fontSize: 11, color: "#6B7280", marginTop: 1 }}>
+                          {p.filteredUnits.toLocaleString()} {p.filteredUnits === 1 ? "unit" : "units"}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </BlockStack>
+              </div>
+            ))}
+          </div>
+        )}
+      </BlockStack>
+    </Card>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
 // COMPONENT
 // ═══════════════════════════════════════════════════════════════
 
 export default function GeoPerformance() {
   const {
     overallRows, campaignEntities, adsetEntities, adEntities,
-    shopifyByCountry, customerMapBlob, currencySymbol, protomapsKey, hasData,
+    shopifyByCountry, customerMapBlob, topProductsByCountry, currencySymbol, protomapsKey, hasData,
     aiCachedInsights, aiGeneratedAt, aiIsStale,
     fromKey, toKey, preset,
   } = useLoaderData<typeof loader>();
@@ -1008,6 +1284,9 @@ export default function GeoPerformance() {
               />
             )},
           ] as TileDef[]} />
+
+          {/* ═══ Top Products per Country ═══ */}
+          <TopProductsByCountryTile data={topProductsByCountry} cs={cs} />
 
           {/* ═══ 2. VISUAL TILES (50/50 row) ═══ */}
           {/* Spend vs Revenue and Untapped Markets read together - one shows

@@ -319,26 +319,9 @@ export default function DateRangeSelector() {
               multiMonth
             />
 
-            {/* Compare + Apply row */}
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", borderTop: "1px solid #E4E5E7", paddingTop: "10px" }}>
-              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                <span style={{ fontSize: "13px", fontWeight: 500, color: "#6B7280" }}>Compare:</span>
-                {COMPARE_OPTIONS.map(opt => (
-                  <button
-                    key={opt.value}
-                    onClick={() => handleCompareChange(opt.value)}
-                    style={{
-                      padding: "4px 10px", borderRadius: "6px", border: "none", cursor: "pointer",
-                      fontSize: "12px", fontWeight: 500,
-                      background: compare === opt.value ? "#7C3AED" : "#F3F4F6",
-                      color: compare === opt.value ? "#fff" : "#4B5563",
-                      transition: "all 0.15s",
-                    }}
-                  >
-                    {opt.value === "none" ? "Off" : opt.value === "previous" ? "Prev period" : "Year-on-year"}
-                  </button>
-                ))}
-              </div>
+            {/* Apply row - Compare removed; period-over-period compare lives
+                on the individual tiles via the DeltaBadge hover overlay. */}
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", borderTop: "1px solid #E4E5E7", paddingTop: "10px" }}>
               <Button variant="primary" onClick={applyDates}>Apply</Button>
             </div>
           </div>

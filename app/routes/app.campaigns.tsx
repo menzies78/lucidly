@@ -3106,7 +3106,7 @@ function AdExplorerTable({ rows, cs, entityType, adDemographicsByAd, onEntityCli
                 Clear filters
               </button>
             )}
-            <span style={{ flex: 1, minWidth: "40px" }} />
+            <span style={{ width: "24px", flexShrink: 0 }} />
             <input
               type="search"
               value={searchQuery}

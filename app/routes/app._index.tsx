@@ -14,6 +14,7 @@ import { parseDateRange } from "../utils/dateRange.server";
 import { shopLocalDayKey } from "../utils/shopTime.server";
 import { currencySymbolFromCode } from "../utils/currency";
 import { cached as queryCached } from "../services/queryCache.server";
+import { isInternalShop } from "../utils/access.server";
 
 export const loader = async ({ request }) => {
   const { admin, session } = await authenticate.admin(request);
@@ -124,17 +125,20 @@ export const loader = async ({ request }) => {
       const matchedSet = new Set(matched.map(a => a.shopifyOrderId));
       return recentOrders.filter(o => matchedSet.has(o.shopifyOrderId));
     })(),
-    // Campaigns that stopped delivering in last 7 days
+    // Campaigns + ad sets that stopped delivering in last 7 days. Ad sets
+    // are flagged separately so the merchant sees adset-level pauses even
+    // when the parent campaign is still ACTIVE - common case where one
+    // adset gets paused for budget reallocation while siblings keep running.
     db.metaEntity.findMany({
       where: {
         shopDomain,
-        entityType: "campaign",
+        entityType: { in: ["campaign", "adset"] },
         currentStatus: { in: ["PAUSED", "ARCHIVED", "DELETED"] },
         effectiveEndAt: { gte: sevenDaysAgo },
       },
-      select: { entityName: true, currentStatus: true, effectiveEndAt: true },
+      select: { entityType: true, entityName: true, currentStatus: true, effectiveEndAt: true },
       orderBy: { effectiveEndAt: "desc" },
-      take: 10,
+      take: 20,
     }),
     // Active campaign count
     db.metaEntity.count({
@@ -241,7 +245,7 @@ export const loader = async ({ request }) => {
   };
 
   // Check if any background task is currently running for this shop
-  const taskNames = ["syncOrders", "syncMeta", "syncMetaHistorical", "runAttribution", "dateRangeRematch", "fillGaps", "incrementalSync", "startOngoingSync", "calibratePixel", "inferGender", "backfillFirstNames", "forceRollups"];
+  const taskNames = ["syncOrders", "syncMeta", "syncMetaHistorical", "runAttribution", "dateRangeRematch", "fillGaps", "incrementalSync", "startOngoingSync", "calibratePixel", "inferGender", "backfillFirstNames", "forceRollups", "refreshAdThumbnails"];
   let activeTaskFromServer = null;
   for (const t of taskNames) {
     const p = getProgress(`${t}:${shopDomain}`);
@@ -274,11 +278,16 @@ export const loader = async ({ request }) => {
     utmHealth,
     syncFreshness,
     recentlyStoppedCampaigns: recentlyStoppedCampaigns.map(c => ({
+      level: c.entityType,
       name: c.entityName,
       status: c.currentStatus,
       stoppedAt: c.effectiveEndAt?.toISOString() || null,
     })),
     activeCampaignCount,
+    // Role gate: only LUCIDLY_INTERNAL_SHOPS see ops tooling. Production
+    // merchants see a clean dashboard. Andy adds a shop to the env var
+    // when he needs to debug it inside that merchant's store.
+    isInternal: isInternalShop(shopDomain),
   });
 };
 
@@ -633,7 +642,7 @@ export default function Index() {
     utmOnlyCount, utmOnlyRevenue, utmAndLucidlyCount, onboardingCompleted,
     webhooksRegisteredAt, webhooksFirstFiredAt, pixelCalibration,
     matchAccuracyChart, matchRate30d, matchRate30dDetail, utmHealth, syncFreshness,
-    recentlyStoppedCampaigns, activeCampaignCount,
+    recentlyStoppedCampaigns, activeCampaignCount, isInternal,
   } = useLoaderData();
   const submit = useSubmit();
   const navigate = useNavigate();
@@ -880,7 +889,7 @@ export default function Index() {
             <Card>
               <BlockStack gap="300">
                 <InlineStack align="space-between" blockAlign="center">
-                  <Text as="h2" variant="headingLg">Campaign Alerts</Text>
+                  <Text as="h2" variant="headingLg">Campaign &amp; Ad Set Alerts</Text>
                   <div style={{
                     fontSize: "13px", fontWeight: 600, padding: "4px 12px",
                     borderRadius: "12px", background: "#EFF6FF", color: "#1D4ED8",
@@ -892,29 +901,43 @@ export default function Index() {
                 {recentlyStoppedCampaigns.length > 0 ? (
                   <BlockStack gap="100">
                     <Text as="p" variant="bodySm" tone="subdued">
-                      Campaigns that stopped delivering in the last 7 days:
+                      Campaigns and ad sets that stopped delivering in the last 7 days:
                     </Text>
-                    {recentlyStoppedCampaigns.map((c, i) => (
-                      <div key={i} style={{
-                        display: "flex", justifyContent: "space-between", alignItems: "center",
-                        padding: "8px 12px", borderRadius: "6px", background: "#FEF2F2",
-                        fontSize: "13px",
-                      }}>
-                        <span style={{ fontWeight: 600, color: "#374151" }}>
-                          {c.name || "Unnamed campaign"}
-                        </span>
-                        <span style={{ color: "#6B7280", fontSize: "12px" }}>
-                          {c.status.toLowerCase()} {daysAgo(c.stoppedAt)}
-                        </span>
-                      </div>
-                    ))}
+                    {recentlyStoppedCampaigns.map((c, i) => {
+                      const isAdset = c.level === "adset";
+                      return (
+                        <div key={i} style={{
+                          display: "flex", justifyContent: "space-between", alignItems: "center",
+                          padding: "8px 12px", borderRadius: "6px", background: "#FEF2F2",
+                          fontSize: "13px", gap: 8,
+                        }}>
+                          <span style={{ display: "inline-flex", alignItems: "center", gap: 8, minWidth: 0, flex: 1 }}>
+                            <span style={{
+                              fontSize: "10.5px", fontWeight: 700, padding: "2px 7px",
+                              borderRadius: "10px", textTransform: "uppercase", letterSpacing: 0.3,
+                              background: isAdset ? "#EDE9FE" : "#FEE2E2",
+                              color: isAdset ? "#5B21B6" : "#991B1B",
+                              flexShrink: 0,
+                            }}>
+                              {isAdset ? "Ad Set" : "Campaign"}
+                            </span>
+                            <span style={{ fontWeight: 600, color: "#374151", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                              {c.name || (isAdset ? "Unnamed ad set" : "Unnamed campaign")}
+                            </span>
+                          </span>
+                          <span style={{ color: "#6B7280", fontSize: "12px", flexShrink: 0 }}>
+                            {c.status.toLowerCase()} {daysAgo(c.stoppedAt)}
+                          </span>
+                        </div>
+                      );
+                    })}
                   </BlockStack>
                 ) : (
                   <div style={{
                     padding: "20px", textAlign: "center", borderRadius: "8px",
                     background: "#ECFDF5", color: "#065F46", fontSize: "14px", fontWeight: 500,
                   }}>
-                    No campaigns stopped in the last 7 days
+                    No campaigns or ad sets stopped in the last 7 days
                   </div>
                 )}
 
@@ -1061,10 +1084,27 @@ export default function Index() {
           </Card>
         )}
 
-        {/* ═══ Data Pipeline ═══ */}
+        {/* ═══ Internal Tools (Lucidly admin only) ═══
+            Gated behind isInternalShop() - controlled by LUCIDLY_INTERNAL_SHOPS
+            env var (CSV of shop domains). Production merchants see a clean
+            dashboard; Andy adds a shop here temporarily when debugging.
+        */}
+        {isInternal && (
         <Card>
+          <BlockStack gap="100">
+            <InlineStack gap="200" blockAlign="center">
+              <Text as="h2" variant="headingLg">Internal Tools</Text>
+              <span style={{
+                fontSize: 10.5, fontWeight: 700, padding: "2px 8px", borderRadius: 10,
+                background: "#FEF3C7", color: "#92400E", textTransform: "uppercase", letterSpacing: 0.4,
+              }}>Lucidly admin only</span>
+            </InlineStack>
+            <Text as="p" variant="bodySm" tone="subdued">
+              Operational levers - sync triggers, re-matchers, backfills. Hidden from merchants.
+            </Text>
+          </BlockStack>
+          <div style={{ marginTop: 16 }} />
           <BlockStack gap="300">
-            <Text as="h2" variant="headingLg">Data Pipeline</Text>
             <InlineStack gap="300" wrap>
               <BlockStack gap="100">
                 <Button variant="primary" onClick={() => startTask("syncOrders")} disabled={isRunning}
@@ -1183,6 +1223,7 @@ export default function Index() {
             )}
           </BlockStack>
         </Card>
+        )}
       </BlockStack>
       </ReportTabs>
     </Page>
