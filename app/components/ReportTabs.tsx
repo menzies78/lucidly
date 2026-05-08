@@ -1,17 +1,13 @@
 import { useLocation, useNavigate, useSearchParams } from "@remix-run/react";
 import type { ReactNode } from "react";
-import { PAGE_TABS, PageThemeContext, getThemeForPath } from "./PageTheme";
-
-const CONTENT_BG = "#fff";
+import { PAGE_TABS, PageThemeContext, getThemeForPath, useDarkMode } from "./PageTheme";
 
 export default function ReportTabs({ children }: { children?: ReactNode }) {
   const location = useLocation();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const theme = getThemeForPath(location.pathname);
-
-  // Semi-transparent accent for borders (40% opacity)
-  const borderAccent = `${theme.accent}66`;
+  const [dark, toggleDark] = useDarkMode();
 
   const dateQuery = () => {
     const params = new URLSearchParams();
@@ -34,28 +30,27 @@ export default function ReportTabs({ children }: { children?: ReactNode }) {
         .lucidly-themed-content .Polaris-Card,
         .lucidly-themed-content .Polaris-LegacyCard,
         .lucidly-themed-content .Polaris-ShadowBevel {
-          box-shadow: 0 0 0 1px ${borderAccent}, 0 1px 2px rgba(0,0,0,0.05) !important;
+          box-shadow: 0 0 0 1px var(--l-border), var(--l-shadow-sm) !important;
         }
       `}</style>
       <div>
         <div style={{ display: "flex", alignItems: "flex-end", flexWrap: "wrap" }}>
           {PAGE_TABS.map(tab => {
             const active = isActive(tab);
-            const tabBorder = active ? `${tab.accent}66` : "#c9cccf";
             return (
               <button
                 key={tab.path}
                 onClick={() => navigate(`${tab.path}${dateQuery()}`)}
                 style={{
                   padding: "9px 16px",
-                  fontSize: "13px",
+                  fontSize: "var(--l-font-base)",
                   minWidth: ["Customers", "Products", "Ad Campaigns", "Countries"].includes(tab.label) ? "130px" : undefined,
                   fontWeight: active ? 700 : 500,
-                  color: active ? tab.accentDark : "#6d7175",
-                  background: active ? tab.accentLight : "#f6f6f7",
-                  border: `1px solid ${tabBorder}`,
-                  borderBottom: active ? `2px solid ${tab.accent}` : `1px solid ${tabBorder}`,
-                  borderRadius: "8px 8px 0 0",
+                  color: active ? "var(--l-accent-dark)" : "var(--l-text-secondary)",
+                  background: active ? "var(--l-accent-light)" : "var(--l-bg-subtle)",
+                  border: `1px solid ${active ? "var(--l-accent-40)" : "var(--l-border)"}`,
+                  borderBottom: active ? "2px solid var(--l-accent)" : `1px solid ${active ? "var(--l-accent-40)" : "var(--l-border)"}`,
+                  borderRadius: "var(--l-radius-md) var(--l-radius-md) 0 0",
                   cursor: "pointer",
                   marginRight: "-1px",
                   marginBottom: "-1px",
@@ -67,16 +62,16 @@ export default function ReportTabs({ children }: { children?: ReactNode }) {
                 }}
                 onMouseEnter={e => {
                   if (!active) {
-                    e.currentTarget.style.color = tab.accentDark;
-                    e.currentTarget.style.background = tab.accentLight;
-                    e.currentTarget.style.borderColor = `${tab.accent}44`;
+                    e.currentTarget.style.color = "var(--l-accent-dark)";
+                    e.currentTarget.style.background = "var(--l-accent-light)";
+                    e.currentTarget.style.borderColor = "var(--l-accent-40)";
                   }
                 }}
                 onMouseLeave={e => {
                   if (!active) {
-                    e.currentTarget.style.color = "#6d7175";
-                    e.currentTarget.style.background = "#f6f6f7";
-                    e.currentTarget.style.borderColor = "#c9cccf";
+                    e.currentTarget.style.color = "var(--l-text-secondary)";
+                    e.currentTarget.style.background = "var(--l-bg-subtle)";
+                    e.currentTarget.style.borderColor = "var(--l-border)";
                   }
                 }}
               >
@@ -84,17 +79,37 @@ export default function ReportTabs({ children }: { children?: ReactNode }) {
               </button>
             );
           })}
-          <div style={{ flex: 1, borderBottom: `1px solid ${borderAccent}` }} />
+          {/* Dark mode toggle */}
+          <button
+            onClick={toggleDark}
+            title={dark ? "Switch to light mode" : "Switch to dark mode"}
+            style={{
+              padding: "6px 10px",
+              fontSize: "16px",
+              background: "transparent",
+              border: "none",
+              cursor: "pointer",
+              marginLeft: "auto",
+              marginBottom: "-1px",
+              color: "var(--l-text-secondary)",
+              transition: "color 0.15s ease",
+            }}
+            onMouseEnter={e => { e.currentTarget.style.color = "var(--l-text)"; }}
+            onMouseLeave={e => { e.currentTarget.style.color = "var(--l-text-secondary)"; }}
+          >
+            {dark ? "\u2600\uFE0F" : "\uD83C\uDF19"}
+          </button>
+          <div style={{ flex: 1, borderBottom: "1px solid var(--l-border)" }} />
         </div>
         {children && (
           <div
             className="lucidly-themed-content"
             style={{
-              border: `1px solid ${borderAccent}`,
+              border: "1px solid var(--l-border)",
               borderTop: "none",
-              borderRadius: "0 0 8px 8px",
-              background: CONTENT_BG,
-              padding: "20px",
+              borderRadius: "0 0 var(--l-radius-md) var(--l-radius-md)",
+              background: "var(--l-bg)",
+              padding: "var(--l-space-5)",
               position: "relative" as const,
               zIndex: 1,
             }}

@@ -4720,13 +4720,12 @@ export default function Campaigns() {
     return null;
   }, [level, selectedCampaignIds, selectedAdSetIds, filterCampaignId, filterAdSetId]);
 
-  const theme = usePageTheme();
   const tabStyle = (isActive: boolean): React.CSSProperties => ({
     padding: "10px 20px",
     fontSize: "14px",
     fontWeight: isActive ? 700 : 500,
-    color: isActive ? theme.accentDark : "#6d7175",
-    background: isActive ? "#fff" : "#f6f6f7",
+    color: isActive ? "var(--l-accent-dark)" : "var(--l-text-secondary)",
+    background: isActive ? "var(--l-bg)" : "var(--l-bg-subtle)",
     border: `1px solid ${isActive ? theme.accent + "44" : "#c9cccf"}`,
     borderBottom: isActive ? "1px solid #fff" : `2px solid ${theme.accent}33`,
     borderRadius: "8px 8px 0 0",

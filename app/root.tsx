@@ -5,6 +5,7 @@ import {
   Scripts,
   ScrollRestoration,
 } from "@remix-run/react";
+import "./styles/tokens.css";
 
 export default function App() {
   return (

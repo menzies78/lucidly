@@ -164,7 +164,7 @@ function MultiSelectFilter({
           style={{
             padding: "2px 6px",
             fontSize: "11px",
-            border: activeCount > 0 ? "1px solid #2c6ecb" : "1px solid #c9cccf",
+            border: activeCount > 0 ? "1px solid #2c6ecb" : "1px solid var(--l-border)",
             borderRadius: "4px",
             cursor: "pointer",
             backgroundColor: activeCount > 0 ? "#f0f5ff" : "#fff",
@@ -458,7 +458,7 @@ export default function InteractiveTable({
           zIndex: 10,
           backgroundColor: "#fff",
           padding: "10px 10px 8px",
-          borderBottom: "1px solid #e1e3e5",
+          borderBottom: "1px solid var(--l-border)",
         }}
       >
         <InlineStack gap="300" align="start" blockAlign="center" wrap>
@@ -548,11 +548,11 @@ export default function InteractiveTable({
                         padding: "4px 10px",
                         fontSize: "12px",
                         fontWeight: isActive ? 600 : 400,
-                        border: isActive ? `1px solid ${pageTheme.accent}` : "1px solid #c9cccf",
+                        border: isActive ? "1px solid var(--l-accent)" : "1px solid var(--l-border)",
                         borderRadius: "16px",
                         cursor: "pointer",
-                        backgroundColor: isActive ? pageTheme.accentLight : "#fafbfb",
-                        color: isActive ? pageTheme.accentDark : "#555",
+                        backgroundColor: isActive ? "var(--l-accent-light)" : "var(--l-bg-subtle)",
+                        color: isActive ? "var(--l-accent-dark)" : "var(--l-text-secondary)",
                         whiteSpace: "nowrap",
                         display: "flex",
                         alignItems: "center",
@@ -579,9 +579,9 @@ export default function InteractiveTable({
                     style={{
                       display: "flex",
                       alignItems: "center",
-                      border: `1px solid ${pageTheme.accent}`,
+                      border: "1px solid var(--l-accent)",
                       borderRadius: "16px",
-                      backgroundColor: pageTheme.accentLight,
+                      backgroundColor: "var(--l-accent-light)",
                       overflow: "hidden",
                     }}
                   >
@@ -594,7 +594,7 @@ export default function InteractiveTable({
                         border: "none",
                         cursor: "pointer",
                         backgroundColor: "transparent",
-                        color: pageTheme.accentDark,
+                        color: "var(--l-accent-dark)",
                         display: "flex",
                         alignItems: "center",
                         gap: "4px",
@@ -603,7 +603,7 @@ export default function InteractiveTable({
                       <span>{profile.icon}</span>
                       <span>{profile.label}</span>
                     </button>
-                    <div style={{ width: "1px", height: "16px", backgroundColor: `${pageTheme.accent}44` }} />
+                    <div style={{ width: "1px", height: "16px", backgroundColor: "var(--l-accent-40)" }} />
                     <button
                       onClick={() => applyProfileWithMode(profile, "lite")}
                       style={{
@@ -612,8 +612,8 @@ export default function InteractiveTable({
                         fontWeight: activeProfileMode === "lite" ? 700 : 400,
                         border: "none",
                         cursor: "pointer",
-                        backgroundColor: activeProfileMode === "lite" ? `${pageTheme.accent}22` : "transparent",
-                        color: activeProfileMode === "lite" ? pageTheme.accentDark : `${pageTheme.accent}88`,
+                        backgroundColor: activeProfileMode === "lite" ? "var(--l-accent-light)" : "transparent",
+                        color: activeProfileMode === "lite" ? "var(--l-accent-dark)" : "var(--l-text-tertiary)",
                         borderRadius: 0,
                       }}
                     >
@@ -627,8 +627,8 @@ export default function InteractiveTable({
                         fontWeight: activeProfileMode === "full" ? 700 : 400,
                         border: "none",
                         cursor: "pointer",
-                        backgroundColor: activeProfileMode === "full" ? `${pageTheme.accent}22` : "transparent",
-                        color: activeProfileMode === "full" ? pageTheme.accentDark : `${pageTheme.accent}88`,
+                        backgroundColor: activeProfileMode === "full" ? "var(--l-accent-light)" : "transparent",
+                        color: activeProfileMode === "full" ? "var(--l-accent-dark)" : "var(--l-text-tertiary)",
                         borderRadius: "0 16px 16px 0",
                       }}
                     >
@@ -659,8 +659,8 @@ export default function InteractiveTable({
         borderSpacing: 0,
         fontSize: "13px",
         tableLayout: "fixed",
-        borderLeft: "1px solid #e1e3e5",
-        borderRight: "1px solid #e1e3e5",
+        borderLeft: "1px solid var(--l-border)",
+        borderRight: "1px solid var(--l-border)",
       }}>
         <colgroup>
           {table.getVisibleLeafColumns().map(col => {
@@ -688,15 +688,15 @@ export default function InteractiveTable({
                       userSelect: "none",
                       padding: "8px 6px 8px 6px",
                       textAlign: "left",
-                      borderBottom: hasFilterRow ? "1px solid #e1e3e5" : `2px solid ${pageTheme.accent}33`,
-                      borderRight: isLast ? "none" : "1px solid #d2d5d8",
+                      borderBottom: hasFilterRow ? "1px solid var(--l-border)" : "2px solid var(--l-accent-20)",
+                      borderRight: isLast ? "none" : "1px solid var(--l-border)",
                       whiteSpace: "nowrap",
                       fontSize: "12px",
                       fontWeight: 600,
-                      color: pageTheme.accentDark,
+                      color: "var(--l-accent-dark)",
                       position: "sticky",
                       top: headerTop,
-                      backgroundColor: pageTheme.accentLight,
+                      backgroundColor: "var(--l-accent-light)",
                       zIndex: 4,
                       overflow: "hidden",
                       textOverflow: "ellipsis",
@@ -744,7 +744,7 @@ export default function InteractiveTable({
                             width: "7px",
                             cursor: "col-resize",
                             zIndex: 5,
-                            borderLeft: "1px solid #d2d5d8",
+                            borderLeft: "1px solid var(--l-border)",
                           }}
                           onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.borderLeftColor = "#2c6ecb"; }}
                           onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.borderLeftColor = "#d2d5d8"; }}
@@ -761,13 +761,13 @@ export default function InteractiveTable({
               {headerGroup.headers.map((header, hIdx) => {
                 const isLast = hIdx === headerGroup.headers.length - 1;
                 const filterType = (header.column.columnDef.meta as any)?.filterType;
-                const borderStyle = isLast ? "none" : "1px solid #d2d5d8";
+                const borderStyle = isLast ? "none" : "1px solid var(--l-border)";
                 return (
                   <th key={header.id} style={{
                     padding: "3px 6px",
-                    borderBottom: `2px solid ${pageTheme.accent}33`,
+                    borderBottom: "2px solid var(--l-accent-20)",
                     borderRight: borderStyle,
-                    backgroundColor: pageTheme.accentLight,
+                    backgroundColor: "var(--l-accent-light)",
                     position: "sticky",
                     top: filterRowTop,
                     zIndex: 4,
@@ -799,7 +799,7 @@ export default function InteractiveTable({
 
             return (
               <tr key={row.id} style={{
-                borderBottom: isLastBd ? "2px solid #d0d3d6" : isBdRow ? "1px solid #e8e8e8" : "1px solid #e1e3e5",
+                borderBottom: isLastBd ? "2px solid #d0d3d6" : isBdRow ? "1px solid #e8e8e8" : "1px solid var(--l-border)",
                 backgroundColor: rowBackgroundFn ? rowBackgroundFn(row.original, rowIdx) : (rowIdx % 2 === 1 ? "#f7f8fa" : "#fff"),
               }}>
                 {row.getVisibleCells().map((cell, cIdx) => {
@@ -845,10 +845,10 @@ export default function InteractiveTable({
                       overflow: "hidden",
                       textOverflow: "ellipsis",
                       borderRight: isLast ? "none" : "1px solid #ebebeb",
-                      borderTop: `2px solid ${pageTheme.accent}33`,
+                      borderTop: "2px solid var(--l-accent-20)",
                       position: "sticky",
                       bottom: 0,
-                      backgroundColor: pageTheme.accentLight,
+                      backgroundColor: "var(--l-accent-light)",
                       zIndex: 3,
                       boxShadow: footerIsFloating ? "0 -3px 6px rgba(0,0,0,0.10)" : "none",
                       clipPath: footerIsFloating ? "inset(-6px -1px 0 -1px)" : "none",

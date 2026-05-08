@@ -1,0 +1,186 @@
+/* ═══════════════════════════════════════════════════════════════
+   Lucidly Design Tokens
+   Single source of truth for colors, typography, spacing, radius.
+   ═══════════════════════════════════════════════════════════════ */
+
+:root {
+  /* ── Neutrals (slate family) ── */
+  --l-bg:             #FFFFFF;
+  --l-bg-subtle:      #F8FAFC;
+  --l-bg-muted:       #F1F5F9;
+  --l-border:         #E2E8F0;
+  --l-border-strong:  #CBD5E1;
+  --l-text:           #1E293B;
+  --l-text-secondary: #64748B;
+  --l-text-tertiary:  #94A3B8;
+
+  /* ── Brand accent (slate blue) ── */
+  --l-accent:         #5C6AC4;
+  --l-accent-light:   #F0F1FF;
+  --l-accent-dark:    #4650A8;
+  --l-accent-20:      #5C6AC433;
+  --l-accent-40:      #5C6AC466;
+
+  /* ── Semantic ── */
+  --l-success:        #059669;
+  --l-success-bg:     #ECFDF5;
+  --l-warning:        #D97706;
+  --l-warning-bg:     #FFFBEB;
+  --l-critical:       #DC2626;
+  --l-critical-bg:    #FEF2F2;
+  --l-info:           #2563EB;
+  --l-info-bg:        #EFF6FF;
+
+  /* ── Typography ── */
+  --l-font-xs:   10px;
+  --l-font-sm:   12px;
+  --l-font-base: 13px;
+  --l-font-lg:   15px;
+
+  /* ── Spacing ── */
+  --l-space-1:  4px;
+  --l-space-2:  8px;
+  --l-space-3:  12px;
+  --l-space-4:  16px;
+  --l-space-5:  20px;
+  --l-space-6:  24px;
+
+  /* ── Radius ── */
+  --l-radius-sm:   4px;
+  --l-radius-md:   8px;
+  --l-radius-pill: 16px;
+  --l-radius-full: 50%;
+
+  /* ── Shadows ── */
+  --l-shadow-sm:  0 1px 3px rgba(0,0,0,0.08);
+  --l-shadow-md:  0 4px 12px rgba(0,0,0,0.12);
+  --l-shadow-lg:  0 8px 24px rgba(0,0,0,0.16);
+
+  /* ── Tooltip ── */
+  --l-tooltip-bg:    #1F2937;
+  --l-tooltip-text:  #F1F5F9;
+
+  /* ── Chart palette (8 complementary colors) ── */
+  --l-chart-1: #5C6AC4;  /* slate blue (brand) */
+  --l-chart-2: #0E7490;  /* teal */
+  --l-chart-3: #7C3AED;  /* violet */
+  --l-chart-4: #059669;  /* emerald */
+  --l-chart-5: #D97706;  /* amber */
+  --l-chart-6: #DC2626;  /* rose */
+  --l-chart-7: #2563EB;  /* blue */
+  --l-chart-8: #9333EA;  /* purple */
+}
+
+/* ── Dark mode ── */
+[data-theme="dark"] {
+  --l-bg:             #0F172A;
+  --l-bg-subtle:      #1E293B;
+  --l-bg-muted:       #334155;
+  --l-border:         #334155;
+  --l-border-strong:  #475569;
+  --l-text:           #F1F5F9;
+  --l-text-secondary: #94A3B8;
+  --l-text-tertiary:  #64748B;
+
+  --l-accent:         #8B95E0;
+  --l-accent-light:   #1E1D3B;
+  --l-accent-dark:    #B0B8F0;
+  --l-accent-20:      #8B95E033;
+  --l-accent-40:      #8B95E066;
+
+  --l-success:        #34D399;
+  --l-success-bg:     #064E3B;
+  --l-warning:        #FBBF24;
+  --l-warning-bg:     #78350F;
+  --l-critical:       #F87171;
+  --l-critical-bg:    #7F1D1D;
+  --l-info:           #60A5FA;
+  --l-info-bg:        #1E3A5F;
+
+  --l-tooltip-bg:     #334155;
+  --l-tooltip-text:   #F1F5F9;
+
+  --l-shadow-sm:  0 1px 3px rgba(0,0,0,0.3);
+  --l-shadow-md:  0 4px 12px rgba(0,0,0,0.4);
+  --l-shadow-lg:  0 8px 24px rgba(0,0,0,0.5);
+}
+
+/* ── Pill standardisation ── */
+.l-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  font-size: var(--l-font-sm);
+  font-weight: 500;
+  border-radius: var(--l-radius-pill);
+  border: 1px solid var(--l-border);
+  background: var(--l-bg);
+  color: var(--l-text-secondary);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+.l-pill:hover {
+  border-color: var(--l-border-strong);
+  color: var(--l-text);
+  background: var(--l-bg-subtle);
+}
+.l-pill--active {
+  border-color: var(--l-accent);
+  background: var(--l-accent-light);
+  color: var(--l-accent-dark);
+  font-weight: 600;
+}
+
+/* ── Filter button standardisation ── */
+.l-filter-btn {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 12px;
+  font-size: var(--l-font-sm);
+  font-weight: 400;
+  border-radius: var(--l-radius-pill);
+  border: 1px solid var(--l-border);
+  background: var(--l-bg);
+  color: var(--l-text-secondary);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.l-filter-btn:hover {
+  border-color: var(--l-border-strong);
+  background: var(--l-bg-subtle);
+}
+.l-filter-btn--active {
+  border-color: var(--l-accent);
+  background: var(--l-accent-light);
+  color: var(--l-accent-dark);
+  font-weight: 600;
+}
+
+/* ── Badge (delta +/- indicators) ── */
+.l-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 1px 6px;
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: var(--l-radius-sm);
+}
+.l-badge--good { color: var(--l-success); background: var(--l-success-bg); }
+.l-badge--bad  { color: var(--l-critical); background: var(--l-critical-bg); }
+.l-badge--neutral { color: var(--l-text-secondary); background: var(--l-bg-muted); }
+
+/* ── Polaris dark mode overrides ── */
+[data-theme="dark"] .Polaris-Card,
+[data-theme="dark"] .Polaris-LegacyCard,
+[data-theme="dark"] .Polaris-ShadowBevel {
+  background: var(--l-bg-subtle) !important;
+  color: var(--l-text) !important;
+}
+[data-theme="dark"] .Polaris-Text--root {
+  color: var(--l-text) !important;
+}
+[data-theme="dark"] .Polaris-Banner {
+  color: var(--l-text) !important;
+}
