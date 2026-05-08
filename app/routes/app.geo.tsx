@@ -828,9 +828,9 @@ type ProductCell = {
 type CountryProducts = { cc: string; products: ProductCell[]; totalCountryUnits: number };
 
 const SEGMENT_PILLS = [
-  { value: "all",     label: "All Customers" },
   { value: "metaNew", label: "Meta New" },
   { value: "metaRet", label: "Meta Returning" },
+  { value: "all",     label: "All Customers" },
 ] as const;
 
 const GENDER_PILLS = [
@@ -902,26 +902,24 @@ function TopProductsByCountryTile({
   return (
     <Card>
       <BlockStack gap="300">
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 12 }}>
-          <BlockStack gap="050">
-            <Text as="h2" variant="headingMd">Top Products per Country</Text>
-            <Text as="p" variant="bodySm" tone="subdued">
-              Best-selling products by country in this period. Filter by customer segment and gender to see what each audience is buying where.
-            </Text>
-          </BlockStack>
-          <div style={{ display: "flex", flexDirection: "column", gap: 6, alignItems: "flex-end" }}>
-            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-              <span style={{ fontSize: 11, color: "#6B7280", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.4 }}>Customers</span>
-              {SEGMENT_PILLS.map(p => (
-                <button key={p.value} onClick={() => setSeg(p.value)} style={pillClass(seg === p.value)}>{p.label}</button>
-              ))}
-            </div>
-            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-              <span style={{ fontSize: 11, color: "#6B7280", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.4 }}>Gender</span>
-              {GENDER_PILLS.map(p => (
-                <button key={p.value} onClick={() => setGen(p.value)} style={pillClass(gen === p.value)}>{p.label}</button>
-              ))}
-            </div>
+        <BlockStack gap="050">
+          <Text as="h2" variant="headingMd">Top Products per Country</Text>
+          <Text as="p" variant="bodySm" tone="subdued">
+            Best-selling products by country in this period. Filter by customer segment and gender to see what each audience is buying where.
+          </Text>
+        </BlockStack>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 14, alignItems: "center" }}>
+          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+            <span style={{ fontSize: 11, color: "#6B7280", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.4 }}>Customers</span>
+            {SEGMENT_PILLS.map(p => (
+              <button key={p.value} onClick={() => setSeg(p.value)} style={pillClass(seg === p.value)}>{p.label}</button>
+            ))}
+          </div>
+          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+            <span style={{ fontSize: 11, color: "#6B7280", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.4 }}>Gender</span>
+            {GENDER_PILLS.map(p => (
+              <button key={p.value} onClick={() => setGen(p.value)} style={pillClass(gen === p.value)}>{p.label}</button>
+            ))}
           </div>
         </div>
 
@@ -930,7 +928,13 @@ function TopProductsByCountryTile({
             No product orders match these filters in this period.
           </div>
         ) : (
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 14 }}>
+          // maxHeight = ~2.5 country card rows. Each card runs ~340px (header
+          // + 5 product rows). 2.5 * 340 = 850; round up so the half-row
+          // peeking at the bottom is obvious.
+          <div style={{
+            display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 14,
+            maxHeight: 880, overflowY: "auto", paddingRight: 4,
+          }}>
             {filtered.map(c => (
               <div key={c.cc} style={{ border: "1px solid #E5E7EB", borderRadius: 12, padding: 14, background: "#fff" }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12, paddingBottom: 10, borderBottom: "1px solid #F3F4F6" }}>
