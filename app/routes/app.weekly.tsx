@@ -115,7 +115,7 @@ export const loader = async ({ request }) => {
     })),
     queryCached(cacheKey("prevInsights"), DEFAULT_TTL, () => db.metaInsight.findMany({
       where: { shopDomain, date: { gte: prevMonday, lte: prevSunday } },
-      select: { date: true, spend: true },
+      select: { date: true, spend: true, adId: true, adName: true, campaignName: true, adSetName: true },
     })),
     queryCached(cacheKey("breakdowns"), DEFAULT_TTL, () => db.metaBreakdown.findMany({
       where: { shopDomain, date: { gte: monday, lte: sunday }, breakdownType: "country" },
@@ -478,6 +478,45 @@ export const loader = async ({ request }) => {
   }
   newlyLaunchedAds.sort((a, b) => b.spend - a.spend);
 
+  // ── Ads switched off this week (had spend last week, none this week) ──
+  // Build prev-week ad spend map. Compare to this week's adSpendMap; any ad
+  // with prev spend > 0 and this-week spend == 0 (or absent) counts as
+  // switched off. Includes prev-week orders/revenue for context.
+  const prevAdSpendMap: Record<string, number> = {};
+  const prevAdMetaMap: Record<string, { adName: string; campaignName: string; adSetName: string }> = {};
+  for (const ins of prevInsights) {
+    if (!ins.adId) continue;
+    prevAdSpendMap[ins.adId] = (prevAdSpendMap[ins.adId] || 0) + (ins.spend || 0);
+    if (!prevAdMetaMap[ins.adId]) prevAdMetaMap[ins.adId] = { adName: ins.adName || ins.adId, campaignName: ins.campaignName || "", adSetName: ins.adSetName || "" };
+  }
+  // Aggregate prev-week orders/revenue per ad (mirrors the current-week loop above).
+  const prevAdsAll: Record<string, { orders: number; revenue: number }> = {};
+  for (const order of prevOrders) {
+    const attr = prevAttrMap.get(order.shopifyOrderId);
+    const adId = attr?.metaAdId || (order.utmConfirmedMeta ? order.metaAdId : null);
+    if (!adId) continue;
+    const rev = order.frozenTotalPrice || 0;
+    if (rev === 0) continue;
+    if (!prevAdsAll[adId]) prevAdsAll[adId] = { orders: 0, revenue: 0 };
+    prevAdsAll[adId].orders++;
+    prevAdsAll[adId].revenue += rev;
+  }
+  const adsSwitchedOff: { adName: string; adId: string; prevOrders: number; prevRevenue: number; prevSpend: number }[] = [];
+  for (const [adId, prevSpend] of Object.entries(prevAdSpendMap)) {
+    if (prevSpend <= 0) continue;
+    if ((adSpendMap[adId] || 0) > 0) continue; // still active
+    const meta = prevAdMetaMap[adId];
+    const perf = prevAdsAll[adId] || { orders: 0, revenue: 0 };
+    adsSwitchedOff.push({
+      adName: meta?.adName || adId,
+      adId,
+      prevOrders: perf.orders,
+      prevRevenue: perf.revenue,
+      prevSpend,
+    });
+  }
+  adsSwitchedOff.sort((a, b) => b.prevSpend - a.prevSpend);
+
   // ── Date labels (shop-local) ──
   const dateLabels = Array.from({ length: 7 }, (_, i) => addDaysKey(tz, mondayKey, i));
 
@@ -494,6 +533,7 @@ export const loader = async ({ request }) => {
     topAdsNew: sortAds(adsNew),
     topAdsExisting: sortAds(adsExisting),
     newlyLaunchedAds,
+    adsSwitchedOff,
   });
 };
 
@@ -679,8 +719,7 @@ function AdSection({ title, ads, currency, color }: { title: string; ads: AdPerf
 }
 
 // ── Summary generator ──
-type NewAd = { adName: string; adId: string; orders: number; revenue: number; spend: number };
-function generateSummary(totals: DayData, prevTotals: DayData, currency: string, geoNew: GeoRow[], topAdsNew: AdPerf[], topAdsExisting: AdPerf[], newlyLaunchedAds: NewAd[]): string[] {
+function generateSummary(totals: DayData, prevTotals: DayData, currency: string, geoNew: GeoRow[], topAdsNew: AdPerf[], topAdsExisting: AdPerf[]): string[] {
   const points: string[] = [];
   const sym = currencySymbolFromCode(currency);
   const f = (v: number) => `${sym}${Math.round(v).toLocaleString("en-GB")}`;
@@ -761,19 +800,6 @@ function generateSummary(totals: DayData, prevTotals: DayData, currency: string,
     points.push(`Customer split: ${newPct}% new, ${100 - newPct}% existing.`);
   }
 
-  // Newly launched ads this week
-  if (newlyLaunchedAds.length > 0) {
-    for (const ad of newlyLaunchedAds) {
-      const adLabel = ad.adName.length > 40 ? ad.adName.slice(0, 38) + "…" : ad.adName;
-      if (ad.orders > 0) {
-        const roas = ad.spend > 0 ? (ad.revenue / ad.spend).toFixed(1) : "N/A";
-        points.push(`New ad launched: "${adLabel}" - ${ad.orders} orders, ${f(ad.revenue)}, ROAS: ${roas}x.`);
-      } else {
-        points.push(`New ad launched: "${adLabel}" - no orders yet, spend ${f(ad.spend)}.`);
-      }
-    }
-  }
-
   if (points.length === 0) {
     points.push("No significant activity this week.");
   }
@@ -785,7 +811,7 @@ function generateSummary(totals: DayData, prevTotals: DayData, currency: string,
 // Component
 // ══════════════════════════════════════════════════
 export default function WeeklyReport() {
-  const { monday, sunday, days, prevDays, dateLabels, currency, geoNew, productNew, countrySpend, topAdsNew, topAdsExisting, newlyLaunchedAds } = useLoaderData<typeof loader>();
+  const { monday, sunday, days, prevDays, dateLabels, currency, geoNew, productNew, countrySpend, topAdsNew, topAdsExisting, newlyLaunchedAds, adsSwitchedOff } = useLoaderData<typeof loader>();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
 
@@ -796,7 +822,7 @@ export default function WeeklyReport() {
   const totals = sumDays(days);
   const prevTotals = sumDays(prevDays);
 
-  const summaryPoints = generateSummary(totals, prevTotals, currency, geoNew, topAdsNew, topAdsExisting, newlyLaunchedAds);
+  const summaryPoints = generateSummary(totals, prevTotals, currency, geoNew, topAdsNew, topAdsExisting);
 
   const navigateWeek = (direction: number) => {
     const m = new Date(monday + "T12:00:00");
@@ -857,15 +883,65 @@ export default function WeeklyReport() {
           </InlineStack>
         </div>
 
-        {/* ── Weekly Summary (top of page) ── */}
-        <div style={{ marginBottom: "16px" }}>
-          <SectionTile title="Weekly Summary" titleColor="#16a34a">
-            <ul style={{ margin: 0, paddingLeft: "18px" }}>
-              {summaryPoints.map((point, i) => (
-                <li key={i} style={{ fontSize: "13px", color: "#1a1a1a", lineHeight: 1.6, marginBottom: "4px" }}>{point}</li>
-              ))}
-            </ul>
-          </SectionTile>
+        {/* ── Weekly Summary (top of page): 3 columns - Summary | New Ads | Switched-Off Ads ── */}
+        <div style={{ display: "flex", gap: "12px", marginBottom: "16px", alignItems: "stretch" }}>
+          <div style={{ flex: 2, display: "flex" }}>
+            <div style={{ flex: 1 }}>
+              <SectionTile title="Weekly Summary" titleColor="#16a34a">
+                <ul style={{ margin: 0, paddingLeft: "18px" }}>
+                  {summaryPoints.map((point, i) => (
+                    <li key={i} style={{ fontSize: "13px", color: "#1a1a1a", lineHeight: 1.6, marginBottom: "4px" }}>{point}</li>
+                  ))}
+                </ul>
+              </SectionTile>
+            </div>
+          </div>
+
+          <div style={{ flex: 1, display: "flex" }}>
+            <div style={{ flex: 1 }}>
+              <SectionTile title="New Ads Launched" titleColor="#7c3aed">
+                {newlyLaunchedAds.length === 0 ? (
+                  <div style={{ fontSize: "12px", color: "#8c9196", fontStyle: "italic" }}>No new ads launched this week</div>
+                ) : (
+                  <>
+                    <TableRow cells={["Ad", "Orders", "Revenue", "Spend", "ROAS"]} bold />
+                    {newlyLaunchedAds.map((ad, i) => (
+                      <TableRow key={i} cells={[
+                        ad.adName,
+                        String(ad.orders),
+                        fmtCurrency(ad.revenue, currency),
+                        fmtCurrency(ad.spend, currency),
+                        ad.spend > 0 && ad.revenue > 0 ? fmtRoas(ad.revenue / ad.spend) : "-",
+                      ]} />
+                    ))}
+                  </>
+                )}
+              </SectionTile>
+            </div>
+          </div>
+
+          <div style={{ flex: 1, display: "flex" }}>
+            <div style={{ flex: 1 }}>
+              <SectionTile title="Ads Switched Off" titleColor="#dc2626">
+                {adsSwitchedOff.length === 0 ? (
+                  <div style={{ fontSize: "12px", color: "#8c9196", fontStyle: "italic" }}>No ads switched off this week</div>
+                ) : (
+                  <>
+                    <TableRow cells={["Ad", "Prev Orders", "Prev Revenue", "Prev Spend", "Prev ROAS"]} bold />
+                    {adsSwitchedOff.map((ad, i) => (
+                      <TableRow key={i} cells={[
+                        ad.adName,
+                        String(ad.prevOrders),
+                        fmtCurrency(ad.prevRevenue, currency),
+                        fmtCurrency(ad.prevSpend, currency),
+                        ad.prevSpend > 0 && ad.prevRevenue > 0 ? fmtRoas(ad.prevRevenue / ad.prevSpend) : "-",
+                      ]} />
+                    ))}
+                  </>
+                )}
+              </SectionTile>
+            </div>
+          </div>
         </div>
 
         {/* ── Day Tiles: Top row Mon–Thu ── */}
