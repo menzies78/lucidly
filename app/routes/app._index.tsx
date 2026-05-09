@@ -285,8 +285,28 @@ export const loader = async ({ request }) => {
     metaSyncAgo: shop?.lastMetaSync ? Math.round((now.getTime() - new Date(shop.lastMetaSync).getTime()) / 60000) : null,
   };
 
+  // Internal-only: list of full-shop backups (newest first). Only loaded
+  // when the viewer is an internal shop, so production merchants never
+  // pay the disk-read cost.
+  const isInternal = isInternalShop(shopDomain);
+  let backups: Array<{ backupId: string; startedAt: string; completedAt?: string; totalRows?: number }> = [];
+  if (isInternal) {
+    try {
+      const { listBackups } = await import("../services/shopBackup.server.js");
+      const list = await listBackups(shopDomain);
+      backups = list.slice(0, 20).map((b: any) => ({
+        backupId: b.backupId,
+        startedAt: b.startedAt,
+        completedAt: b.completedAt,
+        totalRows: b.totalRows,
+      }));
+    } catch (err: any) {
+      console.error("[app._index] listBackups failed:", err.message);
+    }
+  }
+
   // Check if any background task is currently running for this shop
-  const taskNames = ["syncOrders", "syncMeta", "syncMetaHistorical", "runAttribution", "dateRangeRematch", "fillGaps", "incrementalSync", "startOngoingSync", "calibratePixel", "inferGender", "backfillFirstNames", "forceRollups", "refreshAdThumbnails"];
+  const taskNames = ["syncOrders", "syncMeta", "syncMetaHistorical", "runAttribution", "dateRangeRematch", "fillGaps", "incrementalSync", "startOngoingSync", "calibratePixel", "inferGender", "backfillFirstNames", "forceRollups", "refreshAdThumbnails", "backupShop", "wipeShop", "restoreShop"];
   let activeTaskFromServer = null;
   for (const t of taskNames) {
     const p = getProgress(`${t}:${shopDomain}`);
@@ -330,7 +350,8 @@ export const loader = async ({ request }) => {
     // Role gate: only LUCIDLY_INTERNAL_SHOPS see ops tooling. Production
     // merchants see a clean dashboard. Andy adds a shop to the env var
     // when he needs to debug it inside that merchant's store.
-    isInternal: isInternalShop(shopDomain),
+    isInternal,
+    backups,
   });
 };
 
@@ -488,6 +509,49 @@ export const action = async ({ request }) => {
       completeProgress(taskId, result);
     });
     return json({ started: true, task: "refreshAdThumbnails" });
+  }
+  // ── Internal-only: full-shop backup, wipe, restore ──
+  // Used to re-experience the new-merchant install flow on a real merchant
+  // (typically Vollebak in dev). Wipe is gated behind a fresh-backup check
+  // inside the service, so missing the backup step throws rather than
+  // silently destroying data.
+  if (actionType === "backupShop") {
+    if (!isInternalShop(shopDomain)) return json({ success: false, error: "forbidden" });
+    runInBackground(async () => {
+      const { backupShop } = await import("../services/shopBackup.server.js");
+      const manifest = await backupShop(shopDomain, (m) =>
+        setProgress(taskId, { status: "running", message: m })
+      );
+      completeProgress(taskId, { backupId: manifest.backupId, totalRows: manifest.totalRows });
+    });
+    return json({ started: true, task: "backupShop" });
+  }
+  if (actionType === "wipeShop") {
+    if (!isInternalShop(shopDomain)) return json({ success: false, error: "forbidden" });
+    runInBackground(async () => {
+      const { wipeShop } = await import("../services/shopBackup.server.js");
+      const result = await wipeShop(shopDomain, (m) =>
+        setProgress(taskId, { status: "running", message: m })
+      );
+      const { invalidateShop } = await import("../services/queryCache.server.js");
+      invalidateShop(shopDomain);
+      completeProgress(taskId, result);
+    });
+    return json({ started: true, task: "wipeShop" });
+  }
+  if (actionType === "restoreShop") {
+    if (!isInternalShop(shopDomain)) return json({ success: false, error: "forbidden" });
+    const backupId = formData.get("backupId");
+    runInBackground(async () => {
+      const { restoreShop } = await import("../services/shopBackup.server.js");
+      const result = await restoreShop(shopDomain, backupId ? String(backupId) : null, (m) =>
+        setProgress(taskId, { status: "running", message: m })
+      );
+      const { invalidateShop } = await import("../services/queryCache.server.js");
+      invalidateShop(shopDomain);
+      completeProgress(taskId, result);
+    });
+    return json({ started: true, task: "restoreShop" });
   }
   return json({ success: false });
 };
@@ -686,7 +750,7 @@ export default function Index() {
     onboardingPhase, onboardingStartedAt,
     webhooksRegisteredAt, webhooksFirstFiredAt, pixelCalibration,
     matchAccuracyChart, matchRate30d, matchRate30dDetail, utmHealth, syncFreshness,
-    recentlyStoppedCampaigns, activeCampaignCount, isInternal,
+    recentlyStoppedCampaigns, activeCampaignCount, isInternal, backups,
   } = useLoaderData();
   const submit = useSubmit();
   const navigate = useNavigate();
@@ -1255,7 +1319,55 @@ export default function Index() {
                   <Text as="p" variant="bodySm" tone="subdued">Pulls Meta creative thumbnails for the Ad Explorer. Auto-runs nightly; use this to refresh now.</Text>
                 </BlockStack>
               )}
+              {/* Backup / Wipe / Restore - lets Andy reset a test merchant
+                  to walk through the new-install flow, then restore the
+                  historical (incrementally-matched) data afterwards. */}
+              <BlockStack gap="100">
+                <Button onClick={() => startTask("backupShop")} disabled={isRunning}
+                  loading={activeTask === "backupShop"}>
+                  {activeTask === "backupShop" ? "Backing up..." : "Backup Shop"}
+                </Button>
+                <Text as="p" variant="bodySm" tone="subdued">
+                  {backups && backups.length > 0
+                    ? `Last: ${new Date(backups[0].startedAt).toLocaleString()} (${backups[0].totalRows ?? "?"} rows)`
+                    : "No backups yet"}
+                </Text>
+              </BlockStack>
+              <BlockStack gap="100">
+                <Button tone="critical" onClick={() => {
+                  if (!window.confirm("Wipe ALL data for this shop?\n\nRequires a backup younger than 24h. This deletes orders, attributions, Meta data, customers, rollups - everything.")) return;
+                  if (!window.confirm("Are you absolutely sure? Type-no-second-confirm-just-click-OK-only-if-you-mean-it.")) return;
+                  startTask("wipeShop");
+                }} disabled={isRunning || !backups || backups.length === 0}
+                  loading={activeTask === "wipeShop"}>
+                  {activeTask === "wipeShop" ? "Wiping..." : "Wipe Shop"}
+                </Button>
+                <Text as="p" variant="bodySm" tone="subdued">Disabled until a fresh backup exists.</Text>
+              </BlockStack>
+              <BlockStack gap="100">
+                <Button onClick={() => {
+                  if (!backups || backups.length === 0) return;
+                  if (!window.confirm(`Restore from backup ${backups[0].backupId}?\n\nThis re-inserts ${backups[0].totalRows ?? "?"} rows and rebuilds rollups.`)) return;
+                  startTask("restoreShop", { backupId: backups[0].backupId });
+                }} disabled={isRunning || !backups || backups.length === 0}
+                  loading={activeTask === "restoreShop"}>
+                  {activeTask === "restoreShop" ? "Restoring..." : "Restore Latest Backup"}
+                </Button>
+                <Text as="p" variant="bodySm" tone="subdued">
+                  {backups && backups.length > 0
+                    ? `Will restore: ${backups[0].backupId}`
+                    : "No backups to restore"}
+                </Text>
+              </BlockStack>
             </InlineStack>
+            {backups && backups.length > 0 && (
+              <BlockStack gap="100">
+                <Text as="p" variant="bodySm" tone="subdued">
+                  {backups.length} backup{backups.length === 1 ? "" : "s"} on disk -
+                  newest: {new Date(backups[0].startedAt).toLocaleString()}
+                </Text>
+              </BlockStack>
+            )}
 
             {progress?.status === "error" && (
               <Banner tone="critical">
