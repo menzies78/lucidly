@@ -1,6 +1,7 @@
 import { json } from "@remix-run/node";
 import { useLoaderData, useSearchParams, useNavigate } from "@remix-run/react";
 import { Page, Text, InlineStack, Button } from "@shopify/polaris";
+import { useEffect, useRef, useState } from "react";
 import ReportTabs from "../components/ReportTabs";
 import { authenticate } from "../shopify.server";
 import db from "../db.server";
@@ -824,6 +825,25 @@ export default function WeeklyReport() {
 
   const summaryPoints = generateSummary(totals, prevTotals, currency, geoNew, topAdsNew, topAdsExisting);
 
+  // ── Cap right-column tile heights to the Weekly Summary tile ──
+  // alignItems:stretch alone doesn't help: the row's height is driven by
+  // its tallest child, so long ad lists were stretching every column. We
+  // measure the Summary's natural height with a ResizeObserver and apply
+  // it as a maxHeight on the right two tiles, which then scroll internally.
+  const summaryRef = useRef<HTMLDivElement | null>(null);
+  const [summaryHeight, setSummaryHeight] = useState<number | null>(null);
+  useEffect(() => {
+    if (!summaryRef.current) return;
+    const ro = new ResizeObserver(entries => {
+      for (const entry of entries) {
+        const h = Math.round(entry.contentRect.height);
+        if (h > 0) setSummaryHeight(h);
+      }
+    });
+    ro.observe(summaryRef.current);
+    return () => ro.disconnect();
+  }, []);
+
   const navigateWeek = (direction: number) => {
     const m = new Date(monday + "T12:00:00");
     m.setDate(m.getDate() + direction * 7);
@@ -884,74 +904,75 @@ export default function WeeklyReport() {
         </div>
 
         {/* ── Weekly Summary (top of page): 3 columns - Summary | New Ads | Switched-Off Ads ── */}
-        <div style={{ display: "flex", gap: "12px", marginBottom: "16px", alignItems: "stretch" }}>
-          <div style={{ flex: 2, display: "flex" }}>
-            <div style={{ flex: 1 }}>
-              <SectionTile title="Weekly Summary" titleColor="#16a34a">
-                <ul style={{ margin: 0, paddingLeft: "18px" }}>
-                  {summaryPoints.map((point, i) => (
-                    <li key={i} style={{ fontSize: "13px", color: "#1a1a1a", lineHeight: 1.6, marginBottom: "4px" }}>{point}</li>
-                  ))}
-                </ul>
-              </SectionTile>
-            </div>
+        {/* The Summary's natural height is measured and applied as a maxHeight
+            to the two right tiles so long ad lists scroll inside the tile
+            instead of stretching the whole row. */}
+        <div style={{ display: "flex", gap: "12px", marginBottom: "16px", alignItems: "flex-start" }}>
+          <div ref={summaryRef} style={{ flex: 2 }}>
+            <SectionTile title="Weekly Summary" titleColor="#16a34a">
+              <ul style={{ margin: 0, paddingLeft: "18px" }}>
+                {summaryPoints.map((point, i) => (
+                  <li key={i} style={{ fontSize: "13px", color: "#1a1a1a", lineHeight: 1.6, marginBottom: "4px" }}>{point}</li>
+                ))}
+              </ul>
+            </SectionTile>
           </div>
 
           {/* New Ads + Switched Off bypass SectionTile so we can flex-scroll
-              the body when there are more rows than the Weekly Summary's
-              natural height. The row uses alignItems:stretch, so each column
-              fills the tallest column (the Summary). */}
-          <div style={{ flex: 1, display: "flex", minHeight: 0 }}>
-            <div style={{
-              flex: 1, display: "flex", flexDirection: "column", minHeight: 0,
-              background: "#fff", border: "1px solid #e1e3e5", borderRadius: "10px", padding: "20px",
-            }}>
-              <div style={{ fontSize: "14px", fontWeight: 700, color: "#7c3aed", marginBottom: "12px", textTransform: "uppercase", letterSpacing: "0.5px" }}>New Ads Launched</div>
-              <div style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
-                {newlyLaunchedAds.length === 0 ? (
-                  <div style={{ fontSize: "12px", color: "#8c9196", fontStyle: "italic" }}>No new ads launched this week</div>
-                ) : (
-                  <>
-                    <TableRow cells={["Ad", "Orders", "Revenue", "Spend", "ROAS"]} bold />
-                    {newlyLaunchedAds.map((ad, i) => (
-                      <TableRow key={i} cells={[
-                        ad.adName,
-                        String(ad.orders),
-                        fmtCurrency(ad.revenue, currency),
-                        fmtCurrency(ad.spend, currency),
-                        ad.spend > 0 && ad.revenue > 0 ? fmtRoas(ad.revenue / ad.spend) : "-",
-                      ]} />
-                    ))}
-                  </>
-                )}
-              </div>
+              the body. maxHeight = measured Summary height (fallback: 320). */}
+          <div style={{
+            flex: 1,
+            display: "flex", flexDirection: "column",
+            background: "#fff", border: "1px solid #e1e3e5", borderRadius: "10px", padding: "20px",
+            maxHeight: summaryHeight ? `${summaryHeight}px` : "320px",
+            minHeight: 0,
+          }}>
+            <div style={{ fontSize: "14px", fontWeight: 700, color: "#7c3aed", marginBottom: "12px", textTransform: "uppercase", letterSpacing: "0.5px" }}>New Ads Launched</div>
+            <div style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
+              {newlyLaunchedAds.length === 0 ? (
+                <div style={{ fontSize: "12px", color: "#8c9196", fontStyle: "italic" }}>No new ads launched this week</div>
+              ) : (
+                <>
+                  <TableRow cells={["Ad", "Orders", "Revenue", "Spend", "ROAS"]} bold />
+                  {newlyLaunchedAds.map((ad, i) => (
+                    <TableRow key={i} cells={[
+                      ad.adName,
+                      String(ad.orders),
+                      fmtCurrency(ad.revenue, currency),
+                      fmtCurrency(ad.spend, currency),
+                      ad.spend > 0 && ad.revenue > 0 ? fmtRoas(ad.revenue / ad.spend) : "-",
+                    ]} />
+                  ))}
+                </>
+              )}
             </div>
           </div>
 
-          <div style={{ flex: 1, display: "flex", minHeight: 0 }}>
-            <div style={{
-              flex: 1, display: "flex", flexDirection: "column", minHeight: 0,
-              background: "#fff", border: "1px solid #e1e3e5", borderRadius: "10px", padding: "20px",
-            }}>
-              <div style={{ fontSize: "14px", fontWeight: 700, color: "#dc2626", marginBottom: "12px", textTransform: "uppercase", letterSpacing: "0.5px" }}>Ads Switched Off</div>
-              <div style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
-                {adsSwitchedOff.length === 0 ? (
-                  <div style={{ fontSize: "12px", color: "#8c9196", fontStyle: "italic" }}>No ads switched off this week</div>
-                ) : (
-                  <>
-                    <TableRow cells={["Ad", "Prev Orders", "Prev Revenue", "Prev Spend", "Prev ROAS"]} bold />
-                    {adsSwitchedOff.map((ad, i) => (
-                      <TableRow key={i} cells={[
-                        ad.adName,
-                        String(ad.prevOrders),
-                        fmtCurrency(ad.prevRevenue, currency),
-                        fmtCurrency(ad.prevSpend, currency),
-                        ad.prevSpend > 0 && ad.prevRevenue > 0 ? fmtRoas(ad.prevRevenue / ad.prevSpend) : "-",
-                      ]} />
-                    ))}
-                  </>
-                )}
-              </div>
+          <div style={{
+            flex: 1,
+            display: "flex", flexDirection: "column",
+            background: "#fff", border: "1px solid #e1e3e5", borderRadius: "10px", padding: "20px",
+            maxHeight: summaryHeight ? `${summaryHeight}px` : "320px",
+            minHeight: 0,
+          }}>
+            <div style={{ fontSize: "14px", fontWeight: 700, color: "#dc2626", marginBottom: "12px", textTransform: "uppercase", letterSpacing: "0.5px" }}>Ads Switched Off</div>
+            <div style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
+              {adsSwitchedOff.length === 0 ? (
+                <div style={{ fontSize: "12px", color: "#8c9196", fontStyle: "italic" }}>No ads switched off this week</div>
+              ) : (
+                <>
+                  <TableRow cells={["Ad", "Prev Orders", "Prev Revenue", "Prev Spend", "Prev ROAS"]} bold />
+                  {adsSwitchedOff.map((ad, i) => (
+                    <TableRow key={i} cells={[
+                      ad.adName,
+                      String(ad.prevOrders),
+                      fmtCurrency(ad.prevRevenue, currency),
+                      fmtCurrency(ad.prevSpend, currency),
+                      ad.prevSpend > 0 && ad.prevRevenue > 0 ? fmtRoas(ad.prevRevenue / ad.prevSpend) : "-",
+                    ]} />
+                  ))}
+                </>
+              )}
             </div>
           </div>
         </div>

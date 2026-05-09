@@ -1658,10 +1658,26 @@ export default function GeoPerformance() {
 
   // ── Page summary bullets ──
   // At-a-glance country-level read-out for the selected range. All values
-  // come from the same overallRows / quickStats that power the tiles below,
-  // so the summary and tiles stay in lock-step.
+  // come from the same overallRows / quickStats / customerMapBlob that
+  // power the tiles below, so the summary and tiles stay in lock-step.
+  // Bullets ordered headline-first: market snapshot, then top performers,
+  // then over-index / repeat / waste / opportunity signals.
   const summaryBullets: SummaryBullet[] = useMemo(() => {
     const out: SummaryBullet[] = [];
+
+    // 0. Market snapshot - sets the scale before any specific country call-out.
+    const activeMarketCount = overallRows.filter((r: any) => r.spend > 0).length;
+    const blended = totalSpend > 0 ? totalRevenue / totalSpend : 0;
+    if (activeMarketCount > 0 && totalSpend > 0) {
+      out.push({
+        tone: "neutral",
+        text: (
+          <>
+            <strong>Market snapshot:</strong> {activeMarketCount} active {activeMarketCount === 1 ? "market" : "markets"}, {fmtCompact(totalSpend, cs)} spend → {fmtCompact(totalRevenue, cs)} revenue ({blended.toFixed(2)}x blended ROAS)
+          </>
+        ),
+      });
+    }
 
     if (quickStats.highestNewCustRev) {
       const c = quickStats.highestNewCustRev;
@@ -1708,8 +1724,113 @@ export default function GeoPerformance() {
       });
     }
 
+    // Largest repeat / existing-customer market. Different signal from
+    // "highest new-customer revenue" - flags where retention/retargeting
+    // is the dominant driver.
+    const MIN_EXISTING_ORDERS = quickStats.MIN_ORDERS;
+    const topExisting = [...overallRows]
+      .filter((r: any) => r.existingCustomerOrders >= MIN_EXISTING_ORDERS && r.existingCustomerRevenue > 0)
+      .sort((a: any, b: any) => b.existingCustomerRevenue - a.existingCustomerRevenue)[0];
+    if (topExisting) {
+      out.push({
+        tone: "positive",
+        text: (
+          <>
+            <strong>Largest repeat market:</strong> {countryName(topExisting.country)} - {fmtCompact(topExisting.existingCustomerRevenue, cs)} from {topExisting.existingCustomerOrders} existing-customer orders
+          </>
+        ),
+      });
+    }
+
+    // VIP over-index: which country punches above its weight on lifetime
+    // VIPs. Reuses the same chi-square floor (expected ≥ 5) as the
+    // VipsByCountryTile to avoid promoting tail noise. All-time, all-scope
+    // (matches the tile's defaults).
+    if (customerMapBlob && Array.isArray((customerMapBlob as any).points)) {
+      const points = (customerMapBlob as MapBlob).points;
+      const byCountry: Record<string, { customers: number; vips: number; vipRevenue: number }> = {};
+      let totalCustomers = 0;
+      let totalVips = 0;
+      for (const p of points) {
+        if (!p.c) continue;
+        totalCustomers++;
+        const isVip = p.v !== 0;
+        if (isVip) totalVips++;
+        if (!byCountry[p.c]) byCountry[p.c] = { customers: 0, vips: 0, vipRevenue: 0 };
+        byCountry[p.c].customers++;
+        if (isVip) {
+          byCountry[p.c].vips++;
+          byCountry[p.c].vipRevenue += p.$ - p.r;
+        }
+      }
+      const globalVipRate = totalCustomers > 0 ? totalVips / totalCustomers : 0;
+      const MIN_EXPECTED = 5;
+      let bestCc: string | null = null;
+      let bestLift = 0;
+      let bestVips = 0;
+      for (const [cc, agg] of Object.entries(byCountry)) {
+        const expected = agg.customers * globalVipRate;
+        if (expected < MIN_EXPECTED) continue;
+        const lift = expected > 0 ? agg.vips / expected : 0;
+        if (lift > bestLift) { bestLift = lift; bestCc = cc; bestVips = agg.vips; }
+      }
+      if (bestCc && bestLift >= 1.2) {
+        out.push({
+          tone: "neutral",
+          text: (
+            <>
+              <strong>Most VIP-dense market:</strong> {countryName(bestCc)} - {bestLift.toFixed(2)}x over-indexed on lifetime VIPs ({bestVips} VIPs)
+            </>
+          ),
+        });
+      }
+    }
+
+    // Spend concentration warning - flags single-market dependence.
+    if (concentration.top1 >= 50 && concentration.top1Name) {
+      out.push({
+        tone: "warning",
+        text: (
+          <>
+            <strong>Spend concentrated in one market:</strong> {concentration.top1}% of ad spend goes to {concentration.top1Name}
+          </>
+        ),
+      });
+    }
+
+    // Wasted spend: a top-3 spender with sub-1x ROAS is a meaningful
+    // financial leak, worth surfacing distinctly from "highest ROAS".
+    const topSpenders = [...overallRows].sort((a: any, b: any) => b.spend - a.spend).slice(0, 3);
+    const worstTopSpender = topSpenders
+      .filter((r: any) => r.spend > 0 && r.attributedOrders >= quickStats.MIN_ORDERS && r.blendedROAS > 0 && r.blendedROAS < 1)
+      .sort((a: any, b: any) => a.blendedROAS - b.blendedROAS)[0];
+    if (worstTopSpender) {
+      out.push({
+        tone: "negative",
+        text: (
+          <>
+            <strong>Underperforming spend:</strong> {countryName(worstTopSpender.country)} burns {fmtCompact(worstTopSpender.spend, cs)} at {worstTopSpender.blendedROAS}x ROAS
+          </>
+        ),
+      });
+    }
+
+    // Largest untapped market - Shopify revenue with zero Meta spend.
+    // Concrete opportunity, not noise.
+    if (untappedMarkets.length > 0 && untappedMarkets[0].revenue > 0) {
+      const u = untappedMarkets[0];
+      out.push({
+        tone: "warning",
+        text: (
+          <>
+            <strong>Largest untapped market:</strong> {u.name} - {fmtCompact(u.revenue, cs)} organic revenue, no Meta spend
+          </>
+        ),
+      });
+    }
+
     return out;
-  }, [quickStats, cs]);
+  }, [quickStats, cs, overallRows, totalSpend, totalRevenue, customerMapBlob, concentration, untappedMarkets]);
 
   const customerFilterToolbar = (
     <Popover
