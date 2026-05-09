@@ -7,7 +7,7 @@ import {
 import ReportTabs from "../components/ReportTabs";
 import TileGrid, { type TileDef } from "../components/TileGrid";
 import SummaryTile from "../components/SummaryTile";
-import CustomerMapExplorer from "../components/CustomerMapExplorer";
+import CustomerMapExplorer, { type MapBlob } from "../components/CustomerMapExplorer";
 import { useState, useMemo, useCallback } from "react";
 import { authenticate } from "../shopify.server";
 import db from "../db.server";
@@ -809,6 +809,347 @@ const PAGE_STYLES = `
 `;
 
 // ═══════════════════════════════════════════════════════════════
+// VIPs per Country tile
+//
+// Surfaces which countries punch above their weight for high-spending
+// customers. Reuses the customerMapBlob already loaded for the map
+// explorer - every point carries a lifetime VIP band (5/10/20/none),
+// a country code, and days-since-last-order. No server work needed.
+//
+// Headline metric is the over-index ratio:
+//   actual_VIPs / expected_VIPs   (where expected = country_customers × global_VIP_rate)
+// A 2.4× over-index reads "this country has 2.4× the share of VIPs you'd
+// expect given its customer base" - the UAE-style geo opportunity signal.
+//
+// Time window mirrors CME: filters customers by recency-of-last-order
+// (p.d ≤ window). VIP band itself stays lifetime (the tier is computed
+// over a customer's full history at rollup time), which matches CME's
+// existing semantics so band thresholds are consistent across tiles.
+// ═══════════════════════════════════════════════════════════════
+
+type VipBand = "top5" | "top10" | "top20";
+type VipWindow = "all" | 30 | 90 | 180 | 365;
+
+const VIP_BANDS: { value: VipBand; label: string }[] = [
+  { value: "top5", label: "Top 5%" },
+  { value: "top10", label: "Top 10%" },
+  { value: "top20", label: "Top 20%" },
+];
+
+const VIP_WINDOWS: { key: VipWindow; label: string }[] = [
+  { key: "all", label: "All time" },
+  { key: 365, label: "365d" },
+  { key: 180, label: "180d" },
+  { key: 90, label: "90d" },
+  { key: 30, label: "30d" },
+];
+
+// Lifetime VIP-band membership rule. Mirrors CME: top10 includes top5,
+// top20 includes top10/top5. Anything in tier 0 is not a VIP at any band.
+function pointInBand(v: 0 | 5 | 10 | 20, band: VipBand): boolean {
+  if (v === 0) return false;
+  if (band === "top5") return v === 5;
+  if (band === "top10") return v === 5 || v === 10;
+  return true; // top20 = any non-zero band
+}
+
+type CountryAgg = {
+  cc: string;
+  customers: number;
+  vips: number;
+  vipRevenue: number;     // sum of (net) lifetime spend across this country's VIPs
+  expected: number;
+  overIndex: number;
+};
+
+function VipsByCountryTile({ blob, cs }: { blob: MapBlob | null; cs: string }) {
+  const [band, setBand] = useState<VipBand>("top5");
+  const [vwindow, setVwindow] = useState<VipWindow>("all");
+
+  // Country with at least this many customers in scope is "big enough" to
+  // be worth comparing - filters out the tail that creates 5× over-indexes
+  // off 1 VIP and 0.2 expected (statistical noise, not signal).
+  const MIN_COUNTRY_CUSTOMERS = 30;
+
+  const { rows, totals } = useMemo(() => {
+    const points = blob?.points || [];
+    const cutoff = vwindow === "all" ? null : (vwindow as number);
+    const inWindow = (d: number | null) => cutoff == null ? true : (d != null && d <= cutoff);
+
+    const byCountry: Record<string, CountryAgg> = {};
+    let totalCustomers = 0;
+    let totalVips = 0;
+    let totalVipRevenue = 0;
+
+    for (const p of points) {
+      if (!inWindow(p.d)) continue;
+      if (!p.c) continue; // can't attribute to a country
+      totalCustomers++;
+      const isVip = pointInBand(p.v, band);
+      if (isVip) totalVips++;
+      let row = byCountry[p.c];
+      if (!row) {
+        row = byCountry[p.c] = {
+          cc: p.c, customers: 0, vips: 0, vipRevenue: 0, expected: 0, overIndex: 0,
+        };
+      }
+      row.customers++;
+      if (isVip) {
+        row.vips++;
+        const net = p.$ - p.r;
+        row.vipRevenue += net;
+        totalVipRevenue += net;
+      }
+    }
+
+    const globalVipRate = totalCustomers > 0 ? totalVips / totalCustomers : 0;
+    const list: CountryAgg[] = [];
+    for (const r of Object.values(byCountry)) {
+      if (r.customers < MIN_COUNTRY_CUSTOMERS) continue;
+      r.expected = r.customers * globalVipRate;
+      r.overIndex = r.expected > 0 ? r.vips / r.expected : 0;
+      list.push(r);
+    }
+    list.sort((a, b) => b.overIndex - a.overIndex);
+
+    return {
+      rows: list,
+      totals: {
+        customers: totalCustomers,
+        vips: totalVips,
+        vipRevenue: totalVipRevenue,
+        rate: globalVipRate,
+      },
+    };
+  }, [blob, band, vwindow]);
+
+  // Headline tiles: most over-indexed country, country with most VIPs
+  // (raw count), and highest avg VIP lifetime spend.
+  const highlights = useMemo(() => {
+    if (rows.length === 0) return null;
+    const overIndexed = [...rows].filter(r => r.vips > 0).sort((a, b) => b.overIndex - a.overIndex)[0];
+    const mostVips = [...rows].sort((a, b) => b.vips - a.vips)[0];
+    const highestAvg = [...rows]
+      .filter(r => r.vips >= 3)
+      .map(r => ({ ...r, avg: r.vipRevenue / r.vips }))
+      .sort((a, b) => b.avg - a.avg)[0];
+    return { overIndexed, mostVips, highestAvg };
+  }, [rows]);
+
+  // Bar chart axis: clamp to a sensible upper bound. 3× covers most real
+  // geo signals; anything over the clamp gets a "+" indicator.
+  const AXIS_MAX = 3;
+
+  if (!blob) {
+    return (
+      <Card>
+        <BlockStack gap="200">
+          <Text as="h2" variant="headingMd">VIPs per Country</Text>
+          <Text as="p" variant="bodySm" tone="subdued">
+            VIP analysis becomes available once the customer map blob has finished building.
+          </Text>
+        </BlockStack>
+      </Card>
+    );
+  }
+
+  return (
+    <Card>
+      <BlockStack gap="300">
+        <BlockStack gap="050">
+          <Text as="h2" variant="headingMd">VIPs per Country</Text>
+          <Text as="p" variant="bodySm" tone="subdued">
+            Where your highest-spending customers come from. Over-index of 1.0× means a country has its fair share of VIPs;
+            anything above means it punches above its weight - a strong signal for where to lean in.
+          </Text>
+        </BlockStack>
+
+        {/* Filter row: time window first (mirrors CME ordering), VIP band next */}
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 14, alignItems: "center" }}>
+          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+            <span style={{ fontSize: 11, color: "#6B7280", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.4 }}>Window</span>
+            {VIP_WINDOWS.map(w => (
+              <button key={String(w.key)} onClick={() => setVwindow(w.key)} className={`l-pill${vwindow === w.key ? " l-pill--active" : ""}`}>
+                {w.label}
+              </button>
+            ))}
+          </div>
+          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+            <span style={{ fontSize: 11, color: "#6B7280", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.4 }}>VIPs</span>
+            {VIP_BANDS.map(b => (
+              <button key={b.value} onClick={() => setBand(b.value)} className={`l-pill${band === b.value ? " l-pill--active" : ""}`}>
+                {b.label}
+              </button>
+            ))}
+          </div>
+          {totals.customers > 0 && (
+            <span style={{ fontSize: 11, color: "#9CA3AF", marginLeft: "auto" }}>
+              {totals.vips.toLocaleString()} VIPs across {totals.customers.toLocaleString()} customers ({(totals.rate * 100).toFixed(1)}%)
+            </span>
+          )}
+        </div>
+
+        {/* Headline strip - 3 mini-tiles. Falls back to a single empty-state
+            card when no country meets the sample-size floor. */}
+        {highlights ? (
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12 }}>
+            <HighlightTile
+              label="Most over-indexed"
+              cc={highlights.overIndexed?.cc}
+              value={highlights.overIndexed ? `${highlights.overIndexed.overIndex.toFixed(1)}×` : "-"}
+              sub={highlights.overIndexed ? `${highlights.overIndexed.vips} VIPs · ~${Math.round(highlights.overIndexed.expected)} expected` : ""}
+              accent="#10B981"
+            />
+            <HighlightTile
+              label="Most VIPs"
+              cc={highlights.mostVips?.cc}
+              value={highlights.mostVips ? highlights.mostVips.vips.toLocaleString() : "-"}
+              sub={highlights.mostVips ? `${highlights.mostVips.customers.toLocaleString()} customers in country` : ""}
+              accent="#7C3AED"
+            />
+            <HighlightTile
+              label="Highest avg VIP spend"
+              cc={highlights.highestAvg?.cc}
+              value={highlights.highestAvg ? `${cs}${Math.round(highlights.highestAvg.vipRevenue / highlights.highestAvg.vips).toLocaleString()}` : "-"}
+              sub={highlights.highestAvg ? `${highlights.highestAvg.vips} VIPs in country` : "Need 3+ VIPs in a country"}
+              accent="#F59E0B"
+            />
+          </div>
+        ) : null}
+
+        {/* Bar chart - over-index by country, sorted desc. Bars centred on
+            the 1.0× baseline; right of baseline = over-indexed (accent
+            colour), left = under-indexed (grey). Ratio + raw counts on
+            the right, country flag + name on the left. */}
+        {rows.length === 0 ? (
+          <div style={{ padding: 28, textAlign: "center", color: "#6B7280", fontSize: 13, background: "#F9FAFB", borderRadius: 8 }}>
+            No country has at least {MIN_COUNTRY_CUSTOMERS} customers in this window. Try a wider window.
+          </div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {/* Axis ticks - 0×, 1× baseline, AXIS_MAX×. Visual reference
+                so users can read magnitude at a glance. */}
+            <div style={{ position: "relative", height: 16, marginLeft: 200, marginRight: 110 }}>
+              {[0, 1, 2, 3].map(t => (
+                <div
+                  key={t}
+                  style={{
+                    position: "absolute",
+                    left: `${(t / AXIS_MAX) * 100}%`,
+                    top: 0,
+                    transform: "translateX(-50%)",
+                    fontSize: 10,
+                    color: t === 1 ? "#6B7280" : "#9CA3AF",
+                    fontWeight: t === 1 ? 700 : 500,
+                  }}
+                >
+                  {t}×
+                </div>
+              ))}
+            </div>
+            {rows.map(r => {
+              const ratioForBar = Math.min(r.overIndex, AXIS_MAX);
+              const widthPct = (ratioForBar / AXIS_MAX) * 100;
+              const baselinePct = (1 / AXIS_MAX) * 100;
+              const isOver = r.overIndex >= 1;
+              const barColor = !isOver
+                ? "#9CA3AF"
+                : r.overIndex >= 2
+                ? "#10B981"  // strongly over - emerald
+                : r.overIndex >= 1.3
+                ? "#34D399"  // moderately over - lighter emerald
+                : "#A7F3D0"; // mildly over - mint
+
+              return (
+                <div key={r.cc} style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 12 }}>
+                  {/* Left: flag + name. Fixed width so bars align across rows. */}
+                  <div style={{
+                    width: 190, flexShrink: 0,
+                    display: "flex", alignItems: "center", gap: 8,
+                    overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis",
+                  }}>
+                    <span style={{ fontSize: 18, lineHeight: 1, flexShrink: 0 }}>{countryFlag(r.cc)}</span>
+                    <span style={{ fontWeight: 600, color: "#1F2937", overflow: "hidden", textOverflow: "ellipsis" }} title={countryName(r.cc)}>
+                      {countryName(r.cc)}
+                    </span>
+                  </div>
+
+                  {/* Middle: bar track with 1.0× baseline marker. */}
+                  <div style={{ flex: 1, position: "relative", height: 22, background: "#F3F4F6", borderRadius: 4, overflow: "hidden" }}>
+                    {/* Bar */}
+                    <div style={{
+                      position: "absolute", left: 0, top: 0, bottom: 0,
+                      width: `${widthPct}%`,
+                      background: barColor,
+                      transition: "width 0.3s ease",
+                    }} />
+                    {/* Baseline (1.0×) marker - vertical line on the track */}
+                    <div style={{
+                      position: "absolute",
+                      left: `${baselinePct}%`, top: 0, bottom: 0,
+                      width: 1, background: "#6B7280",
+                    }} />
+                    {/* "+" indicator when ratio is clamped */}
+                    {r.overIndex > AXIS_MAX && (
+                      <div style={{
+                        position: "absolute", right: 4, top: "50%", transform: "translateY(-50%)",
+                        fontSize: 10, fontWeight: 700, color: "#fff",
+                      }}>
+                        {r.overIndex.toFixed(1)}×
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Right: numeric ratio + raw counts */}
+                  <div style={{
+                    width: 100, flexShrink: 0, textAlign: "right",
+                    display: "flex", flexDirection: "column", gap: 1,
+                  }}>
+                    <span style={{ fontWeight: 700, color: isOver ? "#065F46" : "#6B7280", fontSize: 13 }}>
+                      {r.overIndex.toFixed(2)}×
+                    </span>
+                    <span style={{ fontSize: 10, color: "#9CA3AF" }}>
+                      {r.vips} vs ~{Math.round(r.expected)}
+                    </span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </BlockStack>
+    </Card>
+  );
+}
+
+// Headline mini-tile used in the VIPs-per-Country strip. Flag on the left,
+// big number on the right, supporting count below.
+function HighlightTile({
+  label, cc, value, sub, accent,
+}: {
+  label: string; cc: string | undefined; value: string; sub: string; accent: string;
+}) {
+  return (
+    <div style={{
+      border: "1px solid #E5E7EB", borderRadius: 12, padding: 14, background: "#fff",
+      display: "flex", alignItems: "center", gap: 12, minHeight: 78,
+    }}>
+      {cc ? (
+        <span style={{ fontSize: 40, lineHeight: 1, flexShrink: 0 }}>{countryFlag(cc)}</span>
+      ) : (
+        <span style={{ fontSize: 40, lineHeight: 1, flexShrink: 0, color: "#E5E7EB" }}>·</span>
+      )}
+      <div style={{ minWidth: 0, flex: 1 }}>
+        <div style={{ fontSize: 10, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.4, color: "#6B7280" }}>{label}</div>
+        <div style={{ fontSize: 22, fontWeight: 700, color: accent, lineHeight: 1.15, marginTop: 2 }}>{value}</div>
+        {cc && <div style={{ fontSize: 11, color: "#374151", marginTop: 1, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }} title={countryName(cc)}>{countryName(cc)}</div>}
+        {sub && <div style={{ fontSize: 10, color: "#9CA3AF", marginTop: 1 }}>{sub}</div>}
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
 // Top Products per Country tile
 // Visual grid - flag header + ranked product thumbnails. Filters by
 // customer segment (Meta New / Meta Returning / All) and gender.
@@ -923,15 +1264,19 @@ function TopProductsByCountryTile({
             No product orders match these filters in this period.
           </div>
         ) : (
-          // maxHeight = ~2.5 country card rows. Each card runs ~340px (header
-          // + 5 product rows). 2.5 * 340 = 850; round up so the half-row
-          // peeking at the bottom is obvious.
+          // Single horizontal row, sideways scroll. Card width sized so 4.5
+          // cards fit in the viewport - the half-card peeking on the right
+          // is the affordance that says "scroll for more".
           <div style={{
-            display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 14,
-            maxHeight: 880, overflowY: "auto", paddingRight: 4,
+            display: "flex", gap: 14, overflowX: "auto", overflowY: "hidden",
+            paddingBottom: 4, scrollSnapType: "x proximity",
           }}>
             {filtered.map(c => (
-              <div key={c.cc} style={{ border: "1px solid #E5E7EB", borderRadius: 12, padding: 14, background: "#fff" }}>
+              <div key={c.cc} style={{
+                flex: "0 0 calc((100% - 4 * 14px) / 4.5)",
+                minWidth: 0, scrollSnapAlign: "start",
+                border: "1px solid #E5E7EB", borderRadius: 12, padding: 14, background: "#fff",
+              }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12, paddingBottom: 10, borderBottom: "1px solid #F3F4F6" }}>
                   <span style={{ fontSize: 32, lineHeight: 1 }}>{countryFlag(c.cc)}</span>
                   <BlockStack gap="050">
@@ -1283,6 +1628,9 @@ export default function GeoPerformance() {
               />
             )},
           ] as TileDef[]} />
+
+          {/* ═══ VIPs per Country ═══ */}
+          <VipsByCountryTile blob={customerMapBlob} cs={cs} />
 
           {/* ═══ Top Products per Country ═══ */}
           <TopProductsByCountryTile data={topProductsByCountry} cs={cs} />
