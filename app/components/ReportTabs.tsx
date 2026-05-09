@@ -40,15 +40,22 @@ export default function ReportTabs({ children }: { children?: ReactNode }) {
                 key={tab.path}
                 onClick={() => navigate(`${tab.path}${dateQuery()}`)}
                 style={{
-                  padding: "9px 16px",
+                  padding: "13px 16px",
                   fontSize: "var(--l-font-base)",
                   minWidth: ["Customers", "Products", "Ad Campaigns", "Countries"].includes(tab.label) ? "130px" : undefined,
                   fontWeight: active ? 700 : 500,
                   color: active ? "var(--l-accent-dark)" : "var(--l-text-secondary)",
-                  background: active ? "var(--l-accent-light)" : "var(--l-bg-subtle)",
-                  border: `1px solid ${active ? "var(--l-accent-40)" : "var(--l-border)"}`,
-                  borderBottom: active ? "2px solid var(--l-accent)" : `1px solid ${active ? "var(--l-accent-40)" : "var(--l-border)"}`,
-                  borderRadius: "var(--l-radius-md) var(--l-radius-md) 0 0",
+                  // Selected tab: white (matches content bg), flows seamlessly
+                  // into the page below. Unselected: subtle grey fill.
+                  background: active ? "var(--l-bg)" : "var(--l-bg-subtle)",
+                  borderTop: `1px solid var(--l-border)`,
+                  borderLeft: `1px solid var(--l-border)`,
+                  borderRight: `1px solid var(--l-border)`,
+                  // Selected tab's bottom edge is the page bg colour so it
+                  // visually merges with the content area below (uninterrupted
+                  // white-on-white). Unselected tabs keep a grey baseline.
+                  borderBottom: active ? "1px solid var(--l-bg)" : "1px solid var(--l-border)",
+                  borderRadius: 0,
                   cursor: "pointer",
                   marginRight: "-1px",
                   marginBottom: "-1px",
@@ -62,14 +69,12 @@ export default function ReportTabs({ children }: { children?: ReactNode }) {
                   if (!active) {
                     e.currentTarget.style.color = "var(--l-accent-dark)";
                     e.currentTarget.style.background = "var(--l-accent-light)";
-                    e.currentTarget.style.borderColor = "var(--l-accent-40)";
                   }
                 }}
                 onMouseLeave={e => {
                   if (!active) {
                     e.currentTarget.style.color = "var(--l-text-secondary)";
                     e.currentTarget.style.background = "var(--l-bg-subtle)";
-                    e.currentTarget.style.borderColor = "var(--l-border)";
                   }
                 }}
               >
