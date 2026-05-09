@@ -985,7 +985,7 @@ function VipsByCountryTile({ blob, cs }: { blob: MapBlob | null; cs: string }) {
     const overIndexed = [...rows].filter(r => r.vips > 0).sort((a, b) => b.overIndex - a.overIndex)[0];
     const mostVips = [...rows].sort((a, b) => b.vips - a.vips)[0];
     const highestAvg = [...rows]
-      .filter(r => r.vips >= 3)
+      .filter(r => r.vips >= 5)
       .map(r => ({ ...r, avg: r.vipRevenue / r.vips }))
       .sort((a, b) => b.avg - a.avg)[0];
     return { overIndexed, mostVips, highestAvg };
@@ -1049,7 +1049,11 @@ function VipsByCountryTile({ blob, cs }: { blob: MapBlob | null; cs: string }) {
 
     // highestAvg
     const withAvg = rows
-      .filter(r => r.vips >= 3)
+      // Match the chi-square sample-size floor used elsewhere in this tile:
+      // averaging across <5 VIPs is too noisy (a single high-net spender
+      // skews the result). Mirrors the statistical-significance floor on
+      // expected VIPs - same standard, applied to actuals.
+      .filter(r => r.vips >= 5)
       .map(r => ({ ...r, avg: r.vipRevenue / r.vips }));
     const sorted = withAvg.sort((a, b) => b.avg - a.avg);
     if (sorted.length === 0) return {
@@ -1059,7 +1063,7 @@ function VipsByCountryTile({ blob, cs }: { blob: MapBlob | null; cs: string }) {
       primaryFor: (): string => "-", secondaryFor: (): string => "",
       colorFor: (): string => "#F59E0B", primaryColorFor: (): string => "#92400E",
       clampLabel: (): string | null => null,
-      empty: "Need a country with at least 3 VIPs to compare averages.",
+      empty: "Need a country with at least 5 VIPs to compare averages.",
     };
     const maxVal = sorted[0].avg;
     const axisMax = niceCeil(maxVal);
@@ -1170,7 +1174,7 @@ function VipsByCountryTile({ blob, cs }: { blob: MapBlob | null; cs: string }) {
               label="Highest avg VIP spend"
               cc={highlights.highestAvg?.cc}
               value={highlights.highestAvg ? `${cs}${Math.round(highlights.highestAvg.vipRevenue / highlights.highestAvg.vips).toLocaleString()}` : "-"}
-              sub={highlights.highestAvg ? `${highlights.highestAvg.vips} VIPs in country` : "Need 3+ VIPs in a country"}
+              sub={highlights.highestAvg ? `${highlights.highestAvg.vips} VIPs in country` : "Need 5+ VIPs in a country"}
               accent="#F59E0B"
               selected={view === "highestAvg"}
               onClick={() => setView("highestAvg")}
