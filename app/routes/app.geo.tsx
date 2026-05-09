@@ -862,19 +862,42 @@ type CountryAgg = {
   overIndex: number;
 };
 
+type VipScope = "metaAcquired" | "allMeta" | "all";
+
+const VIP_SCOPES: { value: VipScope; label: string }[] = [
+  { value: "metaAcquired", label: "Meta Acquired" },
+  { value: "allMeta", label: "All Meta" },
+  { value: "all", label: "All Customers" },
+];
+
 function VipsByCountryTile({ blob, cs }: { blob: MapBlob | null; cs: string }) {
   const [band, setBand] = useState<VipBand>("top5");
   const [vwindow, setVwindow] = useState<VipWindow>("all");
+  // Scope mirrors CME: metaAcquired = "m" only, allMeta = "m"+"r",
+  // all = "m"+"r"+"o". Default to "all" because this report's question
+  // ("which geos have high spenders?") is broader than Meta-only -
+  // organic VIPs are still relevant signal for where to lean creative.
+  const [scope, setScope] = useState<VipScope>("all");
 
-  // Country with at least this many customers in scope is "big enough" to
-  // be worth comparing - filters out the tail that creates 5× over-indexes
-  // off 1 VIP and 0.2 expected (statistical noise, not signal).
-  const MIN_COUNTRY_CUSTOMERS = 30;
+  // Statistical-significance floor on EXPECTED VIPs, not raw customer
+  // count. The earlier customer-count floor still let through Romania
+  // (4 vs 2) and Estonia (3 vs 2) - 4-on-2 reads "2× over-indexed" but
+  // is well within Poisson noise. The chi-square rule of thumb requires
+  // expected ≥ 5 for the test to be valid, so we use that as the cutoff.
+  // This mirrors how a statistician would flag "this isn't enough data
+  // to claim a real lift". Countries below the threshold are simply
+  // not shown - we'd rather hide a real signal than promote a false one.
+  const MIN_EXPECTED_VIPS = 5;
 
   const { rows, totals } = useMemo(() => {
     const points = blob?.points || [];
     const cutoff = vwindow === "all" ? null : (vwindow as number);
     const inWindow = (d: number | null) => cutoff == null ? true : (d != null && d <= cutoff);
+    const inScope = (s: "m" | "r" | "o") => {
+      if (scope === "metaAcquired") return s === "m";
+      if (scope === "allMeta") return s === "m" || s === "r";
+      return true;
+    };
 
     const byCountry: Record<string, CountryAgg> = {};
     let totalCustomers = 0;
@@ -883,6 +906,7 @@ function VipsByCountryTile({ blob, cs }: { blob: MapBlob | null; cs: string }) {
 
     for (const p of points) {
       if (!inWindow(p.d)) continue;
+      if (!inScope(p.s)) continue;
       if (!p.c) continue; // can't attribute to a country
       totalCustomers++;
       const isVip = pointInBand(p.v, band);
@@ -904,10 +928,14 @@ function VipsByCountryTile({ blob, cs }: { blob: MapBlob | null; cs: string }) {
 
     const globalVipRate = totalCustomers > 0 ? totalVips / totalCustomers : 0;
     const list: CountryAgg[] = [];
+    let countrySuppressedBelowFloor = 0;
     for (const r of Object.values(byCountry)) {
-      if (r.customers < MIN_COUNTRY_CUSTOMERS) continue;
       r.expected = r.customers * globalVipRate;
       r.overIndex = r.expected > 0 ? r.vips / r.expected : 0;
+      if (r.expected < MIN_EXPECTED_VIPS) {
+        countrySuppressedBelowFloor++;
+        continue;
+      }
       list.push(r);
     }
     list.sort((a, b) => b.overIndex - a.overIndex);
@@ -919,9 +947,10 @@ function VipsByCountryTile({ blob, cs }: { blob: MapBlob | null; cs: string }) {
         vips: totalVips,
         vipRevenue: totalVipRevenue,
         rate: globalVipRate,
+        suppressed: countrySuppressedBelowFloor,
       },
     };
-  }, [blob, band, vwindow]);
+  }, [blob, band, vwindow, scope]);
 
   // Headline tiles: most over-indexed country, country with most VIPs
   // (raw count), and highest avg VIP lifetime spend.
@@ -964,8 +993,18 @@ function VipsByCountryTile({ blob, cs }: { blob: MapBlob | null; cs: string }) {
           </Text>
         </BlockStack>
 
-        {/* Filter row: time window first (mirrors CME ordering), VIP band next */}
+        {/* Filter row: scope first (matches CME's left-to-right ordering -
+            scope is the dominant filter because it changes the population),
+            then time window, then VIP band. */}
         <div style={{ display: "flex", flexWrap: "wrap", gap: 14, alignItems: "center" }}>
+          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+            <span style={{ fontSize: 11, color: "#6B7280", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.4 }}>Customers</span>
+            {VIP_SCOPES.map(s => (
+              <button key={s.value} onClick={() => setScope(s.value)} className={`l-pill${scope === s.value ? " l-pill--active" : ""}`}>
+                {s.label}
+              </button>
+            ))}
+          </div>
           <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
             <span style={{ fontSize: 11, color: "#6B7280", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.4 }}>Window</span>
             {VIP_WINDOWS.map(w => (
@@ -985,6 +1024,7 @@ function VipsByCountryTile({ blob, cs }: { blob: MapBlob | null; cs: string }) {
           {totals.customers > 0 && (
             <span style={{ fontSize: 11, color: "#9CA3AF", marginLeft: "auto" }}>
               {totals.vips.toLocaleString()} VIPs across {totals.customers.toLocaleString()} customers ({(totals.rate * 100).toFixed(1)}%)
+              {totals.suppressed > 0 ? ` · ${totals.suppressed} small countr${totals.suppressed === 1 ? "y" : "ies"} hidden` : ""}
             </span>
           )}
         </div>
@@ -1023,7 +1063,7 @@ function VipsByCountryTile({ blob, cs }: { blob: MapBlob | null; cs: string }) {
             the right, country flag + name on the left. */}
         {rows.length === 0 ? (
           <div style={{ padding: 28, textAlign: "center", color: "#6B7280", fontSize: 13, background: "#F9FAFB", borderRadius: 8 }}>
-            No country has at least {MIN_COUNTRY_CUSTOMERS} customers in this window. Try a wider window.
+            No country has enough customers for a statistically meaningful comparison (need at least ~{MIN_EXPECTED_VIPS / Math.max(totals.rate, 0.001) | 0} customers per country at this VIP band). Try a wider window or a broader VIP band.
           </div>
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
