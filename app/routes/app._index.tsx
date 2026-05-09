@@ -289,7 +289,7 @@ export const loader = async ({ request }) => {
   // when the viewer is an internal shop, so production merchants never
   // pay the disk-read cost.
   const isInternal = isInternalShop(shopDomain);
-  let backups: Array<{ backupId: string; startedAt: string; completedAt?: string; totalRows?: number }> = [];
+  let backups: Array<{ backupId: string; startedAt: string; completedAt?: string; totalRows?: number; verified?: boolean; sqliteBytes?: number; lastDownloadedAt?: string | null }> = [];
   if (isInternal) {
     try {
       const { listBackups } = await import("../services/shopBackup.server.js");
@@ -299,6 +299,9 @@ export const loader = async ({ request }) => {
         startedAt: b.startedAt,
         completedAt: b.completedAt,
         totalRows: b.totalRows,
+        verified: b.verified || false,
+        sqliteBytes: b.sqliteSnapshot?.bytes || 0,
+        lastDownloadedAt: b.lastDownloadedAt || null,
       }));
     } catch (err: any) {
       console.error("[app._index] listBackups failed:", err.message);
@@ -306,7 +309,7 @@ export const loader = async ({ request }) => {
   }
 
   // Check if any background task is currently running for this shop
-  const taskNames = ["syncOrders", "syncMeta", "syncMetaHistorical", "runAttribution", "dateRangeRematch", "fillGaps", "incrementalSync", "startOngoingSync", "calibratePixel", "inferGender", "backfillFirstNames", "forceRollups", "refreshAdThumbnails", "backupShop", "wipeShop", "restoreShop"];
+  const taskNames = ["syncOrders", "syncMeta", "syncMetaHistorical", "runAttribution", "dateRangeRematch", "fillGaps", "incrementalSync", "startOngoingSync", "calibratePixel", "inferGender", "backfillFirstNames", "forceRollups", "refreshAdThumbnails", "backupShop", "wipeShop", "restoreShop", "verifyBackup"];
   let activeTaskFromServer = null;
   for (const t of taskNames) {
     const p = getProgress(`${t}:${shopDomain}`);
@@ -538,6 +541,17 @@ export const action = async ({ request }) => {
       completeProgress(taskId, result);
     });
     return json({ started: true, task: "wipeShop" });
+  }
+  if (actionType === "verifyBackup") {
+    if (!isInternalShop(shopDomain)) return json({ success: false, error: "forbidden" });
+    const backupId = formData.get("backupId");
+    if (!backupId) return json({ success: false, error: "missing backupId" });
+    runInBackground(async () => {
+      const { verifyBackup } = await import("../services/shopBackup.server.js");
+      const result = await verifyBackup(shopDomain, String(backupId));
+      completeProgress(taskId, result);
+    });
+    return json({ started: true, task: "verifyBackup" });
   }
   if (actionType === "restoreShop") {
     if (!isInternalShop(shopDomain)) return json({ success: false, error: "forbidden" });
@@ -1319,9 +1333,11 @@ export default function Index() {
                   <Text as="p" variant="bodySm" tone="subdued">Pulls Meta creative thumbnails for the Ad Explorer. Auto-runs nightly; use this to refresh now.</Text>
                 </BlockStack>
               )}
-              {/* Backup / Wipe / Restore - lets Andy reset a test merchant
-                  to walk through the new-install flow, then restore the
-                  historical (incrementally-matched) data afterwards. */}
+              {/* Backup / Verify / Download / Restore / Wipe - reset a test
+                  merchant to walk through the new-install flow, then restore
+                  the historical (incrementally-matched) data afterwards.
+                  Four-layer safety: JSON dump, SQLite snapshot, verify pass,
+                  off-Fly tarball download. */}
               <BlockStack gap="100">
                 <Button onClick={() => startTask("backupShop")} disabled={isRunning}
                   loading={activeTask === "backupShop"}>
@@ -1329,20 +1345,34 @@ export default function Index() {
                 </Button>
                 <Text as="p" variant="bodySm" tone="subdued">
                   {backups && backups.length > 0
-                    ? `Last: ${new Date(backups[0].startedAt).toLocaleString()} (${backups[0].totalRows ?? "?"} rows)`
+                    ? `Last: ${new Date(backups[0].startedAt).toLocaleString()} (${backups[0].totalRows ?? "?"} rows, ${backups[0].verified ? "✓ verified" : "✗ unverified"})`
                     : "No backups yet"}
                 </Text>
               </BlockStack>
               <BlockStack gap="100">
-                <Button tone="critical" onClick={() => {
-                  if (!window.confirm("Wipe ALL data for this shop AND uninstall from Shopify?\n\nThis:\n  • Deletes orders, attributions, Meta data, customers, rollups\n  • Revokes the Shopify access token (uninstalls the app)\n  • Forces a reinstall via the App Store link to come back\n\nRequires a backup younger than 24h.")) return;
-                  if (!window.confirm("Final confirm: this will log you out and you'll need to reinstall via the App Store link. Continue?")) return;
-                  startTask("wipeShop");
+                <Button onClick={() => {
+                  if (!backups || backups.length === 0) return;
+                  startTask("verifyBackup", { backupId: backups[0].backupId });
                 }} disabled={isRunning || !backups || backups.length === 0}
-                  loading={activeTask === "wipeShop"}>
-                  {activeTask === "wipeShop" ? "Wiping..." : "Wipe Shop + Uninstall"}
+                  loading={activeTask === "verifyBackup"}>
+                  {activeTask === "verifyBackup" ? "Verifying..." : "Verify Latest"}
                 </Button>
-                <Text as="p" variant="bodySm" tone="subdued">Forces reinstall via App Store link. Disabled until a fresh backup exists.</Text>
+                <Text as="p" variant="bodySm" tone="subdued">Re-checks every JSON file's sha256 + row count.</Text>
+              </BlockStack>
+              <BlockStack gap="100">
+                <Button onClick={() => {
+                  if (!backups || backups.length === 0) return;
+                  // Direct download via the streaming endpoint - no fetch,
+                  // browser handles save dialog.
+                  window.location.href = `/app/api/backup-download/${backups[0].backupId}`;
+                }} disabled={!backups || backups.length === 0}>
+                  Download Latest (.tar.gz)
+                </Button>
+                <Text as="p" variant="bodySm" tone="subdued">
+                  {backups && backups.length > 0 && backups[0].lastDownloadedAt
+                    ? `Last DL: ${new Date(backups[0].lastDownloadedAt).toLocaleString()}`
+                    : "Get an off-Fly copy on your Mac before wiping."}
+                </Text>
               </BlockStack>
               <BlockStack gap="100">
                 <Button onClick={() => {
@@ -1359,12 +1389,37 @@ export default function Index() {
                     : "No backups to restore"}
                 </Text>
               </BlockStack>
+              <BlockStack gap="100">
+                <Button tone="critical" onClick={() => {
+                  if (!backups || backups.length === 0 || !backups[0].verified) {
+                    window.alert("Wipe is disabled until the newest backup is verified.");
+                    return;
+                  }
+                  if (!window.confirm("Wipe ALL data for this shop AND uninstall from Shopify?\n\nThis:\n  • Deletes orders, attributions, Meta data, customers, rollups\n  • Revokes the Shopify access token (uninstalls the app)\n  • Forces a reinstall via the App Store link to come back\n\nRequires a verified backup younger than 24h.")) return;
+                  if (!backups[0].lastDownloadedAt) {
+                    if (!window.confirm("WARNING: this backup has not been downloaded to your Mac yet. The Fly volume could in theory be lost. Continue without an off-Fly copy?")) return;
+                  }
+                  if (!window.confirm("Final confirm: this will log you out and you'll need to reinstall via the App Store link. Continue?")) return;
+                  startTask("wipeShop");
+                }} disabled={isRunning || !backups || backups.length === 0 || !backups[0].verified}
+                  loading={activeTask === "wipeShop"}>
+                  {activeTask === "wipeShop" ? "Wiping..." : "Wipe Shop + Uninstall"}
+                </Button>
+                <Text as="p" variant="bodySm" tone="subdued">
+                  {backups && backups.length > 0 && !backups[0].verified
+                    ? "Disabled: latest backup is unverified."
+                    : "Forces reinstall via App Store link."}
+                </Text>
+              </BlockStack>
             </InlineStack>
             {backups && backups.length > 0 && (
               <BlockStack gap="100">
                 <Text as="p" variant="bodySm" tone="subdued">
                   {backups.length} backup{backups.length === 1 ? "" : "s"} on disk -
                   newest: {new Date(backups[0].startedAt).toLocaleString()}
+                  {backups[0].sqliteBytes ? ` · sqlite snapshot ${(backups[0].sqliteBytes / (1024 * 1024)).toFixed(1)} MB` : ""}
+                  {backups[0].verified ? " · ✓ verified" : " · ✗ unverified"}
+                  {backups[0].lastDownloadedAt ? ` · downloaded ${new Date(backups[0].lastDownloadedAt).toLocaleString()}` : " · not downloaded"}
                 </Text>
               </BlockStack>
             )}
