@@ -1335,14 +1335,14 @@ export default function Index() {
               </BlockStack>
               <BlockStack gap="100">
                 <Button tone="critical" onClick={() => {
-                  if (!window.confirm("Wipe ALL data for this shop?\n\nRequires a backup younger than 24h. This deletes orders, attributions, Meta data, customers, rollups - everything.")) return;
-                  if (!window.confirm("Are you absolutely sure? Type-no-second-confirm-just-click-OK-only-if-you-mean-it.")) return;
+                  if (!window.confirm("Wipe ALL data for this shop AND uninstall from Shopify?\n\nThis:\n  • Deletes orders, attributions, Meta data, customers, rollups\n  • Revokes the Shopify access token (uninstalls the app)\n  • Forces a reinstall via the App Store link to come back\n\nRequires a backup younger than 24h.")) return;
+                  if (!window.confirm("Final confirm: this will log you out and you'll need to reinstall via the App Store link. Continue?")) return;
                   startTask("wipeShop");
                 }} disabled={isRunning || !backups || backups.length === 0}
                   loading={activeTask === "wipeShop"}>
-                  {activeTask === "wipeShop" ? "Wiping..." : "Wipe Shop"}
+                  {activeTask === "wipeShop" ? "Wiping..." : "Wipe Shop + Uninstall"}
                 </Button>
-                <Text as="p" variant="bodySm" tone="subdued">Disabled until a fresh backup exists.</Text>
+                <Text as="p" variant="bodySm" tone="subdued">Forces reinstall via App Store link. Disabled until a fresh backup exists.</Text>
               </BlockStack>
               <BlockStack gap="100">
                 <Button onClick={() => {

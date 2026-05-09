@@ -182,8 +182,37 @@ export async function listBackups(shopDomain) {
 }
 
 /**
- * Wipe all shop-scoped data. Refuses unless a backup younger than 24h
- * exists. Children deleted first so foreign keys don't trip.
+ * Self-uninstall the app from Shopify so the next visit takes the App Store
+ * install link path (not a silent OAuth re-token). Calls the documented
+ * Shopify endpoint:
+ *
+ *   DELETE /admin/api/{version}/api_permissions/current.json
+ *
+ * This revokes the access token Shopify-side and removes the app from the
+ * merchant's admin > Apps list. Best-effort - if Shopify rejects (e.g. the
+ * token is already invalid), we still proceed with the local DB wipe.
+ */
+async function shopifyUninstall(shopDomain, accessToken) {
+  if (!shopDomain || !accessToken) return { ok: false, reason: "missing-credentials" };
+  const url = `https://${shopDomain}/admin/api/2025-01/api_permissions/current.json`;
+  try {
+    const res = await fetch(url, {
+      method: "DELETE",
+      headers: { "X-Shopify-Access-Token": accessToken },
+    });
+    if (res.ok) return { ok: true, status: res.status };
+    const body = await res.text().catch(() => "");
+    return { ok: false, status: res.status, body: body.slice(0, 200) };
+  } catch (err) {
+    return { ok: false, reason: err.message };
+  }
+}
+
+/**
+ * Wipe all shop-scoped data AND uninstall the app from Shopify so the
+ * merchant must use the App Store install link to reconnect. Refuses
+ * unless a backup younger than 24h exists. Children deleted first so
+ * foreign keys don't trip.
  */
 export async function wipeShop(shopDomain, onProgress = () => {}) {
   const backups = await listBackups(shopDomain);
@@ -195,6 +224,29 @@ export async function wipeShop(shopDomain, onProgress = () => {}) {
   if (ageMs > BACKUP_FRESHNESS_MS) {
     const hours = Math.round(ageMs / 3600000);
     throw new Error(`Refusing to wipe: newest backup is ${hours}h old (>24h). Run backupShop first.`);
+  }
+
+  // Capture the Shopify access token BEFORE we delete the Session row -
+  // we need it to authenticate the self-uninstall call. There may be more
+  // than one session per shop (online + offline); any valid offline token
+  // works for the api_permissions DELETE.
+  onProgress("Reading Shopify access token...");
+  const sessions = await db.session.findMany({
+    where: { shop: shopDomain },
+    select: { accessToken: true, isOnline: true },
+  });
+  const offline = sessions.find(s => !s.isOnline) || sessions[0];
+  const shopifyAccessToken = offline?.accessToken || null;
+
+  // Self-uninstall on Shopify FIRST. If we wipe the DB first, the access
+  // token is gone and the Shopify-side uninstall can't run. Failure here
+  // is non-fatal - we still wipe locally and surface the failure in logs.
+  onProgress("Uninstalling app from Shopify...");
+  const uninstallResult = await shopifyUninstall(shopDomain, shopifyAccessToken);
+  if (uninstallResult.ok) {
+    console.log(`[shopBackup] ${shopDomain}: Shopify self-uninstall OK`);
+  } else {
+    console.warn(`[shopBackup] ${shopDomain}: Shopify self-uninstall failed:`, uninstallResult);
   }
 
   // Delete in reverse restore order so child rows go before parents.
@@ -218,8 +270,13 @@ export async function wipeShop(shopDomain, onProgress = () => {}) {
   }
 
   console.log(`[shopBackup] ${shopDomain}: wiped ${totalDeleted} rows`);
-  onProgress(`Wipe complete: ${totalDeleted} rows deleted`);
-  return { deleted: totalDeleted, backupId: newest.backupId };
+  onProgress(`Wipe complete: ${totalDeleted} rows deleted${uninstallResult.ok ? "; reinstall via App Store link" : "; Shopify uninstall failed - manual uninstall may be needed"}`);
+  return {
+    deleted: totalDeleted,
+    backupId: newest.backupId,
+    shopifyUninstalled: uninstallResult.ok,
+    shopifyUninstallDetail: uninstallResult,
+  };
 }
 
 /**
