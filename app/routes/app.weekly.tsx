@@ -897,9 +897,17 @@ export default function WeeklyReport() {
             </div>
           </div>
 
-          <div style={{ flex: 1, display: "flex" }}>
-            <div style={{ flex: 1 }}>
-              <SectionTile title="New Ads Launched" titleColor="#7c3aed">
+          {/* New Ads + Switched Off bypass SectionTile so we can flex-scroll
+              the body when there are more rows than the Weekly Summary's
+              natural height. The row uses alignItems:stretch, so each column
+              fills the tallest column (the Summary). */}
+          <div style={{ flex: 1, display: "flex", minHeight: 0 }}>
+            <div style={{
+              flex: 1, display: "flex", flexDirection: "column", minHeight: 0,
+              background: "#fff", border: "1px solid #e1e3e5", borderRadius: "10px", padding: "20px",
+            }}>
+              <div style={{ fontSize: "14px", fontWeight: 700, color: "#7c3aed", marginBottom: "12px", textTransform: "uppercase", letterSpacing: "0.5px" }}>New Ads Launched</div>
+              <div style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
                 {newlyLaunchedAds.length === 0 ? (
                   <div style={{ fontSize: "12px", color: "#8c9196", fontStyle: "italic" }}>No new ads launched this week</div>
                 ) : (
@@ -916,13 +924,17 @@ export default function WeeklyReport() {
                     ))}
                   </>
                 )}
-              </SectionTile>
+              </div>
             </div>
           </div>
 
-          <div style={{ flex: 1, display: "flex" }}>
-            <div style={{ flex: 1 }}>
-              <SectionTile title="Ads Switched Off" titleColor="#dc2626">
+          <div style={{ flex: 1, display: "flex", minHeight: 0 }}>
+            <div style={{
+              flex: 1, display: "flex", flexDirection: "column", minHeight: 0,
+              background: "#fff", border: "1px solid #e1e3e5", borderRadius: "10px", padding: "20px",
+            }}>
+              <div style={{ fontSize: "14px", fontWeight: 700, color: "#dc2626", marginBottom: "12px", textTransform: "uppercase", letterSpacing: "0.5px" }}>Ads Switched Off</div>
+              <div style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
                 {adsSwitchedOff.length === 0 ? (
                   <div style={{ fontSize: "12px", color: "#8c9196", fontStyle: "italic" }}>No ads switched off this week</div>
                 ) : (
@@ -939,7 +951,7 @@ export default function WeeklyReport() {
                     ))}
                   </>
                 )}
-              </SectionTile>
+              </div>
             </div>
           </div>
         </div>
