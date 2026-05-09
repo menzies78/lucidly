@@ -870,6 +870,29 @@ const VIP_SCOPES: { value: VipScope; label: string }[] = [
   { value: "all", label: "All Customers" },
 ];
 
+// The three headline tiles double as bar-chart selectors. Each "view"
+// controls (a) which metric the bar length encodes, (b) sort order,
+// (c) colour, and (d) the axis treatment - see viewData below.
+type VipView = "overIndex" | "mostVips" | "highestAvg";
+
+// Round a positive number up to a "nice" axis bound (1, 2, 5, 10, 20, 50, …).
+// Keeps tick labels reading as round numbers regardless of the dataset.
+function niceCeil(v: number): number {
+  if (v <= 0) return 1;
+  const exp = Math.floor(Math.log10(v));
+  const base = Math.pow(10, exp);
+  const mantissa = v / base;
+  const niceMantissa = mantissa <= 1 ? 1 : mantissa <= 2 ? 2 : mantissa <= 5 ? 5 : 10;
+  return niceMantissa * base;
+}
+
+// Compact number for axis labels: 1.2k, 12k, 1.5M.
+function formatCompactNumber(v: number): string {
+  if (v >= 1000000) return `${(v / 1000000).toFixed(v >= 10000000 ? 0 : 1)}M`;
+  if (v >= 1000) return `${(v / 1000).toFixed(v >= 10000 ? 0 : 1)}k`;
+  return Math.round(v).toLocaleString();
+}
+
 function VipsByCountryTile({ blob, cs }: { blob: MapBlob | null; cs: string }) {
   const [band, setBand] = useState<VipBand>("top5");
   const [vwindow, setVwindow] = useState<VipWindow>("all");
@@ -878,6 +901,9 @@ function VipsByCountryTile({ blob, cs }: { blob: MapBlob | null; cs: string }) {
   // ("which geos have high spenders?") is broader than Meta-only -
   // organic VIPs are still relevant signal for where to lean creative.
   const [scope, setScope] = useState<VipScope>("all");
+  // Default view = over-index (the headline insight). Clicking another
+  // tile re-sorts the bar chart and switches what the bar length encodes.
+  const [view, setView] = useState<VipView>("overIndex");
 
   // Statistical-significance floor on EXPECTED VIPs, not raw customer
   // count. The earlier customer-count floor still let through Romania
@@ -965,9 +991,96 @@ function VipsByCountryTile({ blob, cs }: { blob: MapBlob | null; cs: string }) {
     return { overIndexed, mostVips, highestAvg };
   }, [rows]);
 
-  // Bar chart axis: clamp to a sensible upper bound. 3× covers most real
-  // geo signals; anything over the clamp gets a "+" indicator.
-  const AXIS_MAX = 3;
+  // Bar chart axis for the over-index view: clamp to a sensible upper
+  // bound. 3× covers most real geo signals; anything over gets a label.
+  const AXIS_MAX_OVER_INDEX = 3;
+
+  // Per-view rendering data: which rows to show, what the bar value is,
+  // axis max, primary/secondary right-side text. Computed once per (view,
+  // rows) change so the bar render below stays declarative.
+  const viewData = useMemo(() => {
+    if (rows.length === 0) return null;
+
+    if (view === "overIndex") {
+      const sorted = [...rows].sort((a, b) => b.overIndex - a.overIndex);
+      return {
+        items: sorted,
+        axisMax: AXIS_MAX_OVER_INDEX,
+        valueOf: (r: CountryAgg) => Math.min(r.overIndex, AXIS_MAX_OVER_INDEX),
+        rawValueOf: (r: CountryAgg) => r.overIndex,
+        baselinePct: (1 / AXIS_MAX_OVER_INDEX) * 100,
+        ticks: [0, 1, 2, 3].map(t => ({ pos: (t / AXIS_MAX_OVER_INDEX) * 100, label: `${t}×`, isBaseline: t === 1 })),
+        primaryFor: (r: CountryAgg) => `${r.overIndex.toFixed(2)}×`,
+        secondaryFor: (r: CountryAgg) => `${r.vips} vs ~${Math.round(r.expected)}`,
+        colorFor: (r: CountryAgg) =>
+          r.overIndex < 1 ? "#9CA3AF"
+          : r.overIndex >= 2 ? "#10B981"
+          : r.overIndex >= 1.3 ? "#34D399"
+          : "#A7F3D0",
+        primaryColorFor: (r: CountryAgg) => r.overIndex >= 1 ? "#065F46" : "#6B7280",
+        clampLabel: (r: CountryAgg) =>
+          r.overIndex > AXIS_MAX_OVER_INDEX ? `${r.overIndex.toFixed(1)}×` : null,
+      };
+    }
+
+    if (view === "mostVips") {
+      const sorted = [...rows].filter(r => r.vips > 0).sort((a, b) => b.vips - a.vips);
+      const maxVal = sorted[0]?.vips || 1;
+      // Round axis to a nice round number so ticks read cleanly.
+      const axisMax = niceCeil(maxVal);
+      const tickCount = 4;
+      return {
+        items: sorted,
+        axisMax,
+        valueOf: (r: CountryAgg) => r.vips,
+        rawValueOf: (r: CountryAgg) => r.vips,
+        baselinePct: null,
+        ticks: Array.from({ length: tickCount + 1 }, (_, i) => {
+          const v = (i / tickCount) * axisMax;
+          return { pos: (v / axisMax) * 100, label: Math.round(v).toLocaleString(), isBaseline: false };
+        }),
+        primaryFor: (r: CountryAgg) => `${r.vips.toLocaleString()}`,
+        secondaryFor: (r: CountryAgg) => `of ${r.customers.toLocaleString()} customers`,
+        colorFor: (): string => "#7C3AED",
+        primaryColorFor: (): string => "#5B21B6",
+        clampLabel: (): string | null => null,
+      };
+    }
+
+    // highestAvg
+    const withAvg = rows
+      .filter(r => r.vips >= 3)
+      .map(r => ({ ...r, avg: r.vipRevenue / r.vips }));
+    const sorted = withAvg.sort((a, b) => b.avg - a.avg);
+    if (sorted.length === 0) return {
+      items: [], axisMax: 1,
+      valueOf: (): number => 0, rawValueOf: (): number => 0,
+      baselinePct: null, ticks: [],
+      primaryFor: (): string => "-", secondaryFor: (): string => "",
+      colorFor: (): string => "#F59E0B", primaryColorFor: (): string => "#92400E",
+      clampLabel: (): string | null => null,
+      empty: "Need a country with at least 3 VIPs to compare averages.",
+    };
+    const maxVal = sorted[0].avg;
+    const axisMax = niceCeil(maxVal);
+    const tickCount = 4;
+    return {
+      items: sorted,
+      axisMax,
+      valueOf: (r: any) => r.avg as number,
+      rawValueOf: (r: any) => r.avg as number,
+      baselinePct: null,
+      ticks: Array.from({ length: tickCount + 1 }, (_, i) => {
+        const v = (i / tickCount) * axisMax;
+        return { pos: (v / axisMax) * 100, label: `${cs}${formatCompactNumber(v)}`, isBaseline: false };
+      }),
+      primaryFor: (r: any) => `${cs}${Math.round(r.avg).toLocaleString()}`,
+      secondaryFor: (r: any) => `${r.vips} VIPs`,
+      colorFor: (): string => "#F59E0B",
+      primaryColorFor: (): string => "#92400E",
+      clampLabel: (): string | null => null,
+    };
+  }, [rows, view, cs]);
 
   if (!blob) {
     return (
@@ -1029,8 +1142,10 @@ function VipsByCountryTile({ blob, cs }: { blob: MapBlob | null; cs: string }) {
           )}
         </div>
 
-        {/* Headline strip - 3 mini-tiles. Falls back to a single empty-state
-            card when no country meets the sample-size floor. */}
+        {/* Headline strip - 3 mini-tiles, each acts as a chart-view selector.
+            Default selection = Most over-indexed. Clicking a tile re-sorts
+            the bars and switches the metric the bar length encodes.
+            Hover on non-selected tiles semi-highlights to show clickability. */}
         {highlights ? (
           <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12 }}>
             <HighlightTile
@@ -1039,6 +1154,8 @@ function VipsByCountryTile({ blob, cs }: { blob: MapBlob | null; cs: string }) {
               value={highlights.overIndexed ? `${highlights.overIndexed.overIndex.toFixed(1)}×` : "-"}
               sub={highlights.overIndexed ? `${highlights.overIndexed.vips} VIPs · ~${Math.round(highlights.overIndexed.expected)} expected` : ""}
               accent="#10B981"
+              selected={view === "overIndex"}
+              onClick={() => setView("overIndex")}
             />
             <HighlightTile
               label="Most VIPs"
@@ -1046,6 +1163,8 @@ function VipsByCountryTile({ blob, cs }: { blob: MapBlob | null; cs: string }) {
               value={highlights.mostVips ? highlights.mostVips.vips.toLocaleString() : "-"}
               sub={highlights.mostVips ? `${highlights.mostVips.customers.toLocaleString()} customers in country` : ""}
               accent="#7C3AED"
+              selected={view === "mostVips"}
+              onClick={() => setView("mostVips")}
             />
             <HighlightTile
               label="Highest avg VIP spend"
@@ -1053,53 +1172,52 @@ function VipsByCountryTile({ blob, cs }: { blob: MapBlob | null; cs: string }) {
               value={highlights.highestAvg ? `${cs}${Math.round(highlights.highestAvg.vipRevenue / highlights.highestAvg.vips).toLocaleString()}` : "-"}
               sub={highlights.highestAvg ? `${highlights.highestAvg.vips} VIPs in country` : "Need 3+ VIPs in a country"}
               accent="#F59E0B"
+              selected={view === "highestAvg"}
+              onClick={() => setView("highestAvg")}
             />
           </div>
         ) : null}
 
-        {/* Bar chart - over-index by country, sorted desc. Bars centred on
-            the 1.0× baseline; right of baseline = over-indexed (accent
-            colour), left = under-indexed (grey). Ratio + raw counts on
-            the right, country flag + name on the left. */}
-        {rows.length === 0 ? (
+        {/* Bar chart - rendering driven by the selected view (over-index /
+            most VIPs / highest avg spend). Each row: flag + name on the
+            left, bar in the middle, primary value + secondary detail on
+            the right. The over-index view also draws a 1.0× baseline. */}
+        {rows.length === 0 || !viewData ? (
           <div style={{ padding: 28, textAlign: "center", color: "#6B7280", fontSize: 13, background: "#F9FAFB", borderRadius: 8 }}>
             No country has enough customers for a statistically meaningful comparison (need at least ~{MIN_EXPECTED_VIPS / Math.max(totals.rate, 0.001) | 0} customers per country at this VIP band). Try a wider window or a broader VIP band.
           </div>
+        ) : (viewData.items.length === 0) ? (
+          <div style={{ padding: 28, textAlign: "center", color: "#6B7280", fontSize: 13, background: "#F9FAFB", borderRadius: 8 }}>
+            {(viewData as any).empty || "No data for this view."}
+          </div>
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            {/* Axis ticks - 0×, 1× baseline, AXIS_MAX×. Visual reference
-                so users can read magnitude at a glance. */}
+            {/* Axis ticks - rendered via positioned absolute elements over
+                a track-width spacer so they line up with the bar tracks. */}
             <div style={{ position: "relative", height: 16, marginLeft: 200, marginRight: 110 }}>
-              {[0, 1, 2, 3].map(t => (
+              {viewData.ticks.map((t, i) => (
                 <div
-                  key={t}
+                  key={i}
                   style={{
                     position: "absolute",
-                    left: `${(t / AXIS_MAX) * 100}%`,
+                    left: `${t.pos}%`,
                     top: 0,
                     transform: "translateX(-50%)",
                     fontSize: 10,
-                    color: t === 1 ? "#6B7280" : "#9CA3AF",
-                    fontWeight: t === 1 ? 700 : 500,
+                    color: t.isBaseline ? "#6B7280" : "#9CA3AF",
+                    fontWeight: t.isBaseline ? 700 : 500,
                   }}
                 >
-                  {t}×
+                  {t.label}
                 </div>
               ))}
             </div>
-            {rows.map(r => {
-              const ratioForBar = Math.min(r.overIndex, AXIS_MAX);
-              const widthPct = (ratioForBar / AXIS_MAX) * 100;
-              const baselinePct = (1 / AXIS_MAX) * 100;
-              const isOver = r.overIndex >= 1;
-              const barColor = !isOver
-                ? "#9CA3AF"
-                : r.overIndex >= 2
-                ? "#10B981"  // strongly over - emerald
-                : r.overIndex >= 1.3
-                ? "#34D399"  // moderately over - lighter emerald
-                : "#A7F3D0"; // mildly over - mint
-
+            {viewData.items.map((r: any) => {
+              const value = viewData.valueOf(r);
+              const widthPct = (value / viewData.axisMax) * 100;
+              const barColor = viewData.colorFor(r);
+              const primaryColor = viewData.primaryColorFor(r);
+              const clamp = viewData.clampLabel(r);
               return (
                 <div key={r.cc} style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 12 }}>
                   {/* Left: flag + name. Fixed width so bars align across rows. */}
@@ -1114,42 +1232,42 @@ function VipsByCountryTile({ blob, cs }: { blob: MapBlob | null; cs: string }) {
                     </span>
                   </div>
 
-                  {/* Middle: bar track with 1.0× baseline marker. */}
+                  {/* Middle: bar track. Baseline marker shown only on
+                      views that have a meaningful baseline (over-index). */}
                   <div style={{ flex: 1, position: "relative", height: 22, background: "#F3F4F6", borderRadius: 4, overflow: "hidden" }}>
-                    {/* Bar */}
                     <div style={{
                       position: "absolute", left: 0, top: 0, bottom: 0,
                       width: `${widthPct}%`,
                       background: barColor,
-                      transition: "width 0.3s ease",
+                      transition: "width 0.3s ease, background 0.2s ease",
                     }} />
-                    {/* Baseline (1.0×) marker - vertical line on the track */}
-                    <div style={{
-                      position: "absolute",
-                      left: `${baselinePct}%`, top: 0, bottom: 0,
-                      width: 1, background: "#6B7280",
-                    }} />
-                    {/* "+" indicator when ratio is clamped */}
-                    {r.overIndex > AXIS_MAX && (
+                    {viewData.baselinePct != null && (
+                      <div style={{
+                        position: "absolute",
+                        left: `${viewData.baselinePct}%`, top: 0, bottom: 0,
+                        width: 1, background: "#6B7280",
+                      }} />
+                    )}
+                    {clamp && (
                       <div style={{
                         position: "absolute", right: 4, top: "50%", transform: "translateY(-50%)",
                         fontSize: 10, fontWeight: 700, color: "#fff",
                       }}>
-                        {r.overIndex.toFixed(1)}×
+                        {clamp}
                       </div>
                     )}
                   </div>
 
-                  {/* Right: numeric ratio + raw counts */}
+                  {/* Right: primary value + secondary detail. */}
                   <div style={{
                     width: 100, flexShrink: 0, textAlign: "right",
                     display: "flex", flexDirection: "column", gap: 1,
                   }}>
-                    <span style={{ fontWeight: 700, color: isOver ? "#065F46" : "#6B7280", fontSize: 13 }}>
-                      {r.overIndex.toFixed(2)}×
+                    <span style={{ fontWeight: 700, color: primaryColor, fontSize: 13 }}>
+                      {viewData.primaryFor(r)}
                     </span>
                     <span style={{ fontSize: 10, color: "#9CA3AF" }}>
-                      {r.vips} vs ~{Math.round(r.expected)}
+                      {viewData.secondaryFor(r)}
                     </span>
                   </div>
                 </div>
@@ -1163,17 +1281,59 @@ function VipsByCountryTile({ blob, cs }: { blob: MapBlob | null; cs: string }) {
 }
 
 // Headline mini-tile used in the VIPs-per-Country strip. Flag on the left,
-// big number on the right, supporting count below.
+// big number on the right, supporting count below. Doubles as a chart-view
+// selector: when selected, the tile uses its accent colour for the border
+// and a tinted background; when not selected, hover reveals a softer
+// border + lift to signal the tile is clickable.
 function HighlightTile({
-  label, cc, value, sub, accent,
+  label, cc, value, sub, accent, selected, onClick,
 }: {
   label: string; cc: string | undefined; value: string; sub: string; accent: string;
+  selected: boolean; onClick: () => void;
 }) {
+  const [hovered, setHovered] = useState(false);
+
+  // Border colour: solid accent when selected; mid-emerald when hovered
+  // (echoing the page palette); default neutral grey otherwise.
+  const borderColor = selected
+    ? accent
+    : hovered
+    ? "#9CA3AF"
+    : "#E5E7EB";
+  const borderWidth = selected ? 2 : 1;
+  const padding = selected ? 13 : 14; // compensate for the 2px selected border so layout doesn't jump
+  const bg = selected
+    // 12% accent tint - light enough to read text against, distinct enough
+    // to broadcast "this view is active" at a glance.
+    ? `${accent}1F`
+    : "#fff";
+  const boxShadow = selected
+    ? `0 0 0 1px ${accent}33`
+    : hovered
+    ? "0 1px 3px rgba(0,0,0,0.08)"
+    : "none";
+
   return (
-    <div style={{
-      border: "1px solid #E5E7EB", borderRadius: 12, padding: 14, background: "#fff",
-      display: "flex", alignItems: "center", gap: 12, minHeight: 78,
-    }}>
+    <button
+      type="button"
+      onClick={onClick}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      aria-pressed={selected}
+      style={{
+        border: `${borderWidth}px solid ${borderColor}`,
+        borderRadius: 12,
+        padding,
+        background: bg,
+        boxShadow,
+        cursor: "pointer",
+        textAlign: "left",
+        display: "flex", alignItems: "center", gap: 12, minHeight: 78,
+        width: "100%",
+        transition: "border-color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease",
+        font: "inherit",
+      }}
+    >
       {cc ? (
         <span style={{ fontSize: 40, lineHeight: 1, flexShrink: 0 }}>{countryFlag(cc)}</span>
       ) : (
@@ -1185,7 +1345,7 @@ function HighlightTile({
         {cc && <div style={{ fontSize: 11, color: "#374151", marginTop: 1, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }} title={countryName(cc)}>{countryName(cc)}</div>}
         {sub && <div style={{ fontSize: 10, color: "#9CA3AF", marginTop: 1 }}>{sub}</div>}
       </div>
-    </div>
+    </button>
   );
 }
 
