@@ -29,6 +29,7 @@
 
 import db from "../db.server.js";
 import fs from "node:fs/promises";
+import { createWriteStream } from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 
@@ -107,15 +108,90 @@ async function ensureDir(p) {
   await fs.mkdir(p, { recursive: true });
 }
 
+// Cursor pagination batch size. 5000 rows × ~500 bytes/row = ~2.5 MB
+// per batch held in JS heap at peak - safe for an 8 GB VM with a 3 GB
+// Node heap cap. Loading 287k MetaInsight rows in one findMany blew the
+// heap cap; this keeps memory bounded regardless of table size.
+const STREAM_BATCH = 5000;
+
 /**
- * Dump every shop-keyed table to JSON, take a native SQLite snapshot of
- * the whole database, then run a verify pass that re-reads every JSON
- * file and confirms its checksum matches the manifest.
+ * Stream-dump one Prisma model's rows for a given shop into a JSON file
+ * using cursor pagination. Memory stays bounded to one batch at a time;
+ * sha256 is computed incrementally so we never hold the whole text in
+ * memory.
  *
- * Manifest is written *twice*:
- *   - Once after JSON dump + SQLite snapshot (so a crash partway through
- *     verify still leaves a recoverable backup).
- *   - Again after verify pass with `verified: true` set.
+ * Output is a JSON array, written incrementally as `[row1,row2,...,rowN]`.
+ * safeStringify per row preserves BigInt + Date.
+ */
+async function streamDumpTable(model, shopKey, shopDomain, file, onTick) {
+  const stream = createWriteStream(file, { encoding: "utf8" });
+  const hash = crypto.createHash("sha256");
+  let bytes = 0;
+
+  function writeChunk(s) {
+    bytes += Buffer.byteLength(s, "utf8");
+    hash.update(s);
+    if (!stream.write(s)) {
+      // backpressure - wait until drain
+      return new Promise((resolve) => stream.once("drain", resolve));
+    }
+    return undefined;
+  }
+
+  await writeChunk("[");
+
+  let cursor = undefined;
+  let count = 0;
+  let isFirst = true;
+
+  // We need a stable ordering for cursor pagination - every model has an
+  // `id` column (string or int) that we can use. The cursor's `id` field
+  // type is auto-inferred by Prisma from the model.
+  while (true) {
+    const args = {
+      where: { [shopKey]: shopDomain },
+      take: STREAM_BATCH,
+      orderBy: { id: "asc" },
+    };
+    if (cursor !== undefined) {
+      args.cursor = { id: cursor };
+      args.skip = 1;
+    }
+    const batch = await db[model].findMany(args);
+    if (batch.length === 0) break;
+
+    for (const row of batch) {
+      const json = safeStringify(row);
+      const chunk = isFirst ? json : "," + json;
+      const maybe = writeChunk(chunk);
+      if (maybe) await maybe;
+      isFirst = false;
+      count++;
+    }
+    cursor = batch[batch.length - 1].id;
+    if (onTick) onTick(count);
+    if (batch.length < STREAM_BATCH) break;
+    // Help V8 release the previous batch before fetching the next one.
+    if (global.gc) global.gc();
+  }
+
+  await writeChunk("]");
+  await new Promise((resolve, reject) => {
+    stream.end((err) => (err ? reject(err) : resolve()));
+  });
+  return { count, bytes, checksum: hash.digest("hex").slice(0, 16) };
+}
+
+/**
+ * Dump every shop-keyed table to JSON (cursor-paginated streaming - bounded
+ * memory regardless of table size), take a native SQLite snapshot of the
+ * whole database, then run a verify pass that re-reads every JSON file and
+ * confirms its checksum matches the manifest.
+ *
+ * Manifest is written EARLY (status: "in-progress") so a crashed/killed
+ * backup is still visible in the UI as `verified: false` rather than
+ * vanishing. The wipe gate refuses anything not `verified: true`, so
+ * surfacing partial backups doesn't reduce safety.
  */
 export async function backupShop(shopDomain, onProgress = () => {}) {
   const startedAt = new Date();
@@ -130,63 +206,93 @@ export async function backupShop(shopDomain, onProgress = () => {}) {
     shopDomain,
     backupId: stamp,
     startedAt: startedAt.toISOString(),
-    schemaVersion: 2,
+    schemaVersion: 3,
+    status: "in-progress",
     tables: {},
     verified: false,
     sqliteSnapshot: null,
     lastDownloadedAt: null,
   };
 
+  // Helper: write the manifest to disk. Called early (so partial backups
+  // are visible) and after each step (so progress is durable across a
+  // crash/restart).
+  const manifestPath = path.join(folder, "manifest.json");
+  const writeManifest = async () => {
+    await fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2), "utf8");
+  };
+  await writeManifest();
+
   let totalRows = 0;
   for (let i = 0; i < tables.length; i++) {
     const t = tables[i];
     onProgress(`Dumping ${t.model} (${i + 1}/${tables.length})`);
-    let rows = [];
-    try {
-      rows = await db[t.model].findMany({ where: { [t.shopKey]: shopDomain } });
-    } catch (err) {
-      console.warn(`[shopBackup] Failed to dump ${t.model}: ${err.message}`);
-      manifest.tables[t.model] = { count: 0, error: err.message, derived: t.derived };
-      continue;
-    }
-    const text = safeStringify(rows);
     const file = path.join(folder, `${t.model}.json`);
-    await fs.writeFile(file, text, "utf8");
-    manifest.tables[t.model] = {
-      count: rows.length,
-      bytes: Buffer.byteLength(text, "utf8"),
-      checksum: checksum(text),
-      derived: t.derived,
-    };
-    totalRows += rows.length;
+    try {
+      const r = await streamDumpTable(t.model, t.shopKey, shopDomain, file, (n) => {
+        if (n % (STREAM_BATCH * 4) === 0) {
+          onProgress(`Dumping ${t.model} (${i + 1}/${tables.length}) - ${n} rows`);
+        }
+      });
+      manifest.tables[t.model] = {
+        count: r.count,
+        bytes: r.bytes,
+        checksum: r.checksum,
+        derived: t.derived,
+      };
+      totalRows += r.count;
+      console.log(`[shopBackup] ${shopDomain}: ${t.model} ${r.count} rows, ${r.bytes} bytes`);
+    } catch (err) {
+      console.error(`[shopBackup] Failed to dump ${t.model}: ${err.message}`);
+      manifest.tables[t.model] = { count: 0, error: err.message?.slice(0, 500), derived: t.derived };
+    }
+    // Persist progress after every table so a crash mid-run still leaves
+    // a useful manifest.
+    manifest.totalRows = totalRows;
+    await writeManifest();
   }
 
   manifest.completedAt = new Date().toISOString();
   manifest.totalRows = totalRows;
+  manifest.status = "snapshotting";
+  await writeManifest();
 
   // Layer 2: native SQLite snapshot. Perfect-fidelity copy of the entire
   // database (all shops, all tables, all indices). Even if the JSON path
   // ever has a bug, this snapshot can be hand-restored by stopping the app
   // and copying snapshot.sqlite over /data/lucidly.db. `VACUUM INTO`
-  // produces a single consistent file - no need for WAL handling.
+  // produces a single consistent file - no need for WAL handling, and per
+  // SQLite docs it does NOT block concurrent readers.
   onProgress("Taking native SQLite snapshot...");
   const snapshotPath = path.join(folder, "snapshot.sqlite");
   try {
-    // Prisma escapes the string literal correctly inside $executeRawUnsafe
-    // since we control the input. Path is also restricted to a known dir.
     await db.$executeRawUnsafe(`VACUUM INTO '${snapshotPath.replace(/'/g, "''")}'`);
     const stat = await fs.stat(snapshotPath);
-    const buf = await fs.readFile(snapshotPath);
-    const sha = crypto.createHash("sha256").update(buf).digest("hex");
-    manifest.sqliteSnapshot = { bytes: stat.size, checksum: sha.slice(0, 16) };
+    // Stream the snapshot through sha256 instead of readFile - VACUUM INTO
+    // can produce a multi-GB file and we don't want to load it all into
+    // heap.
+    const sha = crypto.createHash("sha256");
+    const fh = await fs.open(snapshotPath, "r");
+    try {
+      const buf = Buffer.allocUnsafe(1024 * 1024); // 1 MB read window
+      let pos = 0;
+      while (true) {
+        const { bytesRead } = await fh.read(buf, 0, buf.length, pos);
+        if (bytesRead === 0) break;
+        sha.update(buf.subarray(0, bytesRead));
+        pos += bytesRead;
+      }
+    } finally {
+      await fh.close();
+    }
+    manifest.sqliteSnapshot = { bytes: stat.size, checksum: sha.digest("hex").slice(0, 16) };
+    console.log(`[shopBackup] ${shopDomain}: sqlite snapshot ${stat.size} bytes`);
   } catch (err) {
     console.error(`[shopBackup] SQLite snapshot failed: ${err.message}`);
-    manifest.sqliteSnapshot = { error: err.message };
+    manifest.sqliteSnapshot = { error: err.message?.slice(0, 500) };
   }
-
-  // Provisional manifest write so a crash before verify still leaves a
-  // recoverable backup folder.
-  await fs.writeFile(path.join(folder, "manifest.json"), JSON.stringify(manifest, null, 2), "utf8");
+  manifest.status = "verifying";
+  await writeManifest();
 
   // Layer 3: verify pass. Re-read every JSON file and check sha256 +
   // parseability + row count. Anything mismatched marks the backup as
@@ -195,9 +301,9 @@ export async function backupShop(shopDomain, onProgress = () => {}) {
   const verifyResult = await verifyBackupFolder(folder, manifest);
   manifest.verified = verifyResult.ok;
   manifest.verifyDetail = verifyResult;
+  manifest.status = verifyResult.ok ? "complete" : "verify-failed";
 
-  // Final manifest write with verified flag.
-  await fs.writeFile(path.join(folder, "manifest.json"), JSON.stringify(manifest, null, 2), "utf8");
+  await writeManifest();
 
   console.log(`[shopBackup] ${shopDomain}: backup ${stamp} - ${totalRows} rows, sqlite ${manifest.sqliteSnapshot?.bytes || 0}B, verified=${manifest.verified}`);
   onProgress(`Backup complete: ${totalRows} rows, verified=${manifest.verified}`);
