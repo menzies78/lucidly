@@ -203,9 +203,10 @@ async function computeOrderCounts(shopDomain, customerIdsToUpdate = null) {
     totalUpdated += updates.length;
     setProgress(`syncOrders:${shopDomain}`, {
       status: "running",
-      current: totalUpdated,
-      total: customerIds.length * 2, // rough estimate (orders > customers)
-      message: `Step 2 of 2 - Order counts: ${totalUpdated.toLocaleString()} orders processed (${Math.min(b + BATCH, customerIds.length).toLocaleString()}/${customerIds.length.toLocaleString()} customers)`,
+      current: Math.min(b + BATCH, customerIds.length),
+      total: customerIds.length,
+      unitLabel: "customers",
+      detail: "Building customer order history",
     });
   }
 
@@ -389,6 +390,40 @@ export async function syncOrders(admin, shopDomain) {
   twoYearsAgo.setUTCFullYear(twoYearsAgo.getUTCFullYear() - 2);
   const sinceDate = shop?.lastOrderSync || twoYearsAgo;
   console.log(`[OrderSync] sinceDate=${sinceDate.toISOString()}, lastOrderSync=${shop?.lastOrderSync || 'null'}`);
+
+  // Upfront total count so the onboarding progress bar can show
+  // "X of Y orders" + an ETA. Best-effort - if the count call fails or
+  // returns AT_LEAST (huge stores), we just skip the total and surface
+  // the running tally without a percentage.
+  const ordersQuery = `created_at:>='${sinceDate.toISOString()}' status:any`;
+  let expectedOrderTotal = null;
+  try {
+    const countData = await graphqlWithRetry(
+      admin,
+      `query OrderCount($q: String!) { ordersCount(query: $q) { count precision } }`,
+      { q: ordersQuery },
+      "OrderSync/ordersCount",
+    );
+    const c = countData?.data?.ordersCount;
+    if (c?.precision === "EXACT" && typeof c.count === "number") {
+      expectedOrderTotal = c.count;
+      console.log(`[OrderSync] ordersCount=${expectedOrderTotal} (EXACT)`);
+    } else {
+      console.log(`[OrderSync] ordersCount precision=${c?.precision}, count=${c?.count} - falling back to count-less progress`);
+    }
+  } catch (err) {
+    console.warn(`[OrderSync] ordersCount lookup failed: ${err.message}`);
+  }
+
+  // Seed the progress map immediately so the onboarding UI shows the bar
+  // before the first 50 orders complete (~few seconds otherwise).
+  setProgress(`syncOrders:${shopDomain}`, {
+    status: "running",
+    current: 0,
+    total: expectedOrderTotal,
+    unitLabel: "orders",
+    detail: "Importing your Shopify orders",
+  });
 
   let hasNextPage = true;
   let cursor = null;
@@ -642,7 +677,9 @@ export async function syncOrders(admin, shopDomain) {
         setProgress(`syncOrders:${shopDomain}`, {
           status: "running",
           current: totalImported,
-          message: `Step 1 of 2 - Importing orders: ${totalImported.toLocaleString()} imported (page ${pageCount})`,
+          total: expectedOrderTotal, // null when count was unavailable - UI hides %
+          unitLabel: "orders",
+          detail: "Importing your Shopify orders",
         });
       }
 
@@ -679,7 +716,10 @@ export async function syncOrders(admin, shopDomain) {
   // Initial backfill: full shop-wide sweep. Incremental: only customers touched this run.
   setProgress(`syncOrders:${shopDomain}`, {
     status: "running",
-    message: `Step 2 of 2 - Computing customer order counts (${totalImported.toLocaleString()} orders)...`,
+    current: totalImported,
+    total: expectedOrderTotal,
+    unitLabel: "orders",
+    detail: "Building customer order history",
   });
   if (isInitialBackfill) {
     await computeOrderCounts(shopDomain);
@@ -692,7 +732,10 @@ export async function syncOrders(admin, shopDomain) {
   if (isInitialBackfill) {
     setProgress(`syncOrders:${shopDomain}`, {
       status: "running",
-      message: `Inferring customer demographics from billing names...`,
+      current: totalImported,
+      total: expectedOrderTotal,
+      unitLabel: "orders",
+      detail: "Inferring customer demographics",
     });
     try {
       const result = await backfillShopInferredGender(db, shopDomain);

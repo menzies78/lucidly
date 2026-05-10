@@ -220,6 +220,8 @@ export async function syncMetaInsights(shopDomain, daysBack = 7, progressKey = n
 
   let totalRows = 0;
   let rangesCompleted = 0;
+  let daysCompleted = 0;
+  const totalDays = daysBack;
   const key = progressKey || `syncMeta:${shopDomain}`;
   const startTime = Date.now();
 
@@ -229,34 +231,28 @@ export async function syncMetaInsights(shopDomain, daysBack = 7, progressKey = n
   let ratesByDate = {};
   if (needsConversion) {
     setProgress(key, {
-      status: "running", current: 0, total: totalRanges,
-      message: `Step 1/3 · Fetching exchange rates (${shop.metaCurrency}→${shop.shopifyCurrency})...`,
+      status: "running", current: 0, total: totalDays, unitLabel: "days",
+      detail: `Fetching ${shop.metaCurrency}→${shop.shopifyCurrency} exchange rates`,
     });
     ratesByDate = await prefetchExchangeRates(allDays, shop.metaCurrency, shop.shopifyCurrency, (msg) => {
       setProgress(key, {
-        status: "running", current: 0, total: totalRanges,
-        message: `Step 1/3 · Exchange rates: ${msg}`,
+        status: "running", current: 0, total: totalDays, unitLabel: "days",
+        detail: `Exchange rates: ${msg}`,
       });
     });
   }
 
-  function updateProgress(phase, rangeLabel) {
-    const pct = Math.round((rangesCompleted / totalRanges) * 100);
-    const elapsed = Date.now() - startTime;
-    const elapsedStr = formatElapsed(elapsed);
-    let etaStr = "calculating...";
-    if (rangesCompleted > 2) {
-      const msPerRange = elapsed / rangesCompleted;
-      const remaining = (totalRanges - rangesCompleted) * msPerRange;
-      etaStr = `~${formatElapsed(remaining)} left`;
-    }
-    const usage = getMetaApiUsage();
-    const rowRate = elapsed > 0 ? Math.round(totalRows / (elapsed / 1000)) : 0;
+  // Plain-English progress writer. The UI computes percentage, "X of Y days",
+  // elapsed and ETA from {current,total} + phase.startedAt. We don't bake any
+  // of that into the message string ourselves - just a short detail line.
+  function updateProgress(detail) {
     setProgress(key, {
       status: "running",
-      current: rangesCompleted,
-      total: totalRanges,
-      message: `Step 1/3 · Insights (${phase}): ${rangeLabel} · ${pct}% (${rangesCompleted}/${totalRanges} ranges) · ${totalRows.toLocaleString()} rows (${rowRate}/s) · ${elapsedStr}, ${etaStr} · API ${usage}%`,
+      current: daysCompleted,
+      total: totalDays,
+      unitLabel: "days",
+      rowsImported: totalRows,
+      detail,
     });
   }
 
@@ -265,7 +261,7 @@ export async function syncMetaInsights(shopDomain, daysBack = 7, progressKey = n
     console.log(`[MetaSync] Fetching ${dailyDays.length} days as daily aggregates in ${dailyRanges.length} ranges...`);
     for (let b = 0; b < dailyRanges.length; b += CONCURRENCY) {
       const batch = dailyRanges.slice(b, b + CONCURRENCY);
-      updateProgress("daily", `${batch[0].since} → ${batch[batch.length - 1].until}`);
+      updateProgress(`Importing ad data from ${batch[0].since} to ${batch[batch.length - 1].until}`);
 
       const results = await Promise.all(
         batch.map(range => fetchDailyRange(metaAccessToken, metaAdAccountId, range.since, range.until, fields))
@@ -277,7 +273,8 @@ export async function syncMetaInsights(shopDomain, daysBack = 7, progressKey = n
       await Promise.all(results.map(rows => batchUpsertInsights(shopDomain, rows, ratesByDate)));
       for (const rows of results) totalRows += rows.length;
       rangesCompleted += results.length;
-      updateProgress("daily", `${batch[batch.length - 1].since} → ${batch[batch.length - 1].until}`);
+      for (const r of batch) daysCompleted += r.dayCount;
+      updateProgress(`Importing ad data from ${batch[batch.length - 1].since} to ${batch[batch.length - 1].until}`);
     }
   }
 
@@ -286,7 +283,7 @@ export async function syncMetaInsights(shopDomain, daysBack = 7, progressKey = n
     console.log(`[MetaSync] Fetching ${hourlyDays.length} days with hourly breakdowns in ${hourlyRanges.length} ranges...`);
     for (let b = 0; b < hourlyRanges.length; b += CONCURRENCY) {
       const batch = hourlyRanges.slice(b, b + CONCURRENCY);
-      updateProgress("hourly", `${batch[0].since} → ${batch[batch.length - 1].until}`);
+      updateProgress(`Importing hourly ad data from ${batch[0].since} to ${batch[batch.length - 1].until}`);
 
       const results = await Promise.all(
         batch.map(range => fetchHourlyRange(metaAccessToken, metaAdAccountId, range.since, range.until, fields))
@@ -295,7 +292,8 @@ export async function syncMetaInsights(shopDomain, daysBack = 7, progressKey = n
       await Promise.all(results.map(rows => batchUpsertInsights(shopDomain, rows, ratesByDate)));
       for (const rows of results) totalRows += rows.length;
       rangesCompleted += results.length;
-      updateProgress("hourly", `${batch[batch.length - 1].since} → ${batch[batch.length - 1].until}`);
+      for (const r of batch) daysCompleted += r.dayCount;
+      updateProgress(`Importing hourly ad data from ${batch[batch.length - 1].since} to ${batch[batch.length - 1].until}`);
     }
   }
 

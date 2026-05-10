@@ -28,7 +28,15 @@ type Phase = {
   errorMessage?: string;
   startedAt?: string;
   completedAt?: string;
-  live?: { current: number | null; total: number | null; message: string | null };
+  live?: {
+    current: number | null;
+    total: number | null;
+    unitLabel?: string | null;
+    detail?: string | null;
+    rowsImported?: number | null;
+    // Legacy fallback - older payloads use `message`.
+    message?: string | null;
+  };
 };
 
 type FitTestData = {
@@ -129,6 +137,42 @@ function PhaseRow({ phase }: { phase: Phase }) {
     : null;
   const elapsed = phaseElapsed(phase);
 
+  // Client-side ETA: extrapolate remaining time from elapsed + completion %.
+  // Only show once we have at least 5% done (any earlier and the rate is too
+  // noisy to be useful). Display in human units: seconds < 60, then minutes,
+  // then "Xm Ys" once we exceed a minute.
+  let etaText: string | null = null;
+  if (
+    isRunning &&
+    phase.startedAt &&
+    live &&
+    typeof live.current === "number" &&
+    typeof live.total === "number" &&
+    live.total > 0 &&
+    live.current > 0 &&
+    livePct !== null &&
+    livePct >= 5 &&
+    livePct < 100
+  ) {
+    const elapsedMs = Date.now() - new Date(phase.startedAt).getTime();
+    const remainingMs = (elapsedMs / live.current) * (live.total - live.current);
+    if (remainingMs > 0 && Number.isFinite(remainingMs)) {
+      const sec = Math.round(remainingMs / 1000);
+      if (sec < 60) etaText = `~${sec}s remaining`;
+      else if (sec < 3600) {
+        const m = Math.round(sec / 60);
+        etaText = `~${m} min remaining`;
+      } else {
+        const h = Math.floor(sec / 3600);
+        const m = Math.round((sec % 3600) / 60);
+        etaText = `~${h}h ${m}m remaining`;
+      }
+    }
+  }
+
+  const detailText = live?.detail || live?.message || null;
+  const unitLabel = live?.unitLabel || "rows";
+
   return (
     <div style={{
       display: "flex", alignItems: "flex-start", gap: 12, padding: "12px 14px",
@@ -156,29 +200,31 @@ function PhaseRow({ phase }: { phase: Phase }) {
             </div>
           )}
         </div>
-        {isRunning && live && (live.current !== null || live.message) && (
+        {isRunning && live && (live.current !== null || detailText) && (
           <div style={{ marginTop: 8 }}>
             {livePct !== null && (
               <>
-                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: TEXT_DIM, marginBottom: 4, fontVariantNumeric: "tabular-nums" }}>
+                <ProgressBar pct={livePct} />
+                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: TEXT_DIM, marginTop: 4, fontVariantNumeric: "tabular-nums", gap: 8 }}>
                   <span>
                     {live.current !== null && live.total !== null
-                      ? `${live.current.toLocaleString()} of ${live.total.toLocaleString()}`
-                      : (live.current?.toLocaleString() ?? "")}
+                      ? `${live.current.toLocaleString()} of ${live.total.toLocaleString()} ${unitLabel}`
+                      : ""}
                   </span>
-                  <span>{livePct}%</span>
+                  <span style={{ whiteSpace: "nowrap" }}>
+                    {etaText || `${livePct}%`}
+                  </span>
                 </div>
-                <ProgressBar pct={livePct} />
               </>
             )}
             {livePct === null && live.current !== null && (
               <div style={{ fontSize: 12, color: TEXT_DIM, fontVariantNumeric: "tabular-nums" }}>
-                {live.current.toLocaleString()} rows
+                {live.current.toLocaleString()} {unitLabel} so far
               </div>
             )}
-            {live.message && (
-              <div style={{ fontSize: 12, color: TEXT_DIM, marginTop: livePct !== null ? 6 : 0 }}>
-                {live.message}
+            {detailText && (
+              <div style={{ fontSize: 12, color: TEXT_DIM, marginTop: 6 }}>
+                {detailText}
               </div>
             )}
           </div>

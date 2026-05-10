@@ -7,6 +7,21 @@ const CONCURRENCY = 10; // Match insights concurrency
 const BREAKDOWN_RANGE_SIZE = 14; // 14 days per API call (breakdowns are lighter than hourly)
 const DB_BATCH_SIZE = 500; // Match insights batch size
 
+// Map raw Meta breakdown type strings to human-readable labels for the
+// onboarding progress UI ("Analysing audience by country" reads cleaner
+// than "Analysing country").
+function humaniseBreakdown(type) {
+  const map = {
+    country: "audience by country",
+    publisher_platform: "audience by platform",
+    platform_position: "audience by placement",
+    age: "audience by age",
+    gender: "audience by gender",
+    age_gender: "audience by age + gender",
+  };
+  return map[type] || `audience by ${type}`;
+}
+
 function parseActionValue(actions, actionType) {
   if (!actions) return 0;
   for (const a of actions) {
@@ -187,21 +202,13 @@ export async function syncMetaBreakdowns(shopDomain, progressKey, daysBack = 7) 
     for (let b = 0; b < ranges.length; b += CONCURRENCY) {
       const batch = ranges.slice(b, b + CONCURRENCY);
 
-      const pct = Math.round((workCompleted / totalWork) * 100);
-      const elapsed = Date.now() - startTime;
-      const elapsedStr = formatElapsed(elapsed);
-      let etaStr = "calculating...";
-      if (workCompleted > 2) {
-        const remaining = ((totalWork - workCompleted) / workCompleted) * elapsed;
-        etaStr = `~${formatElapsed(remaining)} left`;
-      }
-      const usage = getMetaApiUsage();
-      const rowRate = elapsed > 0 ? Math.round(totalRows / (elapsed / 1000)) : 0;
       setProgress(key, {
         status: "running",
         current: workCompleted,
         total: totalWork,
-        message: `Step 2/3 · Breakdowns (${config.type}): ${batch[0].since} → ${batch[batch.length - 1].until} · ${pct}% · ${totalRows.toLocaleString()} rows (${rowRate}/s) · ${elapsedStr}, ${etaStr} · API ${usage}%`,
+        unitLabel: "breakdowns",
+        rowsImported: totalRows,
+        detail: `Analysing ${humaniseBreakdown(config.type)}`,
       });
 
       const results = await Promise.all(

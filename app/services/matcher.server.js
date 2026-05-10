@@ -439,7 +439,8 @@ export async function runAttribution(shopDomain) {
       status: "running",
       current: di + 1,
       total: dates.length,
-      message: `Processing ${day} (${di + 1} of ${dates.length})`,
+      unitLabel: "days",
+      detail: `Matching orders to Meta ads (${day})`,
     });
     console.log(`[Attribution] Processing ${day} (${di + 1}/${dates.length})...`);
     const dayInsights = insightsByDate.get(day) || [];
@@ -661,7 +662,7 @@ export async function runAttribution(shopDomain) {
   }
 
   // Enrich all attributions with demographic data from MetaBreakdown
-  setProgress(`runAttribution:${shopDomain}`, { status: "running", message: "Enriching attribution demographics..." });
+  setProgress(`runAttribution:${shopDomain}`, { status: "running", detail: "Enriching customer demographics" });
   const { enrichAll } = await import("./attributionEnrichment.server.js");
   const enrichResult = await enrichAll(shopDomain);
 
