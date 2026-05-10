@@ -4,7 +4,7 @@ import { Page, Layout, Card, Text, Button, BlockStack, InlineStack, Banner, Prog
 import ReportTabs from "../components/ReportTabs";
 import OnboardingFlow from "../components/OnboardingFlow";
 import { useState, useEffect, useRef, useCallback } from "react";
-import { authenticate } from "../shopify.server";
+import { authenticate, unauthenticated } from "../shopify.server";
 import db from "../db.server";
 import { syncOrders } from "../services/orderSync.server";
 import { syncMetaAll } from "../services/metaSync.server";
@@ -380,6 +380,12 @@ export const action = async ({ request }) => {
   if (actionType === "begin-fit-test") {
     // Fire-and-forget. The form submit returns 303 immediately and
     // OnboardingFlow's polling does the rest.
+    //
+    // CRITICAL: do NOT capture the request-scoped `admin` GraphQL client in
+    // the IIFE - by the time the IIFE actually runs, the request has ended
+    // and the session reference is gone, so every GraphQL call throws
+    // "Missing access token when creating GraphQL client". Build a fresh
+    // admin client from the offline token via unauthenticated.admin() instead.
     (async () => {
       try {
         const { syncOrdersForFitTest } = await import("../services/orderSync.server.js");
@@ -391,7 +397,8 @@ export const action = async ({ request }) => {
           update: { onboardingPhase: "fit-importing", onboardingStartedAt: new Date() },
         });
 
-        await syncOrdersForFitTest(admin, shopDomain);
+        const { admin: bgAdmin } = await unauthenticated.admin(shopDomain);
+        await syncOrdersForFitTest(bgAdmin, shopDomain);
 
         await db.shop.update({
           where: { shopDomain },
