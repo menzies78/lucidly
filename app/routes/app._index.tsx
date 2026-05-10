@@ -1,8 +1,8 @@
-import { json, redirect } from "@remix-run/node";
+import { json } from "@remix-run/node";
 import { useLoaderData, useSubmit, useNavigate, useNavigation, useRevalidator, useSearchParams } from "@remix-run/react";
 import { Page, Layout, Card, Text, Button, BlockStack, InlineStack, Banner, ProgressBar, Spinner } from "@shopify/polaris";
 import ReportTabs from "../components/ReportTabs";
-import OnboardingProgressCard from "../components/OnboardingProgressCard";
+import OnboardingFlow from "../components/OnboardingFlow";
 import { useState, useEffect, useRef, useCallback } from "react";
 import { authenticate } from "../shopify.server";
 import db from "../db.server";
@@ -17,11 +17,6 @@ import { currencySymbolFromCode } from "../utils/currency";
 import { cached as queryCached } from "../services/queryCache.server";
 import { isInternalShop } from "../utils/access.server";
 
-// Cross-request guard: avoid kicking off the same auto-install order sync
-// twice if the merchant rapid-refreshes the dashboard before the first sync
-// has had a chance to write lastOrderSync. Memory-only, per-process.
-const __autoInstallSyncStarted = (globalThis.__autoInstallSyncStarted ||= new Set());
-
 export const loader = async ({ request }) => {
   const { admin, session } = await authenticate.admin(request);
   const shopDomain = session.shop;
@@ -30,37 +25,20 @@ export const loader = async ({ request }) => {
   const tz = shop?.shopifyTimezone || "UTC";
 
   // ── Onboarding install gate ─────────────────────────────────────────
-  // First-load auto-trigger of historical Shopify backfill. The Fit Report
-  // can't run without orders, so we kick the sync the moment a merchant
-  // lands on the dashboard with an empty DB. Fire-and-forget; the dashboard
-  // shows the existing welcome banner until the import lands.
-  if (shop && !shop.lastOrderSync && !__autoInstallSyncStarted.has(shopDomain)) {
-    __autoInstallSyncStarted.add(shopDomain);
-    console.log(`[onboarding] ${shopDomain}: auto-firing initial Shopify backfill`);
-    (async () => {
-      try {
-        const { syncOrders } = await import("../services/orderSync.server.js");
-        await syncOrders(admin, shopDomain);
-      } catch (err) {
-        console.error(`[onboarding] auto-backfill failed for ${shopDomain}: ${err.message}`);
-      } finally {
-        __autoInstallSyncStarted.delete(shopDomain);
-      }
-    })();
-  }
-
-  // Once the historical orders are in, the next gate is the Fit Report.
-  // We redirect *once* - after the merchant has seen it, fitTestComputedAt
-  // is set and the redirect stops firing. They can still hit Skip on the
-  // Fit page to land on the dashboard, and re-visit /app/fit-test from the
-  // Meta-connect CTA later.
-  if (
-    shop?.lastOrderSync
-    && !shop.metaAccessToken
-    && !shop.fitTestComputedAt
-    && !shop.onboardingCompleted
-  ) {
-    return redirect("/app/fit-test");
+  // The new flow is driven entirely by Shop.onboardingPhase (welcome →
+  // fit-importing → fit-running → fit-ready → ingesting → complete).
+  // The OnboardingFlow component handles the UI; we no longer auto-fire
+  // a full backfill or redirect to /app/fit-test on first load. The full
+  // 2-year Shopify backfill happens later, inside the orchestrator's
+  // shopify track, which kicks off after the merchant connects Meta.
+  //
+  // Make sure a Shop row exists so OnboardingFlow has something to drive.
+  if (!shop) {
+    await db.shop.upsert({
+      where: { shopDomain },
+      create: { shopDomain, onboardingPhase: "welcome" },
+      update: {},
+    });
   }
   // ────────────────────────────────────────────────────────────────────
 
@@ -333,8 +311,10 @@ export const loader = async ({ request }) => {
     currencySymbol, isNewInstall, activeTaskFromServer,
     utmOnlyCount, utmOnlyRevenue, utmAndLucidlyCount,
     onboardingCompleted: shop?.onboardingCompleted || false,
-    onboardingPhase: shop?.onboardingPhase || "shopify",
+    onboardingPhase: shop?.onboardingPhase || "welcome",
     onboardingStartedAt: shop?.onboardingStartedAt || null,
+    fitTestScore: shop?.fitTestScore ?? null,
+    fitTestComputedAt: shop?.fitTestComputedAt || null,
     webhooksRegisteredAt: shop?.webhooksRegisteredAt || null,
     webhooksFirstFiredAt: shop?.webhooksFirstFiredAt || null,
     pixelCalibration: {
@@ -383,6 +363,53 @@ export const action = async ({ request }) => {
   if (actionType === "syncOrders") {
     runInBackground(() => syncOrders(admin, shopDomain));
     return json({ started: true, task: "syncOrders" });
+  }
+  // ── Onboarding: Begin Fit Test ──────────────────────────────────────
+  // Triggered by the Welcome card's only button. Chains:
+  //   1. set Shop.onboardingPhase = "fit-importing"
+  //   2. syncOrdersForFitTest (90d minimal — just timestamps + values)
+  //   3. set onboardingPhase = "fit-running"
+  //   4. runFitTest (rival-density scoring, populates Shop.fitTestScore)
+  //   5. set onboardingPhase = "fit-ready"
+  //
+  // Each phase transition is persisted to the DB so OnboardingFlow's poll
+  // (which reads Shop.onboardingPhase) advances the UI in real time. If a
+  // step throws, we leave the merchant on the failed phase rather than
+  // silently rolling back — the next page load can then retry from where
+  // they were.
+  if (actionType === "begin-fit-test") {
+    // Fire-and-forget. The form submit returns 303 immediately and
+    // OnboardingFlow's polling does the rest.
+    (async () => {
+      try {
+        const { syncOrdersForFitTest } = await import("../services/orderSync.server.js");
+        const { runFitTest } = await import("../services/fitTest.server.js");
+
+        await db.shop.upsert({
+          where: { shopDomain },
+          create: { shopDomain, onboardingPhase: "fit-importing", onboardingStartedAt: new Date() },
+          update: { onboardingPhase: "fit-importing", onboardingStartedAt: new Date() },
+        });
+
+        await syncOrdersForFitTest(admin, shopDomain);
+
+        await db.shop.update({
+          where: { shopDomain },
+          data: { onboardingPhase: "fit-running" },
+        });
+
+        await runFitTest(shopDomain);
+
+        await db.shop.update({
+          where: { shopDomain },
+          data: { onboardingPhase: "fit-ready" },
+        });
+      } catch (err) {
+        console.error(`[begin-fit-test] failed for ${shopDomain}: ${err.message}`);
+        // Leave phase where it is — UI can retry by re-clicking on next load.
+      }
+    })();
+    return json({ started: true, task: "begin-fit-test" });
   }
   if (actionType === "syncMeta") {
     runInBackground(async () => {
@@ -766,7 +793,7 @@ export default function Index() {
     lastSync, lastMetaSync, metaConnected, metaAdAccountId, attribution,
     currencySymbol, isNewInstall, activeTaskFromServer,
     utmOnlyCount, utmOnlyRevenue, utmAndLucidlyCount, onboardingCompleted,
-    onboardingPhase, onboardingStartedAt,
+    onboardingPhase, onboardingStartedAt, fitTestScore, fitTestComputedAt,
     webhooksRegisteredAt, webhooksFirstFiredAt, pixelCalibration,
     matchAccuracyChart, matchRate30d, matchRate30dDetail, utmHealth, syncFreshness,
     recentlyStoppedCampaigns, activeCampaignCount, isInternal, backups,
@@ -895,6 +922,31 @@ export default function Index() {
   // Sync freshness status
   const syncOk = syncFreshness.metaSyncAgo !== null && syncFreshness.metaSyncAgo < 180; // < 3 hours
   const syncWarning = syncFreshness.metaSyncAgo !== null && syncFreshness.metaSyncAgo < 1440; // < 24 hours
+
+  // ── Onboarding gate ────────────────────────────────────────────────
+  // Until onboardingCompleted flips to true the merchant sees ONLY the
+  // OnboardingFlow component (welcome → fit-test → ingest). The rest of
+  // the dashboard is hidden so the merchant has 100% focus on step 1.
+  // Internal shops still see their tools because we (Andy) need them to
+  // debug merchants mid-onboarding.
+  if (!onboardingCompleted) {
+    return (
+      <Page title="Welcome to Lucidly" fullWidth>
+        <BlockStack gap="500">
+          <OnboardingFlow shopDomain={shopDomain} />
+          {isInternal && (
+            <Banner tone="warning">
+              <Text as="p" variant="bodyMd">
+                Internal admin: dashboard hidden until merchant completes onboarding.
+                Phase: <strong>{onboardingPhase}</strong>
+                {fitTestScore !== null && fitTestScore !== undefined ? ` · Fit Score: ${fitTestScore}` : ""}
+              </Text>
+            </Banner>
+          )}
+        </BlockStack>
+      </Page>
+    );
+  }
 
   return (
     <Page title="Health" fullWidth>
@@ -1123,104 +1175,12 @@ export default function Index() {
           </Layout.Section>
         </Layout>
 
-        {/* ═══ Phased ingest progress card (auto-driven, shown only while
-            onboardingPhase=="ingesting"). The card hides itself when the
-            backend reports onboardingCompleted=true and triggers a revalidate
-            so the dashboard re-renders with the freshly-imported data. ═══ */}
-        {!onboardingCompleted && onboardingPhase === "ingesting" && (
-          <OnboardingProgressCard />
-        )}
-
-        {/* ═══ Manual Getting-Started buttons - kept for the pre-ingest
-            phases (shopify/fit/meta) and for any merchant who skipped the
-            auto-ingest path. Hidden once the orchestrator is running so we
-            don't show two cards at once. ═══ */}
-        {!onboardingCompleted && onboardingPhase !== "ingesting" && (
-          <Card>
-            <BlockStack gap="300">
-              <Text as="h2" variant="headingLg">Getting Started</Text>
-              <InlineStack gap="400" wrap>
-                <BlockStack gap="100">
-                  <Button variant={orderCount === 0 ? "primary" : undefined} onClick={() => startTask("syncOrders")} disabled={isRunning} loading={activeTask === "syncOrders"}>
-                    1. Sync Shopify Orders
-                  </Button>
-                  <Text as="p" variant="bodySm" tone="subdued">
-                    {lastSync ? `\u2713 ${orderCount.toLocaleString()} orders imported` : "Import 2 years of order history"}
-                  </Text>
-                </BlockStack>
-
-                <BlockStack gap="100">
-                  <Button
-                    variant={!metaConnected && orderCount > 0 ? "primary" : undefined}
-                    onClick={() => navigate("/app/meta-connect")}
-                    disabled={isRunning}
-                  >
-                    {metaConnected ? "2. Connect Meta Ads \u2713" : "2. Connect Meta Ads"}
-                  </Button>
-                  <Text as="p" variant="bodySm" tone="subdued">
-                    {metaConnected ? `Connected: ${metaAdAccountId}` : "Link your Meta ad account"}
-                  </Text>
-                </BlockStack>
-
-                <BlockStack gap="100">
-                  <Button
-                    variant={metaConnected && !lastMetaSync ? "primary" : undefined}
-                    onClick={() => startTask("syncMetaHistorical")}
-                    disabled={isRunning || !metaConnected}
-                    loading={activeTask === "syncMetaHistorical"}
-                  >
-                    {lastMetaSync ? "3. Sync Meta Ads Data \u2713" : "3. Sync Meta Ads Data"}
-                  </Button>
-                  <Text as="p" variant="bodySm" tone="subdued">
-                    {lastMetaSync ? `Last: ${new Date(lastMetaSync).toLocaleString()}` : "2 years of ad performance data"}
-                  </Text>
-                </BlockStack>
-
-                <BlockStack gap="100">
-                  <Button
-                    variant={lastMetaSync && orderCount > 0 && attribution.total === 0 ? "primary" : undefined}
-                    onClick={() => startTask("runAttribution")}
-                    disabled={isRunning || !metaConnected || orderCount === 0 || !lastMetaSync}
-                    loading={activeTask === "runAttribution"}
-                  >
-                    {attribution.total > 0 ? "4. Run Customer Matcher \u2713" : "4. Run Customer Matcher"}
-                  </Button>
-                  <Text as="p" variant="bodySm" tone="subdued">
-                    {attribution.total > 0 ? `${attribution.matched} matched, ${attribution.unmatched} unmatched` : "Match orders to Meta conversions"}
-                  </Text>
-                </BlockStack>
-
-                <BlockStack gap="100">
-                  <Button
-                    tone="success"
-                    variant={attribution.total > 0 ? "primary" : undefined}
-                    onClick={() => startTask("startOngoingSync")}
-                    disabled={isRunning || attribution.total === 0}
-                    loading={activeTask === "startOngoingSync"}
-                  >
-                    5. Start Ongoing Syncing
-                  </Button>
-                  <Text as="p" variant="bodySm" tone="subdued">Enable automatic hourly sync</Text>
-                </BlockStack>
-              </InlineStack>
-
-              {progress?.status === "running" && (
-                <BlockStack gap="200">
-                  <InlineStack gap="200" align="center">
-                    <Spinner size="small" />
-                    <Text as="p" variant="bodyMd">{progress.message || "Processing..."}</Text>
-                  </InlineStack>
-                  {progressPct !== null && (
-                    <ProgressBar progress={progressPct} tone="highlight" size="small" />
-                  )}
-                </BlockStack>
-              )}
-              {progress?.status === "error" && (
-                <Banner tone="critical"><p>Task failed: {progress.error}</p></Banner>
-              )}
-            </BlockStack>
-          </Card>
-        )}
+        {/* ═══ Onboarding cards removed — the !onboardingCompleted gate
+            higher up renders <OnboardingFlow /> in place of the entire
+            dashboard. The old "Getting Started" 5-step card is now dead
+            code (replaced by the welcome → fit-test → ingest flow) and
+            isn't rendered here anymore. Internal Tools below remain for
+            staff debugging. ═══ */}
 
         {/* ═══ Internal Tools (Lucidly admin only) ═══
             Gated behind isInternalShop() - controlled by LUCIDLY_INTERNAL_SHOPS

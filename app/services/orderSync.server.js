@@ -212,6 +212,144 @@ async function computeOrderCounts(shopDomain, customerIdsToUpdate = null) {
   console.log(`[OrderSync] Computed order counts for ${totalUpdated} orders across ${customerIds.length} customers`);
 }
 
+/**
+ * Minimal 90-day order sync used ONLY by the Fit Test on first install.
+ *
+ * What it does:
+ *   - Pulls last 90 days of orders, page size 50, only the four fields the
+ *     Fit Test needs: id, createdAt, totalPriceSet (original), and the channel
+ *     handle so we can flag isOnlineStore.
+ *   - Upserts each row into the Order table with frozenTotalPrice = the
+ *     ORIGINAL total at order-creation time. NO refund parsing, so a £200
+ *     order that's later fully refunded still scores as a £200 candidate
+ *     (without this, refunded orders collapse to £0 and pollute the rival
+ *     density calc).
+ *   - Skips Customer, OrderLineItem, UTM, gender inference, refund tables,
+ *     etc. The full syncOrders() runs afterwards and overwrites these rows
+ *     with the rich data via the same upsert keys (shopDomain + shopifyOrderId)
+ *     so there's no contamination.
+ *   - Does NOT set Shop.lastOrderSync. That field is the contract used by
+ *     full syncOrders() to decide whether to do an initial backfill or an
+ *     incremental window. Setting it here would silently flip the next full
+ *     run from "go back 2 years" to "only the last 90d".
+ *
+ * Returns: { totalImported, ordersAnalysable }
+ *   ordersAnalysable = subset that passed isOnlineStore + totalPrice > 0,
+ *   i.e. what the Fit Test actually scores.
+ */
+export async function syncOrdersForFitTest(admin, shopDomain) {
+  console.log(`[FitTestSync] Starting 90d minimal sync for ${shopDomain}`);
+  const taskId = `fit-test-import:${shopDomain}`;
+  setProgress(taskId, { status: "running", current: 0, message: "Connecting to Shopify..." });
+
+  // Detect currency + timezone so the Fit Test histogram bucket-by-hour uses
+  // the merchant's local time rather than UTC. Cheap, only one call.
+  try {
+    const shopInfoData = await graphqlWithRetry(
+      admin,
+      `{ shop { currencyCode ianaTimezone } }`,
+      null,
+      "FitTestSync/shopInfo"
+    );
+    const detectedCurrency = shopInfoData.data?.shop?.currencyCode;
+    const detectedTimezone = shopInfoData.data?.shop?.ianaTimezone;
+    if (detectedCurrency || detectedTimezone) {
+      const updateData = {};
+      if (detectedCurrency) updateData.shopifyCurrency = detectedCurrency;
+      if (detectedTimezone) updateData.shopifyTimezone = detectedTimezone;
+      await db.shop.upsert({
+        where: { shopDomain },
+        create: { shopDomain, ...updateData },
+        update: updateData,
+      });
+    }
+  } catch (err) {
+    console.warn(`[FitTestSync] Could not detect shop settings: ${err.message}`);
+  }
+
+  const ninetyDaysAgo = new Date();
+  ninetyDaysAgo.setUTCDate(ninetyDaysAgo.getUTCDate() - 90);
+  const sinceIso = ninetyDaysAgo.toISOString();
+
+  let hasNextPage = true;
+  let cursor = null;
+  let totalImported = 0;
+  let ordersAnalysable = 0;
+  let pageCount = 0;
+
+  while (hasNextPage) {
+    const query = `
+      query GetFitTestOrders($cursor: String) {
+        orders(first: 50, after: $cursor, sortKey: CREATED_AT, query: "created_at:>='${sinceIso}' status:any") {
+          edges {
+            cursor
+            node {
+              id
+              createdAt
+              totalPriceSet { shopMoney { amount currencyCode } }
+              channelInformation { channelDefinition { handle } }
+            }
+          }
+          pageInfo { hasNextPage }
+        }
+      }
+    `;
+    const data = await graphqlWithRetry(admin, query, { cursor }, `FitTestSync/page ${pageCount + 1}`);
+    pageCount++;
+    const edges = data.data.orders.edges;
+
+    for (const edge of edges) {
+      const order = edge.node;
+      cursor = edge.cursor;
+
+      const shopifyOrderId = order.id.replace("gid://shopify/Order/", "");
+      const totalPrice = parseFloat(order.totalPriceSet.shopMoney.amount);
+      const currency = order.totalPriceSet.shopMoney.currencyCode;
+      const channelHandle = order.channelInformation?.channelDefinition?.handle || "unknown";
+      const isOnlineStore = channelHandle === "online_store" || channelHandle === "web" || channelHandle === "unknown";
+
+      // Upsert minimal row. frozenTotalPrice = original price (Shopify's
+      // totalPriceSet IS the order-time total - it doesn't include later
+      // refunds; refunds live in a separate refunds[] payload we deliberately
+      // don't touch here).
+      await db.order.upsert({
+        where: { shopDomain_shopifyOrderId: { shopDomain, shopifyOrderId } },
+        create: {
+          shopDomain, shopifyOrderId,
+          createdAt: new Date(order.createdAt),
+          totalPrice, currency,
+          channelName: channelHandle, isOnlineStore,
+          frozenTotalPrice: totalPrice,
+        },
+        // If the row somehow already exists (e.g. retry), only refresh the
+        // four Fit-Test fields. Don't clobber any richer data a previous
+        // full sync may have written.
+        update: {
+          createdAt: new Date(order.createdAt),
+          totalPrice,
+          channelName: channelHandle, isOnlineStore,
+        },
+      });
+
+      totalImported++;
+      if (isOnlineStore && totalPrice > 0) ordersAnalysable++;
+
+      if (totalImported % 25 === 0) {
+        setProgress(taskId, {
+          status: "running",
+          current: totalImported,
+          message: `Importing your last 90 days of orders: ${totalImported.toLocaleString()} so far...`,
+        });
+      }
+    }
+    hasNextPage = data.data.orders.pageInfo.hasNextPage;
+  }
+
+  completeProgress(taskId, { totalImported, ordersAnalysable });
+  console.log(`[FitTestSync] Complete: imported=${totalImported} analysable=${ordersAnalysable}`);
+  return { totalImported, ordersAnalysable };
+}
+
 export async function syncOrders(admin, shopDomain) {
   console.log(`[OrderSync] Starting sync for ${shopDomain}`);
 
