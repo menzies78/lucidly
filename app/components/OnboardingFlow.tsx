@@ -366,31 +366,11 @@ function ScoreTile({ value, label, sub, color }: {
         {label}
       </div>
       <div style={{ fontSize: 44, fontWeight: 700, color, lineHeight: 1.1, margin: "8px 0 2px" }}>
-        {value}<span style={{ fontSize: 18, color: TEXT_DIM, fontWeight: 500 }}> / 100</span>
+        {value}<span style={{ fontSize: 28, color, fontWeight: 600 }}>%</span>
       </div>
       <div style={{ fontSize: 12, color: TEXT_DIM, lineHeight: 1.4 }}>{sub}</div>
     </div>
   );
-}
-
-function HistogramRow({ label, pct, color }: { label: string; pct: number; color: string }) {
-  return (
-    <div style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 13 }}>
-      <div style={{ width: 90, color: TEXT_DIM, flexShrink: 0 }}>{label}</div>
-      <div style={{ flex: 1, height: 8, background: "#F3F4F6", borderRadius: 999, overflow: "hidden" }}>
-        <div style={{ width: `${Math.max(pct, 1)}%`, height: "100%", background: color, transition: "width 0.6s" }} />
-      </div>
-      <div style={{ width: 42, textAlign: "right", color: "#1F2937", fontWeight: 600 }}>{pct}%</div>
-    </div>
-  );
-}
-
-function fmtMoney(n: number, currency: string): string {
-  try {
-    return new Intl.NumberFormat("en-GB", {
-      style: "currency", currency, maximumFractionDigits: 0,
-    }).format(n);
-  } catch { return `${currency} ${Math.round(n).toLocaleString()}`; }
 }
 
 function FitReadyCard({ score, data, navigate }: {
@@ -402,15 +382,8 @@ function FitReadyCard({ score, data, navigate }: {
     score >= 50 ? { label: "Workable", color: "#D97706" } :
                   { label: "Challenging", color: RED };
 
-  // Pull projection + substance from the fit test data blob. If for any
-  // reason it's missing (older shop, computed before this code shipped)
-  // we degrade to a single-score view.
   const historic = data?.historicScore ?? score;
   const projected = data?.projectedOngoingScore ?? null;
-  const orders = data?.ordersAnalysed ?? null;
-  const perDay = data?.ordersPerDay ?? null;
-  const aov = data?.aov ?? null;
-  const hist = data?.histogramPct ?? null;
 
   return (
     <Box paddingBlockEnd="600">
@@ -426,99 +399,40 @@ function FitReadyCard({ score, data, navigate }: {
               </Text>
             </BlockStack>
 
-            {/* Dual score tiles */}
             <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
               <ScoreTile
                 value={historic}
                 label="Historic batch accuracy"
-                sub="If we re-matched all 90 days of orders against Meta in one shot"
+                sub="All Meta results up until today will be matched to their corresponding Shopify orders with this level of accuracy"
                 color={verdict.color}
               />
               {projected !== null && (
                 <ScoreTile
                   value={projected}
                   label="Projected ongoing accuracy"
-                  sub="What the live matcher achieves as orders arrive one at a time"
+                  sub="All Meta results going forwards from now will be matched with close to this accuracy"
                   color={PURPLE}
                 />
               )}
             </div>
 
-            {/* Why two numbers */}
-            {projected !== null && (
-              <Box padding="400" background="bg-surface-secondary" borderRadius="300">
-                <BlockStack gap="200">
-                  <Text as="h3" variant="headingMd">Why two numbers?</Text>
-                  <Text as="p" variant="bodyMd" tone="subdued">
-                    The historic score is the floor - it assumes we&apos;re disambiguating
-                    every order against 90 days of competitors at once. In real life
-                    the matcher sees orders one at a time as they arrive. Most rivals
-                    get uniquely matched first and drop out of the pool, lifting confidence
-                    on the rest. The projected number is calibrated against Lucidly&apos;s
-                    existing merchants and refines as more data flows in.
-                  </Text>
-                </BlockStack>
-              </Box>
-            )}
-
-            {/* Substance: real numbers from your 90 days */}
-            {orders !== null && (
-              <Box padding="400" background="bg-surface-secondary" borderRadius="300">
-                <BlockStack gap="300">
-                  <Text as="h3" variant="headingMd">What we found in your last 90 days</Text>
-                  <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 16 }}>
-                    <div>
-                      <div style={{ fontSize: 22, fontWeight: 700, color: "#1F2937" }}>{orders.toLocaleString()}</div>
-                      <div style={{ fontSize: 12, color: TEXT_DIM }}>orders analysed</div>
-                    </div>
-                    <div>
-                      <div style={{ fontSize: 22, fontWeight: 700, color: "#1F2937" }}>{perDay}</div>
-                      <div style={{ fontSize: 12, color: TEXT_DIM }}>orders/day average</div>
-                    </div>
-                    {aov && (
-                      <div>
-                        <div style={{ fontSize: 22, fontWeight: 700, color: "#1F2937" }}>{fmtMoney(aov.mean, aov.currency)}</div>
-                        <div style={{ fontSize: 12, color: TEXT_DIM }}>AOV ({aov.spread} spread)</div>
-                      </div>
-                    )}
-                  </div>
-
-                  {hist && (
-                    <BlockStack gap="200">
-                      <Text as="p" variant="bodySm" tone="subdued">
-                        Rival distribution - other orders within ±2% value sharing
-                        your Meta hour-bucket. Fewer rivals = higher confidence.
-                      </Text>
-                      <BlockStack gap="100">
-                        <HistogramRow label="0 rivals" pct={hist["0"]} color={GREEN} />
-                        <HistogramRow label="1 rival" pct={hist["1"]} color="#10B981" />
-                        <HistogramRow label="2 rivals" pct={hist["2"]} color="#F59E0B" />
-                        <HistogramRow label="3 rivals" pct={hist["3"]} color="#EF4444" />
-                        <HistogramRow label="4+ rivals" pct={hist["4+"]} color="#991B1B" />
-                      </BlockStack>
-                      <Text as="p" variant="bodySm" tone="subdued">
-                        {hist["0"]}% of your orders sit alone in their slot - those
-                        match with full certainty regardless of any other signal.
-                      </Text>
-                    </BlockStack>
-                  )}
-                </BlockStack>
-              </Box>
-            )}
-
-            {/* What's next */}
             <Box padding="400" background="bg-surface-secondary" borderRadius="300">
-              <BlockStack gap="200">
+              <BlockStack gap="300">
                 <Text as="h3" variant="headingMd">What&apos;s next</Text>
                 <Text as="p" variant="bodyMd" tone="subdued">
-                  Connect your Meta Ads account and we&apos;ll import your full
-                  Shopify order history alongside 13 months of Meta data - in
-                  parallel. Then we match the two together and your dashboard
-                  comes alive.
+                  Click the button below to connect your Meta Ads account to
+                  Lucidly, and we&apos;ll begin importing up to 2 years of
+                  Shopify data alongside 13 months of Meta Ads data (the
+                  maximum period of time where Meta provides the granular data
+                  we require to match your orders).
                 </Text>
                 <Text as="p" variant="bodyMd" tone="subdued">
-                  This typically takes 10-30 minutes. You can close this tab -
-                  we&apos;ll email you when your dashboard is ready.
+                  This typically takes 30 - 60 minutes, but could be more for
+                  stores with more data.
+                </Text>
+                <Text as="p" variant="bodyMd" tone="subdued">
+                  You can close this tab and come back later when the import
+                  is complete.
                 </Text>
               </BlockStack>
             </Box>

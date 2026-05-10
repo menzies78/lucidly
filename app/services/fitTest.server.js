@@ -30,7 +30,10 @@
 import db from "../db.server.js";
 
 const LOOKBACK_DAYS = 90;
-const VALUE_TOLERANCE = 0.02; // ±2% - matches matcher.server.js REVENUE_TOLERANCE
+// ±1% - tighter than the matcher's REVENUE_TOLERANCE (0.02) because in practice
+// the vast majority of real matches land within ±0.4% of the conversion value.
+// ±2% over-counts rivals that the matcher would never actually confuse.
+const VALUE_TOLERANCE = 0.01;
 const SLOT_PADDING_MS = 6 * 60 * 1000; // -6 min - matches matcher.server.js PADDING_MINUTES
 const HOUR_MS = 60 * 60 * 1000;
 
