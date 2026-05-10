@@ -221,8 +221,8 @@ function WelcomeCard({ fetcher }: { fetcher: ReturnType<typeof useFetcher> }) {
 
             <Text as="p" variant="bodyLg" tone="subdued">
               Lucidly works by matching your Meta Ads conversions to your Shopify
-              orders with statistical certainty - so every campaign metric you
-              see is grounded in real revenue.
+              orders with statistical certainty, so you know - with confidence -
+              which ads drove which sales.
             </Text>
 
             <Box
@@ -236,17 +236,17 @@ function WelcomeCard({ fetcher }: { fetcher: ReturnType<typeof useFetcher> }) {
                 <Text as="h3" variant="headingMd">What is the Fit Test?</Text>
                 <Text as="p" variant="bodyMd" tone="subdued">
                   Before we import months of data, we run a quick check against
-                  your last 90 days of Shopify orders. We look at how many orders
-                  cluster within the same hour at similar values - the signal
-                  Meta uses to attribute conversions.
+                  your last 90 days of Shopify orders and run them through our
+                  system to assess how good a match Lucidly will be for you.
                 </Text>
                 <Text as="p" variant="bodyMd" tone="subdued">
                   We&apos;ll calculate a projected matching accuracy score so you
-                  know how confidently Lucidly can attribute your ads to revenue
-                  before committing to the full import.
+                  know how confidently Lucidly will be able to attribute your
+                  Meta results against Shopify orders, before committing to a
+                  full import.
                 </Text>
                 <BlockStack gap="100">
-                  <FeatureBullet>Imports just the order timestamps & values - nothing else</FeatureBullet>
+                  <FeatureBullet>Imports just the order timestamps &amp; values - nothing else</FeatureBullet>
                   <FeatureBullet>Takes about 30 seconds for most stores</FeatureBullet>
                   <FeatureBullet>No commitment - see your score before going further</FeatureBullet>
                 </BlockStack>
