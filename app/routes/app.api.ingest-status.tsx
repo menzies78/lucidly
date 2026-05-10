@@ -2,6 +2,7 @@ import { json } from "@remix-run/node";
 import { authenticate } from "../shopify.server";
 import { getIngestStatus } from "../services/ingestOrchestrator.server";
 import { getProgress } from "../services/progress.server";
+import { getFitTest } from "../services/fitTest.server.js";
 
 // Status endpoint for the onboarding flow. Polled every 3s by OnboardingFlow.
 // Returns:
@@ -50,5 +51,10 @@ export const loader = async ({ request }) => {
     status: fitImport.status || "idle",
   } : null;
 
-  return json({ ...status, liveMessage, livePhaseKey, fitImportLive });
+  // Pull the full Fit Test JSON snapshot so the FitReadyCard can show
+  // dual scores (historic + projected ongoing), histogram, AOV, etc.
+  // Cheap - it's a single Shop row read.
+  const fitTestData = await getFitTest(shopDomain);
+
+  return json({ ...status, liveMessage, livePhaseKey, fitImportLive, fitTestData });
 };

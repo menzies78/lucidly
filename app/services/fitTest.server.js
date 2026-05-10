@@ -2,25 +2,46 @@
 // merchant connects Shopify but BEFORE they connect Meta.
 //
 // Premise: Lucidly's Layer-2 statistical matcher correlates Meta hourly
-// conversion slots to Shopify orders by (timestamp ± 30 min, value ± 2%).
-// The accuracy ceiling is bounded by how unique each order is within its
-// time slot at its value. We can compute that uniqueness from Shopify
-// alone - we don't need Meta to predict whether the matcher will work.
+// conversion slots to Shopify orders. Each Meta hourly slot S spans
+// [S - 6 min, S + 60 min] in shop-local time (backward-only padding -
+// the pixel fires after order placement, never before). Within that
+// window an order matches a Meta conversion if value is within ±2%.
+// The accuracy ceiling is bounded by how unique each order is within
+// its slot at its value - we can predict that from Shopify data alone.
 //
-// For each online_store order in the last 90 days we count "rivals" -
-// other online_store orders in the same hour within ±2% value. Per-order
-// confidence = 100 / (1 + rivals). The volume-weighted average across
-// all orders is the predicted match accuracy.
+// Two scores are produced:
+//   1. historicScore - what the BATCH matcher would achieve re-running
+//      over the full 90 days at once. Volume-weighted avg of
+//      100/(1+rivals) across all orders. This is the floor.
+//   2. projectedOngoingScore - what the LIVE incremental matcher tends
+//      to achieve as orders arrive one at a time. Computed as
+//      historic + α × (100 - historic) where α ("gap-recovery factor")
+//      is calibrated from observed merchants. The incremental matcher
+//      disambiguates rivals over time (matched orders drop from the
+//      rival pool, post-processor upgrades remaining rivals to 100%
+//      when alternatives clear), so live confidence sits above the
+//      static fit score.
 //
-// Output is stored on Shop.fitTestScore (0-100) and Shop.fitTestData
-// (JSON snapshot of the histogram, worst hours, AOV spread). The Fit
-// Report UI reads from the JSON snapshot rather than recomputing.
+// Output is stored on Shop.fitTestScore (= historicScore for backward
+// compat) and Shop.fitTestData (JSON snapshot of histogram, worst hours,
+// AOV spread, projectedOngoingScore, gapRecoveryFactor). The Fit Ready
+// card reads from the JSON snapshot.
 
 import db from "../db.server.js";
 
 const LOOKBACK_DAYS = 90;
-const VALUE_TOLERANCE = 0.02; // ±2% - matches matcher.server.js
-const TIME_PAD_MS = 30 * 60 * 1000; // ±30 min - matches matcher hourly slot
+const VALUE_TOLERANCE = 0.02; // ±2% - matches matcher.server.js REVENUE_TOLERANCE
+const SLOT_PADDING_MS = 6 * 60 * 1000; // -6 min - matches matcher.server.js PADDING_MINUTES
+const HOUR_MS = 60 * 60 * 1000;
+
+// Gap-recovery factor: fraction of the (100 - historic) gap that the live
+// incremental matcher typically reclaims. Seeded from Vollebak: historic 91
+// → live 99 = α = 0.89. Will be replaced with a learned median across all
+// calibrated merchants once the FitCalibration table is wired up (see
+// projectedOngoingScore comment above).
+//
+// TODO: replace with median(α) across FitCalibration rows where sampleSize ≥ 30d.
+const GAP_RECOVERY_FACTOR = 0.89;
 
 /**
  * Compute and persist the Fit Test for a shop.
@@ -29,6 +50,16 @@ const TIME_PAD_MS = 30 * 60 * 1000; // ±30 min - matches matcher hourly slot
  */
 export async function runFitTest(shopDomain) {
   const since = new Date(Date.now() - LOOKBACK_DAYS * 24 * 3600 * 1000);
+
+  // Look up the shop currency once - we use it on the AOV display so the
+  // Fit Ready card renders the right symbol regardless of where Lucidly is
+  // running. Falls back to GBP if the minimal Fit-Test sync hasn't yet
+  // resolved currencyCode.
+  const shopRow = await db.shop.findUnique({
+    where: { shopDomain },
+    select: { shopifyCurrency: true },
+  });
+  const currency = shopRow?.shopifyCurrency || "GBP";
 
   // Pull only online_store orders - those are the matchable universe.
   // We don't need refunded amount or full enrichment, just timestamp +
@@ -66,34 +97,47 @@ export async function runFitTest(shopDomain) {
     return empty;
   }
 
-  // Time-window scan. Orders are sorted ascending; for each order we walk
-  // forward until we leave the time pad. Within the window we count how
-  // many other orders are within ±2% value. This is O(N * K) where K is
-  // average orders per ±30 min window; for any normal merchant K is tiny
-  // so this scales to 100k+ orders.
+  // Rival counting mirrors the actual matcher. Each Meta hourly slot S spans
+  // [S - 6min, S + 60min] in shop-local time. Two orders are rivals iff they
+  // share at least one candidate slot AND fall within ±2% value of each
+  // other. Most orders have exactly one candidate slot (their natural hour
+  // bucket); orders placed in the last 6 min of an hour are candidates for
+  // both that hour AND the next, since a Meta pixel firing for either slot
+  // would consider them.
+  //
+  // We bucket in UTC rather than shop-local. The rival distribution is
+  // statistically equivalent (we're counting clusters, not labelling them),
+  // and skipping the timezone offset keeps this loader-fast for new installs.
+  const slotsToOrders = new Map(); // slotKey (hourBucket) -> [{idx, value}]
+  const orderToSlots = new Array(orders.length);
+
+  for (let i = 0; i < orders.length; i++) {
+    const ms = orders[i].createdAt.getTime();
+    const slotA = Math.floor(ms / HOUR_MS);
+    const slotB = Math.floor((ms + SLOT_PADDING_MS) / HOUR_MS);
+    const slots = slotA === slotB ? [slotA] : [slotA, slotB];
+    orderToSlots[i] = slots;
+    for (const s of slots) {
+      let bucket = slotsToOrders.get(s);
+      if (!bucket) { bucket = []; slotsToOrders.set(s, bucket); }
+      bucket.push({ idx: i, value: orders[i].totalPrice });
+    }
+  }
+
   const rivalCounts = new Array(orders.length).fill(0);
   for (let i = 0; i < orders.length; i++) {
-    const a = orders[i];
-    const aMs = a.createdAt.getTime();
-    const aLow = a.totalPrice * (1 - VALUE_TOLERANCE);
-    const aHigh = a.totalPrice * (1 + VALUE_TOLERANCE);
-
-    // Walk backwards within window
-    for (let j = i - 1; j >= 0; j--) {
-      const b = orders[j];
-      if (aMs - b.createdAt.getTime() > TIME_PAD_MS) break;
-      if (b.totalPrice >= aLow && b.totalPrice <= aHigh) {
-        rivalCounts[i]++;
+    const myValue = orders[i].totalPrice;
+    const lo = myValue * (1 - VALUE_TOLERANCE);
+    const hi = myValue * (1 + VALUE_TOLERANCE);
+    const rivalSet = new Set();
+    for (const s of orderToSlots[i]) {
+      const peers = slotsToOrders.get(s);
+      for (const peer of peers) {
+        if (peer.idx === i) continue;
+        if (peer.value >= lo && peer.value <= hi) rivalSet.add(peer.idx);
       }
     }
-    // Walk forwards within window
-    for (let j = i + 1; j < orders.length; j++) {
-      const b = orders[j];
-      if (b.createdAt.getTime() - aMs > TIME_PAD_MS) break;
-      if (b.totalPrice >= aLow && b.totalPrice <= aHigh) {
-        rivalCounts[i]++;
-      }
-    }
+    rivalCounts[i] = rivalSet.size;
   }
 
   // Aggregate metrics
@@ -102,6 +146,15 @@ export async function runFitTest(shopDomain) {
     0,
   );
   const score = Math.round(totalConfidence / orders.length);
+
+  // Projected ongoing accuracy - what the live incremental matcher tends to
+  // achieve. The static fit score is a worst case; in practice the matcher
+  // disambiguates clusters over time. α (gap-recovery) is calibrated from
+  // observed merchants - see GAP_RECOVERY_FACTOR comment above.
+  const projectedOngoingScore = Math.min(
+    99,
+    Math.round(score + GAP_RECOVERY_FACTOR * (100 - score)),
+  );
 
   // Histogram of rival counts
   const histogram = { 0: 0, 1: 0, 2: 0, 3: 0, "4+": 0 };
@@ -172,7 +225,10 @@ export async function runFitTest(shopDomain) {
   }
 
   const data = {
-    score,
+    score, // historic batch score - kept as `score` for backward compat
+    historicScore: score,
+    projectedOngoingScore,
+    gapRecoveryFactor: GAP_RECOVERY_FACTOR,
     verdict,
     verdictReason,
     ordersAnalysed: orders.length,
@@ -191,6 +247,7 @@ export async function runFitTest(shopDomain) {
       stdDev: Math.round(stdDev * 100) / 100,
       cv: Math.round(cv * 100) / 100,
       spread: cv >= 0.4 ? "wide" : cv >= 0.2 ? "moderate" : "narrow",
+      currency,
     },
     ordersPerDay: Math.round((orders.length / LOOKBACK_DAYS) * 10) / 10,
     computedAt: new Date().toISOString(),
