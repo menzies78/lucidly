@@ -8,9 +8,9 @@ import { getMetaAuthUrl } from "../services/metaAuth.server";
 // Status endpoint for the onboarding flow. Polled every 3s by OnboardingFlow.
 // Returns:
 //   - ingest phase + per-phase status (from IngestJob rows)
+//   - per-phase live progress (current/total/message) for any running phase,
+//     so each row in the UI gets its own progress bar
 //   - fit-test score + computedAt (from Shop)
-//   - liveMessage for whichever phase is currently running
-//   - livePhaseKey so the UI knows which phase row to attach the live msg to
 //   - fitImportLive for the 90d minimal Shopify sync (separate progress key)
 //
 // All fields are optional/nullable - the UI is defensive and tolerates missing
@@ -21,26 +21,23 @@ export const loader = async ({ request }) => {
 
   const status = await getIngestStatus(shopDomain);
 
-  // Decorate with live progress (the progress.server map keyed per phase) so
-  // the UI can show "65% · 12,840 rows · 8m left" inside the running phase.
-  // With parallel tracks there can be MULTIPLE running phases at once - we
-  // pick the most recently started so the UI shows whatever's freshest.
-  const runningPhases = status.phases.filter(p => p.status === "running");
-  let liveMessage = null;
-  let livePhaseKey = null;
-  if (runningPhases.length > 0) {
-    runningPhases.sort((a, b) => {
-      const ta = a.startedAt ? new Date(a.startedAt).getTime() : 0;
-      const tb = b.startedAt ? new Date(b.startedAt).getTime() : 0;
-      return tb - ta;
-    });
-    const live = runningPhases[0];
-    const p = getProgress(`ingest:${shopDomain}:${live.key}`);
-    if (p?.message) {
-      liveMessage = p.message;
-      livePhaseKey = live.key;
-    }
-  }
+  // Decorate every phase with its live progress (current/total/message) from
+  // the in-memory progress map. We do this for ALL phases, not just one
+  // "winner" - the UI renders a per-phase progress bar so the merchant sees
+  // both Shopify and Meta tracks ticking up in parallel.
+  const phasesWithProgress = status.phases.map(phase => {
+    if (!phase.progressKey) return phase;
+    const p = getProgress(phase.progressKey);
+    if (!p) return phase;
+    return {
+      ...phase,
+      live: {
+        current: typeof p.current === "number" ? p.current : null,
+        total: typeof p.total === "number" ? p.total : null,
+        message: p.message || null,
+      },
+    };
+  });
 
   // Fit Test imports use a different progress key (no IngestJob row - the
   // 90d minimal sync doesn't go through the orchestrator). Surface it
@@ -62,5 +59,5 @@ export const loader = async ({ request }) => {
   const url = new URL(request.url);
   const metaAuthUrl = getMetaAuthUrl(shopDomain, `https://${url.host}`);
 
-  return json({ ...status, liveMessage, livePhaseKey, fitImportLive, fitTestData, metaAuthUrl });
+  return json({ ...status, phases: phasesWithProgress, fitImportLive, fitTestData, metaAuthUrl });
 };

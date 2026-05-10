@@ -19,8 +19,13 @@
 //
 // Track layout:
 //   Track A (Shopify):  shopify-orders-Ny
-//   Track B (Meta):     insights-90d → insights-13mo → breakdowns → entities → creatives
+//   Track B (Meta):     insights-13mo → breakdowns → entities → creatives
 //   Final:              match (depends on BOTH tracks)
+//
+// Each phase declares a `progressKey` mapping to the in-memory progress map
+// written by the underlying sync service. The status endpoint surfaces
+// {current,total,message} per running phase so the UI can render a
+// per-phase progress bar.
 //
 // We deliberately reuse the existing sync functions - this layer is *only*
 // about scheduling and persistence. If a phase fails, we mark the IngestJob
@@ -50,6 +55,7 @@ const TRACKS = {
       key: "shopify-orders",
       label: `${SHOPIFY_BACKFILL_YEARS} years of Shopify orders`,
       requiresAdmin: true,
+      progressKey: (shopDomain) => `syncOrders:${shopDomain}`,
       run: async (shopDomain, ctx) => {
         const r = await syncOrders(ctx.admin, shopDomain);
         return { rowsWritten: r?.totalImported || 0 };
@@ -58,16 +64,9 @@ const TRACKS = {
   ],
   meta: [
     {
-      key: "insights-90d",
-      label: "Last 90 days of ad performance",
-      run: async (shopDomain) => {
-        const r = await syncMetaInsights(shopDomain, 90, `ingest:${shopDomain}:insights-90d`);
-        return { rowsWritten: r?.totalRows || 0 };
-      },
-    },
-    {
       key: "insights-13mo",
       label: "13 months of historical ad data",
+      progressKey: (shopDomain) => `ingest:${shopDomain}:insights-13mo`,
       run: async (shopDomain) => {
         const r = await syncMetaInsights(shopDomain, 400, `ingest:${shopDomain}:insights-13mo`);
         return { rowsWritten: r?.totalRows || 0 };
@@ -76,6 +75,7 @@ const TRACKS = {
     {
       key: "breakdowns",
       label: "Country, platform, age & gender breakdowns",
+      progressKey: (shopDomain) => `ingest:${shopDomain}:breakdowns`,
       run: async (shopDomain) => {
         const r = await syncMetaBreakdowns(shopDomain, `ingest:${shopDomain}:breakdowns`, 7);
         return { rowsWritten: r?.totalRows || 0 };
@@ -84,6 +84,7 @@ const TRACKS = {
     {
       key: "entities",
       label: "Campaign, ad-set & ad metadata",
+      progressKey: null,
       run: async (shopDomain) => {
         await syncMetaEntities(shopDomain);
         return { rowsWritten: 0 };
@@ -92,6 +93,7 @@ const TRACKS = {
     {
       key: "creatives",
       label: "Ad creative thumbnails",
+      progressKey: null,
       run: async (shopDomain) => {
         const r = await refreshAdCreatives(shopDomain);
         return { rowsWritten: r?.updated || 0 };
@@ -104,6 +106,7 @@ const TRACKS = {
 const FINAL_PHASE = {
   key: "match",
   label: "Matching Meta conversions to Shopify orders",
+  progressKey: (shopDomain) => `runAttribution:${shopDomain}`,
   run: async (shopDomain) => {
     const r = await runAttribution(shopDomain);
     return { rowsWritten: r?.matched || 0 };
@@ -308,7 +311,8 @@ export async function getIngestStatus(shopDomain) {
 
   const phases = ALL_PHASES.map(p => {
     const j = byPhase.get(p.key);
-    if (!j) return { key: p.key, label: p.label, track: p.track, status: "pending" };
+    const progressKey = typeof p.progressKey === "function" ? p.progressKey(shopDomain) : null;
+    if (!j) return { key: p.key, label: p.label, track: p.track, status: "pending", progressKey };
     return {
       key: p.key,
       label: p.label,
@@ -318,6 +322,7 @@ export async function getIngestStatus(shopDomain) {
       errorMessage: j.errorMessage,
       startedAt: j.startedAt,
       completedAt: j.completedAt,
+      progressKey,
     };
   });
 

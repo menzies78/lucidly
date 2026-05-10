@@ -28,6 +28,7 @@ type Phase = {
   errorMessage?: string;
   startedAt?: string;
   completedAt?: string;
+  live?: { current: number | null; total: number | null; message: string | null };
 };
 
 type FitTestData = {
@@ -56,6 +57,10 @@ type Status = {
   fitImportLive?: { current?: number; message?: string } | null;
   metaAuthUrl?: string | null;
   inFlight: boolean;
+  // Legacy field name retained on the API but no longer used by the UI -
+  // per-phase progress is now driven by phase.live.
+  liveMessage?: string | null;
+  livePhaseKey?: string | null;
 };
 
 const PURPLE = "#7C3AED";
@@ -91,9 +96,22 @@ function ProgressBar({ pct }: { pct: number }) {
   );
 }
 
-function PhaseRow({ phase, liveMessage, isLive }: {
-  phase: Phase; liveMessage: string | null; isLive: boolean;
-}) {
+function formatElapsed(ms: number): string {
+  const sec = Math.floor(ms / 1000);
+  if (sec < 60) return `${sec}s`;
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min}m ${sec % 60}s`;
+  return `${Math.floor(min / 60)}h ${min % 60}m`;
+}
+
+function phaseElapsed(phase: Phase): string | null {
+  if (!phase.startedAt) return null;
+  const start = new Date(phase.startedAt).getTime();
+  const end = phase.completedAt ? new Date(phase.completedAt).getTime() : Date.now();
+  return formatElapsed(end - start);
+}
+
+function PhaseRow({ phase }: { phase: Phase }) {
   const isRunning = phase.status === "running";
   const isDone = phase.status === "completed";
   const isFailed = phase.status === "failed";
@@ -104,6 +122,12 @@ function PhaseRow({ phase, liveMessage, isLive }: {
   else if (isFailed) { icon = <span style={{ fontWeight: 700, fontSize: 14 }}>{"\u2717"}</span>; color = RED; }
   else if (isRunning) { icon = <Spinner size="small" />; color = PURPLE; }
   else { icon = <span style={{ opacity: 0.4 }}>{"\u25CB"}</span>; color = "#9CA3AF"; }
+
+  const live = phase.live;
+  const livePct = live && typeof live.current === "number" && typeof live.total === "number" && live.total > 0
+    ? Math.round((live.current / live.total) * 100)
+    : null;
+  const elapsed = phaseElapsed(phase);
 
   return (
     <div style={{
@@ -117,24 +141,47 @@ function PhaseRow({ phase, liveMessage, isLive }: {
         {icon}
       </div>
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: 14, fontWeight: 600, color: isRunning ? "#5B21B6" : (isDone ? "#065F46" : "#1F2937") }}>
-          {phase.label}
-          {isDone && phase.rowsWritten ? (
-            <span style={{ marginLeft: 8, fontWeight: 400, fontSize: 12, color: TEXT_DIM }}>
-              {phase.rowsWritten.toLocaleString()} rows
-            </span>
-          ) : null}
-          {phase.track && phase.track !== "final" && (
-            <span style={{
-              marginLeft: 8, fontWeight: 500, fontSize: 11, color: TEXT_DIM,
-              textTransform: "uppercase", letterSpacing: 0.5,
-            }}>
-              {phase.track}
-            </span>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+          <div style={{ fontSize: 14, fontWeight: 600, color: isRunning ? "#5B21B6" : (isDone ? "#065F46" : "#1F2937") }}>
+            {phase.label}
+            {isDone && phase.rowsWritten ? (
+              <span style={{ marginLeft: 8, fontWeight: 400, fontSize: 12, color: TEXT_DIM }}>
+                {phase.rowsWritten.toLocaleString()} rows
+              </span>
+            ) : null}
+          </div>
+          {elapsed && (isRunning || isDone) && (
+            <div style={{ fontSize: 12, color: TEXT_DIM, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>
+              {elapsed}
+            </div>
           )}
         </div>
-        {isRunning && isLive && liveMessage && (
-          <div style={{ fontSize: 12, color: TEXT_DIM, marginTop: 4 }}>{liveMessage}</div>
+        {isRunning && live && (live.current !== null || live.message) && (
+          <div style={{ marginTop: 8 }}>
+            {livePct !== null && (
+              <>
+                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: TEXT_DIM, marginBottom: 4, fontVariantNumeric: "tabular-nums" }}>
+                  <span>
+                    {live.current !== null && live.total !== null
+                      ? `${live.current.toLocaleString()} of ${live.total.toLocaleString()}`
+                      : (live.current?.toLocaleString() ?? "")}
+                  </span>
+                  <span>{livePct}%</span>
+                </div>
+                <ProgressBar pct={livePct} />
+              </>
+            )}
+            {livePct === null && live.current !== null && (
+              <div style={{ fontSize: 12, color: TEXT_DIM, fontVariantNumeric: "tabular-nums" }}>
+                {live.current.toLocaleString()} rows
+              </div>
+            )}
+            {live.message && (
+              <div style={{ fontSize: 12, color: TEXT_DIM, marginTop: livePct !== null ? 6 : 0 }}>
+                {live.message}
+              </div>
+            )}
+          </div>
         )}
         {isFailed && phase.errorMessage && (
           <div style={{ fontSize: 12, color: "#991B1B", marginTop: 4 }}>{phase.errorMessage}</div>
@@ -514,25 +561,19 @@ function IngestingCard({ status }: { status: Status }) {
               {shopifyPhases.length > 0 && (
                 <BlockStack gap="200">
                   <Text as="h3" variant="headingSm">Shopify import</Text>
-                  {shopifyPhases.map(p => (
-                    <PhaseRow key={p.key} phase={p} liveMessage={status.liveMessage} isLive={status.livePhaseKey === p.key} />
-                  ))}
+                  {shopifyPhases.map(p => <PhaseRow key={p.key} phase={p} />)}
                 </BlockStack>
               )}
               {metaPhases.length > 0 && (
                 <BlockStack gap="200">
                   <Text as="h3" variant="headingSm">Meta Ads import</Text>
-                  {metaPhases.map(p => (
-                    <PhaseRow key={p.key} phase={p} liveMessage={status.liveMessage} isLive={status.livePhaseKey === p.key} />
-                  ))}
+                  {metaPhases.map(p => <PhaseRow key={p.key} phase={p} />)}
                 </BlockStack>
               )}
               {finalPhases.length > 0 && (
                 <BlockStack gap="200">
                   <Text as="h3" variant="headingSm">Attribution</Text>
-                  {finalPhases.map(p => (
-                    <PhaseRow key={p.key} phase={p} liveMessage={status.liveMessage} isLive={status.livePhaseKey === p.key} />
-                  ))}
+                  {finalPhases.map(p => <PhaseRow key={p.key} phase={p} />)}
                 </BlockStack>
               )}
             </BlockStack>
