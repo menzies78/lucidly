@@ -289,10 +289,11 @@ export const loader = async ({ request }) => {
   // when the viewer is an internal shop, so production merchants never
   // pay the disk-read cost.
   const isInternal = isInternalShop(shopDomain);
-  let backups: Array<{ backupId: string; startedAt: string; completedAt?: string; totalRows?: number; verified?: boolean; sqliteBytes?: number; lastDownloadedAt?: string | null }> = [];
+  let backups: Array<{ backupId: string; startedAt: string; completedAt?: string; totalRows?: number; verified?: boolean; sqliteBytes?: number; lastDownloadedAt?: string | null; downloadUrl?: string }> = [];
   if (isInternal) {
     try {
       const { listBackups } = await import("../services/shopBackup.server.js");
+      const { signDownloadUrl } = await import("../utils/backupToken.server.js");
       const list = await listBackups(shopDomain);
       backups = list.slice(0, 20).map((b: any) => ({
         backupId: b.backupId,
@@ -302,6 +303,10 @@ export const loader = async ({ request }) => {
         verified: b.verified || false,
         sqliteBytes: b.sqliteSnapshot?.bytes || 0,
         lastDownloadedAt: b.lastDownloadedAt || null,
+        // Pre-sign the download URL so the button is a plain top-level
+        // navigation - browser file downloads can't carry the App Bridge
+        // session token, so /app/* auth would bounce to a login page.
+        downloadUrl: signDownloadUrl(shopDomain, b.backupId),
       }));
     } catch (err: any) {
       console.error("[app._index] listBackups failed:", err.message);
@@ -1362,9 +1367,14 @@ export default function Index() {
               <BlockStack gap="100">
                 <Button onClick={() => {
                   if (!backups || backups.length === 0) return;
-                  // Direct download via the streaming endpoint - no fetch,
-                  // browser handles save dialog.
-                  window.location.href = `/app/api/backup-download/${backups[0].backupId}`;
+                  const url = backups[0].downloadUrl;
+                  if (!url) return;
+                  // Pre-signed URL from the loader: lives at /api/* so the
+                  // browser can do a plain top-level navigation (App Bridge
+                  // session tokens can't ride along on a file download).
+                  // Open in a new tab so the embedded iframe state survives
+                  // if the browser intercepts the download.
+                  window.open(url, "_blank");
                 }} disabled={!backups || backups.length === 0}>
                   Download Latest (.tar.gz)
                 </Button>

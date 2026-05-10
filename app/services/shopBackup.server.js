@@ -311,9 +311,44 @@ export async function backupShop(shopDomain, onProgress = () => {}) {
 }
 
 /**
- * Re-read every JSON file in a backup folder, recompute its sha256, and
- * compare to the manifest. Also re-parses each file (catches malformed
- * JSON that managed to round-trip the disk). Returns { ok, errors[] }.
+ * Stream-checksum a file: open it, read in 1 MB chunks, update sha256
+ * incrementally, return the digest + total bytes. Memory stays bounded
+ * regardless of file size (the dump can produce >700 MB JSON files for
+ * MetaBreakdown that would OOM a readFile-based verifier).
+ */
+async function streamChecksumFile(file) {
+  const sha = crypto.createHash("sha256");
+  let bytes = 0;
+  const fh = await fs.open(file, "r");
+  try {
+    const buf = Buffer.allocUnsafe(1024 * 1024);
+    let pos = 0;
+    while (true) {
+      const { bytesRead } = await fh.read(buf, 0, buf.length, pos);
+      if (bytesRead === 0) break;
+      sha.update(buf.subarray(0, bytesRead));
+      pos += bytesRead;
+      bytes += bytesRead;
+    }
+  } finally {
+    await fh.close();
+  }
+  return { checksum: sha.digest("hex").slice(0, 16), bytes };
+}
+
+/**
+ * Re-stream every JSON file in a backup folder, recompute its sha256 and
+ * size, and compare to the manifest. Returns { ok, errors[] }.
+ *
+ * Notes:
+ *  - We deliberately DON'T re-parse the JSON. Parsing a multi-GB file
+ *    needs the whole thing in memory (V8's parser). The dump's
+ *    streamDumpTable already byte-by-byte-checksums what it wrote, so
+ *    a sha256 match here proves the bytes round-tripped the disk
+ *    intact - stronger than a parse round-trip would give us.
+ *  - We compare manifest.bytes too as a cheap sanity check - catches
+ *    truncation that somehow produced a checksum collision (vanishingly
+ *    unlikely but free to verify).
  */
 async function verifyBackupFolder(folder, manifest) {
   const errors = [];
@@ -322,19 +357,13 @@ async function verifyBackupFolder(folder, manifest) {
     if (meta.error) continue; // already-known failure, don't re-flag
     const file = path.join(folder, `${model}.json`);
     try {
-      const text = await fs.readFile(file, "utf8");
-      const sha = checksum(text);
-      if (sha !== meta.checksum) {
-        errors.push({ model, kind: "checksum-mismatch", expected: meta.checksum, got: sha });
+      const r = await streamChecksumFile(file);
+      if (r.checksum !== meta.checksum) {
+        errors.push({ model, kind: "checksum-mismatch", expected: meta.checksum, got: r.checksum });
         continue;
       }
-      const parsed = safeParse(text);
-      if (!Array.isArray(parsed)) {
-        errors.push({ model, kind: "not-array" });
-        continue;
-      }
-      if (parsed.length !== meta.count) {
-        errors.push({ model, kind: "count-mismatch", expected: meta.count, got: parsed.length });
+      if (typeof meta.bytes === "number" && r.bytes !== meta.bytes) {
+        errors.push({ model, kind: "size-mismatch", expected: meta.bytes, got: r.bytes });
         continue;
       }
       totalChecked++;
