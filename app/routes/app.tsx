@@ -1,4 +1,5 @@
 import type { HeadersFunction, LoaderFunctionArgs } from "@remix-run/node";
+import { redirect } from "@remix-run/node";
 import { Link, Outlet, useLoaderData, useRouteError, useNavigation } from "@remix-run/react";
 import { boundary } from "@shopify/shopify-app-remix/server";
 import { AppProvider } from "@shopify/shopify-app-remix/react";
@@ -9,8 +10,18 @@ import { useState, useEffect } from "react";
 
 import { authenticate } from "../shopify.server";
 import { ensureWebhooks } from "../services/ensureWebhooks.server.js";
+import db from "../db.server";
+import { isInternalShop } from "../utils/access.server";
 
 export const links = () => [{ rel: "stylesheet", href: polarisStyles }];
+
+// Sub-paths under /app that remain reachable while onboarding is in progress.
+// Everything else is redirected to /app so the merchant stays focused on the
+// onboarding flow until the data is actually there to look at.
+//   - /app                  : the onboarding card itself
+//   - /app/api/*            : status polling, progress, etc.
+const ONBOARDING_ALLOWED = (pathname: string) =>
+  pathname === "/app" || pathname === "/app/" || pathname.startsWith("/app/api/");
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
@@ -18,7 +29,23 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   ensureWebhooks(session.shop, session.accessToken!).catch(err =>
     console.error("[app loader] ensureWebhooks failed:", err)
   );
-  return { apiKey: process.env.SHOPIFY_API_KEY || "" };
+
+  const shop = await db.shop.findUnique({
+    where: { shopDomain: session.shop },
+    select: { onboardingCompleted: true },
+  });
+  const onboardingCompleted = shop?.onboardingCompleted ?? false;
+  const isInternal = isInternalShop(session.shop);
+
+  // Server-side gate: if onboarding isn't done, every nav target except the
+  // dashboard itself + the polling APIs gets bounced back to /app. Internal
+  // shops bypass the gate so we can still debug merchants mid-onboarding.
+  const url = new URL(request.url);
+  if (!onboardingCompleted && !isInternal && !ONBOARDING_ALLOWED(url.pathname)) {
+    throw redirect("/app");
+  }
+
+  return { apiKey: process.env.SHOPIFY_API_KEY || "", onboardingCompleted, isInternal };
 };
 
 function LoadingIndicator() {
@@ -126,7 +153,11 @@ function LoadingIndicator() {
 }
 
 export default function App() {
-  const { apiKey } = useLoaderData<typeof loader>();
+  const { apiKey, onboardingCompleted, isInternal } = useLoaderData<typeof loader>();
+  // While onboarding is in progress (and the merchant isn't an internal user),
+  // collapse the nav to just the home/Health link and hide the date selector.
+  // Stops the merchant from clicking through to pages that have no data yet.
+  const showFullNav = onboardingCompleted || isInternal;
 
   return (
     <AppProvider isEmbeddedApp apiKey={apiKey}>
@@ -144,15 +175,15 @@ export default function App() {
             This means the "home" tab is always visually first and cannot
             be moved to the end without breaking embedding. Rename only. */}
         <Link to="/app" rel="home">Health</Link>
-        <Link to="/app/customers">Customers</Link>
-        <Link to="/app/products">Products</Link>
-        <Link to="/app/campaigns">Ad Campaigns</Link>
-        <Link to="/app/geo">Countries</Link>
-        <Link to="/app/orders">Order Explorer</Link>
-        <Link to="/app/weekly">Weekly Report</Link>
-        <Link to="/app/utm">UTM Manager</Link>
+        {showFullNav && <Link to="/app/customers">Customers</Link>}
+        {showFullNav && <Link to="/app/products">Products</Link>}
+        {showFullNav && <Link to="/app/campaigns">Ad Campaigns</Link>}
+        {showFullNav && <Link to="/app/geo">Countries</Link>}
+        {showFullNav && <Link to="/app/orders">Order Explorer</Link>}
+        {showFullNav && <Link to="/app/weekly">Weekly Report</Link>}
+        {showFullNav && <Link to="/app/utm">UTM Manager</Link>}
       </NavMenu>
-      <DateRangeSelector />
+      {showFullNav && <DateRangeSelector />}
       <Outlet />
     </AppProvider>
   );
