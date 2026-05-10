@@ -287,6 +287,7 @@ export async function syncOrdersForFitTest(admin, shopDomain) {
               id
               createdAt
               totalPriceSet { shopMoney { amount currencyCode } }
+              subtotalPriceSet { shopMoney { amount } }
               channelInformation { channelDefinition { handle } }
             }
           }
@@ -304,6 +305,7 @@ export async function syncOrdersForFitTest(admin, shopDomain) {
 
       const shopifyOrderId = order.id.replace("gid://shopify/Order/", "");
       const totalPrice = parseFloat(order.totalPriceSet.shopMoney.amount);
+      const subtotalPrice = parseFloat(order.subtotalPriceSet?.shopMoney?.amount ?? order.totalPriceSet.shopMoney.amount);
       const currency = order.totalPriceSet.shopMoney.currencyCode;
       const channelHandle = order.channelInformation?.channelDefinition?.handle || "unknown";
       const isOnlineStore = channelHandle === "online_store" || channelHandle === "web" || channelHandle === "unknown";
@@ -311,22 +313,26 @@ export async function syncOrdersForFitTest(admin, shopDomain) {
       // Upsert minimal row. frozenTotalPrice = original price (Shopify's
       // totalPriceSet IS the order-time total - it doesn't include later
       // refunds; refunds live in a separate refunds[] payload we deliberately
-      // don't touch here).
+      // don't touch here). subtotalPrice + frozenSubtotalPrice are required
+      // Float fields on the schema, so we must set them on create even though
+      // the Fit Test scoring doesn't consume them.
       await db.order.upsert({
         where: { shopDomain_shopifyOrderId: { shopDomain, shopifyOrderId } },
         create: {
           shopDomain, shopifyOrderId,
           createdAt: new Date(order.createdAt),
-          totalPrice, currency,
+          totalPrice, subtotalPrice, currency,
           channelName: channelHandle, isOnlineStore,
           frozenTotalPrice: totalPrice,
+          frozenSubtotalPrice: subtotalPrice,
         },
         // If the row somehow already exists (e.g. retry), only refresh the
-        // four Fit-Test fields. Don't clobber any richer data a previous
-        // full sync may have written.
+        // Fit-Test fields. Don't clobber any richer data a previous full
+        // sync may have written.
         update: {
           createdAt: new Date(order.createdAt),
           totalPrice,
+          subtotalPrice,
           channelName: channelHandle, isOnlineStore,
         },
       });
