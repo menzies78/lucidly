@@ -17,7 +17,7 @@ import { useEffect, useState } from "react";
 import {
   Card, BlockStack, Text, Button, Spinner, InlineStack, Banner, Box,
 } from "@shopify/polaris";
-import { useFetcher, useRevalidator, useNavigate } from "@remix-run/react";
+import { useFetcher, useRevalidator } from "@remix-run/react";
 
 type Phase = {
   key: string;
@@ -54,6 +54,7 @@ type Status = {
   liveMessage: string | null;
   livePhaseKey?: string | null;
   fitImportLive?: { current?: number; message?: string } | null;
+  metaAuthUrl?: string | null;
   inFlight: boolean;
 };
 
@@ -147,7 +148,6 @@ export default function OnboardingFlow({ shopDomain }: { shopDomain: string }) {
   const [status, setStatus] = useState<Status | null>(null);
   const { revalidate } = useRevalidator();
   const fetcher = useFetcher();
-  const navigate = useNavigate();
 
   // Poll the status endpoint every 3s. Stops once onboardingCompleted flips.
   useEffect(() => {
@@ -208,7 +208,7 @@ export default function OnboardingFlow({ shopDomain }: { shopDomain: string }) {
 
   // ─── State 4: Fit-ready (score + Connect Meta CTA) ────────────────
   if (phase === "fit-ready" || (phase === "fit" && fitDone)) {
-    return <FitReadyCard score={fitScore!} data={status.fitTestData ?? null} navigate={navigate} />;
+    return <FitReadyCard score={fitScore!} data={status.fitTestData ?? null} metaAuthUrl={status.metaAuthUrl ?? null} />;
   }
 
   // ─── State 5: Ingesting (parallel Shopify + Meta) ─────────────────
@@ -373,8 +373,8 @@ function ScoreTile({ value, label, sub, color }: {
   );
 }
 
-function FitReadyCard({ score, data, navigate }: {
-  score: number; data: FitTestData; navigate: ReturnType<typeof useNavigate>;
+function FitReadyCard({ score, data, metaAuthUrl }: {
+  score: number; data: FitTestData; metaAuthUrl: string | null;
 }) {
   const verdict =
     score >= 85 ? { label: "Excellent", color: GREEN } :
@@ -440,7 +440,10 @@ function FitReadyCard({ score, data, navigate }: {
             <Button
               variant="primary"
               size="large"
-              onClick={() => navigate("/app/meta-connect")}
+              onClick={() => {
+                if (metaAuthUrl) window.open(metaAuthUrl, "meta_oauth", "width=600,height=700");
+              }}
+              disabled={!metaAuthUrl}
               fullWidth
             >
               Connect Meta Ads

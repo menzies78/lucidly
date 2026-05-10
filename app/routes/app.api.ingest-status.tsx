@@ -3,6 +3,7 @@ import { authenticate } from "../shopify.server";
 import { getIngestStatus } from "../services/ingestOrchestrator.server";
 import { getProgress } from "../services/progress.server";
 import { getFitTest } from "../services/fitTest.server.js";
+import { getMetaAuthUrl } from "../services/metaAuth.server";
 
 // Status endpoint for the onboarding flow. Polled every 3s by OnboardingFlow.
 // Returns:
@@ -56,5 +57,10 @@ export const loader = async ({ request }) => {
   // Cheap - it's a single Shop row read.
   const fitTestData = await getFitTest(shopDomain);
 
-  return json({ ...status, liveMessage, livePhaseKey, fitImportLive, fitTestData });
+  // Meta OAuth URL so the FitReadyCard's "Connect Meta Ads" button can
+  // open the Facebook auth popup directly - no intermediate page.
+  const url = new URL(request.url);
+  const metaAuthUrl = getMetaAuthUrl(shopDomain, `https://${url.host}`);
+
+  return json({ ...status, liveMessage, livePhaseKey, fitImportLive, fitTestData, metaAuthUrl });
 };
