@@ -221,7 +221,7 @@ function WelcomeCard({ fetcher }: { fetcher: ReturnType<typeof useFetcher> }) {
 
             <Text as="p" variant="bodyLg" tone="subdued">
               Lucidly works by matching your Meta Ads conversions to your Shopify
-              orders with statistical certainty — so every campaign metric you
+              orders with statistical certainty - so every campaign metric you
               see is grounded in real revenue.
             </Text>
 
@@ -237,7 +237,7 @@ function WelcomeCard({ fetcher }: { fetcher: ReturnType<typeof useFetcher> }) {
                 <Text as="p" variant="bodyMd" tone="subdued">
                   Before we import months of data, we run a quick check against
                   your last 90 days of Shopify orders. We look at how many orders
-                  cluster within the same hour at similar values — the signal
+                  cluster within the same hour at similar values - the signal
                   Meta uses to attribute conversions.
                 </Text>
                 <Text as="p" variant="bodyMd" tone="subdued">
@@ -246,9 +246,9 @@ function WelcomeCard({ fetcher }: { fetcher: ReturnType<typeof useFetcher> }) {
                   before committing to the full import.
                 </Text>
                 <BlockStack gap="100">
-                  <FeatureBullet>Imports just the order timestamps & values — nothing else</FeatureBullet>
+                  <FeatureBullet>Imports just the order timestamps & values - nothing else</FeatureBullet>
                   <FeatureBullet>Takes about 30 seconds for most stores</FeatureBullet>
-                  <FeatureBullet>No commitment — see your score before going further</FeatureBullet>
+                  <FeatureBullet>No commitment - see your score before going further</FeatureBullet>
                 </BlockStack>
               </BlockStack>
             </Box>
@@ -323,7 +323,7 @@ function FitRunningCard() {
               <Text as="h2" variant="headingLg">Calculating your Fit Score</Text>
             </InlineStack>
             <Text as="p" variant="bodyMd" tone="subdued">
-              Analysing rival density across every hour — checking how many
+              Analysing rival density across every hour - checking how many
               orders Meta might confuse with each other.
             </Text>
             <ProgressBar pct={92} />
@@ -360,12 +360,12 @@ function FitReadyCard({ score, navigate }: { score: number; navigate: ReturnType
                 <Text as="h3" variant="headingMd">What&apos;s next</Text>
                 <Text as="p" variant="bodyMd" tone="subdued">
                   Connect your Meta Ads account and we&apos;ll import your full
-                  Shopify order history alongside 13 months of Meta data — in
+                  Shopify order history alongside 13 months of Meta data - in
                   parallel. Then we match the two together and your dashboard
                   comes alive.
                 </Text>
                 <Text as="p" variant="bodyMd" tone="subdued">
-                  This typically takes 10–30 minutes. You can close this tab —
+                  This typically takes 10–30 minutes. You can close this tab -
                   we&apos;ll email you when your dashboard is ready.
                 </Text>
               </BlockStack>
@@ -412,11 +412,11 @@ function IngestingCard({ status }: { status: Status }) {
           <Box padding="600">
             <BlockStack gap="500">
               <BlockStack gap="200">
-                <GradientPill>Step 2 of 2 — Importing your data</GradientPill>
+                <GradientPill>Step 2 of 2 - Importing your data</GradientPill>
                 <Text as="h1" variant="heading2xl">Building your dashboard</Text>
                 <Text as="p" variant="bodyLg" tone="subdued">
                   Importing Shopify orders and Meta Ads data in parallel, then
-                  matching them together. You can leave this tab — we&apos;ll
+                  matching them together. You can leave this tab - we&apos;ll
                   email you when it&apos;s ready.
                 </Text>
               </BlockStack>

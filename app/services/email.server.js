@@ -88,7 +88,7 @@ export async function sendOnboardingCompleteEmail({ to, shopDomain, dashboardUrl
         </a>
       </div>
       <p style="font-size:13px;line-height:1.5;color:#6B7280;margin:24px 0 0;">
-        — The Lucidly team
+        - The Lucidly team
       </p>
     </div>
   `;

@@ -367,7 +367,7 @@ export const action = async ({ request }) => {
   // ── Onboarding: Begin Fit Test ──────────────────────────────────────
   // Triggered by the Welcome card's only button. Chains:
   //   1. set Shop.onboardingPhase = "fit-importing"
-  //   2. syncOrdersForFitTest (90d minimal — just timestamps + values)
+  //   2. syncOrdersForFitTest (90d minimal - just timestamps + values)
   //   3. set onboardingPhase = "fit-running"
   //   4. runFitTest (rival-density scoring, populates Shop.fitTestScore)
   //   5. set onboardingPhase = "fit-ready"
@@ -375,7 +375,7 @@ export const action = async ({ request }) => {
   // Each phase transition is persisted to the DB so OnboardingFlow's poll
   // (which reads Shop.onboardingPhase) advances the UI in real time. If a
   // step throws, we leave the merchant on the failed phase rather than
-  // silently rolling back — the next page load can then retry from where
+  // silently rolling back - the next page load can then retry from where
   // they were.
   if (actionType === "begin-fit-test") {
     // Fire-and-forget. The form submit returns 303 immediately and
@@ -406,7 +406,7 @@ export const action = async ({ request }) => {
         });
       } catch (err) {
         console.error(`[begin-fit-test] failed for ${shopDomain}: ${err.message}`);
-        // Leave phase where it is — UI can retry by re-clicking on next load.
+        // Leave phase where it is - UI can retry by re-clicking on next load.
       }
     })();
     return json({ started: true, task: "begin-fit-test" });
@@ -1175,7 +1175,7 @@ export default function Index() {
           </Layout.Section>
         </Layout>
 
-        {/* ═══ Onboarding cards removed — the !onboardingCompleted gate
+        {/* ═══ Onboarding cards removed - the !onboardingCompleted gate
             higher up renders <OnboardingFlow /> in place of the entire
             dashboard. The old "Getting Started" 5-step card is now dead
             code (replaced by the welcome → fit-test → ingest flow) and
