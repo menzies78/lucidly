@@ -223,8 +223,9 @@ export function startScheduler() {
   if (global.__lucidlyIngestResume) clearTimeout(global.__lucidlyIngestResume);
   global.__lucidlyIngestResume = setTimeout(async () => {
     try {
-      const { reapOrphanedJobs, resumePendingIngests } = await import("./ingestOrchestrator.server.js");
+      const { reapOrphanedJobs, reapOrphanedFitPhases, resumePendingIngests } = await import("./ingestOrchestrator.server.js");
       await reapOrphanedJobs();
+      await reapOrphanedFitPhases();
       const resumed = await resumePendingIngests();
       if (resumed > 0) console.log(`[Scheduler] Resumed ingest for ${resumed} shop(s)`);
     } catch (err) {

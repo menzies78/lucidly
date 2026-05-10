@@ -345,6 +345,29 @@ export async function getIngestStatus(shopDomain) {
 }
 
 /**
+ * Recovery: on server boot, reset any Shop stuck in fit-importing or
+ * fit-running back to "welcome". These phases are owned by the action
+ * handler in app._index.tsx (NOT IngestJob rows), so a Fly redeploy mid-
+ * import leaves them sticky in the DB while the in-memory progress map is
+ * empty - merchant sees "Importing your last 90 days of orders" forever
+ * with no live counter.
+ *
+ * Resetting to "welcome" surfaces the welcome card on next page load and
+ * lets the merchant click Begin Fit Test again. The 90d sync is idempotent
+ * (upsert keyed on shopDomain+shopifyOrderId), so retrying is safe.
+ */
+export async function reapOrphanedFitPhases() {
+  const reset = await db.shop.updateMany({
+    where: { onboardingPhase: { in: ["fit-importing", "fit-running"] } },
+    data: { onboardingPhase: "welcome", onboardingStartedAt: null },
+  });
+  if (reset.count > 0) {
+    console.log(`[ingestOrchestrator] Reset ${reset.count} shop(s) stuck in fit-importing/running back to welcome`);
+  }
+  return reset.count;
+}
+
+/**
  * Recovery: on server boot, reap orphaned `running` IngestJobs (their owning
  * process died mid-phase). Caller decides whether to immediately re-run.
  */
