@@ -7,6 +7,7 @@ import { getProgress } from "./progress.server";
 import { syncOrders } from "./orderSync.server.js";
 import { unauthenticated } from "../shopify.server";
 import { markSyncStart, markSyncEnd } from "./syncStatus.server.js";
+import { isOnboardingIngestInFlight } from "./ingestOrchestrator.server.js";
 
 const HOURLY_MS = 60 * 60 * 1000;
 const DAILY_CHECK_MS = 15 * 60 * 1000; // check every 15 min if daily sync is due
@@ -49,6 +50,15 @@ async function runHourlyCycle() {
       try {
         // Don't compete with manual syncs for Meta API rate limit
         if (isManualSyncRunning(shop.shopDomain)) continue;
+
+        // Don't compete with the onboarding ingest for SQLite connections.
+        // Both paths upsert orders + line items in tight loops; running them
+        // concurrently triggers Prisma socket timeouts (seen 2026-05-10
+        // when the hourly cycle fired mid-onboarding for vollebak).
+        if (isOnboardingIngestInFlight(shop.shopDomain)) {
+          console.log(`[Scheduler] Skipping ${shop.shopDomain} - onboarding ingest in progress`);
+          continue;
+        }
 
         // 1. Pull any Shopify orders missed by webhooks (delta since lastOrderSync)
         try {
@@ -106,6 +116,14 @@ async function runDailyCycle() {
         if (isManualSyncRunning(shop.shopDomain)) {
           console.log(`[Scheduler] Deferring daily sync for ${shop.shopDomain} - manual task running`);
           lastDailyRun = null; // Reset so it retries next 15-min check
+          continue;
+        }
+
+        // Same DB-contention reason as the hourly cycle - skip if the
+        // onboarding ingest owns the SQLite pool right now.
+        if (isOnboardingIngestInFlight(shop.shopDomain)) {
+          console.log(`[Scheduler] Deferring daily sync for ${shop.shopDomain} - onboarding ingest in progress`);
+          lastDailyRun = null;
           continue;
         }
 

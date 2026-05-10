@@ -126,6 +126,13 @@ export const ALL_PHASES = [
 // kick off two parallel ingests stomping on the same Meta budget.
 const inFlight = (globalThis.__ingestInFlight ||= new Set());
 
+// Exposed so the hourly scheduler can skip a shop while its onboarding
+// ingest is running - they otherwise contend for the same SQLite
+// connection pool and trigger socket timeouts mid-import.
+export function isOnboardingIngestInFlight(shopDomain) {
+  return inFlight.has(shopDomain);
+}
+
 /**
  * Public entry: triggered by the Meta OAuth callback after we've stored a
  * token + ad-account, OR by the Fit Test action once the merchant approves.
@@ -143,13 +150,23 @@ export async function startOnboardingIngest(shopDomain) {
   }
   inFlight.add(shopDomain);
 
-  await db.shop.update({
-    where: { shopDomain },
-    data: {
-      onboardingPhase: "ingesting",
-      onboardingStartedAt: new Date(),
-    },
-  }).catch(() => {});
+  // Flip the phase to "ingesting" up front so the UI can render the
+  // progress card on the next poll. We don't swallow errors here - if the
+  // DB is too overloaded to handle a single Shop update, the ingest is
+  // doomed anyway and we want to know.
+  try {
+    await db.shop.update({
+      where: { shopDomain },
+      data: {
+        onboardingPhase: "ingesting",
+        onboardingStartedAt: new Date(),
+      },
+    });
+  } catch (err) {
+    console.error(`[ingestOrchestrator] ${shopDomain}: failed to set phase=ingesting: ${err.message}`);
+    inFlight.delete(shopDomain);
+    throw err;
+  }
 
   // Run async, don't await - caller is the OAuth callback and must return.
   (async () => {
