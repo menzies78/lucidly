@@ -34,6 +34,7 @@ export const loader = async ({ request }) => {
       live: {
         current: typeof p.current === "number" ? p.current : null,
         total: typeof p.total === "number" ? p.total : null,
+        totalIsApproximate: !!p.totalIsApproximate,
         unitLabel: p.unitLabel || null,
         detail: p.detail || p.message || null,
         rowsImported: typeof p.rowsImported === "number" ? p.rowsImported : null,

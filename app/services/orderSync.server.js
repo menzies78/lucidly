@@ -392,11 +392,17 @@ export async function syncOrders(admin, shopDomain) {
   console.log(`[OrderSync] sinceDate=${sinceDate.toISOString()}, lastOrderSync=${shop?.lastOrderSync || 'null'}`);
 
   // Upfront total count so the onboarding progress bar can show
-  // "X of Y orders" + an ETA. Best-effort - if the count call fails or
-  // returns AT_LEAST (huge stores), we just skip the total and surface
-  // the running tally without a percentage.
+  // "X of Y orders" + an ETA. Best-effort.
+  //
+  // Shopify caps `ordersCount` at 10,000 for large catalogs - it returns
+  // count=10000 with precision=AT_LEAST. Rather than throwing the value
+  // away (which leaves the merchant with just "1,450 orders so far" and
+  // no sense of scale), we treat AT_LEAST as an approximate floor: we
+  // show "X of ~10,000+ orders" and bump the total upward if the
+  // running count overtakes it, so the bar never sticks at 100%.
   const ordersQuery = `created_at:>='${sinceDate.toISOString()}' status:any`;
   let expectedOrderTotal = null;
+  let expectedOrderTotalIsApprox = false;
   try {
     const countData = await graphqlWithRetry(
       admin,
@@ -405,22 +411,33 @@ export async function syncOrders(admin, shopDomain) {
       "OrderSync/ordersCount",
     );
     const c = countData?.data?.ordersCount;
-    if (c?.precision === "EXACT" && typeof c.count === "number") {
+    if (typeof c?.count === "number") {
       expectedOrderTotal = c.count;
-      console.log(`[OrderSync] ordersCount=${expectedOrderTotal} (EXACT)`);
+      expectedOrderTotalIsApprox = c.precision !== "EXACT";
+      console.log(`[OrderSync] ordersCount=${expectedOrderTotal} (${c.precision})`);
     } else {
-      console.log(`[OrderSync] ordersCount precision=${c?.precision}, count=${c?.count} - falling back to count-less progress`);
+      console.log(`[OrderSync] ordersCount returned no count - falling back to count-less progress`);
     }
   } catch (err) {
     console.warn(`[OrderSync] ordersCount lookup failed: ${err.message}`);
   }
+
+  // Helper: if we've crossed the AT_LEAST floor, the bar would otherwise
+  // stick at 100%. Bump the displayed total to current + 10% headroom so
+  // the % still moves and the ETA still computes.
+  const effectiveTotal = (current) => {
+    if (expectedOrderTotal == null) return null;
+    if (!expectedOrderTotalIsApprox) return expectedOrderTotal;
+    return current >= expectedOrderTotal ? Math.ceil(current * 1.1) : expectedOrderTotal;
+  };
 
   // Seed the progress map immediately so the onboarding UI shows the bar
   // before the first 50 orders complete (~few seconds otherwise).
   setProgress(`syncOrders:${shopDomain}`, {
     status: "running",
     current: 0,
-    total: expectedOrderTotal,
+    total: effectiveTotal(0),
+    totalIsApproximate: expectedOrderTotalIsApprox,
     unitLabel: "orders",
     detail: "Importing your Shopify orders",
   });
@@ -677,7 +694,8 @@ export async function syncOrders(admin, shopDomain) {
         setProgress(`syncOrders:${shopDomain}`, {
           status: "running",
           current: totalImported,
-          total: expectedOrderTotal, // null when count was unavailable - UI hides %
+          total: effectiveTotal(totalImported), // null when count was unavailable - UI hides %
+          totalIsApproximate: expectedOrderTotalIsApprox,
           unitLabel: "orders",
           detail: "Importing your Shopify orders",
         });
@@ -717,7 +735,8 @@ export async function syncOrders(admin, shopDomain) {
   setProgress(`syncOrders:${shopDomain}`, {
     status: "running",
     current: totalImported,
-    total: expectedOrderTotal,
+    total: effectiveTotal(totalImported),
+    totalIsApproximate: expectedOrderTotalIsApprox,
     unitLabel: "orders",
     detail: "Building customer order history",
   });
@@ -733,7 +752,8 @@ export async function syncOrders(admin, shopDomain) {
     setProgress(`syncOrders:${shopDomain}`, {
       status: "running",
       current: totalImported,
-      total: expectedOrderTotal,
+      total: effectiveTotal(totalImported),
+      totalIsApproximate: expectedOrderTotalIsApprox,
       unitLabel: "orders",
       detail: "Inferring customer demographics",
     });

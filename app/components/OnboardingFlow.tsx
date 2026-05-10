@@ -31,6 +31,7 @@ type Phase = {
   live?: {
     current: number | null;
     total: number | null;
+    totalIsApproximate?: boolean;
     unitLabel?: string | null;
     detail?: string | null;
     rowsImported?: number | null;
@@ -208,7 +209,7 @@ function PhaseRow({ phase }: { phase: Phase }) {
                 <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: TEXT_DIM, marginTop: 4, fontVariantNumeric: "tabular-nums", gap: 8 }}>
                   <span>
                     {live.current !== null && live.total !== null
-                      ? `${live.current.toLocaleString()} of ${live.total.toLocaleString()} ${unitLabel}`
+                      ? `${live.current.toLocaleString()} of ${live.totalIsApproximate ? "~" : ""}${live.total.toLocaleString()}${live.totalIsApproximate ? "+" : ""} ${unitLabel}`
                       : ""}
                   </span>
                   <span style={{ whiteSpace: "nowrap" }}>
