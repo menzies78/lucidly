@@ -1,16 +1,16 @@
 // Shared Meta API fetch layer. Sits on top of metaGovernor.server.js
-// which does all per-(app, ad_account, BUC) tracking, pacing, and
-// concurrency. This file owns retry semantics + error classification
-// only.
+// (BUC-aware pacing) and accountLock.server.js (one-in-flight per account).
 //
 // Key principles:
 //  1. Reads X-App-Usage, X-Business-Use-Case-Usage, X-FB-Ads-Insights-Throttle
 //     via metaGovernor on every response.
-//  2. Proactively paces against the highest util % across all signals
-//     for the targeted ad account.
+//  2. ONE in-flight call per ad account at a time, app-wide. Different
+//     accounts run in parallel. This prevents the thundering-herd loop we
+//     hit when 10 parallel calls all tripped subcode 1504022, each parked
+//     for 60s, all unparked together, all tripped again.
 //  3. NEVER silently drops data on rate limits - retries indefinitely.
-//  4. Error code 1 ("reduce data") throws ReduceDataError so callers
-//     can split ranges.
+//  4. Error code 1 ("reduce data") throws ReduceDataError so callers can
+//     split ranges.
 
 import {
   reportHeaders,
@@ -18,8 +18,8 @@ import {
   accountKeyFromUrl,
   markBlocked,
   getEffectiveUtil,
-  withSlot,
 } from "./metaGovernor.server.js";
+import { withAccountLock } from "./accountLock.server.js";
 
 // Special error class for "reduce the amount of data" - callers can catch
 // and retry with smaller range.
@@ -38,8 +38,8 @@ export function getMetaApiUsage() {
 }
 
 // Resilient fetch that NEVER silently drops data on rate limits.
-//  - Rate limits: retries indefinitely with exponential backoff (cap 120s)
-//  - Error subcode 1504022: parks the account via the governor, then retries
+//  - Rate limits (code 4/17): retries indefinitely with exponential backoff (cap 120s)
+//  - Error subcode 1504022: parks account for max(60s, BUC.estimated × 1.5), retries
 //  - Error code 1 ("reduce data"): throws ReduceDataError immediately
 //  - Real errors (bad token, invalid params): retries 3 times then throws
 //  - Network errors: retries 5 times then throws
@@ -56,12 +56,12 @@ export async function fetchWithRetry(url, label = "MetaAPI", accountKey = null) 
   let networkErrorCount = 0;
   let rateLimitRetries = 0;
 
-  // Slot acquisition wraps the whole retry loop so we don't release the
-  // slot just to immediately re-acquire it on backoff. The slot caps
-  // *parallelism per account*, not total requests.
-  return withSlot(acctKey, async () => {
+  // Account lock holds across the entire retry loop so backoffs don't release
+  // and re-acquire (which would let other in-flight calls jump in front and
+  // re-trigger the throttle we're trying to recover from).
+  return withAccountLock(acctKey, async () => {
     while (true) {
-      // Pace against current util before issuing the request.
+      // Pace against current util (and any blockedUntil) before issuing.
       await paceBeforeRequest(acctKey);
 
       try {
@@ -96,11 +96,16 @@ export async function fetchWithRetry(url, label = "MetaAPI", accountKey = null) 
         }
 
         if (isAccountThrottled) {
-          // Meta has explicitly blocked the account. Park it for 60s and
-          // let the governor's blockedUntil gate hold off the next call.
-          markBlocked(acctKey, 60);
+          // Trust BUC.estimated_time_to_regain_access if present (already
+          // captured by metaGovernor.parseBucHeader from the response).
+          // Otherwise default to 60s. Pad by 50% (community-validated).
+          // Floor at 60s, ceiling at 30 min so we don't sleep forever on a
+          // bad estimate.
+          const estimateSec = readBlockEstimateSec(acctKey);
+          const cooldown = Math.min(30 * 60, Math.max(60, Math.round(estimateSec * 1.5)));
+          markBlocked(acctKey, cooldown);
           rateLimitRetries++;
-          console.warn(`[${label}] Account throttled (subcode 1504022) on ${acctKey}, parked 60s`);
+          console.warn(`[${label}] Account throttled (subcode 1504022) on ${acctKey}, parked ${cooldown}s (est=${estimateSec}s)`);
           continue;
         }
 
@@ -132,8 +137,31 @@ export async function fetchWithRetry(url, label = "MetaAPI", accountKey = null) 
   });
 }
 
+// Pull the most recent block-estimate (seconds) for this account. Stored on
+// the governor record by parseBucHeader when Meta returns
+// estimated_time_to_regain_access. Returns 0 if not available.
+function readBlockEstimateSec(acctKey) {
+  // metaGovernor exports markBlocked which sets blockedUntil based on
+  // a seconds value, but the estimate is parsed from the BUC header into
+  // record.blockedUntil already. Read the residual time from blockedUntil
+  // (set by parseBucHeader before this call returned an error).
+  // If parseBucHeader didn't fire (no header), blockedUntil is 0.
+  // We expose this indirectly via getEffectiveUtil's record.
+  // To avoid circular imports we just compute from the governor's snapshot
+  // surface - cheap.
+  try {
+    // Lazy import to avoid pulling the snapshot fn into hot paths above.
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { snapshot } = require("./metaGovernor.server.js");
+    const acct = snapshot().accounts[acctKey];
+    return acct ? Math.max(0, acct.blockedFor) : 0;
+  } catch {
+    return 0;
+  }
+}
+
 // Fetch all pages from a paginated Meta response. Each page goes through
-// fetchWithRetry which handles slot/governor on its own.
+// fetchWithRetry which handles lock + governor + retries.
 export async function fetchAllPages(initialUrl, label = "MetaAPI", accountKey = null) {
   const allRows = [];
   let url = initialUrl;

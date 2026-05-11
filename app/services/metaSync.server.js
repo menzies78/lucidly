@@ -1,15 +1,68 @@
+// Meta Insights ingestion - two-pass strategy.
+//
+// PASS 1 (daily probe): Fetch the entire window in 90-day daily-aggregate
+// chunks. Cheap, low row count, low risk of throttle. Persisted as
+// hourSlot=-1 rows. Tells us which days actually had Meta-attributed
+// conversions, so Pass 2 only spends API quota on days that matter.
+//
+// PASS 2 (hourly enrich): For every day where Pass 1 saw conversions > 0,
+// fetch single-day hourly. Before writing the 0..23 rows we delete the
+// daily-aggregate row for that ad/day (hourSlot=-1) so the dataset never
+// double-counts.
+//
+// Concurrency: there is NO Promise.all in the hot path. The fetch layer
+// (metaFetch.server.js -> withAccountLock) enforces one in-flight Meta call
+// per ad account at a time, so any parallelism here is dishonest - it just
+// queues at the fetch layer. We make this explicit by walking the work
+// sequentially.
+//
+// Reduce-data: Pass 1 uses a chunk-size ladder (90 → 30 → 7 → 1) and
+// recursively halves on ReduceDataError. Pass 2 is already single-day so
+// "reduce data" can only mean a true API issue - we surface it.
+//
+// Socket timeouts: batchUpsertInsights retries indefinitely with backoff.
+// Per Andy: "We can't do timeouts and move on - that kills the app. No
+// moving on. we need the full data."
+
 import db from "../db.server";
 import { setProgress, completeProgress, failProgress } from "./progress.server";
 import { syncMetaBreakdowns } from "./metaBreakdownSync.server";
-import { getExchangeRate, prefetchExchangeRates, convertMetaFields } from "./exchangeRate.server";
-import { fetchAllPages, getMetaApiUsage, ReduceDataError } from "./metaFetch.server";
+import { prefetchExchangeRates, convertMetaFields } from "./exchangeRate.server";
+import { fetchAllPages, ReduceDataError } from "./metaFetch.server";
 
-const CONCURRENCY = 10; // 10 parallel API calls per batch
-const HOURLY_LIMIT_DAYS = 395; // ~13 months - Meta's limit for hourly time slot data
-const DAILY_RANGE_SIZE = 90; // 90 days per API call for daily aggregates (Meta max)
-const HOURLY_RANGE_SIZE = 14; // 14 days per hourly call - auto-splits to single days if Meta says too large
-const DB_BATCH_SIZE = 500; // 500 rows per $transaction - SQLite handles this fine
-const PAGE_LIMIT = 1000; // rows per API page - fewer round-trips
+const PAGE_LIMIT = 1000;            // rows per API page
+const DB_BATCH_SIZE = 500;          // rows per Prisma $transaction
+const HOURLY_LIMIT_DAYS = 395;      // Meta only allows hourly within ~13 months
+
+// Pass 1 chunk-size ladder. We start at 90 (Meta's max for time_increment=1)
+// and step down on ReduceDataError. 1 is the floor - if a single day still
+// asks us to reduce data, the API is unhappy for a different reason and we
+// surface it.
+const PASS1_LADDER = [90, 30, 7, 1];
+
+// Fields for Pass 1 (daily aggregates - need every metric).
+const FIELDS_DAILY = [
+  "date_start", "ad_id", "ad_name", "campaign_id", "campaign_name",
+  "adset_id", "adset_name", "impressions", "clicks", "spend",
+  "reach", "frequency", "cpc", "cpm",
+  "actions", "action_values", "outbound_clicks",
+  "video_p25_watched_actions", "video_p50_watched_actions",
+  "video_p75_watched_actions", "video_p100_watched_actions",
+].join(",");
+
+// Fields for Pass 2 (hourly). reach/frequency are not returned with hourly
+// breakdown anyway; video_p* metrics aren't useful at hour granularity for
+// our reporting. Trimmed to keep the row payload minimal.
+const FIELDS_HOURLY = [
+  "date_start", "ad_id", "ad_name", "campaign_id", "campaign_name",
+  "adset_id", "adset_name", "impressions", "clicks", "spend",
+  "cpc", "cpm",
+  "actions", "action_values", "outbound_clicks",
+].join(",");
+
+// ------------------------------------------------------------------
+// Action / row parsers
+// ------------------------------------------------------------------
 
 function parseActionValue(actions, actionType) {
   if (!actions) return 0;
@@ -35,15 +88,15 @@ function parseOutboundClicks(outboundClicks) {
   return 0;
 }
 
-function parseVideoWatched(videoActions, pct) {
+function parseVideoWatched(videoActions) {
   if (!videoActions) return 0;
   for (const a of videoActions) {
-    if (a.action_type === `video_view` && a.value) return 0;
-    if (a.action_type === `video_p${pct}_watched_actions`) return parseInt(a.value || "0", 10);
+    if (a.value) return parseInt(a.value, 10);
   }
   return 0;
 }
 
+// hourSlot = -1 for daily-aggregate rows (Pass 1), 0..23 for hourly (Pass 2).
 function parseRow(row, hourSlot) {
   return {
     date: new Date(row.date_start),
@@ -51,113 +104,136 @@ function parseRow(row, hourSlot) {
     campaignId: row.campaign_id, campaignName: row.campaign_name,
     adSetId: row.adset_id, adSetName: row.adset_name,
     adId: row.ad_id, adName: row.ad_name,
-    impressions: parseInt(row.impressions || "0"), clicks: parseInt(row.clicks || "0"),
+    impressions: parseInt(row.impressions || "0"),
+    clicks: parseInt(row.clicks || "0"),
     spend: parseFloat(row.spend || "0"),
     conversions: parseActionValue(row.actions, "offsite_conversion.fb_pixel_purchase"),
     conversionValue: parseActionFloat(row.action_values, "offsite_conversion.fb_pixel_purchase"),
-    reach: parseInt(row.reach || "0"), frequency: parseFloat(row.frequency || "0"),
-    cpc: parseFloat(row.cpc || "0"), cpm: parseFloat(row.cpm || "0"),
+    reach: parseInt(row.reach || "0"),
+    frequency: parseFloat(row.frequency || "0"),
+    cpc: parseFloat(row.cpc || "0"),
+    cpm: parseFloat(row.cpm || "0"),
     outboundClicks: parseOutboundClicks(row.outbound_clicks),
     linkClicks: parseActionValue(row.actions, "link_click"),
     landingPageViews: parseActionValue(row.actions, "landing_page_view"),
     addToCart: parseActionValue(row.actions, "offsite_conversion.fb_pixel_add_to_cart"),
     initiateCheckout: parseActionValue(row.actions, "offsite_conversion.fb_pixel_initiate_checkout"),
     viewContent: parseActionValue(row.actions, "offsite_conversion.fb_pixel_view_content"),
-    videoP25: parseVideoWatched(row.video_p25_watched_actions, 25),
-    videoP50: parseVideoWatched(row.video_p50_watched_actions, 50),
-    videoP75: parseVideoWatched(row.video_p75_watched_actions, 75),
-    videoP100: parseVideoWatched(row.video_p100_watched_actions, 100),
+    videoP25: parseVideoWatched(row.video_p25_watched_actions),
+    videoP50: parseVideoWatched(row.video_p50_watched_actions),
+    videoP75: parseVideoWatched(row.video_p75_watched_actions),
+    videoP100: parseVideoWatched(row.video_p100_watched_actions),
   };
 }
 
-// Batch upsert rows using $transaction for dramatically faster DB writes
+// ------------------------------------------------------------------
+// DB writes - retry-on-socket-timeout, NEVER skip rows
+// ------------------------------------------------------------------
+
+function isSocketTimeout(err) {
+  const msg = String(err?.message || "");
+  return msg.includes("Socket timeout") || msg.includes("connection pool")
+    || msg.includes("P2024") || msg.includes("P1008");
+}
+
+// Run a Prisma operation with indefinite retry on socket-timeout-style
+// failures. Real errors (P2002 unique violation, schema mismatch, etc.)
+// throw immediately so we don't loop on a permanent fault.
+async function withDbRetry(label, fn) {
+  let attempt = 0;
+  while (true) {
+    try {
+      return await fn();
+    } catch (err) {
+      if (!isSocketTimeout(err)) throw err;
+      attempt++;
+      const wait = Math.min(60_000, 1000 * Math.pow(2, attempt - 1));
+      console.warn(`[MetaSync] ${label}: DB socket timeout (attempt ${attempt}), retrying in ${Math.round(wait / 1000)}s`);
+      await new Promise(r => setTimeout(r, wait));
+    }
+  }
+}
+
 async function batchUpsertInsights(shopDomain, parsedRows, ratesByDate) {
   for (let i = 0; i < parsedRows.length; i += DB_BATCH_SIZE) {
     const batch = parsedRows.slice(i, i + DB_BATCH_SIZE);
-    await db.$transaction(
-      batch.map(r => {
-        const dateKey = r.date.toISOString().split("T")[0];
-        const rate = ratesByDate[dateKey] || 1.0;
-        const insightData = {
-          campaignName: r.campaignName, adSetName: r.adSetName, adName: r.adName,
-          impressions: r.impressions, clicks: r.clicks,
-          spend: r.spend, conversions: r.conversions, conversionValue: r.conversionValue,
-          reach: r.reach, frequency: r.frequency, cpc: r.cpc, cpm: r.cpm,
-          outboundClicks: r.outboundClicks, linkClicks: r.linkClicks,
-          landingPageViews: r.landingPageViews,
-          addToCart: r.addToCart, initiateCheckout: r.initiateCheckout,
-          viewContent: r.viewContent,
-          videoP25: r.videoP25, videoP50: r.videoP50, videoP75: r.videoP75, videoP100: r.videoP100,
-        };
-        convertMetaFields(insightData, rate);
+    await withDbRetry(`upsert ${batch.length} rows`, () =>
+      db.$transaction(
+        batch.map(r => {
+          const dateKey = r.date.toISOString().split("T")[0];
+          const rate = ratesByDate[dateKey] || 1.0;
+          const insightData = {
+            campaignName: r.campaignName, adSetName: r.adSetName, adName: r.adName,
+            impressions: r.impressions, clicks: r.clicks,
+            spend: r.spend, conversions: r.conversions, conversionValue: r.conversionValue,
+            reach: r.reach, frequency: r.frequency, cpc: r.cpc, cpm: r.cpm,
+            outboundClicks: r.outboundClicks, linkClicks: r.linkClicks,
+            landingPageViews: r.landingPageViews,
+            addToCart: r.addToCart, initiateCheckout: r.initiateCheckout,
+            viewContent: r.viewContent,
+            videoP25: r.videoP25, videoP50: r.videoP50, videoP75: r.videoP75, videoP100: r.videoP100,
+          };
+          convertMetaFields(insightData, rate);
 
-        return db.metaInsight.upsert({
-          where: { shopDomain_date_hourSlot_adId: { shopDomain, date: r.date, hourSlot: r.hourSlot, adId: r.adId } },
-          create: {
-            shopDomain, date: r.date, hourSlot: r.hourSlot,
-            campaignId: r.campaignId, adSetId: r.adSetId, adId: r.adId,
-            ...insightData,
-          },
-          update: insightData,
-        });
-      })
+          return db.metaInsight.upsert({
+            where: { shopDomain_date_hourSlot_adId: { shopDomain, date: r.date, hourSlot: r.hourSlot, adId: r.adId } },
+            create: {
+              shopDomain, date: r.date, hourSlot: r.hourSlot,
+              campaignId: r.campaignId, adSetId: r.adSetId, adId: r.adId,
+              ...insightData,
+            },
+            update: insightData,
+          });
+        }),
+        { timeout: 30_000 } // give SQLite headroom on the larger batches
+      )
     );
   }
 }
 
-// Fetch a date range as daily aggregates (no hourly breakdown) - used for data >13 months old
-async function fetchDailyRange(metaAccessToken, metaAdAccountId, since, until, fields) {
+// Before Pass 2 writes hourly rows for a day we delete the Pass 1 daily
+// aggregate row(s) for that day, so totals don't double-count.
+async function deleteDailyForDay(shopDomain, dateKey) {
+  const dayStart = new Date(dateKey + "T00:00:00.000Z");
+  const dayEnd = new Date(dateKey + "T23:59:59.999Z");
+  await withDbRetry(`delete daily ${dateKey}`, () =>
+    db.metaInsight.deleteMany({
+      where: { shopDomain, hourSlot: -1, date: { gte: dayStart, lte: dayEnd } },
+    })
+  );
+}
+
+// ------------------------------------------------------------------
+// Fetchers
+// ------------------------------------------------------------------
+
+async function fetchDailyRange(metaAccessToken, metaAdAccountId, since, until) {
   const params = new URLSearchParams({
-    fields, level: "ad",
+    fields: FIELDS_DAILY, level: "ad",
     time_range: JSON.stringify({ since, until }),
     time_increment: "1", limit: String(PAGE_LIMIT), action_report_time: "conversion",
     action_breakdowns: "action_type", use_unified_attribution_setting: "true",
     action_attribution_windows: JSON.stringify(["1d_view", "7d_click"]),
     access_token: metaAccessToken,
   });
-
   const url = `https://graph.facebook.com/v21.0/${metaAdAccountId}/insights?${params.toString()}`;
-  const apiRows = await fetchAllPages(url, "MetaSync");
+  const apiRows = await fetchAllPages(url, "MetaSync/Pass1");
   return apiRows.map(row => parseRow(row, -1));
 }
 
-// Fetch a date range with hourly breakdowns - used for recent data
-// If Meta returns "reduce data" error, automatically splits into single-day requests
-async function fetchHourlyRange(metaAccessToken, metaAdAccountId, since, until, fields) {
-  try {
-    return await fetchHourlyRangeInner(metaAccessToken, metaAdAccountId, since, until, fields);
-  } catch (err) {
-    if (err instanceof ReduceDataError && since !== until) {
-      // Split range into individual days and fetch each separately
-      console.warn(`[MetaSync] Range ${since}→${until} too large, splitting into single days`);
-      const days = [];
-      const d0 = new Date(since + "T00:00:00Z"), d1 = new Date(until + "T00:00:00Z");
-      for (let d = new Date(d0); d <= d1; d.setUTCDate(d.getUTCDate() + 1)) {
-        days.push(d.toISOString().split("T")[0]);
-      }
-      const allParsed = [];
-      for (const day of days) {
-        const rows = await fetchHourlyRangeInner(metaAccessToken, metaAdAccountId, day, day, fields);
-        allParsed.push(...rows);
-      }
-      return allParsed;
-    }
-    throw err;
-  }
-}
-
-async function fetchHourlyRangeInner(metaAccessToken, metaAdAccountId, since, until, fields) {
+async function fetchHourlyDay(metaAccessToken, metaAdAccountId, dateKey) {
   const params = new URLSearchParams({
-    fields, breakdowns: "hourly_stats_aggregated_by_advertiser_time_zone", level: "ad",
-    time_range: JSON.stringify({ since, until }),
+    fields: FIELDS_HOURLY,
+    breakdowns: "hourly_stats_aggregated_by_advertiser_time_zone",
+    level: "ad",
+    time_range: JSON.stringify({ since: dateKey, until: dateKey }),
     time_increment: "1", limit: String(PAGE_LIMIT), action_report_time: "conversion",
     action_breakdowns: "action_type", use_unified_attribution_setting: "true",
     action_attribution_windows: JSON.stringify(["1d_view", "7d_click"]),
     access_token: metaAccessToken,
   });
-
   const url = `https://graph.facebook.com/v21.0/${metaAdAccountId}/insights?${params.toString()}`;
-  const apiRows = await fetchAllPages(url, "MetaSync");
+  const apiRows = await fetchAllPages(url, "MetaSync/Pass2");
   const parsed = [];
   for (const row of apiRows) {
     const hourSlot = parseInt(String(row.hourly_stats_aggregated_by_advertiser_time_zone).split(":")[0], 10);
@@ -167,13 +243,33 @@ async function fetchHourlyRangeInner(metaAccessToken, metaAdAccountId, since, un
   return parsed;
 }
 
-function buildRanges(days, size) {
-  const ranges = [];
-  for (let i = 0; i < days.length; i += size) {
-    const chunk = days.slice(i, i + size);
-    ranges.push({ since: chunk[0], until: chunk[chunk.length - 1], dayCount: chunk.length, days: chunk });
+// ------------------------------------------------------------------
+// Date helpers
+// ------------------------------------------------------------------
+
+function buildDayList(daysBack) {
+  const days = [];
+  for (let i = daysBack; i >= 1; i--) {
+    const d = new Date();
+    d.setUTCDate(d.getUTCDate() - i);
+    days.push(d.toISOString().split("T")[0]);
   }
-  return ranges;
+  return days;
+}
+
+function chunkDays(days, size) {
+  const chunks = [];
+  for (let i = 0; i < days.length; i += size) {
+    const slice = days.slice(i, i + size);
+    chunks.push({ since: slice[0], until: slice[slice.length - 1], days: slice });
+  }
+  return chunks;
+}
+
+function nextLadderSize(currentSize) {
+  const idx = PASS1_LADDER.indexOf(currentSize);
+  if (idx < 0 || idx === PASS1_LADDER.length - 1) return null;
+  return PASS1_LADDER[idx + 1];
 }
 
 function formatElapsed(ms) {
@@ -186,6 +282,127 @@ function formatElapsed(ms) {
   return `${hr}h ${min % 60}m`;
 }
 
+// ------------------------------------------------------------------
+// Pass 1: daily aggregates with reduce-data fallback
+// ------------------------------------------------------------------
+//
+// Returns the parsed rows AND a Set of dateKeys where conversions > 0,
+// so Pass 2 can target only those days.
+async function runPass1(metaAccessToken, metaAdAccountId, shopDomain, allDays, ratesByDate, onProgress) {
+  const conversionDays = new Set();
+  let totalRows = 0;
+  let daysDone = 0;
+
+  // Walk the ladder. We start at the largest chunk size; on ReduceDataError
+  // for a single chunk we recurse with the next-smaller size on just that
+  // chunk's days (not the whole pass).
+  async function fetchChunk(since, until, chunkDayList, sizeAtCall) {
+    try {
+      const rows = await fetchDailyRange(metaAccessToken, metaAdAccountId, since, until);
+      return rows;
+    } catch (err) {
+      if (!(err instanceof ReduceDataError)) throw err;
+      const smaller = nextLadderSize(sizeAtCall);
+      if (!smaller) {
+        // Already at floor (1 day) and Meta still says reduce - real error.
+        throw new Error(`MetaSync/Pass1: reduce-data at single-day chunk ${since} - ${err.message}`);
+      }
+      console.warn(`[MetaSync/Pass1] reduce-data at size=${sizeAtCall}, splitting ${since}→${until} into ${smaller}-day sub-chunks`);
+      const subChunks = chunkDays(chunkDayList, smaller);
+      const all = [];
+      for (const sub of subChunks) {
+        const subRows = await fetchChunk(sub.since, sub.until, sub.days, smaller);
+        all.push(...subRows);
+      }
+      return all;
+    }
+  }
+
+  const startSize = PASS1_LADDER[0];
+  const chunks = chunkDays(allDays, startSize);
+  console.log(`[MetaSync/Pass1] ${allDays.length} days in ${chunks.length} chunks of up to ${startSize}d`);
+
+  for (const c of chunks) {
+    onProgress({
+      detail: `Scanning ad data ${c.since} → ${c.until}`,
+      daysDone,
+      totalRows,
+    });
+
+    const rows = await fetchChunk(c.since, c.until, c.days, startSize);
+
+    // Persist immediately (don't accumulate in memory across the whole window).
+    if (rows.length > 0) {
+      await batchUpsertInsights(shopDomain, rows, ratesByDate);
+      totalRows += rows.length;
+      for (const r of rows) {
+        if (r.conversions > 0) {
+          conversionDays.add(r.date.toISOString().split("T")[0]);
+        }
+      }
+    }
+
+    daysDone += c.days.length;
+    onProgress({
+      detail: `Scanned ${c.since} → ${c.until} (${rows.length} rows)`,
+      daysDone,
+      totalRows,
+    });
+  }
+
+  return { totalRows, conversionDays };
+}
+
+// ------------------------------------------------------------------
+// Pass 2: hourly enrich for conversion days
+// ------------------------------------------------------------------
+
+async function runPass2(metaAccessToken, metaAdAccountId, shopDomain, conversionDays, ratesByDate, onProgress) {
+  // Honour Meta's 13-month hourly window. Anything older stays at daily-only.
+  const cutoff = new Date();
+  cutoff.setUTCDate(cutoff.getUTCDate() - HOURLY_LIMIT_DAYS);
+  const cutoffKey = cutoff.toISOString().split("T")[0];
+
+  const daysToEnrich = [...conversionDays].filter(d => d >= cutoffKey).sort();
+  console.log(`[MetaSync/Pass2] ${daysToEnrich.length} conversion days to enrich (filtered ${conversionDays.size - daysToEnrich.length} pre-13mo)`);
+
+  let totalRows = 0;
+  let daysDone = 0;
+
+  for (const dateKey of daysToEnrich) {
+    onProgress({
+      detail: `Hourly detail for ${dateKey}`,
+      daysDone,
+      totalRows,
+    });
+
+    const rows = await fetchHourlyDay(metaAccessToken, metaAdAccountId, dateKey);
+
+    // Replace daily aggregate with hourly rows atomically-ish: delete the
+    // hourSlot=-1 row(s) for this day, then upsert hourly. There's a brief
+    // window where the day has no rows; acceptable since neither read path
+    // assumes presence (loaders already tolerate gaps).
+    await deleteDailyForDay(shopDomain, dateKey);
+    if (rows.length > 0) {
+      await batchUpsertInsights(shopDomain, rows, ratesByDate);
+      totalRows += rows.length;
+    }
+
+    daysDone++;
+    onProgress({
+      detail: `Hourly detail for ${dateKey} (${rows.length} rows)`,
+      daysDone,
+      totalRows,
+    });
+  }
+
+  return { totalRows, daysEnriched: daysToEnrich.length };
+}
+
+// ------------------------------------------------------------------
+// Public entry points
+// ------------------------------------------------------------------
+
 export async function syncMetaInsights(shopDomain, daysBack = 7, progressKey = null) {
   const shop = await db.shop.findUnique({ where: { shopDomain } });
   if (!shop?.metaAccessToken || !shop?.metaAdAccountId) throw new Error("Meta Ads not connected");
@@ -193,117 +410,71 @@ export async function syncMetaInsights(shopDomain, daysBack = 7, progressKey = n
   const { metaAccessToken, metaAdAccountId } = shop;
   const needsConversion = shop.metaCurrency !== shop.shopifyCurrency;
 
-  const allDays = [];
-  for (let i = daysBack; i >= 1; i--) {
-    const d = new Date();
-    d.setUTCDate(d.getUTCDate() - i);
-    allDays.push(d.toISOString().split("T")[0]);
-  }
-
-  const dailyDays = allDays.filter((_, i) => (daysBack - i) > HOURLY_LIMIT_DAYS);
-  const hourlyDays = allDays.filter((_, i) => (daysBack - i) <= HOURLY_LIMIT_DAYS);
-
-  const dailyRanges = buildRanges(dailyDays, DAILY_RANGE_SIZE);
-  const hourlyRanges = buildRanges(hourlyDays, HOURLY_RANGE_SIZE);
-  const totalRanges = dailyRanges.length + hourlyRanges.length;
-
-  console.log(`[MetaSync] Starting for ${shopDomain}: ${dailyDays.length} daily (${dailyRanges.length} ranges) + ${hourlyDays.length} hourly (${hourlyRanges.length} ranges), concurrency=${CONCURRENCY}`);
-
-  const fields = [
-    "date_start", "ad_id", "ad_name", "campaign_id", "campaign_name",
-    "adset_id", "adset_name", "impressions", "clicks", "spend",
-    "reach", "frequency", "cpc", "cpm",
-    "actions", "action_values", "outbound_clicks",
-    "video_p25_watched_actions", "video_p50_watched_actions",
-    "video_p75_watched_actions", "video_p100_watched_actions",
-  ].join(",");
-
-  let totalRows = 0;
-  let rangesCompleted = 0;
-  let daysCompleted = 0;
-  const totalDays = daysBack;
+  const allDays = buildDayList(daysBack);
   const key = progressKey || `syncMeta:${shopDomain}`;
   const startTime = Date.now();
 
-  if (needsConversion) console.log(`[MetaSync] Will convert ${shop.metaCurrency}→${shop.shopifyCurrency}`);
-
-  // Pre-fetch exchange rates in bulk with progress reporting
+  // Exchange rates up front (can take a few seconds on first run for >12mo).
   let ratesByDate = {};
   if (needsConversion) {
     setProgress(key, {
-      status: "running", current: 0, total: totalDays, unitLabel: "days",
+      status: "running", current: 0, total: daysBack, unitLabel: "days",
+      totalIsApproximate: true,
       detail: `Fetching ${shop.metaCurrency}→${shop.shopifyCurrency} exchange rates`,
     });
     ratesByDate = await prefetchExchangeRates(allDays, shop.metaCurrency, shop.shopifyCurrency, (msg) => {
       setProgress(key, {
-        status: "running", current: 0, total: totalDays, unitLabel: "days",
+        status: "running", current: 0, total: daysBack, unitLabel: "days",
+        totalIsApproximate: true,
         detail: `Exchange rates: ${msg}`,
       });
     });
   }
 
-  // Plain-English progress writer. The UI computes percentage, "X of Y days",
-  // elapsed and ETA from {current,total} + phase.startedAt. We don't bake any
-  // of that into the message string ourselves - just a short detail line.
-  function updateProgress(detail) {
-    setProgress(key, {
-      status: "running",
-      current: daysCompleted,
-      total: totalDays,
-      unitLabel: "days",
-      rowsImported: totalRows,
-      detail,
+  // Pass 1 progress: total = number of days in the window. We don't know yet
+  // how many will need Pass 2 enrichment, so we mark the total approximate.
+  let pass1RowTotal = 0;
+  await (async () => {
+    const start = Date.now();
+    const result = await runPass1(metaAccessToken, metaAdAccountId, shopDomain, allDays, ratesByDate, ({ detail, daysDone, totalRows }) => {
+      setProgress(key, {
+        status: "running",
+        current: daysDone,
+        total: daysBack,
+        unitLabel: "days",
+        totalIsApproximate: true,
+        rowsImported: totalRows,
+        detail,
+      });
     });
-  }
+    pass1RowTotal = result.totalRows;
+    console.log(`[MetaSync/Pass1] complete: ${result.totalRows} daily rows, ${result.conversionDays.size} conversion days, ${formatElapsed(Date.now() - start)}`);
 
-  // Process daily ranges in parallel batches
-  if (dailyRanges.length > 0) {
-    console.log(`[MetaSync] Fetching ${dailyDays.length} days as daily aggregates in ${dailyRanges.length} ranges...`);
-    for (let b = 0; b < dailyRanges.length; b += CONCURRENCY) {
-      const batch = dailyRanges.slice(b, b + CONCURRENCY);
-      updateProgress(`Importing ad data from ${batch[0].since} to ${batch[batch.length - 1].until}`);
-
-      const results = await Promise.all(
-        batch.map(range => fetchDailyRange(metaAccessToken, metaAdAccountId, range.since, range.until, fields))
-      );
-
-      // Parallel writes - SQLite WAL + the Prisma connection pool (8) absorb
-      // the contention; sequential writes were leaving the next fetch batch
-      // blocked for tens of seconds.
-      await Promise.all(results.map(rows => batchUpsertInsights(shopDomain, rows, ratesByDate)));
-      for (const rows of results) totalRows += rows.length;
-      rangesCompleted += results.length;
-      for (const r of batch) daysCompleted += r.dayCount;
-      updateProgress(`Importing ad data from ${batch[batch.length - 1].since} to ${batch[batch.length - 1].until}`);
-    }
-  }
-
-  // Process hourly ranges in parallel batches
-  if (hourlyRanges.length > 0) {
-    console.log(`[MetaSync] Fetching ${hourlyDays.length} days with hourly breakdowns in ${hourlyRanges.length} ranges...`);
-    for (let b = 0; b < hourlyRanges.length; b += CONCURRENCY) {
-      const batch = hourlyRanges.slice(b, b + CONCURRENCY);
-      updateProgress(`Importing hourly ad data from ${batch[0].since} to ${batch[batch.length - 1].until}`);
-
-      const results = await Promise.all(
-        batch.map(range => fetchHourlyRange(metaAccessToken, metaAdAccountId, range.since, range.until, fields))
-      );
-
-      await Promise.all(results.map(rows => batchUpsertInsights(shopDomain, rows, ratesByDate)));
-      for (const rows of results) totalRows += rows.length;
-      rangesCompleted += results.length;
-      for (const r of batch) daysCompleted += r.dayCount;
-      updateProgress(`Importing hourly ad data from ${batch[batch.length - 1].since} to ${batch[batch.length - 1].until}`);
-    }
-  }
+    // Pass 2: now we know the real shape of the work.
+    const pass2Total = daysBack + result.conversionDays.size;
+    const pass2Start = Date.now();
+    const pass2 = await runPass2(metaAccessToken, metaAdAccountId, shopDomain, result.conversionDays, ratesByDate, ({ detail, daysDone, totalRows }) => {
+      setProgress(key, {
+        status: "running",
+        current: daysBack + daysDone, // continue from where Pass 1 left off
+        total: pass2Total,
+        unitLabel: "days",
+        totalIsApproximate: false, // known now
+        rowsImported: pass1RowTotal + totalRows,
+        detail,
+      });
+    });
+    console.log(`[MetaSync/Pass2] complete: ${pass2.totalRows} hourly rows over ${pass2.daysEnriched} days, ${formatElapsed(Date.now() - pass2Start)}`);
+  })();
 
   await db.shop.update({ where: { shopDomain }, data: { lastMetaSync: new Date() } });
   const totalElapsed = formatElapsed(Date.now() - startTime);
-  console.log(`[MetaSync] Insights complete: ${totalRows} rows in ${totalElapsed} (${dailyRanges.length} daily + ${hourlyRanges.length} hourly ranges)`);
-  return { totalRows };
+  console.log(`[MetaSync] ${shopDomain} insights complete in ${totalElapsed}`);
+  return { totalRows: pass1RowTotal };
 }
 
-// Combined sync: insights + breakdowns + entity sync
+// Combined sync: insights + breakdowns + entity sync. Same signature as
+// before so the orchestrator and the legacy admin buttons keep working.
 export async function syncMetaAll(shopDomain, daysBack = 7, progressKey = null) {
   const key = progressKey || `syncMeta:${shopDomain}`;
   const breakdownDays = Math.min(daysBack, HOURLY_LIMIT_DAYS);
