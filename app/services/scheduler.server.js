@@ -15,10 +15,19 @@ const DAILY_CHECK_MS = 15 * 60 * 1000; // check every 15 min if daily sync is du
 let lastDailyRun = null;
 
 async function getConnectedShops() {
+  // Only fully-onboarded shops. A shop mid-onboarding (welcome / fit-importing /
+  // fit-running / fit-ready / ingesting) is being driven by either the Fit
+  // Test action handler or the ingest orchestrator - both upsert orders and
+  // Meta insights in tight loops. If the scheduler races them it (a) burns
+  // Meta budget that the orchestrator needs for the historical backfill,
+  // (b) writes phantom orders/insights with no IngestJob row so the
+  // onboarding progress bars never advance, and (c) deadlocks the SQLite
+  // pool. Skip until onboardingCompleted flips true.
   return db.shop.findMany({
     where: {
       metaAccessToken: { not: null },
       metaAdAccountId: { not: null },
+      onboardingCompleted: true,
     },
     select: { shopDomain: true },
   });
