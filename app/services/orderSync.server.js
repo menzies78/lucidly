@@ -353,11 +353,22 @@ export async function syncOrdersSkeleton(admin, shopDomain) {
         };
       });
 
-      const result = await db.order.createMany({
-        data: skeletonRows,
-        skipDuplicates: true,        // existing rows left alone
+      // Prisma's createMany on SQLite does NOT support skipDuplicates (only
+      // Postgres/MySQL/CockroachDB do). So pre-filter the batch: SELECT the
+      // IDs that already exist, drop them from the insert. One extra read
+      // per page, but tiny compared to the GraphQL fetch cost.
+      const pageIds = skeletonRows.map(r => r.shopifyOrderId);
+      const existing = await db.order.findMany({
+        where: { shopDomain, shopifyOrderId: { in: pageIds } },
+        select: { shopifyOrderId: true },
       });
-      totalCreated += result.count;
+      const existingSet = new Set(existing.map(o => o.shopifyOrderId));
+      const newRows = skeletonRows.filter(r => !existingSet.has(r.shopifyOrderId));
+
+      if (newRows.length > 0) {
+        const result = await db.order.createMany({ data: newRows });
+        totalCreated += result.count;
+      }
       totalFound += edges.length;
     }
 
