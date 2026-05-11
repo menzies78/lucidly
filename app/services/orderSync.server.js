@@ -539,6 +539,10 @@ export async function syncOrders(admin, shopDomain) {
     const data = await graphqlWithRetry(admin, query, { cursor }, `OrderSync/GetOrders page ${pageCount + 1}`);
     pageCount++;
     const edges = data.data.orders.edges;
+    // Per-page heartbeat. Lets us trace whether totalImported is actually
+    // monotonic - if the in-flight progress is flapping in the UI, this log
+    // is the ground truth (the closure variable can only ever go up here).
+    console.log(`[OrderSync] page=${pageCount} edges=${edges.length} totalImportedSoFar=${totalImported} shopDomain=${shopDomain}`);
     if (pageCount === 1 && edges.length > 0) {
       console.log(`[OrderSync] First order date: ${edges[0].node.createdAt}`);
     }

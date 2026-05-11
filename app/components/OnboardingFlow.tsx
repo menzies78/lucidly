@@ -53,6 +53,13 @@ type FitTestData = {
   aov: { mean: number; cv: number; spread: "narrow" | "moderate" | "wide"; currency: string };
 } | null;
 
+type MetaGovernorSummary = {
+  appUtilPct: number;
+  acctUtilPct: number;
+  blockedForSec: number;
+  worstAccount: string | null;
+};
+
 type Status = {
   onboardingPhase: string;
   onboardingStartedAt?: string;
@@ -66,6 +73,7 @@ type Status = {
   fitImportLive?: { current?: number; message?: string } | null;
   metaAuthUrl?: string | null;
   inFlight: boolean;
+  metaGovernorSummary?: MetaGovernorSummary;
   // Legacy field name retained on the API but no longer used by the UI -
   // per-phase progress is now driven by phase.live.
   liveMessage?: string | null;
@@ -120,7 +128,30 @@ function phaseElapsed(phase: Phase): string | null {
   return formatElapsed(end - start);
 }
 
-function PhaseRow({ phase }: { phase: Phase }) {
+function MetaGovernorLine({ g }: { g: MetaGovernorSummary }) {
+  // Only render when there's something worth showing. Util < 30% with no
+  // block is "normal" and shouldn't clutter the row.
+  const showUtil = (g.acctUtilPct || 0) >= 30 || (g.appUtilPct || 0) >= 30;
+  const showBlock = (g.blockedForSec || 0) > 0;
+  if (!showUtil && !showBlock) return null;
+  const utilColor = (g.acctUtilPct || g.appUtilPct) >= 75 ? RED
+    : (g.acctUtilPct || g.appUtilPct) >= 50 ? "#D97706"
+    : TEXT_DIM;
+  return (
+    <div style={{ fontSize: 11, color: TEXT_DIM, marginTop: 6, fontVariantNumeric: "tabular-nums" }}>
+      <span style={{ color: utilColor }}>
+        Meta API: account {g.acctUtilPct || 0}% • app {g.appUtilPct || 0}%
+      </span>
+      {showBlock && (
+        <span style={{ color: RED, marginLeft: 8 }}>
+          {"\u2022"} paused for {g.blockedForSec}s (rate limit)
+        </span>
+      )}
+    </div>
+  );
+}
+
+function PhaseRow({ phase, metaGovernor }: { phase: Phase; metaGovernor?: MetaGovernorSummary }) {
   const isRunning = phase.status === "running";
   const isDone = phase.status === "completed";
   const isFailed = phase.status === "failed";
@@ -229,6 +260,9 @@ function PhaseRow({ phase }: { phase: Phase }) {
               </div>
             )}
           </div>
+        )}
+        {isRunning && phase.track === "meta" && metaGovernor && (
+          <MetaGovernorLine g={metaGovernor} />
         )}
         {isFailed && phase.errorMessage && (
           <div style={{ fontSize: 12, color: "#991B1B", marginTop: 4 }}>{phase.errorMessage}</div>
@@ -614,7 +648,9 @@ function IngestingCard({ status }: { status: Status }) {
               {metaPhases.length > 0 && (
                 <BlockStack gap="200">
                   <Text as="h3" variant="headingSm">Meta Ads import</Text>
-                  {metaPhases.map(p => <PhaseRow key={p.key} phase={p} />)}
+                  {metaPhases.map(p => (
+                    <PhaseRow key={p.key} phase={p} metaGovernor={status.metaGovernorSummary} />
+                  ))}
                 </BlockStack>
               )}
               {finalPhases.length > 0 && (
