@@ -33,7 +33,7 @@
 
 import db from "../db.server.js";
 import { syncOrders } from "./orderSync.server.js";
-import { syncMetaInsights } from "./metaSync.server.js";
+import { syncMetaPass1, syncMetaPass2 } from "./metaSync.server.js";
 import { syncMetaBreakdowns } from "./metaBreakdownSync.server.js";
 import { syncMetaEntities } from "./metaEntitySync.server.js";
 import { refreshAdCreatives } from "./metaAdCreativeSync.server.js";
@@ -64,11 +64,28 @@ const TRACKS = {
   ],
   meta: [
     {
-      key: "insights-13mo",
-      label: "13 months of historical ad data",
-      progressKey: (shopDomain) => `ingest:${shopDomain}:insights-13mo`,
+      // Pass 1: daily aggregates across the whole 13-month window. Cheap,
+      // low-row-count probe that tells us which days had conversions. Rendered
+      // as its own progress row so the merchant sees a clean 0→400 days.
+      key: "insights-pass1",
+      label: "Daily ad totals (13 months)",
+      progressKey: (shopDomain) => `ingest:${shopDomain}:insights-pass1`,
       run: async (shopDomain) => {
-        const r = await syncMetaInsights(shopDomain, 400, `ingest:${shopDomain}:insights-13mo`);
+        const r = await syncMetaPass1(shopDomain, 400, `ingest:${shopDomain}:insights-pass1`);
+        return { rowsWritten: r?.totalRows || 0 };
+      },
+    },
+    {
+      // Pass 2: hourly enrich for the conversion-day subset Pass 1 found.
+      // Self-discovers from the DB (hourSlot=-1 rows with conversions>0), so
+      // resume after crash is safe. Separate progress row means the bar shows
+      // a clean 0→N where N is the actual count of conversion days, not the
+      // confusing "789 = 400 + 389" combined total we used to show.
+      key: "insights-pass2",
+      label: "Hourly detail for conversion days",
+      progressKey: (shopDomain) => `ingest:${shopDomain}:insights-pass2`,
+      run: async (shopDomain) => {
+        const r = await syncMetaPass2(shopDomain, 400, `ingest:${shopDomain}:insights-pass2`);
         return { rowsWritten: r?.totalRows || 0 };
       },
     },

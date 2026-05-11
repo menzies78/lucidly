@@ -499,7 +499,10 @@ async function runPass2(metaAccessToken, metaAdAccountId, shopDomain, conversion
 // Public entry points
 // ------------------------------------------------------------------
 
-export async function syncMetaInsights(shopDomain, daysBack = 7, progressKey = null) {
+// Shared setup: resolve shop, validate Meta connection, prefetch exchange
+// rates. Pass 1 and Pass 2 both need this. Idempotent - safe to call twice
+// (rate prefetch is cached).
+async function setupShopAndRates(shopDomain, daysBack, progressKey) {
   const shop = await db.shop.findUnique({ where: { shopDomain } });
   if (!shop?.metaAccessToken || !shop?.metaAdAccountId) throw new Error("Meta Ads not connected");
 
@@ -507,19 +510,16 @@ export async function syncMetaInsights(shopDomain, daysBack = 7, progressKey = n
   const needsConversion = shop.metaCurrency !== shop.shopifyCurrency;
 
   const allDays = buildDayList(daysBack);
-  const key = progressKey || `syncMeta:${shopDomain}`;
-  const startTime = Date.now();
 
-  // Exchange rates up front (can take a few seconds on first run for >12mo).
   let ratesByDate = {};
   if (needsConversion) {
-    setProgress(key, {
+    setProgress(progressKey, {
       status: "running", current: 0, total: daysBack, unitLabel: "days",
       totalIsApproximate: true,
       detail: `Fetching ${shop.metaCurrency}→${shop.shopifyCurrency} exchange rates`,
     });
     ratesByDate = await prefetchExchangeRates(allDays, shop.metaCurrency, shop.shopifyCurrency, (msg) => {
-      setProgress(key, {
+      setProgress(progressKey, {
         status: "running", current: 0, total: daysBack, unitLabel: "days",
         totalIsApproximate: true,
         detail: `Exchange rates: ${msg}`,
@@ -527,46 +527,113 @@ export async function syncMetaInsights(shopDomain, daysBack = 7, progressKey = n
     });
   }
 
-  // Pass 1 progress: total = number of days in the window. We don't know yet
-  // how many will need Pass 2 enrichment, so we mark the total approximate.
-  let pass1RowTotal = 0;
-  await (async () => {
-    const start = Date.now();
-    const result = await runPass1(metaAccessToken, metaAdAccountId, shopDomain, allDays, ratesByDate, ({ detail, daysDone, totalRows }) => {
-      setProgress(key, {
-        status: "running",
-        current: daysDone,
-        total: daysBack,
-        unitLabel: "days",
-        totalIsApproximate: true,
-        rowsImported: totalRows,
-        detail,
-      });
-    });
-    pass1RowTotal = result.totalRows;
-    console.log(`[MetaSync/Pass1] complete: ${result.totalRows} daily rows, ${result.conversionDays.size} conversion days, ${formatElapsed(Date.now() - start)}`);
+  return { shop, metaAccessToken, metaAdAccountId, allDays, ratesByDate };
+}
 
-    // Pass 2: now we know the real shape of the work.
-    const pass2Total = daysBack + result.conversionDays.size;
-    const pass2Start = Date.now();
-    const pass2 = await runPass2(metaAccessToken, metaAdAccountId, shopDomain, result.conversionDays, ratesByDate, ({ detail, daysDone, totalRows }) => {
-      setProgress(key, {
-        status: "running",
-        current: daysBack + daysDone, // continue from where Pass 1 left off
-        total: pass2Total,
-        unitLabel: "days",
-        totalIsApproximate: false, // known now
-        rowsImported: pass1RowTotal + totalRows,
-        detail,
-      });
+/**
+ * Pass 1 only - daily aggregates for the whole window. Writes hourSlot=-1
+ * rows. Returns the list of dates where conversions > 0 so the caller (or
+ * Pass 2 itself, via DB self-discovery) knows which days need hourly detail.
+ *
+ * Used standalone by the phased orchestrator so Pass 1 / Pass 2 render as
+ * two separate progress rows in the onboarding UI. The legacy
+ * syncMetaInsights() wrapper below chains both into one progress key.
+ */
+export async function syncMetaPass1(shopDomain, daysBack = 7, progressKey = null) {
+  const key = progressKey || `syncMetaPass1:${shopDomain}`;
+  const startTime = Date.now();
+  const { metaAccessToken, metaAdAccountId, allDays, ratesByDate } =
+    await setupShopAndRates(shopDomain, daysBack, key);
+
+  const result = await runPass1(metaAccessToken, metaAdAccountId, shopDomain, allDays, ratesByDate, ({ detail, daysDone, totalRows }) => {
+    setProgress(key, {
+      status: "running",
+      current: daysDone,
+      total: daysBack,
+      unitLabel: "days",
+      rowsImported: totalRows,
+      detail,
     });
-    console.log(`[MetaSync/Pass2] complete: ${pass2.totalRows} hourly rows over ${pass2.daysEnriched} days, ${formatElapsed(Date.now() - pass2Start)}`);
-  })();
+  });
+  console.log(`[MetaSync/Pass1] complete: ${result.totalRows} daily rows, ${result.conversionDays.size} conversion days, ${formatElapsed(Date.now() - startTime)}`);
+  return { totalRows: result.totalRows, conversionDays: [...result.conversionDays] };
+}
+
+/**
+ * Pass 2 only - hourly enrich for days that had conversions in Pass 1.
+ *
+ * Self-discovers which days to enrich by reading MetaInsight rows that are
+ * still at hourSlot=-1 with conversions > 0 within the daysBack window. This
+ * makes Pass 2 idempotent and recoverable: if the process dies mid-pass,
+ * resume picks up only the un-enriched days (already-enriched days have had
+ * their hourSlot=-1 row deleted, so they no longer match the discovery query).
+ */
+export async function syncMetaPass2(shopDomain, daysBack = 7, progressKey = null) {
+  const key = progressKey || `syncMetaPass2:${shopDomain}`;
+  const startTime = Date.now();
+  const { metaAccessToken, metaAdAccountId, ratesByDate } =
+    await setupShopAndRates(shopDomain, daysBack, key);
+
+  // Discover conversion days from MetaInsight: any day still at hourSlot=-1
+  // with conversions>0 within the daysBack window needs enriching.
+  const cutoff = new Date();
+  cutoff.setUTCDate(cutoff.getUTCDate() - daysBack);
+  const rows = await db.metaInsight.findMany({
+    where: {
+      shopDomain,
+      hourSlot: -1,
+      conversions: { gt: 0 },
+      date: { gte: cutoff },
+    },
+    select: { date: true },
+    distinct: ["date"],
+  });
+  const conversionDays = new Set(rows.map(r => r.date.toISOString().split("T")[0]));
+  console.log(`[MetaSync/Pass2] discovered ${conversionDays.size} conversion days from DB`);
+
+  if (conversionDays.size === 0) {
+    setProgress(key, {
+      status: "running",
+      current: 0,
+      total: 0,
+      unitLabel: "days",
+      detail: "No conversion days to enrich",
+    });
+    await db.shop.update({ where: { shopDomain }, data: { lastMetaSync: new Date() } });
+    return { totalRows: 0, daysEnriched: 0 };
+  }
+
+  const totalDays = conversionDays.size;
+  const result = await runPass2(metaAccessToken, metaAdAccountId, shopDomain, conversionDays, ratesByDate, ({ detail, daysDone, totalRows }) => {
+    setProgress(key, {
+      status: "running",
+      current: daysDone,
+      total: totalDays,
+      unitLabel: "days",
+      rowsImported: totalRows,
+      detail,
+    });
+  });
+  console.log(`[MetaSync/Pass2] complete: ${result.totalRows} hourly rows over ${result.daysEnriched} days, ${formatElapsed(Date.now() - startTime)}`);
 
   await db.shop.update({ where: { shopDomain }, data: { lastMetaSync: new Date() } });
-  const totalElapsed = formatElapsed(Date.now() - startTime);
-  console.log(`[MetaSync] ${shopDomain} insights complete in ${totalElapsed}`);
-  return { totalRows: pass1RowTotal };
+  return { totalRows: result.totalRows, daysEnriched: result.daysEnriched };
+}
+
+/**
+ * Legacy combined entry-point. Kept for syncMetaAll, incrementalSync, and the
+ * admin buttons that still expect a single progress key. Internally chains
+ * Pass 1 then Pass 2 against the same progressKey - so the merged behaviour
+ * is unchanged for those callers. The phased orchestrator uses syncMetaPass1
+ * and syncMetaPass2 directly so they render as two progress rows.
+ */
+export async function syncMetaInsights(shopDomain, daysBack = 7, progressKey = null) {
+  const key = progressKey || `syncMeta:${shopDomain}`;
+  const startTime = Date.now();
+  const p1 = await syncMetaPass1(shopDomain, daysBack, key);
+  const p2 = await syncMetaPass2(shopDomain, daysBack, key);
+  console.log(`[MetaSync] ${shopDomain} insights complete in ${formatElapsed(Date.now() - startTime)}`);
+  return { totalRows: p1.totalRows + p2.totalRows };
 }
 
 // Combined sync: insights + breakdowns + entity sync. Same signature as

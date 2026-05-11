@@ -566,7 +566,7 @@ function FitReadyCard({ score, data, metaAuthUrl }: {
                   we require to match your orders).
                 </Text>
                 <Text as="p" variant="bodyMd" tone="subdued">
-                  This typically takes 30 - 60 minutes, but could be more for
+                  This typically takes 1 - 2 hours, but could be more for
                   stores with more data.
                 </Text>
                 <Text as="p" variant="bodyMd" tone="subdued">
@@ -632,7 +632,7 @@ function IngestingCard({ status }: { status: Status }) {
               <Banner tone="info">
                 <Text as="p" variant="bodyMd">
                   <strong>{"\u2713"} We&apos;ll email you when this is ready.</strong>{" "}
-                  This usually takes 10–30 minutes depending on your store size.
+                  This usually takes 1–2 hours depending on your store size.
                 </Text>
               </Banner>
 

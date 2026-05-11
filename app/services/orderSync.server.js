@@ -265,11 +265,17 @@ async function computeOrderCounts(shopDomain, customerIdsToUpdate = null) {
       }
     }
 
-    // Batch update in chunks of 200
-    for (let i = 0; i < updates.length; i += 200) {
-      const chunk = updates.slice(i, i + 200);
+    // Apply updates with bounded concurrency. We used to fan 200 updates wide
+    // via Promise.all, which queued behind Prisma's tiny SQLite connection pool
+    // and triggered "Socket timeout" errors mid-import - especially while the
+    // Meta sync was hammering the same DB. 8-wide leaves headroom for the rest
+    // of the ingest to keep writing, and per-update latency stays bounded so
+    // no single update times out at the head of the queue.
+    const CONCURRENCY = 8;
+    for (let i = 0; i < updates.length; i += CONCURRENCY) {
+      const slice = updates.slice(i, i + CONCURRENCY);
       await Promise.all(
-        chunk.map(u => db.order.update({
+        slice.map(u => db.order.update({
           where: { id: u.id },
           data: { customerOrderCountAtPurchase: u.count },
         }))
