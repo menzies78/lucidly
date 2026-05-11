@@ -5,16 +5,51 @@ import { isPaidMetaUtm } from "../utils/utmClassification.js";
 import { parseElevarVisitorInfo } from "../utils/parseElevarVisitorInfo.js";
 import { withRetry } from "./retry.server.js";
 import { backfillShopInferredGender } from "./nameGender.server.js";
+import { unauthenticated } from "../shopify.server";
 
-// Wraps admin.graphql with retry on transient errors.
-async function graphqlWithRetry(admin, query, variables, label) {
+// Wraps admin.graphql with retry on transient errors AND re-auth on 401.
+//
+// A 25-minute Shopify backfill can outlive the offline session: tokens
+// rotate, the merchant might reinstall, the session row can be touched in
+// another tab. Without recovery, a single 401 anywhere in the page walk
+// fails the whole orchestrator track (this is what burned us last run:
+// page ~50 returned 401, syncOrders threw, lastOrderSync never set).
+//
+// Strategy on 401: drop the captured admin, fetch a fresh one via
+// unauthenticated.admin(shopDomain), retry the SAME call once. If that
+// still 401s, re-auth isn't going to help (token actually revoked) - let
+// the exception propagate so the IngestJob fails honestly.
+//
+// We pass shopDomain so we can re-acquire. To keep call sites simple we
+// keep `admin` as the first arg but ignore it after a re-auth - the local
+// `client` variable is what's actually used for the request.
+async function graphqlWithRetry(admin, query, variables, label, shopDomain) {
+  let client = admin;
+  let reauthAttempted = false;
   return withRetry(async () => {
-    const res = await admin.graphql(query, variables ? { variables } : undefined);
-    const data = await res.json();
-    if (data.errors && data.errors.length) {
-      throw new Error(`Shopify GraphQL errors: ${JSON.stringify(data.errors).slice(0, 300)}`);
+    try {
+      const res = await client.graphql(query, variables ? { variables } : undefined);
+      const data = await res.json();
+      if (data.errors && data.errors.length) {
+        throw new Error(`Shopify GraphQL errors: ${JSON.stringify(data.errors).slice(0, 300)}`);
+      }
+      return data;
+    } catch (err) {
+      const is401 = /401|Unauthorized/i.test(err.message || "");
+      if (is401 && !reauthAttempted && shopDomain) {
+        reauthAttempted = true;
+        console.warn(`[${label}] 401 - dropping cached session, re-authenticating ${shopDomain}`);
+        const fresh = await unauthenticated.admin(shopDomain);
+        client = fresh.admin;
+        const res = await client.graphql(query, variables ? { variables } : undefined);
+        const data = await res.json();
+        if (data.errors && data.errors.length) {
+          throw new Error(`Shopify GraphQL errors (post-reauth): ${JSON.stringify(data.errors).slice(0, 300)}`);
+        }
+        return data;
+      }
+      throw err;
     }
-    return data;
   }, label);
 }
 
@@ -250,7 +285,8 @@ export async function syncOrdersForFitTest(admin, shopDomain) {
       admin,
       `{ shop { currencyCode ianaTimezone } }`,
       null,
-      "FitTestSync/shopInfo"
+      "FitTestSync/shopInfo",
+      shopDomain
     );
     const detectedCurrency = shopInfoData.data?.shop?.currencyCode;
     const detectedTimezone = shopInfoData.data?.shop?.ianaTimezone;
@@ -296,7 +332,7 @@ export async function syncOrdersForFitTest(admin, shopDomain) {
         }
       }
     `;
-    const data = await graphqlWithRetry(admin, query, { cursor }, `FitTestSync/page ${pageCount + 1}`);
+    const data = await graphqlWithRetry(admin, query, { cursor }, `FitTestSync/page ${pageCount + 1}`, shopDomain);
     pageCount++;
     const edges = data.data.orders.edges;
 
@@ -366,7 +402,8 @@ export async function syncOrders(admin, shopDomain) {
       admin,
       `{ shop { currencyCode ianaTimezone } }`,
       null,
-      "OrderSync/shopInfo"
+      "OrderSync/shopInfo",
+      shopDomain
     );
     const detectedCurrency = shopInfoData.data?.shop?.currencyCode;
     const detectedTimezone = shopInfoData.data?.shop?.ianaTimezone;
@@ -409,6 +446,7 @@ export async function syncOrders(admin, shopDomain) {
       `query OrderCount($q: String!) { ordersCount(query: $q) { count precision } }`,
       { q: ordersQuery },
       "OrderSync/ordersCount",
+      shopDomain,
     );
     const c = countData?.data?.ordersCount;
     if (typeof c?.count === "number") {
@@ -536,7 +574,7 @@ export async function syncOrders(admin, shopDomain) {
       }
     `;
 
-    const data = await graphqlWithRetry(admin, query, { cursor }, `OrderSync/GetOrders page ${pageCount + 1}`);
+    const data = await graphqlWithRetry(admin, query, { cursor }, `OrderSync/GetOrders page ${pageCount + 1}`, shopDomain);
     pageCount++;
     const edges = data.data.orders.edges;
     // Per-page heartbeat. Lets us trace whether totalImported is actually
@@ -846,7 +884,7 @@ export async function backfillCustomerFirstNames(admin, shopDomain) {
     `;
     let edges;
     try {
-      const data = await graphqlWithRetry(admin, query, { cursor }, "backfillFirstNames");
+      const data = await graphqlWithRetry(admin, query, { cursor }, "backfillFirstNames", shopDomain);
       edges = data.data?.orders?.edges || [];
       hasNextPage = data.data?.orders?.pageInfo?.hasNextPage || false;
       if (edges.length > 0) cursor = edges[edges.length - 1].cursor;

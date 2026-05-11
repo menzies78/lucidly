@@ -158,15 +158,29 @@ export async function paceBeforeRequest(accountKey = DEFAULT_KEY) {
     await new Promise(res => setTimeout(res, wait));
   }
   const util = getEffectiveUtil(accountKey);
-  if (util >= 90) {
+  // Steeper, lower-threshold curve. Previous curve only started slowing
+  // down at 60% — by then BUC's 1-hour decay couldn't catch up with our
+  // call rate and util crept past 100% during long imports (we saw 116%
+  // mid-Pass-2). Adding pauses at 40% / 50% gives the window time to
+  // breathe BEFORE we're in the danger zone, so the import settles at a
+  // steady ~50–60% rather than climbing.
+  if (util >= 95) {
+    console.warn(`[metaGovernor] ${accountKey}: util ${util}%, sleeping 120s`);
+    await new Promise(res => setTimeout(res, 120000));
+  } else if (util >= 85) {
+    console.warn(`[metaGovernor] ${accountKey}: util ${util}%, sleeping 60s`);
+    await new Promise(res => setTimeout(res, 60000));
+  } else if (util >= 75) {
     console.warn(`[metaGovernor] ${accountKey}: util ${util}%, sleeping 30s`);
     await new Promise(res => setTimeout(res, 30000));
-  } else if (util >= 75) {
-    await new Promise(res => setTimeout(res, 8000));
   } else if (util >= 60) {
-    await new Promise(res => setTimeout(res, 3000));
+    await new Promise(res => setTimeout(res, 15000));
+  } else if (util >= 50) {
+    await new Promise(res => setTimeout(res, 10000));
+  } else if (util >= 40) {
+    await new Promise(res => setTimeout(res, 5000));
   }
-  // < 60% — full speed.
+  // < 40% — full speed.
 }
 
 /**

@@ -387,19 +387,28 @@ async function runPass1(metaAccessToken, metaAdAccountId, shopDomain, allDays, r
       }
     }
 
-    // Did this call trip the load throttle? Inspect the governor snapshot.
-    // markBlocked() is called from metaFetch when subcode 1504022 fires.
+    // Three adaptive signals after each chunk:
+    //   • blockedFor > 0  → load throttle (subcode 1504022) tripped. Hard
+    //     step-down: we need to be cheaper next call.
+    //   • util ≥ 75       → BUC budget heating up. Step down BEFORE we get
+    //     blocked, so we never plateau at the danger zone (this was the
+    //     116% bug - the old logic only reacted on block, by which time
+    //     the window was already overcommitted).
+    //   • otherwise success — step up after N clean chunks.
     const snap = governorSnapshot();
-    const blockedFor = snap.accounts?.[acctKey]?.blockedFor || 0;
+    const acctSnap = snap.accounts?.[acctKey];
+    const blockedFor = acctSnap?.blockedFor || 0;
+    const acctUtil = Math.max(acctSnap?.bucMaxPct || 0, acctSnap?.insightsAccPct || 0);
     const tripped = blockedFor > 0;
+    const hot = acctUtil >= 75;
 
-    if (tripped) {
-      // Step DOWN to the previous rung (floor at 0). Reset success counter.
+    if (tripped || hot) {
       const prev = rungIdx;
       rungIdx = Math.max(0, rungIdx - 1);
       consecutiveSuccesses = 0;
       if (rungIdx !== prev) {
-        console.log(`[MetaSync/Pass1] throttle tripped (blockedFor=${blockedFor}s), stepping down ${PASS1_RAMP_LADDER[prev]}d → ${PASS1_RAMP_LADDER[rungIdx]}d`);
+        const reason = tripped ? `throttle tripped (blockedFor=${blockedFor}s)` : `util ${acctUtil}% (>=75)`;
+        console.log(`[MetaSync/Pass1] ${reason}, stepping down ${PASS1_RAMP_LADDER[prev]}d → ${PASS1_RAMP_LADDER[rungIdx]}d`);
       }
     } else {
       consecutiveSuccesses++;

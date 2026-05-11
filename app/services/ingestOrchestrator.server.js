@@ -216,6 +216,36 @@ async function runIngest(shopDomain) {
   // Final phase: matcher needs both Shopify orders AND Meta insights present.
   await runPhase(shopDomain, FINAL_PHASE, ctx);
 
+  // Bake customer segments + the DailyCustomerRollup table BEFORE flipping
+  // onboardingCompleted. The dashboard's Customer tile, the LTV page, the
+  // segment counts on Health - all read from these tables, not from the raw
+  // Customer rows. If we skipped this, the merchant would land on a freshly-
+  // completed dashboard with empty customer panels until the next hourly
+  // scheduler cycle ran (an hour later). Non-fatal on failure - we still
+  // want the rest of the dashboard available.
+  try {
+    const { rebuildCustomerSegments, rebuildCustomerRollups } = await import("./customerRollups.server.js");
+    await rebuildCustomerSegments(shopDomain);
+    await rebuildCustomerRollups(shopDomain);
+    console.log(`[ingestOrchestrator] ${shopDomain}: customer rollups rebuilt`);
+  } catch (err) {
+    console.error(`[ingestOrchestrator] ${shopDomain}: customer rollup rebuild failed (non-fatal): ${err.message}`);
+  }
+
+  // Pixel calibration. Compares attribution-window options against actual
+  // matched conversions and picks the best-fitting "winner". Flips the
+  // Health → Pixel pill from red ("not calibrated") to green. Non-fatal:
+  // a merchant with <N matched orders won't have enough signal for a
+  // winner, but calibratedAt will still be set so the pill shows yellow
+  // ("insufficient data") rather than red.
+  try {
+    const { calibratePixel } = await import("./pixelCalibration.server.js");
+    await calibratePixel(shopDomain);
+    console.log(`[ingestOrchestrator] ${shopDomain}: pixel calibration complete`);
+  } catch (err) {
+    console.error(`[ingestOrchestrator] ${shopDomain}: pixel calibration failed (non-fatal): ${err.message}`);
+  }
+
   // Mark onboarding complete.
   await db.shop.update({
     where: { shopDomain },
