@@ -264,8 +264,14 @@ function PhaseRow({ phase, metaGovernor }: { phase: Phase; metaGovernor?: MetaGo
         {isRunning && phase.track === "meta" && metaGovernor && (
           <MetaGovernorLine g={metaGovernor} />
         )}
-        {isFailed && phase.errorMessage && (
-          <div style={{ fontSize: 12, color: "#991B1B", marginTop: 4 }}>{phase.errorMessage}</div>
+        {isFailed && (
+          // Show a friendly, generic message — the raw Prisma / Meta error
+          // (still stored on the IngestJob row) is unhelpful to merchants and
+          // alarming when it's a transient socket timeout. Full detail lives
+          // in the Diagnostics page for the dev team.
+          <div style={{ fontSize: 12, color: "#991B1B", marginTop: 4 }}>
+            This step couldn't complete. We'll retry it on the next sync cycle.
+          </div>
         )}
       </div>
     </div>

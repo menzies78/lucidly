@@ -40,6 +40,15 @@ import { refreshAdCreatives } from "./metaAdCreativeSync.server.js";
 import { runAttribution } from "./matcher.server.js";
 import { sendOnboardingCompleteEmail } from "./email.server.js";
 import { unauthenticated } from "../shopify.server";
+import { logIngestEvent, errInfo } from "./ingestEventLog.server.js";
+
+// Retry policy for runPhase: how many times we re-run a failing phase before
+// giving up and marking it failed. Most "failures" are transient (socket
+// timeout under load, Meta rate-limit edge cases, brief network blip) so
+// retrying with a backoff resolves them silently. A genuinely broken phase
+// (bad token, missing scope) will still fail after MAX_PHASE_RETRIES.
+const MAX_PHASE_RETRIES = 2;
+const RETRY_BACKOFF_MS = [30_000, 60_000]; // 30s, then 60s
 
 // How far back to pull Shopify orders on first install. Env-tunable so we
 // can dial it up to 3 for hero accounts without redeploying.
@@ -355,33 +364,71 @@ async function runPhase(shopDomain, phase, ctx) {
     },
   });
 
+  logIngestEvent({ shopDomain, phase: phase.key, type: "phase-start", label: phase.label });
   console.log(`[ingestOrchestrator] ${shopDomain}: starting phase ${phase.key}`);
-  const startedAt = Date.now();
-  try {
-    const result = await phase.run(shopDomain, ctx);
-    const elapsed = Math.round((Date.now() - startedAt) / 1000);
-    console.log(`[ingestOrchestrator] ${shopDomain}: phase ${phase.key} done in ${elapsed}s (${result?.rowsWritten || 0} rows)`);
-    await db.ingestJob.update({
-      where: { id: job.id },
-      data: {
-        status: "completed",
-        completedAt: new Date(),
-        rowsWritten: result?.rowsWritten || 0,
-      },
-    });
-  } catch (err) {
-    console.error(`[ingestOrchestrator] ${shopDomain}: phase ${phase.key} failed: ${err.message}`);
-    await db.ingestJob.update({
-      where: { id: job.id },
-      data: {
-        status: "failed",
-        completedAt: new Date(),
-        errorMessage: err.message?.slice(0, 500) || String(err).slice(0, 500),
-      },
-    });
-    // Keep going. A failed phase shouldn't block independent later phases -
-    // partial data is much better than no data.
+
+  // Retry loop. Each attempt that throws is logged to the event log (with
+  // full message + stack) so we have a durable trail. The IngestJob row only
+  // holds the FINAL error if all retries exhausted. Until then we keep the
+  // row in "running" status — the UI will show "retrying" rather than the
+  // raw error, and the merchant sees a clean transition once it succeeds.
+  let attempt = 0;
+  let lastErr = null;
+  while (attempt <= MAX_PHASE_RETRIES) {
+    const attemptStartedAt = Date.now();
+    try {
+      const result = await phase.run(shopDomain, ctx);
+      const elapsed = Math.round((Date.now() - attemptStartedAt) / 1000);
+      console.log(`[ingestOrchestrator] ${shopDomain}: phase ${phase.key} done in ${elapsed}s (${result?.rowsWritten || 0} rows)`);
+      logIngestEvent({
+        shopDomain, phase: phase.key, type: "phase-complete",
+        rowsWritten: result?.rowsWritten || 0, elapsedSec: elapsed, attempt: attempt + 1,
+      });
+      await db.ingestJob.update({
+        where: { id: job.id },
+        data: {
+          status: "completed",
+          completedAt: new Date(),
+          rowsWritten: result?.rowsWritten || 0,
+          // Clear any stale errorMessage from an earlier failed attempt.
+          errorMessage: null,
+        },
+      });
+      return;
+    } catch (err) {
+      lastErr = err;
+      const isFinalAttempt = attempt >= MAX_PHASE_RETRIES;
+      console.error(`[ingestOrchestrator] ${shopDomain}: phase ${phase.key} attempt ${attempt + 1} failed: ${err.message}`);
+      logIngestEvent({
+        shopDomain, phase: phase.key,
+        type: isFinalAttempt ? "phase-failed" : "phase-retry",
+        attempt: attempt + 1, maxAttempts: MAX_PHASE_RETRIES + 1,
+        ...errInfo(err),
+      });
+      if (isFinalAttempt) break;
+      // Bump attempts counter on the job row so the diagnostics page can see
+      // how many tries we made. Keep status=running so the merchant UI shows
+      // "retrying…" not "failed".
+      await db.ingestJob.update({
+        where: { id: job.id },
+        data: { attempts: attempt + 2 },
+      }).catch(() => {});
+      const backoff = RETRY_BACKOFF_MS[attempt] || 60_000;
+      await new Promise(r => setTimeout(r, backoff));
+      attempt++;
+    }
   }
+
+  // Exhausted retries — mark the phase failed and move on. Independent
+  // later phases still get a chance; partial data is much better than none.
+  await db.ingestJob.update({
+    where: { id: job.id },
+    data: {
+      status: "failed",
+      completedAt: new Date(),
+      errorMessage: lastErr?.message?.slice(0, 500) || String(lastErr).slice(0, 500),
+    },
+  });
 }
 
 /**
