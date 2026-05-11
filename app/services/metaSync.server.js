@@ -29,6 +29,7 @@ import { setProgress, completeProgress, failProgress } from "./progress.server";
 import { syncMetaBreakdowns } from "./metaBreakdownSync.server";
 import { prefetchExchangeRates, convertMetaFields } from "./exchangeRate.server";
 import { fetchAllPages, ReduceDataError } from "./metaFetch.server";
+import { snapshot as governorSnapshot } from "./metaGovernor.server.js";
 
 const PAGE_LIMIT = 1000;            // rows per API page
 const DB_BATCH_SIZE = 500;          // rows per Prisma $transaction
@@ -39,22 +40,30 @@ const HOURLY_LIMIT_DAYS = 395;      // Meta only allows hourly within ~13 months
 // amount of data". 1 is the floor.
 const PASS1_LADDER = [90, 30, 7, 1];
 
-// What we ACTUALLY start at. Deliberately smaller than the ladder top.
+// Adaptive ramp-up ladder for Pass 1. We START at 1 day, then step UP on
+// consecutive successful chunks (no governor block triggered).
 //
-// Why not start at 90 days?
+// Why ramp up instead of starting at 7 days?
 //
 // Meta has two distinct throttle channels:
 //   1. Budget util (X-App-Usage, X-Business-Use-Case-Usage). Tracked by
 //      metaGovernor. This is what util% measures.
 //   2. Load throttle (error subcode 1504022, "Ad-Account temporarily blocked
-//      due to high load"). Triggers on per-CALL cost, not budget %. A single
-//      90-day daily-aggregate query across hundreds of ads is heavy enough
-//      to trip this at <35% util - exactly what we saw on Vollebak.
+//      due to high load"). Triggers on per-CALL cost AND on the account's
+//      recent activity, not budget %. The very first call on a cold start
+//      is the riskiest one: Meta's server-side load counter still remembers
+//      our previous bursts (across deploys, the previous merchant install,
+//      etc.) - so even a moderate first call can immediately return 1504022.
 //
-// Smaller per-call cost is the only thing that prevents 1504022. We pay for
-// it in more total calls (58 chunks vs 5 for 13mo), but each one is light
-// enough to fly under the load threshold.
-const PASS1_INITIAL_CHUNK_DAYS = 7;
+// Starting at 1 day makes the first call as cheap as possible. After 2
+// consecutive non-blocked chunks we double up (1 → 3 → 7), so we get to
+// full speed within ~6 chunks while never exposing the merchant to the
+// "paused for 19s (rate limit)" message on chunk 1.
+//
+// On any governor block (blockedFor > 0 detected after a chunk), we drop
+// back to the previous rung.
+const PASS1_RAMP_LADDER = [1, 3, 7];
+const PASS1_RAMP_STEP_UP_AFTER = 2; // successful chunks before stepping up
 
 // Mandatory pause between chunks. The 1504022 load score decays over time;
 // back-to-back calls keep the account warm even if each individual call is
@@ -339,21 +348,32 @@ async function runPass1(metaAccessToken, metaAdAccountId, shopDomain, allDays, r
     }
   }
 
-  const startSize = PASS1_INITIAL_CHUNK_DAYS;
-  const chunks = chunkDays(allDays, startSize);
-  console.log(`[MetaSync/Pass1] ${allDays.length} days in ${chunks.length} chunks of up to ${startSize}d (${INTER_CHUNK_PAUSE_MS}ms between chunks)`);
-
+  // Adaptive walk. We don't pre-chunk - sizes are decided per iteration based
+  // on whether the previous chunk triggered a governor block.
+  const acctKey = `act_${String(metaAdAccountId).replace(/^act_/, "")}`;
+  let cursor = 0;
+  let rungIdx = 0;                          // start at the smallest rung
+  let consecutiveSuccesses = 0;
   let chunkIdx = 0;
-  for (const c of chunks) {
+  const estTotalChunks = Math.ceil(allDays.length / PASS1_RAMP_LADDER[PASS1_RAMP_LADDER.length - 1]);
+
+  console.log(`[MetaSync/Pass1] ${allDays.length} days, adaptive ramp ${PASS1_RAMP_LADDER.join("→")}d (step up after ${PASS1_RAMP_STEP_UP_AFTER} clean chunks)`);
+
+  while (cursor < allDays.length) {
     chunkIdx++;
+    const size = PASS1_RAMP_LADDER[rungIdx];
+    const slice = allDays.slice(cursor, cursor + size);
+    const since = slice[0];
+    const until = slice[slice.length - 1];
+
     onProgress({
-      detail: `Scanning ${c.since} → ${c.until} · chunk ${chunkIdx}/${chunks.length} · ${totalRows.toLocaleString()} rows so far`,
+      detail: `Scanning ${since} → ${until} · ${size}-day chunk · ${totalRows.toLocaleString()} rows so far`,
       daysDone,
       totalRows,
     });
 
     const chunkStart = Date.now();
-    const rows = await fetchChunk(c.since, c.until, c.days, startSize);
+    const rows = await fetchChunk(since, until, slice, size);
     const chunkMs = Date.now() - chunkStart;
 
     // Persist immediately (don't accumulate in memory across the whole window).
@@ -367,17 +387,43 @@ async function runPass1(metaAccessToken, metaAdAccountId, shopDomain, allDays, r
       }
     }
 
-    daysDone += c.days.length;
-    console.log(`[MetaSync/Pass1] chunk ${chunkIdx}/${chunks.length} ${c.since}→${c.until} done: +${rows.length} rows in ${Math.round(chunkMs/1000)}s, total=${totalRows}`);
+    // Did this call trip the load throttle? Inspect the governor snapshot.
+    // markBlocked() is called from metaFetch when subcode 1504022 fires.
+    const snap = governorSnapshot();
+    const blockedFor = snap.accounts?.[acctKey]?.blockedFor || 0;
+    const tripped = blockedFor > 0;
+
+    if (tripped) {
+      // Step DOWN to the previous rung (floor at 0). Reset success counter.
+      const prev = rungIdx;
+      rungIdx = Math.max(0, rungIdx - 1);
+      consecutiveSuccesses = 0;
+      if (rungIdx !== prev) {
+        console.log(`[MetaSync/Pass1] throttle tripped (blockedFor=${blockedFor}s), stepping down ${PASS1_RAMP_LADDER[prev]}d → ${PASS1_RAMP_LADDER[rungIdx]}d`);
+      }
+    } else {
+      consecutiveSuccesses++;
+      if (consecutiveSuccesses >= PASS1_RAMP_STEP_UP_AFTER && rungIdx < PASS1_RAMP_LADDER.length - 1) {
+        const prev = rungIdx;
+        rungIdx++;
+        consecutiveSuccesses = 0;
+        console.log(`[MetaSync/Pass1] ${PASS1_RAMP_STEP_UP_AFTER} clean chunks, stepping up ${PASS1_RAMP_LADDER[prev]}d → ${PASS1_RAMP_LADDER[rungIdx]}d`);
+      }
+    }
+
+    daysDone += slice.length;
+    cursor += slice.length;
+
+    console.log(`[MetaSync/Pass1] chunk ${chunkIdx} ${since}→${until} (${size}d) done: +${rows.length} rows in ${Math.round(chunkMs/1000)}s, total=${totalRows}, nextRung=${PASS1_RAMP_LADDER[rungIdx]}d`);
     onProgress({
-      detail: `Imported ${c.since} → ${c.until} · +${rows.length.toLocaleString()} rows · ${totalRows.toLocaleString()} total`,
+      detail: `Imported ${since} → ${until} · +${rows.length.toLocaleString()} rows · ${totalRows.toLocaleString()} total`,
       daysDone,
       totalRows,
     });
 
     // Cooldown before the next chunk. Skipped on the last iteration so we
     // don't sit idle at 100%.
-    if (chunkIdx < chunks.length) {
+    if (cursor < allDays.length) {
       await new Promise(r => setTimeout(r, INTER_CHUNK_PAUSE_MS));
     }
   }

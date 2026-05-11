@@ -350,7 +350,17 @@ export default function OnboardingFlow({ shopDomain }: { shopDomain: string }) {
 
 // ─── Welcome card ────────────────────────────────────────────────────
 function WelcomeCard({ fetcher }: { fetcher: ReturnType<typeof useFetcher> }) {
-  const isSubmitting = fetcher.state !== "idle";
+  // Two states drive button loading:
+  //   1. fetcher.state - true while the POST is in flight
+  //   2. hasSubmitted   - flips true on first click and never resets, so the
+  //      button stays in the loading style through the 0-3s polling gap
+  //      between the action returning 303 and /app/api/ingest-status reporting
+  //      phase="fit-importing" (which unmounts this card entirely).
+  // Without #2 the button reverts to its idle (black) look the instant the
+  // action returns, even though the next screen is still loading - the user
+  // can't tell their click registered.
+  const [hasSubmitted, setHasSubmitted] = useState(false);
+  const isSubmitting = fetcher.state !== "idle" || hasSubmitted;
   return (
     <Box paddingBlockEnd="600">
       <Card>
@@ -395,13 +405,14 @@ function WelcomeCard({ fetcher }: { fetcher: ReturnType<typeof useFetcher> }) {
               </BlockStack>
             </Box>
 
-            <fetcher.Form method="post">
+            <fetcher.Form method="post" onSubmit={() => setHasSubmitted(true)}>
               <input type="hidden" name="action" value="begin-fit-test" />
               <Button
                 variant="primary"
                 size="large"
                 submit
                 loading={isSubmitting}
+                disabled={hasSubmitted}
                 fullWidth
               >
                 Begin Fit Test
