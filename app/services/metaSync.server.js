@@ -34,11 +34,32 @@ const PAGE_LIMIT = 1000;            // rows per API page
 const DB_BATCH_SIZE = 500;          // rows per Prisma $transaction
 const HOURLY_LIMIT_DAYS = 395;      // Meta only allows hourly within ~13 months
 
-// Pass 1 chunk-size ladder. We start at 90 (Meta's max for time_increment=1)
-// and step down on ReduceDataError. 1 is the floor - if a single day still
-// asks us to reduce data, the API is unhappy for a different reason and we
-// surface it.
+// Pass 1 chunk-size ladder, descending. Used ONLY by the ReduceDataError
+// fallback path - we step DOWN to the next size when Meta says "reduce the
+// amount of data". 1 is the floor.
 const PASS1_LADDER = [90, 30, 7, 1];
+
+// What we ACTUALLY start at. Deliberately smaller than the ladder top.
+//
+// Why not start at 90 days?
+//
+// Meta has two distinct throttle channels:
+//   1. Budget util (X-App-Usage, X-Business-Use-Case-Usage). Tracked by
+//      metaGovernor. This is what util% measures.
+//   2. Load throttle (error subcode 1504022, "Ad-Account temporarily blocked
+//      due to high load"). Triggers on per-CALL cost, not budget %. A single
+//      90-day daily-aggregate query across hundreds of ads is heavy enough
+//      to trip this at <35% util - exactly what we saw on Vollebak.
+//
+// Smaller per-call cost is the only thing that prevents 1504022. We pay for
+// it in more total calls (58 chunks vs 5 for 13mo), but each one is light
+// enough to fly under the load threshold.
+const PASS1_INITIAL_CHUNK_DAYS = 7;
+
+// Mandatory pause between chunks. The 1504022 load score decays over time;
+// back-to-back calls keep the account warm even if each individual call is
+// small. A short pause gives the next call a cooler launch.
+const INTER_CHUNK_PAUSE_MS = 3000;
 
 // Fields for Pass 1 (daily aggregates - need every metric).
 const FIELDS_DAILY = [
@@ -318,18 +339,22 @@ async function runPass1(metaAccessToken, metaAdAccountId, shopDomain, allDays, r
     }
   }
 
-  const startSize = PASS1_LADDER[0];
+  const startSize = PASS1_INITIAL_CHUNK_DAYS;
   const chunks = chunkDays(allDays, startSize);
-  console.log(`[MetaSync/Pass1] ${allDays.length} days in ${chunks.length} chunks of up to ${startSize}d`);
+  console.log(`[MetaSync/Pass1] ${allDays.length} days in ${chunks.length} chunks of up to ${startSize}d (${INTER_CHUNK_PAUSE_MS}ms between chunks)`);
 
+  let chunkIdx = 0;
   for (const c of chunks) {
+    chunkIdx++;
     onProgress({
-      detail: `Scanning ad data ${c.since} → ${c.until}`,
+      detail: `Scanning ${c.since} → ${c.until} · chunk ${chunkIdx}/${chunks.length} · ${totalRows.toLocaleString()} rows so far`,
       daysDone,
       totalRows,
     });
 
+    const chunkStart = Date.now();
     const rows = await fetchChunk(c.since, c.until, c.days, startSize);
+    const chunkMs = Date.now() - chunkStart;
 
     // Persist immediately (don't accumulate in memory across the whole window).
     if (rows.length > 0) {
@@ -343,11 +368,18 @@ async function runPass1(metaAccessToken, metaAdAccountId, shopDomain, allDays, r
     }
 
     daysDone += c.days.length;
+    console.log(`[MetaSync/Pass1] chunk ${chunkIdx}/${chunks.length} ${c.since}→${c.until} done: +${rows.length} rows in ${Math.round(chunkMs/1000)}s, total=${totalRows}`);
     onProgress({
-      detail: `Scanned ${c.since} → ${c.until} (${rows.length} rows)`,
+      detail: `Imported ${c.since} → ${c.until} · +${rows.length.toLocaleString()} rows · ${totalRows.toLocaleString()} total`,
       daysDone,
       totalRows,
     });
+
+    // Cooldown before the next chunk. Skipped on the last iteration so we
+    // don't sit idle at 100%.
+    if (chunkIdx < chunks.length) {
+      await new Promise(r => setTimeout(r, INTER_CHUNK_PAUSE_MS));
+    }
   }
 
   return { totalRows, conversionDays };
@@ -369,9 +401,11 @@ async function runPass2(metaAccessToken, metaAdAccountId, shopDomain, conversion
   let totalRows = 0;
   let daysDone = 0;
 
+  let idx = 0;
   for (const dateKey of daysToEnrich) {
+    idx++;
     onProgress({
-      detail: `Hourly detail for ${dateKey}`,
+      detail: `Hourly detail for ${dateKey} · day ${idx}/${daysToEnrich.length}`,
       daysDone,
       totalRows,
     });
@@ -390,10 +424,17 @@ async function runPass2(metaAccessToken, metaAdAccountId, shopDomain, conversion
 
     daysDone++;
     onProgress({
-      detail: `Hourly detail for ${dateKey} (${rows.length} rows)`,
+      detail: `Hourly ${dateKey} · +${rows.length} rows · ${totalRows.toLocaleString()} total`,
       daysDone,
       totalRows,
     });
+
+    // Same cooling pause as Pass 1. Pass 2 is single-day per call so the
+    // per-call cost is already small, but ad-account load is cumulative -
+    // we still want to back off between calls so 1504022 doesn't fire.
+    if (idx < daysToEnrich.length) {
+      await new Promise(r => setTimeout(r, INTER_CHUNK_PAUSE_MS));
+    }
   }
 
   return { totalRows, daysEnriched: daysToEnrich.length };
