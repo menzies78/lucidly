@@ -53,46 +53,6 @@ async function graphqlWithRetry(admin, query, variables, label, shopDomain) {
   }, label);
 }
 
-// Get an EXACT count of Shopify orders in [since, until) by bisecting the
-// time range whenever Shopify returns precision="AT_LEAST" (which it does
-// any time a single ordersCount query exceeds ~10,000 results).
-//
-// Recursion bottoms out when:
-//   • the response is EXACT (return count),
-//   • the range is < MIN_RANGE_MS (return AT_LEAST count as a fallback to
-//     avoid pathological bisection of a single super-busy minute),
-//   • or depth exceeds MAX_DEPTH (same fallback).
-//
-// In practice the recursion is 2-4 deep for a typical large merchant.
-async function countOrdersInRange(admin, shopDomain, since, until, depth = 0) {
-  const MAX_DEPTH = 8;
-  const MIN_RANGE_MS = 60 * 60 * 1000; // 1 hour - smaller and we give up
-  const sinceIso = since.toISOString();
-  const untilIso = until.toISOString();
-  const q = `created_at:>='${sinceIso}' AND created_at:<'${untilIso}' status:any`;
-  const data = await graphqlWithRetry(
-    admin,
-    `query OC($q: String!) { ordersCount(query: $q) { count precision } }`,
-    { q },
-    `OrderCount[${sinceIso.slice(0, 10)}→${untilIso.slice(0, 10)} d${depth}]`,
-    shopDomain,
-  );
-  const c = data?.data?.ordersCount;
-  if (!c || typeof c.count !== "number") return 0;
-  if (c.precision === "EXACT") return c.count;
-  const rangeMs = until.getTime() - since.getTime();
-  if (depth >= MAX_DEPTH || rangeMs <= MIN_RANGE_MS) {
-    console.warn(`[OrderCount] bisection bailed at depth=${depth} range=${rangeMs}ms - returning AT_LEAST ${c.count}`);
-    return c.count;
-  }
-  const midMs = since.getTime() + Math.floor(rangeMs / 2);
-  const mid = new Date(midMs);
-  // Sequential, not parallel - keeps Shopify GraphQL cost predictable.
-  const lo = await countOrdersInRange(admin, shopDomain, since, mid, depth + 1);
-  const hi = await countOrdersInRange(admin, shopDomain, mid, until, depth + 1);
-  return lo + hi;
-}
-
 function hashEmail(email) {
   if (!email) return null;
   return crypto.createHash("sha256").update(email.toLowerCase().trim()).digest("hex");
@@ -294,6 +254,140 @@ async function computeOrderCounts(shopDomain, customerIdsToUpdate = null) {
   console.log(`[OrderSync] Computed order counts for ${totalUpdated} orders across ${customerIds.length} customers`);
 }
 
+// Helper: resolve the "since when" cutoff for an order sync. Shared between
+// skeleton sweep and the detail walk so both passes walk the same window.
+async function resolveSyncWindow(shopDomain) {
+  const shop = await db.shop.findUnique({ where: { shopDomain } });
+  const twoYearsAgo = new Date();
+  twoYearsAgo.setUTCFullYear(twoYearsAgo.getUTCFullYear() - 2);
+  const sinceDate = shop?.lastOrderSync || twoYearsAgo;
+  const isInitialBackfill = !shop?.lastOrderSync;
+  return { shop, sinceDate, isInitialBackfill };
+}
+
+/**
+ * SKELETON SWEEP. Phase A of the two-phase Shopify import.
+ *
+ * Walks the full Shopify Orders endpoint with the cheapest possible query
+ * (id, name, createdAt only - no line items, no customer, no UTMs, no refunds).
+ * Page size 250 (the GraphQL maximum) instead of the detail walk's 50, so
+ * each page costs roughly the same in query-cost budget but covers 5x more
+ * orders. End-to-end this is ~60-120s for a 40k-order shop.
+ *
+ * Per-page action: bulk createMany with skipDuplicates=true. Rows that
+ * already exist (from webhooks or a prior sync) are left untouched - the
+ * subsequent detail walk will refresh them. New rows are inserted with
+ * placeholder financial fields (0.0 for amounts, "" for currency) which the
+ * detail walk overwrites a few minutes later.
+ *
+ * Why bother? Two reasons:
+ *  1. UX: the merchant sees an EXACT order count climb during the sweep
+ *     (~15,000 found → 23,000 found → 43,712 found ✓), then the detail
+ *     bar moves against that known total. Way better than the old
+ *     "AT_LEAST 15,000" mystery number that drifted upward.
+ *  2. Resume safety: a crash during the detail walk leaves real skeleton
+ *     rows behind, so on resume the detail upserts cleanly update existing
+ *     rows rather than racing to create them while customer rollups read
+ *     from a half-populated table.
+ *
+ * Idempotent on re-run: skipDuplicates means a repeat sweep is just a no-op
+ * page-walk. Does NOT touch Shop.lastOrderSync (only the detail walk
+ * advances that).
+ *
+ * Returns: { totalFound }.
+ */
+export async function syncOrdersSkeleton(admin, shopDomain) {
+  console.log(`[OrderSync/Skeleton] Starting skeleton sweep for ${shopDomain}`);
+  const { sinceDate } = await resolveSyncWindow(shopDomain);
+  const progressKey = `syncOrdersSkeleton:${shopDomain}`;
+
+  setProgress(progressKey, {
+    status: "running",
+    current: 0,
+    total: null,                // total unknown - this sweep IS what discovers it
+    unitLabel: "orders",
+    detail: "Counting your orders...",
+  });
+
+  let hasNextPage = true;
+  let cursor = null;
+  let totalFound = 0;
+  let totalCreated = 0;
+  let pageCount = 0;
+
+  while (hasNextPage) {
+    const query = `
+      query SkeletonOrders($cursor: String) {
+        orders(first: 250, after: $cursor, sortKey: CREATED_AT, query: "created_at:>='${sinceDate.toISOString()}' status:any") {
+          edges {
+            cursor
+            node { id name createdAt }
+          }
+          pageInfo { hasNextPage }
+        }
+      }
+    `;
+    const data = await graphqlWithRetry(admin, query, { cursor }, `OrderSync/Skeleton page ${pageCount + 1}`, shopDomain);
+    pageCount++;
+    const edges = data.data.orders.edges;
+
+    if (edges.length > 0) {
+      const skeletonRows = edges.map((edge) => {
+        cursor = edge.cursor;
+        const order = edge.node;
+        const shopifyOrderId = order.id.replace("gid://shopify/Order/", "");
+        return {
+          shopDomain,
+          shopifyOrderId,
+          orderNumber: order.name,
+          createdAt: new Date(order.createdAt),
+          // Placeholders for NOT NULL fields. The detail walk overwrites
+          // these with real values via upsert keyed on (shopDomain,
+          // shopifyOrderId), so they only persist for the few minutes
+          // between skeleton and detail completing.
+          totalPrice: 0,
+          subtotalPrice: 0,
+          currency: "",
+          frozenTotalPrice: 0,
+          frozenSubtotalPrice: 0,
+        };
+      });
+
+      const result = await db.order.createMany({
+        data: skeletonRows,
+        skipDuplicates: true,        // existing rows left alone
+      });
+      totalCreated += result.count;
+      totalFound += edges.length;
+    }
+
+    setProgress(progressKey, {
+      status: "running",
+      current: totalFound,
+      total: null,
+      unitLabel: "orders",
+      detail: `${totalFound.toLocaleString()} orders found...`,
+    });
+
+    if (pageCount % 5 === 0) {
+      console.log(`[OrderSync/Skeleton] page=${pageCount} totalFound=${totalFound} created=${totalCreated}`);
+    }
+
+    hasNextPage = data.data.orders.pageInfo.hasNextPage;
+  }
+
+  setProgress(progressKey, {
+    status: "running",
+    current: totalFound,
+    total: totalFound,             // make the bar render as 100%
+    unitLabel: "orders",
+    detail: `${totalFound.toLocaleString()} orders found · ready to import details`,
+  });
+
+  console.log(`[OrderSync/Skeleton] Complete: ${totalFound} orders found (${totalCreated} new skeleton rows created)`);
+  return { totalFound, totalCreated };
+}
+
 /**
  * Minimal 90-day order sync used ONLY by the Fit Test on first install.
  *
@@ -468,55 +562,42 @@ export async function syncOrders(admin, shopDomain) {
     console.warn(`[OrderSync] Could not detect shop settings:`, err.message);
   }
 
-  const shop = await db.shop.findUnique({ where: { shopDomain } });
-  const twoYearsAgo = new Date();
-  twoYearsAgo.setUTCFullYear(twoYearsAgo.getUTCFullYear() - 2);
-  const sinceDate = shop?.lastOrderSync || twoYearsAgo;
+  const { shop, sinceDate, isInitialBackfill } = await resolveSyncWindow(shopDomain);
   console.log(`[OrderSync] sinceDate=${sinceDate.toISOString()}, lastOrderSync=${shop?.lastOrderSync || 'null'}`);
 
-  // Upfront EXACT count so the onboarding progress bar can show "X of Y
-  // orders" + a real ETA from the very first page.
+  // The orchestrator runs syncOrdersSkeleton before us on initial backfill, so
+  // the Order table is already populated with skeleton rows for the full
+  // window. Counting the table gives us the exact total for the bar. (The
+  // detail walk uses upsert keyed on (shopDomain, shopifyOrderId), so it
+  // updates the skeleton rows in place rather than creating duplicates.)
   //
-  // Shopify's `ordersCount` query caps at 10,000 for large catalogs -
-  // anything above returns count=10000 with precision="AT_LEAST". For
-  // a 40k-order shop that meant we showed "~10,000+ orders" and let
-  // the total drift upward as we crossed it, which set wildly wrong
-  // expectations ("almost done!" then total balloons).
-  //
-  // Fix: when we hit an AT_LEAST response, bisect the date range and
-  // re-query each half. Recurse until every partition is EXACT, then
-  // sum. For 43k orders over 2 years that's typically 4-8 calls (each
-  // cheap), and the merchant sees the real total before the first
-  // batch of 50 orders lands.
-  const ordersQuery = `created_at:>='${sinceDate.toISOString()}' status:any`;
-  const nowDate = new Date();
+  // On incremental syncs the skeleton phase doesn't run - sinceDate is hours
+  // old and there are at most a handful of new orders - so we leave total
+  // null and the UI hides the bar. Webhook-driven order rows already exist
+  // in the table; the count would over-report if we used it.
   let expectedOrderTotal = null;
-  let expectedOrderTotalIsApprox = false;
-  try {
-    expectedOrderTotal = await countOrdersInRange(admin, shopDomain, sinceDate, nowDate);
-    console.log(`[OrderSync] exact ordersCount=${expectedOrderTotal} (bisected)`);
-  } catch (err) {
-    console.warn(`[OrderSync] ordersCount lookup failed: ${err.message}`);
+  if (isInitialBackfill) {
+    try {
+      expectedOrderTotal = await db.order.count({
+        where: { shopDomain, createdAt: { gte: sinceDate } },
+      });
+      console.log(`[OrderSync] expectedOrderTotal=${expectedOrderTotal} (from skeleton rows)`);
+    } catch (err) {
+      console.warn(`[OrderSync] order.count failed: ${err.message}`);
+    }
   }
-
-  // Helper kept for symmetry with the old AT_LEAST fallback - if for some
-  // reason we end up with an approximate total (e.g. bisection bailed at
-  // max depth), the bar still grows past it rather than sticking at 100%.
-  const effectiveTotal = (current) => {
-    if (expectedOrderTotal == null) return null;
-    if (!expectedOrderTotalIsApprox) return expectedOrderTotal;
-    return current >= expectedOrderTotal ? Math.ceil(current * 1.1) : expectedOrderTotal;
-  };
+  const effectiveTotal = () => expectedOrderTotal;
+  const expectedOrderTotalIsApprox = false;
 
   // Seed the progress map immediately so the onboarding UI shows the bar
   // before the first 50 orders complete (~few seconds otherwise).
   setProgress(`syncOrders:${shopDomain}`, {
     status: "running",
     current: 0,
-    total: effectiveTotal(0),
+    total: effectiveTotal(),
     totalIsApproximate: expectedOrderTotalIsApprox,
     unitLabel: "orders",
-    detail: "Importing your Shopify orders",
+    detail: "Importing order details",
   });
 
   let hasNextPage = true;
@@ -525,9 +606,8 @@ export async function syncOrders(admin, shopDomain) {
   let totalCustomers = 0;
   let pageCount = 0;
   const touchedCustomerIds = new Set();
-  // Detect whether this is an initial backfill (lastOrderSync was null).
-  // Full backfills should do a shop-wide recompute; incremental runs should scope to touched customers only.
-  const isInitialBackfill = !shop?.lastOrderSync;
+  // isInitialBackfill is already resolved from resolveSyncWindow above. Full
+  // backfills do a shop-wide recompute; incremental scoped to touched customers.
 
   while (hasNextPage) {
     const query = `
@@ -775,7 +855,7 @@ export async function syncOrders(admin, shopDomain) {
         setProgress(`syncOrders:${shopDomain}`, {
           status: "running",
           current: totalImported,
-          total: effectiveTotal(totalImported), // null when count was unavailable - UI hides %
+          total: effectiveTotal(), // null when count was unavailable - UI hides %
           totalIsApproximate: expectedOrderTotalIsApprox,
           unitLabel: "orders",
           detail: "Importing your Shopify orders",
@@ -816,7 +896,7 @@ export async function syncOrders(admin, shopDomain) {
   setProgress(`syncOrders:${shopDomain}`, {
     status: "running",
     current: totalImported,
-    total: effectiveTotal(totalImported),
+    total: effectiveTotal(),
     totalIsApproximate: expectedOrderTotalIsApprox,
     unitLabel: "orders",
     detail: "Building customer order history",
@@ -833,7 +913,7 @@ export async function syncOrders(admin, shopDomain) {
     setProgress(`syncOrders:${shopDomain}`, {
       status: "running",
       current: totalImported,
-      total: effectiveTotal(totalImported),
+      total: effectiveTotal(),
       totalIsApproximate: expectedOrderTotalIsApprox,
       unitLabel: "orders",
       detail: "Inferring customer demographics",

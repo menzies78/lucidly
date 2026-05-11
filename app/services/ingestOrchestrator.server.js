@@ -32,8 +32,8 @@
 // failed but keep going - partial data is much better than a blank dashboard.
 
 import db from "../db.server.js";
-import { syncOrders } from "./orderSync.server.js";
-import { syncMetaPass1, syncMetaPass2 } from "./metaSync.server.js";
+import { syncOrders, syncOrdersSkeleton } from "./orderSync.server.js";
+import { syncMetaPass1, syncMetaPass2, syncMetaEntityPreflight } from "./metaSync.server.js";
 import { syncMetaBreakdowns } from "./metaBreakdownSync.server.js";
 import { syncMetaEntities } from "./metaEntitySync.server.js";
 import { refreshAdCreatives } from "./metaAdCreativeSync.server.js";
@@ -52,8 +52,23 @@ const SHOPIFY_BACKFILL_YEARS = Number(process.env.SHOPIFY_BACKFILL_YEARS || 2);
 const TRACKS = {
   shopify: [
     {
+      // Skeleton sweep: cheap id+name+createdAt walk at page-size 250 to
+      // pre-build every Order row and reveal the EXACT count up-front.
+      // Renders as its own progress row showing "X orders found...". Detail
+      // phase below then walks the same window at page-size 50 with rich
+      // fields, upserting into the skeleton rows already in place.
+      key: "shopify-skeleton",
+      label: "Counting your Shopify orders",
+      requiresAdmin: true,
+      progressKey: (shopDomain) => `syncOrdersSkeleton:${shopDomain}`,
+      run: async (shopDomain, ctx) => {
+        const r = await syncOrdersSkeleton(ctx.admin, shopDomain);
+        return { rowsWritten: r?.totalCreated || 0 };
+      },
+    },
+    {
       key: "shopify-orders",
-      label: `${SHOPIFY_BACKFILL_YEARS} years of Shopify orders`,
+      label: `${SHOPIFY_BACKFILL_YEARS} years of Shopify order details`,
       requiresAdmin: true,
       progressKey: (shopDomain) => `syncOrders:${shopDomain}`,
       run: async (shopDomain, ctx) => {
@@ -63,6 +78,18 @@ const TRACKS = {
     },
   ],
   meta: [
+    {
+      // Entity preflight: three tiny summary calls to surface campaign /
+      // ad-set / ad totals before the slower daily-import bar starts moving.
+      // Same UX idea as the Shopify skeleton row.
+      key: "meta-preflight",
+      label: "Discovering your ad account",
+      progressKey: (shopDomain) => `ingest:${shopDomain}:meta-preflight`,
+      run: async (shopDomain) => {
+        await syncMetaEntityPreflight(shopDomain, `ingest:${shopDomain}:meta-preflight`);
+        return { rowsWritten: 0 };
+      },
+    },
     {
       // Pass 1: daily aggregates across the whole 13-month window. Cheap,
       // low-row-count probe that tells us which days had conversions. Rendered

@@ -531,6 +531,68 @@ async function setupShopAndRates(shopDomain, daysBack, progressKey) {
 }
 
 /**
+ * Entity preflight. Cheap "what's in this ad account?" probe that runs
+ * before Pass 1 starts. Three single-page calls to /campaigns, /adsets,
+ * /ads each with summary=true so the response includes the total_count
+ * field - we don't actually fetch the entity rows.
+ *
+ * Two reasons:
+ *  1. UX: the merchant sees "Found 47 campaigns · 320 ad sets · 1,840
+ *     ads" before the slower per-day import starts. It's the Meta-side
+ *     mirror of the Shopify skeleton count.
+ *  2. Sanity check: a Meta token with the wrong ad-account scope returns
+ *     0 entities and we can surface that as a clearer error than waiting
+ *     for Pass 1 to silently produce no rows.
+ *
+ * Completes in ~3-5s (three tiny API calls). No governor reporting needed
+ * - these calls are too small to move the BUC budget.
+ */
+export async function syncMetaEntityPreflight(shopDomain, progressKey = null) {
+  const key = progressKey || `syncMetaPreflight:${shopDomain}`;
+  const shop = await db.shop.findUnique({ where: { shopDomain } });
+  if (!shop?.metaAccessToken || !shop?.metaAdAccountId) throw new Error("Meta Ads not connected");
+
+  const counts = { campaigns: 0, adsets: 0, ads: 0 };
+  const entityList = ["campaigns", "adsets", "ads"];
+
+  setProgress(key, {
+    status: "running",
+    current: 0, total: entityList.length, unitLabel: "checks",
+    detail: "Discovering your ad account...",
+  });
+
+  for (let i = 0; i < entityList.length; i++) {
+    const entity = entityList[i];
+    const url = `https://graph.facebook.com/v21.0/${shop.metaAdAccountId}/${entity}?fields=id&limit=1&summary=true&access_token=${shop.metaAccessToken}`;
+    try {
+      const res = await fetch(url);
+      const data = await res.json();
+      if (data?.summary?.total_count != null) {
+        counts[entity] = data.summary.total_count;
+      } else if (data?.error) {
+        console.warn(`[MetaPreflight] ${entity}: ${data.error.message}`);
+      }
+    } catch (err) {
+      console.warn(`[MetaPreflight] ${entity} fetch failed: ${err.message}`);
+    }
+    setProgress(key, {
+      status: "running",
+      current: i + 1, total: entityList.length, unitLabel: "checks",
+      detail: `Found ${counts.campaigns.toLocaleString()} campaigns, ${counts.adsets.toLocaleString()} ad sets, ${counts.ads.toLocaleString()} ads`,
+    });
+  }
+
+  const summary = `${counts.campaigns.toLocaleString()} campaigns · ${counts.adsets.toLocaleString()} ad sets · ${counts.ads.toLocaleString()} ads`;
+  console.log(`[MetaPreflight] ${shopDomain}: ${summary}`);
+  setProgress(key, {
+    status: "running",
+    current: entityList.length, total: entityList.length, unitLabel: "checks",
+    detail: `Found ${summary}`,
+  });
+  return { counts, summary };
+}
+
+/**
  * Pass 1 only - daily aggregates for the whole window. Writes hourSlot=-1
  * rows. Returns the list of dates where conversions > 0 so the caller (or
  * Pass 2 itself, via DB self-discovery) knows which days need hourly detail.
