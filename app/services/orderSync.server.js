@@ -53,6 +53,46 @@ async function graphqlWithRetry(admin, query, variables, label, shopDomain) {
   }, label);
 }
 
+// Get an EXACT count of Shopify orders in [since, until) by bisecting the
+// time range whenever Shopify returns precision="AT_LEAST" (which it does
+// any time a single ordersCount query exceeds ~10,000 results).
+//
+// Recursion bottoms out when:
+//   • the response is EXACT (return count),
+//   • the range is < MIN_RANGE_MS (return AT_LEAST count as a fallback to
+//     avoid pathological bisection of a single super-busy minute),
+//   • or depth exceeds MAX_DEPTH (same fallback).
+//
+// In practice the recursion is 2-4 deep for a typical large merchant.
+async function countOrdersInRange(admin, shopDomain, since, until, depth = 0) {
+  const MAX_DEPTH = 8;
+  const MIN_RANGE_MS = 60 * 60 * 1000; // 1 hour - smaller and we give up
+  const sinceIso = since.toISOString();
+  const untilIso = until.toISOString();
+  const q = `created_at:>='${sinceIso}' AND created_at:<'${untilIso}' status:any`;
+  const data = await graphqlWithRetry(
+    admin,
+    `query OC($q: String!) { ordersCount(query: $q) { count precision } }`,
+    { q },
+    `OrderCount[${sinceIso.slice(0, 10)}→${untilIso.slice(0, 10)} d${depth}]`,
+    shopDomain,
+  );
+  const c = data?.data?.ordersCount;
+  if (!c || typeof c.count !== "number") return 0;
+  if (c.precision === "EXACT") return c.count;
+  const rangeMs = until.getTime() - since.getTime();
+  if (depth >= MAX_DEPTH || rangeMs <= MIN_RANGE_MS) {
+    console.warn(`[OrderCount] bisection bailed at depth=${depth} range=${rangeMs}ms - returning AT_LEAST ${c.count}`);
+    return c.count;
+  }
+  const midMs = since.getTime() + Math.floor(rangeMs / 2);
+  const mid = new Date(midMs);
+  // Sequential, not parallel - keeps Shopify GraphQL cost predictable.
+  const lo = await countOrdersInRange(admin, shopDomain, since, mid, depth + 1);
+  const hi = await countOrdersInRange(admin, shopDomain, mid, until, depth + 1);
+  return lo + hi;
+}
+
 function hashEmail(email) {
   if (!email) return null;
   return crypto.createHash("sha256").update(email.toLowerCase().trim()).digest("hex");
@@ -428,41 +468,34 @@ export async function syncOrders(admin, shopDomain) {
   const sinceDate = shop?.lastOrderSync || twoYearsAgo;
   console.log(`[OrderSync] sinceDate=${sinceDate.toISOString()}, lastOrderSync=${shop?.lastOrderSync || 'null'}`);
 
-  // Upfront total count so the onboarding progress bar can show
-  // "X of Y orders" + an ETA. Best-effort.
+  // Upfront EXACT count so the onboarding progress bar can show "X of Y
+  // orders" + a real ETA from the very first page.
   //
-  // Shopify caps `ordersCount` at 10,000 for large catalogs - it returns
-  // count=10000 with precision=AT_LEAST. Rather than throwing the value
-  // away (which leaves the merchant with just "1,450 orders so far" and
-  // no sense of scale), we treat AT_LEAST as an approximate floor: we
-  // show "X of ~10,000+ orders" and bump the total upward if the
-  // running count overtakes it, so the bar never sticks at 100%.
+  // Shopify's `ordersCount` query caps at 10,000 for large catalogs -
+  // anything above returns count=10000 with precision="AT_LEAST". For
+  // a 40k-order shop that meant we showed "~10,000+ orders" and let
+  // the total drift upward as we crossed it, which set wildly wrong
+  // expectations ("almost done!" then total balloons).
+  //
+  // Fix: when we hit an AT_LEAST response, bisect the date range and
+  // re-query each half. Recurse until every partition is EXACT, then
+  // sum. For 43k orders over 2 years that's typically 4-8 calls (each
+  // cheap), and the merchant sees the real total before the first
+  // batch of 50 orders lands.
   const ordersQuery = `created_at:>='${sinceDate.toISOString()}' status:any`;
+  const nowDate = new Date();
   let expectedOrderTotal = null;
   let expectedOrderTotalIsApprox = false;
   try {
-    const countData = await graphqlWithRetry(
-      admin,
-      `query OrderCount($q: String!) { ordersCount(query: $q) { count precision } }`,
-      { q: ordersQuery },
-      "OrderSync/ordersCount",
-      shopDomain,
-    );
-    const c = countData?.data?.ordersCount;
-    if (typeof c?.count === "number") {
-      expectedOrderTotal = c.count;
-      expectedOrderTotalIsApprox = c.precision !== "EXACT";
-      console.log(`[OrderSync] ordersCount=${expectedOrderTotal} (${c.precision})`);
-    } else {
-      console.log(`[OrderSync] ordersCount returned no count - falling back to count-less progress`);
-    }
+    expectedOrderTotal = await countOrdersInRange(admin, shopDomain, sinceDate, nowDate);
+    console.log(`[OrderSync] exact ordersCount=${expectedOrderTotal} (bisected)`);
   } catch (err) {
     console.warn(`[OrderSync] ordersCount lookup failed: ${err.message}`);
   }
 
-  // Helper: if we've crossed the AT_LEAST floor, the bar would otherwise
-  // stick at 100%. Bump the displayed total to current + 10% headroom so
-  // the % still moves and the ETA still computes.
+  // Helper kept for symmetry with the old AT_LEAST fallback - if for some
+  // reason we end up with an approximate total (e.g. bisection bailed at
+  // max depth), the bar still grows past it rather than sticking at 100%.
   const effectiveTotal = (current) => {
     if (expectedOrderTotal == null) return null;
     if (!expectedOrderTotalIsApprox) return expectedOrderTotal;
