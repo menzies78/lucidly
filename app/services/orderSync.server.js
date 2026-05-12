@@ -797,7 +797,12 @@ export async function syncOrders(admin, shopDomain) {
       // something to work with.
       const existingOrder = await db.order.findUnique({
         where: { shopDomain_shopifyOrderId: { shopDomain, shopifyOrderId } },
-        select: { customerFirstName: true, customerLastInitial: true },
+        select: {
+          customerFirstName: true,
+          customerLastInitial: true,
+          frozenTotalPrice: true,
+          frozenSubtotalPrice: true,
+        },
       });
       const customerFirstName = existingOrder?.customerFirstName
         || (billing?.firstName || "").trim()
@@ -836,7 +841,26 @@ export async function syncOrders(admin, shopDomain) {
         },
         update: {
           orderNumber: order.name,
-          totalPrice, subtotalPrice,
+          // shopifyCustomerId on existing rows is often null (skeleton sweep
+          // doesn't set it; pre-Apr-2026 detail walks omitted it from the
+          // update branch entirely - see git blame). Always overwrite so a
+          // re-sync repopulates it. Customer being deleted on the Shopify side
+          // is rare and the null is harmless.
+          shopifyCustomerId: order.customer?.id?.replace("gid://shopify/Customer/", "") || null,
+          totalPrice, subtotalPrice, currency,
+          // Frozen price = the original value captured at order creation.
+          // Webhooks set it correctly on orders/create. But skeleton-then-
+          // detail backfills left frozenTotalPrice=0 on every row because the
+          // skeleton wrote 0 and the update branch never overrode it. Fix:
+          // only set when the existing value is 0 (placeholder), so we
+          // backfill placeholders without clobbering real frozen values from
+          // a webhook capture.
+          ...(((existingOrder?.frozenTotalPrice ?? 0) === 0)
+            ? { frozenTotalPrice: totalPrice }
+            : {}),
+          ...(((existingOrder?.frozenSubtotalPrice ?? 0) === 0)
+            ? { frozenSubtotalPrice: subtotalPrice }
+            : {}),
           financialStatus: order.displayFinancialStatus,
           channelName: channelHandle, isOnlineStore,
           isNewCustomerOrder: isNewOnThisOrder,

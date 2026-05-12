@@ -269,13 +269,17 @@ async function runIngest(shopDomain) {
   // Final phase: matcher needs both Shopify orders AND Meta insights present.
   await runPhase(shopDomain, FINAL_PHASE, ctx);
 
-  // Bake customer segments + the DailyCustomerRollup table BEFORE flipping
-  // onboardingCompleted. The dashboard's Customer tile, the LTV page, the
-  // segment counts on Health - all read from these tables, not from the raw
-  // Customer rows. If we skipped this, the merchant would land on a freshly-
-  // completed dashboard with empty customer panels until the next hourly
-  // scheduler cycle ran (an hour later). Non-fatal on failure - we still
-  // want the rest of the dashboard available.
+  // Bake EVERY rollup table BEFORE flipping onboardingCompleted. The merchant
+  // is about to land on a dashboard that reads from DailyCustomerRollup +
+  // DailyProductRollup + ShopAnalysisCache + (campaign rollups for the
+  // Campaign Performance tab) + AdDemographicRollup (Demographics tabs).
+  // Skipping any of these means empty panels until the next hourly cycle
+  // (worst-case 24h via the throttle in incrementalSync.rebuildAllRollups).
+  //
+  // Each rebuild is wrapped in try/catch so a failure in one doesn't block
+  // the others - partial dashboards beat blank ones. We also persist
+  // lastRollupRebuild so the hourly cycle's gated rebuildAllRollups skips a
+  // duplicate run for the next 24h.
   try {
     const { rebuildCustomerSegments, rebuildCustomerRollups } = await import("./customerRollups.server.js");
     await rebuildCustomerSegments(shopDomain);
@@ -283,6 +287,39 @@ async function runIngest(shopDomain) {
     console.log(`[ingestOrchestrator] ${shopDomain}: customer rollups rebuilt`);
   } catch (err) {
     console.error(`[ingestOrchestrator] ${shopDomain}: customer rollup rebuild failed (non-fatal): ${err.message}`);
+  }
+
+  try {
+    const { rebuildProductRollups } = await import("./productRollups.server.js");
+    await rebuildProductRollups(shopDomain);
+    console.log(`[ingestOrchestrator] ${shopDomain}: product rollups rebuilt`);
+  } catch (err) {
+    console.error(`[ingestOrchestrator] ${shopDomain}: product rollup rebuild failed (non-fatal): ${err.message}`);
+  }
+
+  try {
+    const { rebuildCampaignRollups } = await import("./campaignRollups.server.js");
+    await rebuildCampaignRollups(shopDomain);
+    console.log(`[ingestOrchestrator] ${shopDomain}: campaign rollups rebuilt`);
+  } catch (err) {
+    console.error(`[ingestOrchestrator] ${shopDomain}: campaign rollup rebuild failed (non-fatal): ${err.message}`);
+  }
+
+  try {
+    const { rebuildAdDemographicRollups } = await import("./adDemographicRollups.server.js");
+    await rebuildAdDemographicRollups(shopDomain);
+    console.log(`[ingestOrchestrator] ${shopDomain}: ad demographic rollups rebuilt`);
+  } catch (err) {
+    console.error(`[ingestOrchestrator] ${shopDomain}: ad demographic rollup rebuild failed (non-fatal): ${err.message}`);
+  }
+
+  // Persist the rebuild timestamp so the hourly incremental sync's gated
+  // rebuildAllRollups (24h throttle) skips a redundant run. Without this,
+  // the merchant's first hourly tick post-install would re-do all rebuilds.
+  try {
+    await db.shop.update({ where: { shopDomain }, data: { lastRollupRebuild: new Date() } });
+  } catch (err) {
+    console.warn(`[ingestOrchestrator] ${shopDomain}: failed to update lastRollupRebuild: ${err.message}`);
   }
 
   // Pixel calibration. Compares attribution-window options against actual
