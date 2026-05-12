@@ -802,16 +802,19 @@ export async function syncOrders(admin, shopDomain) {
           customerLastInitial: true,
           frozenTotalPrice: true,
           frozenSubtotalPrice: true,
+          // Preserve existing first-order signals on UPDATE. Wiping these to
+          // null mid-resync (then waiting for computeOrderCounts() to repopulate)
+          // creates a window where the matcher sees null and tags every order
+          // as repeat. That window is what emptied the New Meta demographics
+          // tile on 2026-05-12.
+          customerOrderCountAtPurchase: true,
+          isNewCustomerOrder: true,
         },
       });
       const customerFirstName = existingOrder?.customerFirstName
         || (billing?.firstName || "").trim()
         || "";
       const customerLastInitial = existingOrder?.customerLastInitial || "";
-      // Don't set customerOrderCountAtPurchase during import - it will be computed
-      // correctly by computeOrderCounts() after all orders are imported, using the
-      // customer's numberOfOrders as an anchor to count backwards.
-      const customerOrderCountAtPurchase = null;
 
       let isNewOnThisOrder = null;
       if (order.customer?.orders?.edges?.length > 0) {
@@ -832,7 +835,9 @@ export async function syncOrders(admin, shopDomain) {
           frozenTotalPrice: totalPrice, frozenSubtotalPrice: subtotalPrice,
           isNewCustomerOrder: isNewOnThisOrder,
           country, countryCode, city, regionCode,
-          customerFirstName, customerLastInitial, customerOrderCountAtPurchase,
+          customerFirstName, customerLastInitial,
+          // customerOrderCountAtPurchase intentionally omitted — populated by
+          // computeOrderCounts() after the full detail walk completes.
           lineItems: lineItemTitles, productSkus, productCollections,
           discountCodes, refundStatus, totalRefunded, refundLineItems,
           landingSite, referringSite,
@@ -863,9 +868,18 @@ export async function syncOrders(admin, shopDomain) {
             : {}),
           financialStatus: order.displayFinancialStatus,
           channelName: channelHandle, isOnlineStore,
-          isNewCustomerOrder: isNewOnThisOrder,
+          // Only overwrite isNewCustomerOrder when the GraphQL response carried
+          // the customer.orders edges to compute it. Otherwise preserve the
+          // existing value — wiping to null mid-resync briefly tags first
+          // orders as repeat and corrupts Attribution.isNewCustomer.
+          ...(isNewOnThisOrder !== null ? { isNewCustomerOrder: isNewOnThisOrder } : {}),
           country, countryCode, city, regionCode,
-          customerFirstName, customerLastInitial, customerOrderCountAtPurchase,
+          customerFirstName, customerLastInitial,
+          // customerOrderCountAtPurchase intentionally omitted from UPDATE —
+          // preserves the value from computeOrderCounts() across re-syncs.
+          // (Used to be written as `null` here, which silently wiped the
+          // signal every time a webhook update or hourly sync touched the
+          // row.)
           lineItems: lineItemTitles, productSkus, productCollections,
           discountCodes, refundStatus, totalRefunded, refundLineItems,
           // Only overwrite landing/UTM fields when the current GraphQL response

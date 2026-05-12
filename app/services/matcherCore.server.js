@@ -375,9 +375,21 @@ export function matchDay(ctx) {
       const orderCountry = (order.countryCode || "").toUpperCase();
       const countryMatch = dayCountries.size === 0 || !orderCountry || dayCountries.has(orderCountry);
 
+      // isNew sourced from BOTH order signals so the matcher is resilient to
+      // either field being null at match time. isNewCustomerOrder is written
+      // directly from Shopify's `customer.orders.edges[0]` during the detail
+      // walk and survives upserts. customerOrderCountAtPurchase is populated
+      // by the post-import computeOrderCounts() step, but during a re-sync
+      // the UPDATE branch may transiently null it before the recompute runs,
+      // and any concurrent matcher invocation would otherwise read null and
+      // mark every order as repeat (the bug that emptied the New Meta
+      // demographics tile on 2026-05-12).
+      const isNewOrder =
+        order.isNewCustomerOrder === true
+        || order.customerOrderCountAtPurchase === 1;
       candidates.push({
         id: order.id, orderId: order.shopifyOrderId, total: orderTotal,
-        isNew: order.customerOrderCountAtPurchase === 1, slots: matchingSlots,
+        isNew: isNewOrder, slots: matchingSlots,
         time: order.createdAt, customerId: order.shopifyCustomerId,
         countryMatch,
       });

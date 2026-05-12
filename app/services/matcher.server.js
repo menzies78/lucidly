@@ -462,6 +462,9 @@ export async function runAttribution(shopDomain) {
       frozenTotalPrice: o.frozenTotalPrice,
       frozenSubtotalPrice: o.frozenSubtotalPrice,
       customerOrderCountAtPurchase: o.customerOrderCountAtPurchase,
+      // Forwarded so matcherCore can derive isNew from BOTH signals.
+      // See matcherCore.server.js comment near `isNewOrder`.
+      isNewCustomerOrder: o.isNewCustomerOrder,
       countryCode: o.countryCode,
       shopifyCustomerId: o.shopifyCustomerId,
     }));
@@ -844,9 +847,14 @@ export async function runDateRangeRematch(shopDomain, fromDate, toDate) {
         const orderCountry = (order.countryCode || "").toUpperCase();
         const countryMatch = dayCountries.size === 0 || !orderCountry || dayCountries.has(orderCountry);
 
+        // Mirror matcherCore.server.js: isNew from BOTH signals. See the
+        // detailed comment there for the 2026-05-12 demographics regression.
+        const isNewOrder =
+          order.isNewCustomerOrder === true
+          || order.customerOrderCountAtPurchase === 1;
         candidates.push({
           id: order.id, orderId: order.shopifyOrderId, total: orderTotal,
-          isNew: order.customerOrderCountAtPurchase === 1, slots: matchingSlots,
+          isNew: isNewOrder, slots: matchingSlots,
           time: order.createdAt, customerId: order.shopifyCustomerId,
           countryMatch,
         });

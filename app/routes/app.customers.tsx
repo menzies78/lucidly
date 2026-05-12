@@ -716,6 +716,11 @@ export const loader = async ({ request }) => {
           shopifyOrderId: true, shopifyCustomerId: true,
           country: true, city: true,
           frozenTotalPrice: true, totalRefunded: true,
+          // First-order signal taken from the Order row itself (Shopify
+          // ground truth) rather than the matched Attribution. Attribution
+          // .isNewCustomer can lag if a re-match hasn't run since the order
+          // count was populated — see matcherCore.server.js isNewOrder fix.
+          isNewCustomerOrder: true,
         },
       });
       if (orders.length === 0) {
@@ -728,10 +733,9 @@ export const loader = async ({ request }) => {
       const orderIds = orders.map(o => o.shopifyOrderId);
       const attrs = await db.attribution.findMany({
         where: { shopDomain, shopifyOrderId: { in: orderIds }, confidence: { gt: 0 } },
-        select: { shopifyOrderId: true, isNewCustomer: true },
+        select: { shopifyOrderId: true },
       });
-      const metaByOrderId = new Map<string, { isNew: boolean }>();
-      for (const a of attrs) metaByOrderId.set(a.shopifyOrderId, { isNew: !!a.isNewCustomer });
+      const metaOrderIdSet = new Set(attrs.map(a => a.shopifyOrderId));
 
       type Bucket = { customers: Set<string>; revenue: number; orders: number };
       const mkAgg = () => ({} as Record<string, Bucket>);
@@ -756,12 +760,15 @@ export const loader = async ({ request }) => {
         if (cust) allCusts.add(cust);
         add(aCountry, o.country || null, cust, net);
         add(aCity, o.city || null, cust, net);
-        const meta = metaByOrderId.get(o.shopifyOrderId);
-        if (meta) {
+        const isMeta = metaOrderIdSet.has(o.shopifyOrderId);
+        if (isMeta) {
           if (cust) metaCusts.add(cust);
           add(mCountry, o.country || null, cust, net);
           add(mCity, o.city || null, cust, net);
-          if (meta.isNew) {
+          // metaNew = matched Meta order AND order is a first-order by
+          // Shopify's own customer.orders signal. Decoupled from
+          // Attribution.isNewCustomer (which can be stale).
+          if (o.isNewCustomerOrder === true) {
             if (cust) newMetaCusts.add(cust);
             add(nCountry, o.country || null, cust, net);
             add(nCity, o.city || null, cust, net);
