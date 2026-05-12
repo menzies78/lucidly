@@ -379,7 +379,9 @@ export async function syncOrdersSkeleton(admin, shopDomain) {
       current: totalFound,
       total: null,
       unitLabel: "orders",
-      detail: `${totalFound.toLocaleString()} orders found...`,
+      // Intentionally no detail text - the UI already renders
+      // "X orders so far" from current. Adding a detail with the same
+      // count produced a duplicate count line in the onboarding card.
     });
 
     if (pageCount % 5 === 0) {
@@ -394,7 +396,7 @@ export async function syncOrdersSkeleton(admin, shopDomain) {
     current: totalFound,
     total: totalFound,             // make the bar render as 100%
     unitLabel: "orders",
-    detail: `${totalFound.toLocaleString()} orders found · ready to import details`,
+    detail: "Ready to import details",
   });
 
   console.log(`[OrderSync/Skeleton] Complete: ${totalFound} orders found (${totalCreated} new skeleton rows created)`);
