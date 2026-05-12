@@ -489,10 +489,12 @@ export async function runAttribution(shopDomain) {
     });
   }
 
-  // Worker pool. Fly VM is shared-cpu-4x — 3 matcher workers keeps 1 core
-  // free for the main thread (Prisma writes + book-keeping + Remix loaders).
+  // Worker pool. Fly VM is shared-cpu-4x — main thread observed sleeping
+  // (~1.5k jiffies vs workers ~27k each), so reserving a core for it was
+  // wasteful. 4 workers uses all 4 vCPUs; main thread time-shares with one
+  // worker during the brief db.$transaction batches (sub-second).
   // If we have fewer days than that, scale down so we don't spawn idle workers.
-  const WORKER_COUNT = Math.max(1, Math.min(3, dates.length));
+  const WORKER_COUNT = Math.max(1, Math.min(4, dates.length));
   // The worker file lives in source (app/services/matcherWorker.js). Vite's
   // SSR bundle won't pull it in (it's not imported), but `COPY . .` in the
   // Dockerfile puts source files into the container, so we resolve against
