@@ -2,6 +2,9 @@ import db from "../db.server";
 import { setProgress, completeProgress, failProgress } from "./progress.server";
 import { shopLocalDayKey } from "../utils/shopTime.server";
 import { invalidateShop } from "./queryCache.server";
+import { Worker } from "node:worker_threads";
+import path from "node:path";
+import { pathToFileURL } from "node:url";
 
 /**
  * Lucidly Attribution Matcher
@@ -366,6 +369,7 @@ export async function runAttribution(shopDomain) {
 
   const revenueField = shop.revenueDefinition || "total_price";
   const tolerance = shop.matchingTolerance || REVENUE_TOLERANCE;
+  const metaAccountTimezone = shop.metaAccountTimezone || null;
 
   const metaInsights = await db.metaInsight.findMany({
     where: { shopDomain, conversions: { gt: 0 }, hourSlot: { gte: 0 } },
@@ -427,26 +431,19 @@ export async function runAttribution(shopDomain) {
     ordersByDate.get(dateKey).push(order);
   }
 
-  let totalMatched = 0, totalUnmatched = 0;
   const dates = Array.from(insightsByDate.keys()).sort();
+  console.log(`[Attribution] ${dates.length} days to match`);
 
-  for (let di = 0; di < dates.length; di++) {
-    const day = dates[di];
-    const metaOffset = getTimezoneOffsetMinutes(shop.metaAccountTimezone, day);
-    const dayCountries = metaSpendCountriesByDate.get(day) || new Set();
-
-    setProgress(`runAttribution:${shopDomain}`, {
-      status: "running",
-      current: di + 1,
-      total: dates.length,
-      unitLabel: "days",
-      detail: `Matching orders to Meta ads (${day})`,
-    });
-    console.log(`[Attribution] Processing ${day} (${di + 1}/${dates.length})...`);
+  // Build per-day worker contexts once on the main thread. Each context has
+  // everything the matcher needs: that day's insights, candidate orders
+  // (incl. prev-day padding to catch checkouts straddling midnight), and the
+  // set of countries Meta spent in that day. The worker is pure compute — no
+  // DB access. We strip Prisma rows down to the fields the matcher actually
+  // reads so structured-clone over postMessage stays cheap.
+  const ctxByDay = new Map();
+  for (const day of dates) {
     const dayInsights = insightsByDate.get(day) || [];
-    // Include orders from the last PADDING_MINUTES of the PREVIOUS day.
-    // An order at 23:55 on day N-1 is eligible for Meta's hour 0 slot on day N
-    // because the 6-minute backward padding wraps across midnight.
+    const metaOffset = getTimezoneOffsetMinutes(metaAccountTimezone, day);
     const prevDay = new Date(new Date(day + "T00:00:00Z").getTime() - 86400000)
       .toISOString().split("T")[0];
     const prevDayOrders = ordersByDate.get(prevDay) || [];
@@ -457,207 +454,180 @@ export async function runAttribution(shopDomain) {
       const m = o.createdAt.getUTCHours() * 60 + o.createdAt.getUTCMinutes();
       return m >= paddingCutoff;
     });
-    const dayOrders = [...(ordersByDate.get(day) || []), ...prevDayPaddingOrders];
+    const rawDayOrders = [...(ordersByDate.get(day) || []), ...prevDayPaddingOrders];
+    const dayOrders = rawDayOrders.map(o => ({
+      id: o.id,
+      shopifyOrderId: o.shopifyOrderId,
+      createdAt: o.createdAt,
+      frozenTotalPrice: o.frozenTotalPrice,
+      frozenSubtotalPrice: o.frozenSubtotalPrice,
+      customerOrderCountAtPurchase: o.customerOrderCountAtPurchase,
+      countryCode: o.countryCode,
+      shopifyCustomerId: o.shopifyCustomerId,
+    }));
+    const dayInsightsLite = dayInsights.map(i => ({
+      adId: i.adId,
+      campaignId: i.campaignId,
+      campaignName: i.campaignName || "",
+      adSetId: i.adSetId || "",
+      adSetName: i.adSetName || "",
+      adName: i.adName || "",
+      hourSlot: i.hourSlot,
+      conversions: i.conversions,
+      conversionValue: i.conversionValue,
+    }));
+    const dayCountries = Array.from(metaSpendCountriesByDate.get(day) || []);
+    ctxByDay.set(day, {
+      shopDomain,
+      day,
+      metaAccountTimezone,
+      revenueField,
+      tolerance,
+      dayInsights: dayInsightsLite,
+      dayOrders,
+      dayCountries,
+    });
+  }
 
-    const adTotals = new Map();
-    for (const ins of dayInsights) {
-      const existing = adTotals.get(ins.adId) || {
-        adId: ins.adId, campaignId: ins.campaignId, campaignName: ins.campaignName || "",
-        adSetId: ins.adSetId || "", adSetName: ins.adSetName || "",
-        adName: ins.adName || "", totalConversions: 0, totalConversionValue: 0, slots: [],
-      };
-      existing.totalConversions += ins.conversions;
-      existing.totalConversionValue += ins.conversionValue;
-      const { start, end } = hourToMinuteRange(ins.hourSlot, metaOffset);
-      existing.slots.push({ hour: ins.hourSlot, cap: ins.conversions, start, end, slotValue: ins.conversionValue });
-      adTotals.set(ins.adId, existing);
-    }
+  // Worker pool. Fly VM is shared-cpu-4x — 3 matcher workers keeps 1 core
+  // free for the main thread (Prisma writes + book-keeping + Remix loaders).
+  // If we have fewer days than that, scale down so we don't spawn idle workers.
+  const WORKER_COUNT = Math.max(1, Math.min(3, dates.length));
+  // The worker file lives in source (app/services/matcherWorker.js). Vite's
+  // SSR bundle won't pull it in (it's not imported), but `COPY . .` in the
+  // Dockerfile puts source files into the container, so we resolve against
+  // cwd. pathToFileURL is required for Node's ESM loader on Windows; harmless
+  // elsewhere.
+  const workerFile = path.resolve(process.cwd(), "app/services/matcherWorker.js");
+  const workerUrl = pathToFileURL(workerFile);
+  const workers = [];
+  for (let i = 0; i < WORKER_COUNT; i++) {
+    workers.push(new Worker(workerUrl, { workerData: { workerId: i } }));
+  }
+  console.log(`[Attribution] Spawned ${WORKER_COUNT} matcher workers (${workerFile})`);
 
-    const sortedAds = Array.from(adTotals.values())
-      .sort((a, b) => a.totalConversions - b.totalConversions);
+  let totalMatched = 0;
+  let totalUnmatched = 0;
+  let completedDays = 0;
+  const totalDays = dates.length;
 
-    for (const ad of sortedAds) {
-      const metaRevenue = ad.totalConversionValue;
-      const results = ad.totalConversions;
+  // Run one phase (a set of pairwise-non-overlapping days) through the pool.
+  // We split sorted dates into even-indexed (Phase A) and odd-indexed (Phase B)
+  // groups. Same-phase days are always >= 2 sorted-index steps apart, which
+  // means their order pools (the day itself + 6 min of the prev day's tail)
+  // never share an Order.id. Cross-phase, Phase A's results land in usedOrders
+  // before Phase B dispatches, so an order claimed by an even day is invisible
+  // to its odd-day neighbour.
+  async function runPhase(daysInPhase, label) {
+    if (!daysInPhase.length) return;
+    console.log(`[Attribution] ${label}: ${daysInPhase.length} days through ${WORKER_COUNT} workers`);
+    const queue = daysInPhase.slice();
+    let nextJobId = 0;
+    const inFlight = new Map(); // jobId -> { worker, day }
 
-      if (!results) {
-        continue;
+    return new Promise((resolve, reject) => {
+      let resolved = false;
+      function maybeResolve() {
+        if (resolved) return;
+        if (queue.length === 0 && inFlight.size === 0) {
+          resolved = true;
+          resolve();
+        }
+      }
+      function fail(err) {
+        if (resolved) return;
+        resolved = true;
+        reject(err);
       }
 
-      const slots = ad.slots.sort((a, b) => a.hour - b.hour);
-      const slotCaps = slots.map(s => Math.max(0, s.cap));
+      function dispatch(worker) {
+        if (resolved) return;
+        const day = queue.shift();
+        if (!day) { maybeResolve(); return; }
+        // Snapshot usedOrders at dispatch time so each worker sees the latest
+        // set of claimed orders. Within a phase this set only grows.
+        const ctx = { ...ctxByDay.get(day), usedOrderIds: Array.from(usedOrders) };
+        const jobId = ++nextJobId;
+        inFlight.set(jobId, { worker, day });
+        worker.postMessage({ type: "match-day", jobId, ctx });
+      }
 
-      const candidates = [];
-      for (const order of dayOrders) {
-        if (usedOrders.has(order.id)) continue;
-        const orderMinute = dateToMinute(order.createdAt);
-        const orderTotal = revenueField === "subtotal_price"
-          ? order.frozenSubtotalPrice : order.frozenTotalPrice;
-
-        const matchingSlots = [];
-        for (let idx = 0; idx < slots.length; idx++) {
-          if (minuteInRange(orderMinute, slots[idx].start, slots[idx].end)) {
-            matchingSlots.push(idx);
-          }
-        }
-        if (!matchingSlots.length) continue;
-
-        // Country preference: true if Meta spent in this country on this date,
-        // or if we have no country breakdown data for this date (don't penalise)
-        const orderCountry = (order.countryCode || "").toUpperCase();
-        const countryMatch = dayCountries.size === 0 || !orderCountry || dayCountries.has(orderCountry);
-
-        candidates.push({
-          id: order.id, orderId: order.shopifyOrderId, total: orderTotal,
-          isNew: order.customerOrderCountAtPurchase === 1, slots: matchingSlots,
-          time: order.createdAt, customerId: order.shopifyCustomerId,
-          countryMatch,
+      for (const worker of workers) {
+        worker.removeAllListeners("message");
+        worker.removeAllListeners("error");
+        worker.on("error", (err) => {
+          console.error(`[Attribution] worker fatal error: ${err?.message || err}`);
+          fail(err);
         });
-      }
+        worker.on("message", async (msg) => {
+          if (!msg) return;
+          if (msg.type === "ready") return;
 
-      if (!candidates.length) {
-        totalUnmatched += results;
-        // Per-slot unmatched placeholders (no candidates matched any time slot)
-        for (const slot of slots) {
-          const slotPerConv = slot.cap > 0 ? Math.round((slot.slotValue / slot.cap) * 100) / 100 : 0;
-          for (let ui = 0; ui < slot.cap; ui++) {
-            await db.attribution.create({
-              data: {
-                shopDomain, shopifyOrderId: `unmatched_${ad.adId}_${day}_${slot.hour}_c${ui + 1}`,
-                layer: 2, confidence: 0,
-                metaCampaignId: ad.campaignId, metaCampaignName: ad.campaignName,
-                metaAdSetId: ad.adSetId, metaAdSetName: ad.adSetName, metaAdId: ad.adId, metaAdName: ad.adName,
-                matchMethod: "none", metaConversionValue: slotPerConv,
-              },
-            });
+          if (msg.type === "match-day-error") {
+            const slot = inFlight.get(msg.jobId);
+            inFlight.delete(msg.jobId);
+            console.error(`[Attribution] worker error on ${msg.day}: ${msg.error?.message}`);
+            // Don't abort the whole run — log and move on so a single day's
+            // bad data can't tank the entire re-match.
+            completedDays++;
+            maybeResolve();
+            dispatch(slot?.worker || worker);
+            return;
           }
-        }
-        continue;
-      }
 
-      // Zero-value conversions: Meta reports purchases but no monetary value.
-      // Match against £0 Shopify orders (replacement orders) by time window only.
-      if (!metaRevenue) {
-        const zeroCandidates = candidates.filter(c => c.total === 0);
-        // Prefer country-matching zero candidates
-        zeroCandidates.sort((a, b) => (b.countryMatch ? 1 : 0) - (a.countryMatch ? 1 : 0));
-        const picks = zeroCandidates.slice(0, results);
-        if (picks.length > 0) {
-          const pickedIds = new Set(picks.map(p => p.id));
-          for (const pick of picks) {
-            usedOrders.add(pick.id);
-            totalMatched++;
-            let rivalCount = 0;
-            for (const cand of zeroCandidates) {
-              if (pickedIds.has(cand.id)) continue;
-              // Same country-disqualification rule as calculateConfidence above.
-              if (pick.countryMatch && !cand.countryMatch) continue;
-              rivalCount++;
+          if (msg.type !== "match-day-result") return;
+          const slot = inFlight.get(msg.jobId);
+          inFlight.delete(msg.jobId);
+          const { day, attributions, pickedOrderIds, matched, unmatched } = msg.result;
+
+          // Serialise SQLite writes on the main thread. Per-day batches keep
+          // the connection pool happy; 200 per transaction is the same batch
+          // size used by computeOrderCounts.
+          try {
+            if (attributions && attributions.length) {
+              const TX_BATCH = 200;
+              for (let i = 0; i < attributions.length; i += TX_BATCH) {
+                const sliceRows = attributions.slice(i, i + TX_BATCH);
+                await db.$transaction(
+                  sliceRows.map(data => db.attribution.create({ data })),
+                );
+              }
             }
-            const confidence = Math.max(1, Math.round(100 / (1 + rivalCount)));
-            await db.attribution.create({
-              data: {
-                shopDomain, shopifyOrderId: pick.orderId || String(pick.id),
-                layer: 2, confidence, rivalCount,
-                metaCampaignId: ad.campaignId, metaCampaignName: ad.campaignName,
-                metaAdSetId: ad.adSetId, metaAdSetName: ad.adSetName, metaAdId: ad.adId, metaAdName: ad.adName,
-                isNewCustomer: pick.isNew, isNewToMeta: pick.isNew,
-                matchMethod: "exhaustive", metaConversionValue: 0,
-              },
+            for (const id of (pickedOrderIds || [])) usedOrders.add(id);
+            totalMatched += matched || 0;
+            totalUnmatched += unmatched || 0;
+            completedDays++;
+            setProgress(`runAttribution:${shopDomain}`, {
+              status: "running",
+              current: completedDays,
+              total: totalDays,
+              unitLabel: "days",
+              detail: `Matched ${day} (${completedDays}/${totalDays})`,
             });
+            console.log(`[Attribution] ${day} done (${completedDays}/${totalDays}) +${matched} matched +${unmatched} unmatched`);
+          } catch (err) {
+            console.error(`[Attribution] DB write failed for ${day}: ${err?.message}`);
+            // Don't abort — partial results for the run are still useful.
           }
-          if (picks.length < results) {
-            totalUnmatched += results - picks.length;
-          }
-        } else {
-          totalUnmatched += results;
-          for (let ui = 0; ui < results; ui++) {
-            await db.attribution.create({
-              data: {
-                shopDomain, shopifyOrderId: `unmatched_${ad.adId}_${day}_c${ui + 1}`,
-                layer: 2, confidence: 0,
-                metaCampaignId: ad.campaignId, metaCampaignName: ad.campaignName,
-                metaAdSetId: ad.adSetId, metaAdSetName: ad.adSetName, metaAdId: ad.adId, metaAdName: ad.adName,
-                matchMethod: "none", metaConversionValue: 0,
-              },
-            });
-          }
-        }
-        continue;
-      }
 
-      const totalCap = slotCaps.reduce((s, c) => s + c, 0);
-      const R = Math.min(results, candidates.length, totalCap);
-
-      const exhaustivePool = candidates.sort((a, b) => b.total - a.total).slice(0, MAX_CANDIDATES);
-      const deadline = Date.now() + PER_AD_BUDGET_MS;
-
-      let result = chooseRSlotsFlexible(exhaustivePool, R, slotCaps, metaRevenue, tolerance, deadline);
-      let picks = result.picks;
-      let exhaustiveTimedOut = result.timedOut;
-
-      if (!picks.length && R > 0 && Date.now() < deadline) {
-        result = chooseRItemsIgnoreCaps(exhaustivePool, R, metaRevenue, tolerance, deadline);
-        picks = result.picks;
-        exhaustiveTimedOut = exhaustiveTimedOut || result.timedOut;
-      }
-
-      let matchMethod = "exhaustive";
-
-      if (!picks.length && R > 0) {
-        console.log(`[Attribution] Exhaustive found no solution for ${ad.adId} on ${day}${exhaustiveTimedOut ? " (timed out)" : ""}, trying FAST...`);
-        const fastPool = candidates
-          .sort((a, b) => (((b.countryMatch ? 1 : 0) - (a.countryMatch ? 1 : 0)) || (b.isNew - a.isNew) || (b.total - a.total)))
-          .slice(0, MAX_CANDIDATES_FAST);
-        const fastResult = fastGreedyMatch(fastPool, R, slotCaps, metaRevenue, FAST_FALLBACK_BUDGET_MS);
-        picks = fastResult.diffPct <= 0.05 ? fastResult.picks : [];
-        matchMethod = "fast_greedy";
-      }
-
-      if (!picks.length) {
-        totalUnmatched += results;
-        // Per-slot unmatched placeholders: use actual slot value, not an average
-        for (const slot of slots) {
-          const slotPerConv = slot.cap > 0 ? Math.round((slot.slotValue / slot.cap) * 100) / 100 : 0;
-          for (let ui = 0; ui < slot.cap; ui++) {
-            await db.attribution.create({
-              data: {
-                shopDomain, shopifyOrderId: `unmatched_${ad.adId}_${day}_${slot.hour}_c${ui + 1}`,
-                layer: 2, confidence: 0,
-                metaCampaignId: ad.campaignId, metaCampaignName: ad.campaignName,
-                metaAdSetId: ad.adSetId, metaAdSetName: ad.adSetName, metaAdId: ad.adId, metaAdName: ad.adName,
-                matchMethod: "none", metaConversionValue: slotPerConv,
-              },
-            });
-          }
-        }
-        continue;
-      }
-
-      // Per-slot Meta value - NOT total/picks average.
-      // pick.slot tells us which slot the solver assigned this order to.
-      for (const pick of picks) {
-        const assignedSlot = slots[pick.slot];
-        const perPickValue = assignedSlot
-          ? Math.round((assignedSlot.slotValue / Math.max(1, assignedSlot.cap)) * 100) / 100
-          : Math.round((metaRevenue / picks.length) * 100) / 100; // fallback
-
-        usedOrders.add(pick.id);
-        totalMatched++;
-
-        const { confidence, rivalCount } = calculateConfidence(pick, candidates, picks);
-
-        await db.attribution.create({
-          data: {
-            shopDomain, shopifyOrderId: pick.orderId || String(pick.id),
-            layer: 2, confidence, rivalCount,
-            metaCampaignId: ad.campaignId, metaCampaignName: ad.campaignName,
-            metaAdSetId: ad.adSetId, metaAdSetName: ad.adSetName, metaAdId: ad.adId, metaAdName: ad.adName,
-            isNewCustomer: pick.isNew, isNewToMeta: pick.isNew,
-            matchMethod, metaConversionValue: perPickValue,
-          },
+          dispatch(slot?.worker || worker);
         });
       }
+
+      // Prime the pool. Each worker immediately picks up its first day; as
+      // workers report results, dispatch() pulls the next day off the queue.
+      for (const worker of workers) dispatch(worker);
+    });
+  }
+
+  try {
+    const evenDays = dates.filter((_, i) => i % 2 === 0);
+    const oddDays = dates.filter((_, i) => i % 2 === 1);
+    await runPhase(evenDays, "Phase A (even-indexed days)");
+    await runPhase(oddDays, "Phase B (odd-indexed days)");
+  } finally {
+    for (const w of workers) {
+      try { await w.terminate(); } catch {}
     }
   }
 
