@@ -174,7 +174,11 @@ export const loader = async ({ request }) => {
     time("allMetaCombinedGender", queryCached(
       `${shopDomain}:attrAllGender:${dateFromStr}:${dateToStr}`, DEFAULT_TTL,
       () => db.$queryRaw<Array<{ gender: string | null; conversions: bigint | number; revenue: number | null }>>`
-        SELECT COALESCE(a.metaGender, c.inferredGender) AS gender,
+        SELECT CASE
+                 WHEN c.inferredGenderConfidence >= 0.95 AND c.inferredGender IS NOT NULL THEN c.inferredGender
+                 WHEN a.metaGender IS NOT NULL THEN a.metaGender
+                 ELSE c.inferredGender
+               END AS gender,
                COUNT(*) AS conversions,
                SUM(a.metaConversionValue) AS revenue
         FROM Attribution a
@@ -186,8 +190,12 @@ export const loader = async ({ request }) => {
           AND a.confidence > 0
           AND o.createdAt >= ${fromDate}
           AND o.createdAt <= ${toDate}
-          AND COALESCE(a.metaGender, c.inferredGender) IS NOT NULL
-        GROUP BY COALESCE(a.metaGender, c.inferredGender)
+          AND (a.metaGender IS NOT NULL OR c.inferredGender IS NOT NULL)
+        GROUP BY CASE
+                   WHEN c.inferredGenderConfidence >= 0.95 AND c.inferredGender IS NOT NULL THEN c.inferredGender
+                   WHEN a.metaGender IS NOT NULL THEN a.metaGender
+                   ELSE c.inferredGender
+                 END
       `,
     )),
     // New-Meta gender bars - same combined approach scoped to first-order
@@ -197,7 +205,11 @@ export const loader = async ({ request }) => {
     time("newMetaCombinedGender", queryCached(
       `${shopDomain}:attrNewGender:${dateFromStr}:${dateToStr}`, DEFAULT_TTL,
       () => db.$queryRaw<Array<{ gender: string | null; conversions: bigint | number; revenue: number | null }>>`
-        SELECT COALESCE(a.metaGender, c.inferredGender) AS gender,
+        SELECT CASE
+                 WHEN c.inferredGenderConfidence >= 0.95 AND c.inferredGender IS NOT NULL THEN c.inferredGender
+                 WHEN a.metaGender IS NOT NULL THEN a.metaGender
+                 ELSE c.inferredGender
+               END AS gender,
                COUNT(*) AS conversions,
                SUM(a.metaConversionValue) AS revenue
         FROM Attribution a
@@ -210,8 +222,12 @@ export const loader = async ({ request }) => {
           AND a.isNewCustomer = 1
           AND o.createdAt >= ${fromDate}
           AND o.createdAt <= ${toDate}
-          AND COALESCE(a.metaGender, c.inferredGender) IS NOT NULL
-        GROUP BY COALESCE(a.metaGender, c.inferredGender)
+          AND (a.metaGender IS NOT NULL OR c.inferredGender IS NOT NULL)
+        GROUP BY CASE
+                   WHEN c.inferredGenderConfidence >= 0.95 AND c.inferredGender IS NOT NULL THEN c.inferredGender
+                   WHEN a.metaGender IS NOT NULL THEN a.metaGender
+                   ELSE c.inferredGender
+                 END
       `,
     )),
     // All-Customers gender - every order in range joined to Customer.inferredGender.

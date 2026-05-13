@@ -710,17 +710,21 @@ export const loader = async ({ request }) => {
     DEFAULT_TTL,
     async () => {
       try {
-        // Gender resolution: prefer Attribution.metaGender (Meta breakdown
-        // - accurate but sparse: only ~30% of matched orders carry it),
-        // fall back to Customer.inferredGender (name-based - fills the gap
-        // for older orders + organic-tail customers). Age has no name-based
-        // equivalent, so we still require metaAge to be present.
+        // Gender resolution: high-confidence (>=0.95) name inference wins
+        // over Meta's audience signal so the merchant's billing-name sense
+        // check holds; Meta wins for ambiguous names; low-conf name-inferred
+        // fills the long tail. Age has no name-based equivalent, so we still
+        // require metaAge to be present.
         const rows = await db.$queryRaw<Array<{
           metaAge: string; metaGender: string; metaSegment: string;
           country: string | null; lineItems: string | null; frozenTotalPrice: number;
         }>>`
           SELECT a.metaAge,
-                 COALESCE(a.metaGender, c.inferredGender) AS metaGender,
+                 CASE
+                   WHEN c.inferredGenderConfidence >= 0.95 AND c.inferredGender IS NOT NULL THEN c.inferredGender
+                   WHEN a.metaGender IS NOT NULL THEN a.metaGender
+                   ELSE c.inferredGender
+                 END AS metaGender,
                  c.metaSegment, o.country, o.lineItems, o.frozenTotalPrice
           FROM Attribution a
           JOIN "Order" o
@@ -730,7 +734,7 @@ export const loader = async ({ request }) => {
           WHERE a.shopDomain = ${shopDomain}
             AND a.confidence > 0
             AND a.metaAge IS NOT NULL
-            AND COALESCE(a.metaGender, c.inferredGender) IS NOT NULL
+            AND (a.metaGender IS NOT NULL OR c.inferredGender IS NOT NULL)
             AND o.isOnlineStore = 1
             AND o.frozenTotalPrice > 0
             AND o.createdAt >= ${fromDate}

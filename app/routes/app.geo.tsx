@@ -506,21 +506,24 @@ export const loader = async ({ request }) => {
     queryCached(`${shopDomain}:geoCustomers:${fromKey}:${toKey}`, DEFAULT_TTL, () =>
       db.customer.findMany({
         where: { shopDomain, shopifyCustomerId: { in: customerIdsList } },
-        select: { shopifyCustomerId: true, metaSegment: true, inferredGender: true },
+        select: { shopifyCustomerId: true, metaSegment: true, inferredGender: true, inferredGenderConfidence: true },
       })
     ),
   ]);
 
-  const custBySid: Record<string, { seg: string | null; g: string | null }> = {};
+  const custBySid: Record<string, { seg: string | null; g: string | null; gc: number | null }> = {};
   for (const c of customers) {
     custBySid[c.shopifyCustomerId] = {
       seg: c.metaSegment,
       g: c.inferredGender, // "male" | "female" | null
+      gc: (c as any).inferredGenderConfidence ?? null,
     };
   }
 
-  // Attribution metaGender (more accurate than name inference) - sparse,
-  // but where present overrides the name-inferred value.
+  // Attribution metaGender - Meta's audience signal. Sparse, and now
+  // outranked by high-confidence (>=0.95) name inference per the
+  // unified gender precedence (resolveGender). Resolution happens
+  // inline below where the cell key is built.
   const attrGenderById: Record<string, string> = {};
   for (const a of attributions) {
     if ((a as any).metaGender && (a as any).metaGender !== "unknown") {
@@ -552,11 +555,14 @@ export const loader = async ({ request }) => {
                     : cust?.seg === "metaRetargeted" ? "mr"
                     : "o";
 
+    // Unified gender precedence: high-conf name inference (>=0.95) beats
+    // Meta's audience signal so the merchant's billing-name sense-check
+    // holds; Meta wins for ambiguous names; low-conf name fills the tail.
     const metaG = attrGenderById[li.shopifyOrderId];
-    const g = metaG === "female" ? "F"
-            : metaG === "male" ? "M"
-            : cust?.g === "female" ? "F"
-            : cust?.g === "male" ? "M"
+    const inferredHighConf = cust?.g && cust?.gc != null && cust.gc >= 0.95 ? cust.g : null;
+    const resolvedG = inferredHighConf || metaG || cust?.g || null;
+    const g = resolvedG === "female" ? "F"
+            : resolvedG === "male" ? "M"
             : "U";
 
     const cellKey = `${segPrefix}_${g}` as keyof ProductCell;

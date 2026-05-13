@@ -27,6 +27,7 @@ import db from "../db.server.js";
 import { shopLocalDayKey } from "../utils/shopTime.server";
 import { geocodeCity } from "./geo/geocoder.server.js";
 import { COUNTRY_CENTROIDS } from "./geo/countryCentroids.js";
+import { resolveGender } from "./genderResolution.server.js";
 
 const DAY_MS = 86400000;
 const MONTH_MS = 30 * DAY_MS;
@@ -115,7 +116,7 @@ export async function rebuildCustomerSegments(shopDomain) {
     }),
     db.customer.findMany({
       where: { shopDomain },
-      select: { shopifyCustomerId: true, firstOrderDate: true, inferredGender: true },
+      select: { shopifyCustomerId: true, firstOrderDate: true, inferredGender: true, inferredGenderConfidence: true },
     }),
   ]);
 
@@ -131,16 +132,20 @@ export async function rebuildCustomerSegments(shopDomain) {
 
   // Customer first-order-date map (shop-local YYYY-MM-DD keys)
   const customerFirstOrderMap = new Map();
-  // shopifyCustomerId -> name-derived gender, used as a fallback when
-  // attribution-level metaGender is missing (which is most of the time
-  // for orders older than the MetaBreakdown lookback window).
+  // shopifyCustomerId -> { gender, confidence } from name-based inference.
+  // Carries confidence so the unified resolveGender() helper can decide
+  // whether to prefer this signal over Attribution.metaGender (high-conf
+  // name match wins; low-conf is a fallback).
   const customerInferredGenderMap = new Map();
   for (const c of customers) {
     if (c.firstOrderDate) {
       customerFirstOrderMap.set(c.shopifyCustomerId, shopLocalDayKey(tz, c.firstOrderDate));
     }
     if (c.inferredGender) {
-      customerInferredGenderMap.set(c.shopifyCustomerId, c.inferredGender);
+      customerInferredGenderMap.set(c.shopifyCustomerId, {
+        gender: c.inferredGender,
+        confidence: c.inferredGenderConfidence ?? null,
+      });
     }
   }
 
@@ -250,8 +255,8 @@ export async function rebuildCustomerSegments(shopDomain) {
   const allMonthlyCohorts = {};
   // Per-gender cohorts for the "All Customers" tab gender filter on the LTV
   // Explorer chart. Keyed by acqMonth like allMonthlyCohorts. Each customer
-  // is routed into exactly one bucket using the same gender resolution we
-  // use for ltvCustomers + map points (firstAttr.gender || inferredGender).
+  // is routed into exactly one bucket using the unified resolveGender() —
+  // high-conf inferredGender > metaGender > low-conf inferredGender.
   const allMonthlyCohortsByGender = { female: {}, male: {}, unknown: {} };
 
   // Journey accumulators
@@ -399,13 +404,16 @@ export async function rebuildCustomerSegments(shopDomain) {
       //   h  highestRefunds (1, set in second pass)
       //   pr distinct product indices into productList
       const distinctProductIdx = Object.keys(productCounts).map(getProductIdx);
-      // Gender resolution mirrors ltvCustomers: prefer attribution gender
-      // (Meta breakdown - only ~30% of orders carry it), fall back to the
-      // name-based inferredGender on the Customer row. Without this fallback
-      // the map filter only covered Meta-acquired customers; with it, every
-      // segment (organic, retargeted, Meta-new) gets a M/F tag wherever the
-      // first name is unambiguous.
-      const mapGenderRaw = firstAttr?.gender || customerInferredGenderMap.get(custId) || null;
+      // Gender resolution via shared resolveGender(): high-confidence
+      // name-inferred gender (>=0.95 - billing-name signal the merchant
+      // can sense-check) beats Meta's audience signal; lower-confidence
+      // inference is a fallback for the long tail without Meta breakdowns.
+      const inf = customerInferredGenderMap.get(custId);
+      const mapGenderRaw = resolveGender(
+        firstAttr?.gender || null,
+        inf?.gender || null,
+        inf?.confidence ?? null,
+      );
       customerMapPoints.push({
         i: custId,
         la: Math.round(lat * 10000) / 10000,   // 4dp ≈ 11m precision
@@ -524,12 +532,16 @@ export async function rebuildCustomerSegments(shopDomain) {
     // order shipping address. LTV is net of refunds.
     if (segment === "metaNew") {
       const firstAttr2 = customerFirstAttr.get(custId);
-      // Gender resolution: prefer the observed attribution gender (Meta
-      // breakdown enrichment), fall back to name-based inference, then
-      // null. Coverage on attribution gender is sparse (only orders whose
-      // ad+date intersect with MetaBreakdown rows), so the fallback fills
-      // the long tail of historical customers.
-      const resolvedGender = firstAttr2?.gender || customerInferredGenderMap.get(custId) || null;
+      // Gender resolution via shared resolveGender(): high-confidence
+      // name inference (>=0.95) beats Meta's audience signal so the
+      // merchant's billing-name sense-check holds; Meta wins when the
+      // name is ambiguous; low-conf inference catches the long tail.
+      const inf2 = customerInferredGenderMap.get(custId);
+      const resolvedGender = resolveGender(
+        firstAttr2?.gender || null,
+        inf2?.gender || null,
+        inf2?.confidence ?? null,
+      );
       // Per-customer cumulative net revenue at end of each 30-day month
       // since acquisition. Powers the anchor + recent-overlay LTV
       // progression chart on the client. Length up to 13 (months 1..13);
@@ -575,10 +587,14 @@ export async function rebuildCustomerSegments(shopDomain) {
     if (!allMonthlyCohorts[acqMonth]) allMonthlyCohorts[acqMonth] = initRow();
     allMonthlyCohorts[acqMonth].count++;
     // Gender resolution for the all-segment cohort split. Same priority as
-    // ltvCustomers / map points: attribution gender first (Meta breakdown),
-    // name-inferred fallback. "unknown" bucket catches customers whose first
-    // name didn't disambiguate.
-    const allGender = firstAttr?.gender || customerInferredGenderMap.get(custId) || null;
+    // ltvCustomers / map points via shared resolveGender(): high-confidence
+    // name inference > Meta > low-conf name > unknown.
+    const inf3 = customerInferredGenderMap.get(custId);
+    const allGender = resolveGender(
+      firstAttr?.gender || null,
+      inf3?.gender || null,
+      inf3?.confidence ?? null,
+    );
     const allGenderKey = allGender === "female" ? "female" : allGender === "male" ? "male" : "unknown";
     if (!allMonthlyCohortsByGender[allGenderKey][acqMonth]) {
       allMonthlyCohortsByGender[allGenderKey][acqMonth] = initRow();

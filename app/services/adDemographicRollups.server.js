@@ -1,5 +1,6 @@
 import db from "../db.server.js";
 import { shopLocalDayKey } from "../utils/shopTime.server";
+import { resolveGender } from "./genderResolution.server.js";
 
 /**
  * Rebuild DailyAdDemographicRollup for a shop.
@@ -13,7 +14,10 @@ import { shopLocalDayKey } from "../utils/shopTime.server";
  *     gender/age filter, leaving spend pulled from DailyAdRollup unchanged.
  *
  * Demographic resolution (matches the Product Demographics Explorer pattern):
- *   gender     = COALESCE(Attribution.metaGender, Customer.inferredGender, "unknown")
+ *   gender     = resolveGender(metaGender, inferredGender, inferredGenderConfidence)
+ *                — high-confidence (>=0.95) name inference wins over Meta's
+ *                  audience signal; Meta wins for ambiguous names; low-conf
+ *                  inference fills the long tail. Falls back to "unknown".
  *   ageBracket = COALESCE(Attribution.metaAge, "unknown")
  *
  * Sources:
@@ -56,7 +60,7 @@ export async function rebuildAdDemographicRollups(shopDomain) {
     }),
     db.customer.findMany({
       where: { shopDomain },
-      select: { shopifyCustomerId: true, inferredGender: true },
+      select: { shopifyCustomerId: true, inferredGender: true, inferredGenderConfidence: true },
     }),
   ]);
 
@@ -98,7 +102,7 @@ export async function rebuildAdDemographicRollups(shopDomain) {
     const rev = Math.max(0, gross - (order.totalRefunded || 0));
 
     const cust = order.shopifyCustomerId ? customerMap.get(order.shopifyCustomerId) : null;
-    const gender = a.metaGender || cust?.inferredGender || "unknown";
+    const gender = resolveGender(a.metaGender, cust?.inferredGender || null, cust?.inferredGenderConfidence ?? null) || "unknown";
     const ageBracket = a.metaAge || "unknown";
 
     const b = getBucket(order.createdAt, a.metaAdId, gender, ageBracket);
