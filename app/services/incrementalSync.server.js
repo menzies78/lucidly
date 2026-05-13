@@ -278,12 +278,28 @@ async function findNewConversions(shopDomain, today, currentData) {
 }
 
 async function saveSnapshot(shopDomain, today, currentData) {
+  // The snapshot represents MATCHED conversions, not Meta-reported conversions.
+  // Subtract any unmatched placeholders for this ad/slot so that if a delayed Shopify
+  // order arrives later (e.g. webhook lag), the next cycle still sees delta>0 and retries
+  // the match. Without this, the snapshot advances past the slot and the gap becomes
+  // permanently invisible to subsequent hourly cycles (race observed 2026-05-12 VBK1142756).
   for (const row of currentData) {
     if (row.conversions === 0) continue;
+    const placeholderCount = await db.attribution.count({
+      where: {
+        shopDomain,
+        confidence: 0,
+        shopifyOrderId: { startsWith: `unmatched_${row.adId}_${today}_${row.hourSlot}_` },
+      },
+    });
+    const effectiveConv = Math.max(0, row.conversions - placeholderCount);
+    const effectiveValue = row.conversions > 0
+      ? Math.round(row.conversionValue * (effectiveConv / row.conversions) * 100) / 100
+      : 0;
     await db.metaSnapshot.upsert({
       where: { shopDomain_date_adId_hourSlot: { shopDomain, date: today, adId: row.adId, hourSlot: row.hourSlot } },
-      create: { shopDomain, date: today, adId: row.adId, hourSlot: row.hourSlot, conversions: row.conversions, conversionValue: row.conversionValue },
-      update: { conversions: row.conversions, conversionValue: row.conversionValue },
+      create: { shopDomain, date: today, adId: row.adId, hourSlot: row.hourSlot, conversions: effectiveConv, conversionValue: effectiveValue },
+      update: { conversions: effectiveConv, conversionValue: effectiveValue },
     });
   }
 }
