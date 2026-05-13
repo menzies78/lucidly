@@ -935,9 +935,19 @@ export default function Index() {
           <StatusPill label="Meta" ok={metaConnected} warning={!metaConnected} detail={metaConnected ? metaAdAccountId : "not connected"} />
           <StatusPill
             label="Webhooks"
-            ok={!!webhooksFirstFiredAt}
-            warning={!!webhooksRegisteredAt && !webhooksFirstFiredAt}
-            detail={webhooksFirstFiredAt ? "active" : webhooksRegisteredAt ? "pending" : "not registered"}
+            // Registered = healthy. Webhooks can sit "pending fire" for
+            // days on a quiet store (no new orders) - that's not a
+            // problem. Only flag red if Shopify never accepted our
+            // registration request (the merchant needs to reinstall).
+            ok={!!webhooksRegisteredAt}
+            warning={false}
+            detail={
+              webhooksFirstFiredAt
+                ? "active"
+                : webhooksRegisteredAt
+                ? "registered"
+                : "reinstall to register"
+            }
           />
           <StatusPill
             label="Orders Sync"
@@ -953,23 +963,47 @@ export default function Index() {
           />
           <StatusPill
             label="Pixel"
-            ok={!!pixelCalibration?.results?.winner}
-            warning={!!pixelCalibration?.calibratedAt && !pixelCalibration?.results?.winner}
+            // A winner is the gold state. Waiting for UTM samples is NOT a
+            // problem - it's a "needs more data" state and a new install
+            // can sit there for days before enough UTM-tagged orders come
+            // in to triangulate. Only flag red if calibration has run with
+            // a full sample but found no winner (a genuinely
+            // mis-configured pixel that the merchant must investigate in
+            // Meta Events Manager).
+            ok={(() => {
+              const r = pixelCalibration?.results;
+              if (r?.winner) return true;
+              // Not yet calibrated, or calibrated but still below the
+              // sample threshold - both treated as "fine, still
+              // gathering signal".
+              const got = r?.sampleSize ?? 0;
+              const need = r?.minimumRequired ?? 5;
+              return !pixelCalibration?.calibratedAt || got < need;
+            })()}
+            warning={(() => {
+              // Yellow = calibrated, hit the sample threshold, but no
+              // clear winner. This is the actionable state.
+              const r = pixelCalibration?.results;
+              if (r?.winner) return false;
+              if (!pixelCalibration?.calibratedAt) return false;
+              const got = r?.sampleSize ?? 0;
+              const need = r?.minimumRequired ?? 5;
+              return got >= need;
+            })()}
             detail={(() => {
               const r = pixelCalibration?.results;
               if (r?.winner) {
                 return `${r.winner} (\u00B1${(r.winnerDeviation * 100).toFixed(1)}%)`;
               }
-              if (pixelCalibration?.calibratedAt) {
-                // "Insufficient data" tells the user nothing they can act on.
-                // Surface the actual sample shortfall so they can see why
-                // (needs N UTM-confirmed orders to triangulate the pixel's
-                // value field).
-                const got = r?.sampleSize ?? 0;
-                const need = r?.minimumRequired ?? 5;
-                return `${got}/${need} UTM samples`;
+              const got = r?.sampleSize ?? 0;
+              const need = r?.minimumRequired ?? 5;
+              if (!pixelCalibration?.calibratedAt || got < need) {
+                // Friendly waiting state - tell them we're still gathering
+                // signal and what we need before we can decide.
+                return `gathering signal (${got}/${need})`;
               }
-              return "not calibrated";
+              // Calibrated + enough samples + no winner = genuine problem.
+              return "check pixel value field in Meta Events Manager";
             })()}
           />
         </div>

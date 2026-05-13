@@ -283,10 +283,16 @@ export default function OnboardingFlow({ shopDomain }: { shopDomain: string }) {
   const { revalidate } = useRevalidator();
   const fetcher = useFetcher();
 
-  // Poll the status endpoint every 3s. Stops once onboardingCompleted flips.
+  // Poll the status endpoint every 3s. Once onboardingCompleted flips we
+  // call revalidate() so the parent loader re-reads Shop.onboardingCompleted
+  // and swaps the page wrapper from "Welcome to Lucidly" → "Health" with
+  // the full dashboard. A short re-poll keeps trying revalidate in case the
+  // first call lost the race with the DB write propagating through Prisma
+  // (rare, but the cost of a second revalidate is one extra loader run).
   useEffect(() => {
     let stopped = false;
     let lastCompleted = false;
+    let reloadTimer: ReturnType<typeof setTimeout> | null = null;
 
     async function poll() {
       try {
@@ -298,6 +304,13 @@ export default function OnboardingFlow({ shopDomain }: { shopDomain: string }) {
         if (data.onboardingCompleted && !lastCompleted) {
           lastCompleted = true;
           revalidate();
+          // Belt-and-braces fallback: if the parent loader hasn't re-rendered
+          // within 5s (e.g. revalidate raced the orchestrator's final commit
+          // and saw stale data), force a hard reload so the merchant doesn't
+          // sit on a half-blank screen.
+          reloadTimer = setTimeout(() => {
+            if (!stopped) window.location.reload();
+          }, 5000);
         }
       } catch {
         /* network blip */
@@ -306,7 +319,11 @@ export default function OnboardingFlow({ shopDomain }: { shopDomain: string }) {
 
     poll();
     const id = setInterval(poll, 3000);
-    return () => { stopped = true; clearInterval(id); };
+    return () => {
+      stopped = true;
+      clearInterval(id);
+      if (reloadTimer) clearTimeout(reloadTimer);
+    };
   }, [revalidate]);
 
   if (!status) {
@@ -347,11 +364,57 @@ export default function OnboardingFlow({ shopDomain }: { shopDomain: string }) {
 
   // ─── State 5: Ingesting (parallel Shopify + Meta) ─────────────────
   if (phase === "ingesting") {
+    // Once every visible phase is marked completed the orchestrator is
+    // still baking rollups (customer, product, campaign, ad-demographic,
+    // pixel calibration) before flipping onboardingCompleted=true. Show a
+    // dedicated "finalising" state so the merchant sees forward motion
+    // rather than a static 100%/all-ticked checklist.
+    const allPhasesDone =
+      status.phases.length > 0 &&
+      status.phases.every(p => p.status === "completed");
+    if (allPhasesDone) {
+      return <FinalisingCard />;
+    }
     return <IngestingCard status={status} />;
+  }
+
+  // Phase is "complete" but the parent loader hasn't picked up the flag
+  // yet (race between this poll and revalidate completing). Show the
+  // finalising card so the merchant sees a friendly transition rather
+  // than the fallback Welcome screen.
+  if (phase === "complete") {
+    return <FinalisingCard />;
   }
 
   // Fallback: unknown phase, show welcome to recover.
   return <WelcomeCard fetcher={fetcher} />;
+}
+
+// ─── Finalising ──────────────────────────────────────────────────────
+// Shown for the brief window between "all visible phases done" and
+// onboardingCompleted=true (rollup builds + pixel calibration). Also
+// shown when phase has already flipped to "complete" but the parent
+// loader is mid-revalidate.
+function FinalisingCard() {
+  return (
+    <Box paddingBlockEnd="600">
+      <Card>
+        <Box padding="600">
+          <BlockStack gap="500">
+            <InlineStack gap="300" blockAlign="center">
+              <Spinner size="small" />
+              <Text as="h2" variant="headingLg">Finalising your dashboard</Text>
+            </InlineStack>
+            <Text as="p" variant="bodyMd" tone="subdued">
+              Baking rollup tables, calibrating your Meta pixel, and
+              preparing tiles. This usually takes a minute or two.
+            </Text>
+            <ProgressBar pct={96} />
+          </BlockStack>
+        </Box>
+      </Card>
+    </Box>
+  );
 }
 
 // ─── Welcome card ────────────────────────────────────────────────────
@@ -572,7 +635,7 @@ function FitReadyCard({ score, data, metaAuthUrl }: {
                   we require to match your orders).
                 </Text>
                 <Text as="p" variant="bodyMd" tone="subdued">
-                  This typically takes 1 - 2 hours, but could be more for
+                  This typically takes 4 - 6 hours, but could be more for
                   stores with more data.
                 </Text>
                 <Text as="p" variant="bodyMd" tone="subdued">
@@ -638,7 +701,7 @@ function IngestingCard({ status }: { status: Status }) {
               <Banner tone="info">
                 <Text as="p" variant="bodyMd">
                   <strong>{"\u2713"} We&apos;ll email you when this is ready.</strong>{" "}
-                  This usually takes 1–2 hours depending on your store size.
+                  This usually takes 4–6 hours depending on your store size.
                 </Text>
               </Banner>
 

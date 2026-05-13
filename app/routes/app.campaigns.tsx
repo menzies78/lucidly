@@ -603,14 +603,18 @@ export const loader = async ({ request }) => {
     }
   }
 
-  // Count ALL new customers in the period using the order row's own
-  // isNewCustomerOrder flag (set at sync time from customerOrderCountAtPurchase).
-  // Previously this required loading the full customer table; now it's free.
+  // Count ALL new customers in the period using BOTH signals: the
+  // order-row flag (isNewCustomerOrder) set at sync time, OR the count
+  // field (customerOrderCountAtPurchase === 1). Either signal alone misses
+  // edge cases - see attribution_isnew_two_signal_fix memory and the
+  // 2026-05-12 empty-New-Meta-tiles regression for context.
   const totalNewCustomersInPeriodIds = new Set<string>();
   for (const o of allOrders) {
     if (!o.isOnlineStore) continue;
     if (o.createdAt < fromDate || o.createdAt > toDate) continue;
-    if (o.customerOrderCountAtPurchase === 1 && o.shopifyCustomerId) {
+    if (!o.shopifyCustomerId) continue;
+    const isNew = o.isNewCustomerOrder === true || o.customerOrderCountAtPurchase === 1;
+    if (isNew) {
       totalNewCustomersInPeriodIds.add(o.shopifyCustomerId);
     }
   }
