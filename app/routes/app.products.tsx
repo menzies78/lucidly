@@ -146,7 +146,7 @@ export const loader = async ({ request }) => {
   const _t0 = Date.now();
 
   // Cache the per-window rollup queries (date-keyed) and the analysis blob (per-shop)
-  const [currentRollup, prevRollup, analysisCacheRow, unmatchedAgg, imageMap, periodOrders, entryToLtvRaw] = await Promise.all([
+  const [currentRollup, prevRollup, analysisCacheRow, unmatchedAgg, imageMap, periodOrders, entryToLtvRaw, journeyOrdersRaw] = await Promise.all([
     queryCached(`${shopDomain}:productRollup:${fromKey}:${toKey}`, DEFAULT_TTL, () =>
       db.dailyProductRollup.findMany({
         where: { shopDomain, date: { gte: fromDate, lte: toDate } },
@@ -199,6 +199,35 @@ export const loader = async ({ request }) => {
           AND c.firstOrderDate >= ${fromDate}
           AND c.firstOrderDate <= ${toDate}
       ` as Promise<Array<{ customerId: string; totalSpent: number | null; firstLineItems: string | null }>>,
+    ),
+    // Product Journey - per-period first + second order line items per
+    // customer whose first order falls in the range. Replaces the all-time
+    // blob.metaJourney/allJourney which never moved when the date selector
+    // changed. Window function picks the first two orders by createdAt asc
+    // for each customer acquired in this period.
+    queryCached(`${shopDomain}:journeyOrders:${fromKey}:${toKey}`, DEFAULT_TTL, () =>
+      db.$queryRaw`
+        WITH acquired AS (
+          SELECT shopifyCustomerId, metaSegment
+          FROM Customer
+          WHERE shopDomain = ${shopDomain}
+            AND firstOrderDate >= ${fromDate}
+            AND firstOrderDate <= ${toDate}
+        ),
+        ranked AS (
+          SELECT
+            a.shopifyCustomerId AS customerId,
+            a.metaSegment AS segment,
+            o.lineItems AS lineItems,
+            ROW_NUMBER() OVER (PARTITION BY a.shopifyCustomerId ORDER BY o.createdAt ASC) AS rn
+          FROM acquired a
+          JOIN "Order" o
+            ON o.shopDomain = ${shopDomain}
+           AND o.shopifyCustomerId = a.shopifyCustomerId
+           AND o.isOnlineStore = 1
+        )
+        SELECT customerId, segment, lineItems, rn FROM ranked WHERE rn <= 2
+      ` as Promise<Array<{ customerId: string; segment: string | null; lineItems: string | null; rn: number | bigint }>>,
     ),
   ]);
 
@@ -388,12 +417,70 @@ export const loader = async ({ request }) => {
   const topAddonsMeta = buildAddonList(metaCounts, metaBaskets.length);
   const topAddons = topAddonsAll.slice(0, 20);
 
-  const topGateway = blob.metaJourney?.topGateway || [];
-  const topSecond = blob.metaJourney?.topSecond || [];
-  const flows = blob.metaJourney?.flows || [];
-  const topGatewayAll = blob.allJourney?.topGateway || [];
-  const topSecondAll = blob.allJourney?.topSecond || [];
-  const flowsAll = blob.allJourney?.flows || [];
+  // Customer Product Journey - derived per-request from journeyOrdersRaw so
+  // it tracks the date selector. Algorithm mirrors productRollups.server.js
+  // buildJourney() so output shape is identical to the legacy blob:
+  //   - group rows by customerId (must have rn=1 AND rn=2)
+  //   - firstItems / secondItems = parent-product names per order
+  //   - drop second-order items that overlap the first basket (the journey
+  //     question is "what NEW product did they try next?")
+  //   - tally gateway / second products and from→to flows
+  //   - threshold filter: keep top 10% (min 2) of max count per side
+  const journeyByCustomer: Record<string, { segment: string | null; first: string | null; second: string | null }> = {};
+  for (const r of (journeyOrdersRaw as Array<{ customerId: string; segment: string | null; lineItems: string | null; rn: number | bigint }>)) {
+    const rn = Number(r.rn);
+    if (!journeyByCustomer[r.customerId]) journeyByCustomer[r.customerId] = { segment: r.segment, first: null, second: null };
+    if (rn === 1) journeyByCustomer[r.customerId].first = r.lineItems;
+    else if (rn === 2) journeyByCustomer[r.customerId].second = r.lineItems;
+  }
+  const buildJourney = (filterFn: (segment: string | null) => boolean) => {
+    const jFlows: Record<string, Record<string, number>> = {};
+    const gProducts: Record<string, number> = {};
+    const sProducts: Record<string, number> = {};
+    for (const rec of Object.values(journeyByCustomer)) {
+      if (!filterFn(rec.segment)) continue;
+      if (!rec.first || !rec.second) continue;
+      const firstItems = (rec.first || "").split(", ").map((s) => toParentProduct(s.trim())).filter(Boolean);
+      const secondItems = (rec.second || "").split(", ").map((s) => toParentProduct(s.trim())).filter(Boolean);
+      if (firstItems.length === 0 || secondItems.length === 0) continue;
+      const firstSet = new Set(firstItems);
+      const differentSecondItems = secondItems.filter((i) => !firstSet.has(i));
+      if (differentSecondItems.length === 0) continue;
+      for (const item of firstItems) gProducts[item] = (gProducts[item] || 0) + 1;
+      for (const item of differentSecondItems) sProducts[item] = (sProducts[item] || 0) + 1;
+      for (const first of firstItems) {
+        if (!jFlows[first]) jFlows[first] = {};
+        for (const second of differentSecondItems) {
+          jFlows[first][second] = (jFlows[first][second] || 0) + 1;
+        }
+      }
+    }
+    const sortedG = Object.entries(gProducts).sort((a, b) => b[1] - a[1]);
+    const sortedS = Object.entries(sProducts).sort((a, b) => b[1] - a[1]);
+    const gThreshold = sortedG.length > 0 ? Math.max(2, Math.ceil(sortedG[0][1] * 0.1)) : 2;
+    const sThreshold = sortedS.length > 0 ? Math.max(2, Math.ceil(sortedS[0][1] * 0.1)) : 2;
+    const tGateway = sortedG.filter(([, c]) => c >= gThreshold).slice(0, 10) as [string, number][];
+    const tSecond = sortedS.filter(([, c]) => c >= sThreshold).slice(0, 10) as [string, number][];
+    const tGatewayNames = new Set(tGateway.map((g) => g[0]));
+    const tSecondNames = new Set(tSecond.map((g) => g[0]));
+    const fArr: { from: string; to: string; count: number }[] = [];
+    for (const [from, tos] of Object.entries(jFlows)) {
+      if (!tGatewayNames.has(from)) continue;
+      for (const [to, count] of Object.entries(tos)) {
+        if (!tSecondNames.has(to)) continue;
+        fArr.push({ from, to, count });
+      }
+    }
+    return { topGateway: tGateway, topSecond: tSecond, flows: fArr };
+  };
+  const metaJourneyPeriod = buildJourney((seg) => seg === "metaNew" || seg === "metaRepeat" || seg === "metaRetargeted");
+  const allJourneyPeriod = buildJourney(() => true);
+  const topGateway = metaJourneyPeriod.topGateway;
+  const topSecond = metaJourneyPeriod.topSecond;
+  const flows = metaJourneyPeriod.flows;
+  const topGatewayAll = allJourneyPeriod.topGateway;
+  const topSecondAll = allJourneyPeriod.topSecond;
+  const flowsAll = allJourneyPeriod.flows;
 
   // ── Chart dates (shop-local) ──
   const chartDates: string[] = [];

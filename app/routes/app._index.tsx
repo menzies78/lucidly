@@ -986,11 +986,22 @@ export default function Index() {
             label="Pixel"
             ok={!!pixelCalibration?.results?.winner}
             warning={!!pixelCalibration?.calibratedAt && !pixelCalibration?.results?.winner}
-            detail={
-              pixelCalibration?.results?.winner
-                ? `${pixelCalibration.results.winner} (\u00B1${(pixelCalibration.results.winnerDeviation * 100).toFixed(1)}%)`
-                : pixelCalibration?.calibratedAt ? "insufficient data" : "not calibrated"
-            }
+            detail={(() => {
+              const r = pixelCalibration?.results;
+              if (r?.winner) {
+                return `${r.winner} (\u00B1${(r.winnerDeviation * 100).toFixed(1)}%)`;
+              }
+              if (pixelCalibration?.calibratedAt) {
+                // "Insufficient data" tells the user nothing they can act on.
+                // Surface the actual sample shortfall so they can see why
+                // (needs N UTM-confirmed orders to triangulate the pixel's
+                // value field).
+                const got = r?.sampleSize ?? 0;
+                const need = r?.minimumRequired ?? 5;
+                return `${got}/${need} UTM samples`;
+              }
+              return "not calibrated";
+            })()}
           />
         </div>
 

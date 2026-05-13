@@ -622,19 +622,27 @@ export const loader = async ({ request }) => {
   // per-order metaAge/metaGender from the breakdown enrichment step),
   // filtered to isNewCustomer=true within the date range. More precise
   // than Meta's aggregate breakdown because it's per-matched-order.
+  //
+  // Date pivot: Order.createdAt, NOT Attribution.matchedAt. matchedAt is
+  // when the matcher ran; the user-visible date is when the order was
+  // placed. Pivoting on matchedAt caused the AGE chart to show identical
+  // results for "yesterday" and "30 days" (every backfilled match has the
+  // same matchedAt cluster). See attribution_matchedat_gotcha memory.
   const newMetaAttrsWithDemo = await queryCached(
     `${shopDomain}:newMetaDemoAttrs:${dateFromStr}:${dateToStr}`,
     DEFAULT_TTL,
-    () => db.attribution.findMany({
-      where: {
-        shopDomain,
-        confidence: { gt: 0 },
-        isNewCustomer: true,
-        metaAge: { not: null },
-        matchedAt: { gte: fromDate, lte: toDate },
-      },
-      select: { metaAge: true, metaGender: true, metaConversionValue: true },
-    }),
+    () => db.$queryRaw<Array<{ metaAge: string | null; metaGender: string | null; metaConversionValue: number | null }>>`
+      SELECT a.metaAge, a.metaGender, a.metaConversionValue
+      FROM Attribution a
+      JOIN "Order" o
+        ON o.shopDomain = a.shopDomain AND o.shopifyOrderId = a.shopifyOrderId
+      WHERE a.shopDomain = ${shopDomain}
+        AND a.confidence > 0
+        AND a.isNewCustomer = 1
+        AND a.metaAge IS NOT NULL
+        AND o.createdAt >= ${fromDate}
+        AND o.createdAt <= ${toDate}
+    `,
   );
   const newAgeAgg: Record<string, { conversions: number; value: number; spend: number; impressions: number }> = {};
   // Gender no longer aggregated here - moved to newMetaCombinedGenderRaw
@@ -1586,16 +1594,31 @@ function JourneyFlow({ firstAOV, gapDays, secondAOV, thirdAOV, gap2to3Days, cust
     </div>
   );
 
+  // Outer wrapper handles overflow so the journey scrolls horizontally on
+  // narrow laptops instead of getting cropped at both edges (Andy hit this
+  // on a MacBook). Inner row keeps the original centered layout when there's
+  // room, but allows the items to fall back to natural width if the
+  // viewport is narrower than their combined min width.
   return (
-    <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: "0", padding: "22px 12px" }}>
-      {orderBox("1st Order", firstAOV, 0, firstOrderCount, "acquired",
-        "linear-gradient(135deg, #7C3AED 0%, #6D28D9 100%)", "0 4px 12px rgba(124,58,237,0.3)", true)}
-      {arrow(gapDays, repeatRate, "came back", "arrowGrad1", "#7C3AED", "#0891B2")}
-      {orderBox("2nd Order", secondAOV, aov2Change, secondOrderCount, "repeated",
-        "linear-gradient(135deg, #0891B2 0%, #0E7490 100%)", "0 4px 12px rgba(8,145,178,0.3)", secondOrderCount > 0)}
-      {arrow(gap2to3Days, thirdRate, "came back", "arrowGrad2", "#0891B2", "#2E7D32")}
-      {orderBox("3rd Order", thirdAOV, aov3Change, thirdOrderCount, "repeated",
-        "linear-gradient(135deg, #2E7D32 0%, #1B5E20 100%)", "0 4px 12px rgba(46,125,50,0.3)", thirdOrderCount > 0)}
+    <div style={{ overflowX: "auto", width: "100%" }}>
+      <div style={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: "0",
+        padding: "22px 12px",
+        minWidth: "fit-content",
+        margin: "0 auto",
+      }}>
+        {orderBox("1st Order", firstAOV, 0, firstOrderCount, "acquired",
+          "linear-gradient(135deg, #7C3AED 0%, #6D28D9 100%)", "0 4px 12px rgba(124,58,237,0.3)", true)}
+        {arrow(gapDays, repeatRate, "came back", "arrowGrad1", "#7C3AED", "#0891B2")}
+        {orderBox("2nd Order", secondAOV, aov2Change, secondOrderCount, "repeated",
+          "linear-gradient(135deg, #0891B2 0%, #0E7490 100%)", "0 4px 12px rgba(8,145,178,0.3)", secondOrderCount > 0)}
+        {arrow(gap2to3Days, thirdRate, "came back", "arrowGrad2", "#0891B2", "#2E7D32")}
+        {orderBox("3rd Order", thirdAOV, aov3Change, thirdOrderCount, "repeated",
+          "linear-gradient(135deg, #2E7D32 0%, #1B5E20 100%)", "0 4px 12px rgba(46,125,50,0.3)", thirdOrderCount > 0)}
+      </div>
     </div>
   );
 }

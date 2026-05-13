@@ -233,6 +233,44 @@ async function deleteDailyForDay(shopDomain, dateKey) {
   );
 }
 
+// After Pass 1 writes daily rows for a window, delete any hourSlot=-1 row
+// where a hourSlot>=0 sibling already exists for the same (shop, date, ad).
+//
+// Why this is needed: Pass 1 re-runs on the 7-day rolling lookback (hourly
+// incremental sync) over days that Pass 2 has already enriched with hourly
+// rows. Without this dedup, Pass 1 re-creates the daily aggregate row
+// alongside the existing hourly rows, and every downstream sum double-counts
+// (e.g. Match Accuracy 9/18 instead of 9/9, Campaign spend doubled, etc.).
+//
+// Read-path filters (hourSlot: { gte: 0 }) are defensive but easy to forget;
+// the durable fix is to keep the table itself clean.
+async function dedupDailyAgainstHourly(shopDomain) {
+  const removed = await withDbRetry("dedup daily vs hourly", () =>
+    db.$executeRaw`
+      DELETE FROM MetaInsight
+      WHERE shopDomain = ${shopDomain}
+        AND hourSlot = -1
+        AND EXISTS (
+          SELECT 1 FROM MetaInsight m2
+          WHERE m2.shopDomain = MetaInsight.shopDomain
+            AND m2.date = MetaInsight.date
+            AND m2.adId = MetaInsight.adId
+            AND m2.hourSlot >= 0
+        )
+    `
+  );
+  if (removed > 0) {
+    console.log(`[MetaSync] dedup: removed ${removed} orphan daily rows where hourly siblings exist`);
+  }
+  return removed;
+}
+
+// Exported so the admin "force rebuild" tooling can clean up legacy
+// double-counted data without rerunning a full insights sync.
+export async function dedupMetaInsightDailyVsHourly(shopDomain) {
+  return await dedupDailyAgainstHourly(shopDomain);
+}
+
 // ------------------------------------------------------------------
 // Fetchers
 // ------------------------------------------------------------------
@@ -617,6 +655,12 @@ export async function syncMetaPass1(shopDomain, daysBack = 7, progressKey = null
       detail,
     });
   });
+
+  // Dedup: Pass 1 may have re-written daily aggregates for days where Pass 2
+  // already wrote hourly rows. Without this, downstream sums double-count
+  // (daily + hourly both present). Cheap single-statement DELETE.
+  await dedupDailyAgainstHourly(shopDomain);
+
   console.log(`[MetaSync/Pass1] complete: ${result.totalRows} daily rows, ${result.conversionDays.size} conversion days, ${formatElapsed(Date.now() - startTime)}`);
   return { totalRows: result.totalRows, conversionDays: [...result.conversionDays] };
 }

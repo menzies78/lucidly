@@ -721,7 +721,10 @@ async function matchSingleConversion(shopDomain, conv, todayOrders, revenueField
   // zero-value £0 non-online fallback path below.
   const { start, end } = hourToMinuteRange(conv.hourSlot, metaOffsetMinutes, paddingUsed);
 
-  if (allCandidates.length === 0) return [];
+  if (allCandidates.length === 0) {
+    console.log(`[DeltaMatch] REJECT ad=${conv.adId} hour=${conv.hourSlot} R=${conv.deltaConversions} value=${conv.deltaValue?.toFixed?.(2)}: no orders in time window (even after widening to ${WIDE_PADDING_MINUTES}min)`);
+    return [];
+  }
 
   // Zero-value conversions: Meta reports a purchase count but no monetary value.
   // Match against £0 Shopify orders (replacement orders) by time window only.
@@ -757,7 +760,10 @@ async function matchSingleConversion(shopDomain, conv, todayOrders, revenueField
     // Prefer higher country rank when selecting zero-value candidates
     zeroCandidates.sort((a, b) => (b.countryRank || 0) - (a.countryRank || 0));
     const matched = zeroCandidates.slice(0, conv.deltaConversions);
-    if (matched.length === 0) return [];
+    if (matched.length === 0) {
+      console.log(`[DeltaMatch] REJECT ad=${conv.adId} hour=${conv.hourSlot} R=${conv.deltaConversions} value=0: zero-value conv but no £0 orders in window`);
+      return [];
+    }
     const pickedIds = new Set(matched.map(p => p.id));
     return matched.map(pick => {
       let rivalCount = 0;
@@ -804,7 +810,23 @@ async function matchSingleConversion(shopDomain, conv, todayOrders, revenueField
         best = cand; bestDiff = diff; bestCountryRank = rank; bestIsNew = isNew;
       }
     }
-    if (!best) return [];
+    if (!best) {
+      // Surface the closest near-miss so we can tell whether the issue is
+      // tolerance, currency drift, refunds/edits, or just wrong ad. Helps
+      // diagnose cases where Meta reported a conversion but the matcher
+      // couldn't find a Shopify order at the expected value.
+      let closest = null, closestDiff = Infinity;
+      for (const cand of allCandidates) {
+        if (cand.total <= 0) continue;
+        const d = Math.abs(cand.total - target);
+        if (d < closestDiff) { closest = cand; closestDiff = d; }
+      }
+      const closestStr = closest
+        ? `closest=${closest.total?.toFixed?.(2)} (diff=${(closestDiff / (target || 1) * 100).toFixed(2)}%, tol=${(tolerance * 100).toFixed(1)}%)`
+        : "no positive-value candidates";
+      console.log(`[DeltaMatch] REJECT ad=${conv.adId} hour=${conv.hourSlot} R=1 value=${target?.toFixed?.(2)}: ${allCandidates.length} time-window candidates but none within tolerance; ${closestStr}`);
+      return [];
+    }
     // Rivals: other viable candidates within RIVAL_VALUE_TOLERANCE of the
     // pick's value AND at least as country-compatible as the pick. Meta's
     // per-cycle country breakdown already tells us which country this
@@ -879,7 +901,11 @@ async function matchSingleConversion(shopDomain, conv, todayOrders, revenueField
   backtrack(0, 0, 0, []);
   const matched = bestPicks || [];
 
-  if (matched.length === 0) return [];
+  if (matched.length === 0) {
+    const totals = allCandidates.slice(0, 8).map(c => c.total?.toFixed?.(2)).join(", ");
+    console.log(`[DeltaMatch] REJECT ad=${conv.adId} hour=${conv.hourSlot} R=${R} value=${target?.toFixed?.(2)}: backtracking found no combination summing within ${(groupTolerance * 100).toFixed(1)}% tolerance across ${allCandidates.length} candidates [${totals}${allCandidates.length > 8 ? ", ..." : ""}]`);
+    return [];
+  }
   const matchedSum = matched.reduce((s, p) => s + p.total, 0);
   const diffPct = Math.abs(matchedSum - target) / (target || 1);
 
