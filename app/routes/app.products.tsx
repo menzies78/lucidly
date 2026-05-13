@@ -145,8 +145,11 @@ export const loader = async ({ request }) => {
   // sync. Custom date ranges are served by summing daily rollup rows.
   const _t0 = Date.now();
 
-  // Cache the per-window rollup queries (date-keyed) and the analysis blob (per-shop)
-  const [currentRollup, prevRollup, analysisCacheRow, unmatchedAgg, imageMap, periodOrders, entryToLtvRaw, journeyOrdersRaw] = await Promise.all([
+  // Cache the per-window rollup queries (date-keyed) and the analysis blob (per-shop).
+  // Date-scoped add-ons, journey, and entry-to-LTV all read from
+  // analysisBlob.dailyAddonBaskets / customerEntries (pre-computed by
+  // productRollups.server.js). No raw order or customer scans here.
+  const [currentRollup, prevRollup, analysisCacheRow, unmatchedAgg, imageMap] = await Promise.all([
     queryCached(`${shopDomain}:productRollup:${fromKey}:${toKey}`, DEFAULT_TTL, () =>
       db.dailyProductRollup.findMany({
         where: { shopDomain, date: { gte: fromDate, lte: toDate } },
@@ -168,83 +171,7 @@ export const loader = async ({ request }) => {
       _sum: { metaConversionValue: true },
     }),
     fetchImages(),
-    // Per-period orders, slim - needed to compute date-scoped add-on
-    // appearances (cached blob is all-time and was confusing the user).
-    queryCached(`${shopDomain}:periodOrdersForAddons:${fromKey}:${toKey}`, DEFAULT_TTL, () =>
-      db.order.findMany({
-        where: { shopDomain, isOnlineStore: true, createdAt: { gte: fromDate, lte: toDate } },
-        select: { shopifyOrderId: true, lineItems: true, utmConfirmedMeta: true },
-      }),
-    ),
-    // Entry-to-LTV: for every metaNew customer acquired in this period, pull
-    // their earliest online-store order's line items + the customer's
-    // totalSpent. The first line item is treated as the "gateway product";
-    // we aggregate average LTV per gateway product in JS below.
-    queryCached(`${shopDomain}:entryToLtv:${fromKey}:${toKey}`, DEFAULT_TTL, () =>
-      db.$queryRaw`
-        SELECT
-          c.shopifyCustomerId AS customerId,
-          c.totalSpent AS totalSpent,
-          (
-            SELECT o.lineItems FROM "Order" o
-            WHERE o.shopDomain = c.shopDomain
-              AND o.shopifyCustomerId = c.shopifyCustomerId
-              AND o.isOnlineStore = 1
-            ORDER BY o.createdAt ASC
-            LIMIT 1
-          ) AS firstLineItems
-        FROM Customer c
-        WHERE c.shopDomain = ${shopDomain}
-          AND c.metaSegment = 'metaNew'
-          AND c.firstOrderDate >= ${fromDate}
-          AND c.firstOrderDate <= ${toDate}
-      ` as Promise<Array<{ customerId: string; totalSpent: number | null; firstLineItems: string | null }>>,
-    ),
-    // Product Journey - per-period first + second order line items per
-    // customer whose first order falls in the range. Replaces the all-time
-    // blob.metaJourney/allJourney which never moved when the date selector
-    // changed. Window function picks the first two orders by createdAt asc
-    // for each customer acquired in this period.
-    queryCached(`${shopDomain}:journeyOrders:${fromKey}:${toKey}`, DEFAULT_TTL, () =>
-      db.$queryRaw`
-        WITH acquired AS (
-          SELECT shopifyCustomerId, metaSegment
-          FROM Customer
-          WHERE shopDomain = ${shopDomain}
-            AND firstOrderDate >= ${fromDate}
-            AND firstOrderDate <= ${toDate}
-        ),
-        ranked AS (
-          SELECT
-            a.shopifyCustomerId AS customerId,
-            a.metaSegment AS segment,
-            o.lineItems AS lineItems,
-            ROW_NUMBER() OVER (PARTITION BY a.shopifyCustomerId ORDER BY o.createdAt ASC) AS rn
-          FROM acquired a
-          JOIN "Order" o
-            ON o.shopDomain = ${shopDomain}
-           AND o.shopifyCustomerId = a.shopifyCustomerId
-           AND o.isOnlineStore = 1
-        )
-        SELECT customerId, segment, lineItems, rn FROM ranked WHERE rn <= 2
-      ` as Promise<Array<{ customerId: string; segment: string | null; lineItems: string | null; rn: number | bigint }>>,
-    ),
   ]);
-
-  // Period attribution lookup - used to flag Meta orders for the Meta tab.
-  const periodOrderIds = periodOrders.map((o) => o.shopifyOrderId);
-  const periodMetaAttrs = periodOrderIds.length > 0
-    ? await queryCached(
-        `${shopDomain}:periodAttrsForAddons:${fromKey}:${toKey}`,
-        DEFAULT_TTL,
-        () => db.attribution.findMany({
-          where: { shopDomain, shopifyOrderId: { in: periodOrderIds }, confidence: { gt: 0 } },
-          select: { shopifyOrderId: true },
-        }),
-      )
-    : [];
-  const metaOrderIdSet = new Set(periodMetaAttrs.map((a) => a.shopifyOrderId));
-  for (const o of periodOrders) if (o.utmConfirmedMeta) metaOrderIdSet.add(o.shopifyOrderId);
   console.log(`[products] db ${Date.now() - _t0}ms (rollup=${currentRollup.length}, prevRollup=${prevRollup.length})`);
 
   const shop = shopForTz;
@@ -258,6 +185,7 @@ export const loader = async ({ request }) => {
     metaJourney: { topGateway: [], topSecond: [], flows: [] },
     allJourney: { topGateway: [], topSecond: [], flows: [] },
     dailyBasketStats: {}, dailyRefundByProduct: {},
+    dailyAddonBaskets: {}, customerEntries: [],
   };
 
   // ── Build productData by aggregating rollup rows (per product across segments/days) ──
@@ -379,30 +307,22 @@ export const loader = async ({ request }) => {
   // NOTE: these are all-time analyses, not date-scoped. Blob refreshes on each sync.
   const metaCombos = blob.metaCombos || [];
   const nonMetaCombos = blob.nonMetaCombos || [];
-  // Date-scoped add-on counts. We rebuild from the period's raw orders
-  // every loader call (cached per fromKey:toKey via queryCached above).
-  // Each order's lineItems is comma-separated; multi-item orders are the
-  // ones that count toward "baskets". A product's appearances = number of
-  // multi-item baskets containing it. Rate = appearances ÷ basket total.
-  const allBaskets: string[][] = [];
-  const metaBaskets: string[][] = [];
-  for (const o of periodOrders) {
-    const items = (o.lineItems || "")
-      .split(", ").map((s) => toParentProduct(s.trim())).filter(Boolean);
-    const unique = [...new Set(items)];
-    if (unique.length < 2) continue; // only multi-product baskets count
-    allBaskets.push(unique);
-    if (metaOrderIdSet.has(o.shopifyOrderId)) metaBaskets.push(unique);
+  // Date-scoped add-ons: sum over blob.dailyAddonBaskets entries whose date
+  // falls inside fromKey..toKey. allBaskets / metaBaskets are the denominators
+  // for the "appearances ÷ basket total" rate. Per-product appearances come
+  // from the same daily slices.
+  let allBasketsTotal = 0;
+  let metaBasketsTotal = 0;
+  const allCounts: Record<string, number> = {};
+  const metaCounts: Record<string, number> = {};
+  for (const dateStr of Object.keys(blob.dailyAddonBaskets || {})) {
+    if (dateStr < fromKey || dateStr > toKey) continue;
+    const d = blob.dailyAddonBaskets[dateStr];
+    allBasketsTotal += d.allBaskets || 0;
+    metaBasketsTotal += d.metaBaskets || 0;
+    for (const [p, n] of Object.entries(d.allApps || {})) allCounts[p] = (allCounts[p] || 0) + (n as number);
+    for (const [p, n] of Object.entries(d.metaApps || {})) metaCounts[p] = (metaCounts[p] || 0) + (n as number);
   }
-  const countAddons = (baskets: string[][]) => {
-    const counts: Record<string, number> = {};
-    for (const basket of baskets) {
-      for (const p of basket) counts[p] = (counts[p] || 0) + 1;
-    }
-    return counts;
-  };
-  const allCounts = countAddons(allBaskets);
-  const metaCounts = countAddons(metaBaskets);
   const buildAddonList = (counts: Record<string, number>, total: number) =>
     Object.entries(counts)
       .filter(([, n]) => n >= 2)
@@ -413,36 +333,31 @@ export const loader = async ({ request }) => {
       }))
       .sort((a, b) => b.appearances - a.appearances)
       .slice(0, 20);
-  const topAddonsAll = buildAddonList(allCounts, allBaskets.length);
-  const topAddonsMeta = buildAddonList(metaCounts, metaBaskets.length);
+  const topAddonsAll = buildAddonList(allCounts, allBasketsTotal);
+  const topAddonsMeta = buildAddonList(metaCounts, metaBasketsTotal);
   const topAddons = topAddonsAll.slice(0, 20);
 
-  // Customer Product Journey - derived per-request from journeyOrdersRaw so
-  // it tracks the date selector. Algorithm mirrors productRollups.server.js
-  // buildJourney() so output shape is identical to the legacy blob:
-  //   - group rows by customerId (must have rn=1 AND rn=2)
-  //   - firstItems / secondItems = parent-product names per order
-  //   - drop second-order items that overlap the first basket (the journey
-  //     question is "what NEW product did they try next?")
-  //   - tally gateway / second products and from→to flows
-  //   - threshold filter: keep top 10% (min 2) of max count per side
-  const journeyByCustomer: Record<string, { segment: string | null; first: string | null; second: string | null }> = {};
-  for (const r of (journeyOrdersRaw as Array<{ customerId: string; segment: string | null; lineItems: string | null; rn: number | bigint }>)) {
-    const rn = Number(r.rn);
-    if (!journeyByCustomer[r.customerId]) journeyByCustomer[r.customerId] = { segment: r.segment, first: null, second: null };
-    if (rn === 1) journeyByCustomer[r.customerId].first = r.lineItems;
-    else if (rn === 2) journeyByCustomer[r.customerId].second = r.lineItems;
-  }
+  // Customer Product Journey - derived from blob.customerEntries filtered to
+  // customers whose firstOrderDateLocal falls in the period. Pre-parsed
+  // firstParents / secondParents are stored in the blob, so this loop is
+  // just an in-memory reduce.
+  type CustEntry = {
+    customerId: string; firstOrderDateLocal: string; segment: string | null;
+    totalSpent: number; firstParents: string[]; secondParents: string[] | null;
+  };
+  const allEntries = (blob.customerEntries || []) as CustEntry[];
+  const periodEntries = allEntries.filter(
+    (e) => e.firstOrderDateLocal >= fromKey && e.firstOrderDateLocal <= toKey,
+  );
   const buildJourney = (filterFn: (segment: string | null) => boolean) => {
     const jFlows: Record<string, Record<string, number>> = {};
     const gProducts: Record<string, number> = {};
     const sProducts: Record<string, number> = {};
-    for (const rec of Object.values(journeyByCustomer)) {
+    for (const rec of periodEntries) {
       if (!filterFn(rec.segment)) continue;
-      if (!rec.first || !rec.second) continue;
-      const firstItems = (rec.first || "").split(", ").map((s) => toParentProduct(s.trim())).filter(Boolean);
-      const secondItems = (rec.second || "").split(", ").map((s) => toParentProduct(s.trim())).filter(Boolean);
-      if (firstItems.length === 0 || secondItems.length === 0) continue;
+      const firstItems = rec.firstParents || [];
+      const secondItems = rec.secondParents || [];
+      if (firstItems.length === 0 || !rec.secondParents || secondItems.length === 0) continue;
       const firstSet = new Set(firstItems);
       const differentSecondItems = secondItems.filter((i) => !firstSet.has(i));
       if (differentSecondItems.length === 0) continue;
@@ -583,14 +498,13 @@ export const loader = async ({ request }) => {
   // per group. Min 5 customers per product to avoid noisy rankings on
   // low-volume SKUs. Parent-stripped so variants roll up.
   const entryToLtvMap: Record<string, { customers: number; totalSpent: number }> = {};
-  for (const r of entryToLtvRaw || []) {
-    const firstItem = (r.firstLineItems || "").split(",")[0]?.trim();
-    if (!firstItem) continue;
-    const parent = toParentProduct(firstItem);
-    if (!parent || parent.toLowerCase() === "gift card") continue;
+  for (const e of periodEntries) {
+    if (e.segment !== 'metaNew') continue;
+    const parent = e.firstParents[0];
+    if (!parent || parent.toLowerCase() === 'gift card') continue;
     if (!entryToLtvMap[parent]) entryToLtvMap[parent] = { customers: 0, totalSpent: 0 };
     entryToLtvMap[parent].customers++;
-    entryToLtvMap[parent].totalSpent += Number(r.totalSpent || 0);
+    entryToLtvMap[parent].totalSpent += Number(e.totalSpent || 0);
   }
   const entryToLtv = Object.entries(entryToLtvMap)
     .filter(([, d]) => d.customers >= 5)

@@ -112,7 +112,10 @@ export async function rebuildProductRollups(shopDomain) {
     }),
     db.customer.findMany({
       where: { shopDomain },
-      select: { shopifyCustomerId: true, firstOrderDate: true },
+      select: {
+        shopifyCustomerId: true, firstOrderDate: true,
+        metaSegment: true, totalSpent: true,
+      },
     }),
     // Structured per-line revenue rows. Populated by orderSync / orderWebhook.
     // Orders without rows (pre-migration, or still mid-backfill) fall back to
@@ -137,12 +140,20 @@ export async function rebuildProductRollups(shopDomain) {
   const attrByOrderId = {};
   for (const a of attributions) attrByOrderId[a.shopifyOrderId] = a;
 
-  // Customer first-order-date map (shop-local)
+  // Customer first-order-date map (shop-local) + side-table of segment/totalSpent
+  // for the analysis blob's date-scoped customerEntries (drives Entry-to-LTV
+  // and the Customer Product Journey without needing the loader to hit raw SQL).
   const customerFirstOrderMap = {};
+  const customerInfoMap = {};
   for (const c of customers) {
     if (c.firstOrderDate) {
       customerFirstOrderMap[c.shopifyCustomerId] = shopLocalDayKey(tz, c.firstOrderDate);
     }
+    customerInfoMap[c.shopifyCustomerId] = {
+      firstOrderDateLocal: c.firstOrderDate ? shopLocalDayKey(tz, c.firstOrderDate) : null,
+      segment: c.metaSegment || null,
+      totalSpent: c.totalSpent || 0,
+    };
   }
 
   // Meta-acquired customers: customer's first order was a Meta order.
@@ -334,7 +345,7 @@ export async function rebuildProductRollups(shopDomain) {
   // metaAcquiredCustomers - all the stuff that doesn't fit a date rollup.
   // Computed once per shop, cached until the next sync.
   const analysisBlob = await buildAnalysisBlob({
-    orders, attrByOrderId, metaAcquiredCustomers, tz, lineItemsByOrder,
+    orders, attrByOrderId, metaAcquiredCustomers, tz, lineItemsByOrder, customerInfoMap,
   });
 
   await db.shopAnalysisCache.upsert({
@@ -358,7 +369,7 @@ export async function rebuildProductRollups(shopDomain) {
  * Build the analysis blob: journey flows, basket combos, first-purchase
  * lists, add-ons, metaAcquiredCustomers. All-time precomputation.
  */
-async function buildAnalysisBlob({ orders, attrByOrderId, metaAcquiredCustomers, tz, lineItemsByOrder = {} }) {
+async function buildAnalysisBlob({ orders, attrByOrderId, metaAcquiredCustomers, tz, lineItemsByOrder = {}, customerInfoMap = {} }) {
   const metaBaskets = [];
   const nonMetaBaskets = [];
   const metaFirstPurchaseProducts = {};
@@ -368,6 +379,10 @@ async function buildAnalysisBlob({ orders, attrByOrderId, metaAcquiredCustomers,
   const dailyBasketStats = {}; // date → { totalOrders, metaOrders, totalItems, metaItems }
   // Per-date per-product refund data (for prev-period highestRefund)
   const dailyRefundByProduct = {}; // date → product → { total, refunded }
+  // Per-date multi-product basket appearances split all vs meta, so the
+  // Products loader can compute date-scoped Top Add-ons without re-reading
+  // raw orders. Replaces the per-request periodOrders findMany.
+  const dailyAddonBaskets = {}; // date → { allBaskets, metaBaskets, allApps:{p:n}, metaApps:{p:n} }
 
   let _blobLoopI = 0;
   for (const order of orders) {
@@ -438,6 +453,19 @@ async function buildAnalysisBlob({ orders, attrByOrderId, metaAcquiredCustomers,
     if (uniqueParents.length >= 2) {
       if (isMeta) metaBaskets.push(uniqueParents);
       else nonMetaBaskets.push(uniqueParents);
+      // Per-date split: every multi-product basket contributes 1 to allBaskets
+      // and (when meta) 1 to metaBaskets. Each unique parent in the basket
+      // contributes 1 to the appearances map; loader sums over the date range.
+      if (!dailyAddonBaskets[dateStr]) {
+        dailyAddonBaskets[dateStr] = { allBaskets: 0, metaBaskets: 0, allApps: {}, metaApps: {} };
+      }
+      const dab = dailyAddonBaskets[dateStr];
+      dab.allBaskets++;
+      for (const p of uniqueParents) dab.allApps[p] = (dab.allApps[p] || 0) + 1;
+      if (isMeta) {
+        dab.metaBaskets++;
+        for (const p of uniqueParents) dab.metaApps[p] = (dab.metaApps[p] || 0) + 1;
+      }
     }
 
     if (isFirstPurchase) {
@@ -470,6 +498,9 @@ async function buildAnalysisBlob({ orders, attrByOrderId, metaAcquiredCustomers,
       (ordersByCustomer[order.shopifyCustomerId] ||= []).push({
         createdAt: order.createdAt.toISOString(),
         lineItems: order.lineItems || "",
+        // Parent-stripped per-order items. Lets us build the date-scoped
+        // customerEntries below without re-parsing the lineItems string.
+        parents: parentItems,
       });
     }
   }
@@ -554,6 +585,26 @@ async function buildAnalysisBlob({ orders, attrByOrderId, metaAcquiredCustomers,
     .map(([product, data]) => ({ product, qty: data.qty, revenue: Math.round(data.revenue * 100) / 100 }))
     .sort((a, b) => b.qty - a.qty).slice(0, 20);
 
+  // Build per-customer "entry" records used by the Products loader to derive
+  // date-scoped Entry-to-LTV and Customer Product Journey without raw SQL.
+  // One row per customer with a known firstOrderDate. firstParents/secondParents
+  // are taken from the first two orders by createdAt (ascending).
+  const customerEntries = [];
+  for (const [custId, info] of Object.entries(customerInfoMap)) {
+    if (!info.firstOrderDateLocal) continue;
+    const custOrders = ordersByCustomer[custId];
+    if (!custOrders || custOrders.length === 0) continue;
+    custOrders.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    customerEntries.push({
+      customerId: custId,
+      firstOrderDateLocal: info.firstOrderDateLocal,
+      segment: info.segment,
+      totalSpent: info.totalSpent,
+      firstParents: custOrders[0].parents || [],
+      secondParents: custOrders[1]?.parents || null,
+    });
+  }
+
   return {
     metaAcquiredCustomers: [...metaAcquiredCustomers],
     metaCombos: buildCombos(metaBaskets),
@@ -572,5 +623,7 @@ async function buildAnalysisBlob({ orders, attrByOrderId, metaAcquiredCustomers,
     allJourney: buildJourney(Object.keys(ordersByCustomer)),
     dailyBasketStats,
     dailyRefundByProduct,
+    dailyAddonBaskets,
+    customerEntries,
   };
 }
