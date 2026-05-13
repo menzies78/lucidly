@@ -1565,12 +1565,14 @@ export async function runIncrementalSync(shopDomain) {
     console.error(`[IncrementalSync] Breakdown sync failed (non-fatal): ${err.message}`);
   }
 
-  // Enrich today's attributions with demographic data from breakdowns
+  // Enrich any unenriched attribution in the last 7 days. Self-heals when
+  // Meta breakdown data arrives later than hourly insights (typical 1-3h lag) —
+  // yesterday's matches get re-checked on today's cycle.
   setProgress(`incrementalSync:${shopDomain}`, { status: "running", message: "Enriching attribution demographics..." });
   let enrichResult = { enriched: 0 };
   try {
-    const { enrichForDate } = await import("./attributionEnrichment.server.js");
-    enrichResult = await enrichForDate(shopDomain, today);
+    const { enrichRecentUnenriched } = await import("./attributionEnrichment.server.js");
+    enrichResult = await enrichRecentUnenriched(shopDomain, 7);
   } catch (err) {
     console.error(`[IncrementalSync] Demographic enrichment failed (non-fatal): ${err.message}`);
   }

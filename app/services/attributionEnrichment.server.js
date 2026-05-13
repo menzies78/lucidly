@@ -193,3 +193,38 @@ export async function enrichForDate(shopDomain, date) {
   console.log(`[AttrEnrichment] ${date}: ${result.enriched} enriched (${result.exact} exact, ${result.probabilistic} probabilistic)`);
   return result;
 }
+
+/**
+ * Enrich any attribution in the recent window that is still missing demographics.
+ * Self-heals when Meta breakdown data arrives late (typical 1-3h lag vs hourly
+ * insights) — yesterday's matches get re-checked on today's cycle, etc.
+ * Called every hourly cycle from incrementalSync.
+ */
+export async function enrichRecentUnenriched(shopDomain, days = 7) {
+  const windowStart = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+
+  const orders = await db.order.findMany({
+    where: { shopDomain, createdAt: { gte: windowStart } },
+    select: { shopifyOrderId: true },
+  });
+  const orderIds = orders.map(o => o.shopifyOrderId);
+  if (orderIds.length === 0) return { enriched: 0, exact: 0, probabilistic: 0 };
+
+  const attrs = await db.attribution.findMany({
+    where: {
+      shopDomain,
+      confidence: { gt: 0 },
+      metaAdId: { not: null },
+      metaAge: null, // only unenriched
+      shopifyOrderId: { in: orderIds },
+    },
+    select: { id: true, shopifyOrderId: true, metaAdId: true },
+  });
+
+  if (attrs.length === 0) return { enriched: 0, exact: 0, probabilistic: 0 };
+
+  console.log(`[AttrEnrichment] Backfilling ${attrs.length} unenriched attributions in last ${days}d`);
+  const result = await enrichAttributions(attrs, shopDomain);
+  console.log(`[AttrEnrichment] Backfill complete: ${result.enriched} enriched (${result.exact} exact, ${result.probabilistic} probabilistic)`);
+  return result;
+}
