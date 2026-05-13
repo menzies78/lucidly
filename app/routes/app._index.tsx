@@ -550,6 +550,87 @@ export const action = async ({ request }) => {
     });
     return json({ started: true, task: "wipeShop" });
   }
+  // Data-only purge: wipes orders, attribution, meta data, all rollups,
+  // ingest jobs, AI insights - then resets onboarding state and kicks the
+  // orchestrator. Crucially preserves Shop (with metaAccessToken /
+  // metaAdAccountId) and Session (Shopify OAuth) so the merchant doesn't
+  // need to reinstall. Internal-only. Designed for dev iteration where
+  // we want to test the full ingest path against a clean slate without
+  // losing the OAuth handshakes.
+  if (actionType === "purgeData") {
+    if (!isInternalShop(shopDomain)) return json({ success: false, error: "forbidden" });
+    runInBackground(async () => {
+      setProgress(taskId, { status: "running", message: "Purging data tables..." });
+      // Delete in child-first order to satisfy FKs. Mirrors the wipeShop
+      // child-first sequence but skips Shop + Session.
+      const tables = [
+        // Derived / rollup tables first
+        "ingestJob",
+        "dailyAdRollup",
+        "dailyAdDemographicRollup",
+        "dailyCustomerRollup",
+        "dailyProductRollup",
+        "dailyGeoRollup",
+        "shopAnalysisCache",
+        // Source data, child rows before parents
+        "aiInsight",
+        "attribution",
+        "metaCountrySnapshot",
+        "metaSnapshot",
+        "metaChange",
+        "metaEntity",
+        "metaBreakdown",
+        "metaInsight",
+        "orderLineItem",
+        "order",
+        "customer",
+      ];
+      let totalDeleted = 0;
+      for (let i = 0; i < tables.length; i++) {
+        const t = tables[i];
+        setProgress(taskId, { status: "running", message: `Wiping ${t} (${i + 1}/${tables.length})` });
+        try {
+          const r = await db[t].deleteMany({ where: { shopDomain } });
+          totalDeleted += r.count;
+        } catch (err) {
+          console.warn(`[purgeData] Wipe failed for ${t}: ${err.message}`);
+        }
+      }
+      // Reset onboarding + sync state so the orchestrator + dashboard
+      // treat this as a fresh install. Keep metaAccessToken,
+      // metaAdAccountId, shopifyTimezone - those are the OAuth artefacts
+      // we're explicitly preserving.
+      setProgress(taskId, { status: "running", message: "Resetting onboarding state..." });
+      await db.shop.update({
+        where: { shopDomain },
+        data: {
+          onboardingPhase: "ingesting",
+          onboardingCompleted: false,
+          onboardingStartedAt: new Date(),
+          fitTestScore: null,
+          fitTestComputedAt: null,
+          fitTestData: null,
+          lastOrderSync: null,
+          lastMetaSync: null,
+          lastRollupRebuild: null,
+          webhooksRegisteredAt: null,
+          webhooksFirstFiredAt: null,
+          metaValueCalibratedAt: null,
+          metaValueCalibrationSamples: 0,
+          metaValueCalibrationResults: "",
+        },
+      });
+      const { invalidateShop } = await import("../services/queryCache.server.js");
+      invalidateShop(shopDomain);
+      // Kick the orchestrator. startOnboardingIngest is fire-and-forget;
+      // it rebuilds its own admin client from the preserved Session row.
+      setProgress(taskId, { status: "running", message: `Purged ${totalDeleted} rows. Starting fresh ingest...` });
+      const { startOnboardingIngest } = await import("../services/ingestOrchestrator.server.js");
+      await startOnboardingIngest(shopDomain);
+      completeProgress(taskId, { deleted: totalDeleted, ingestStarted: true });
+    });
+    return json({ started: true, task: "purgeData" });
+  }
   if (actionType === "verifyBackup") {
     if (!isInternalShop(shopDomain)) return json({ success: false, error: "forbidden" });
     const backupId = formData.get("backupId");
