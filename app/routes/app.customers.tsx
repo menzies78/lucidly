@@ -105,7 +105,7 @@ export const loader = async ({ request }) => {
     customers, dailyRollups, prevDailyRollups,
     insights, prevInsights, allTimeSpendResult, allTimeSpendByDayResult,
     ageRaw, genderRaw,
-    allMetaCombinedGenderRaw, newMetaCombinedGenderRaw, allCustomerGenderRaw,
+    genderDailyBlob,
     blobs,
     aiCached,
     unmatchedAttrs,
@@ -163,93 +163,16 @@ export const loader = async ({ request }) => {
         _sum: { conversions: true, conversionValue: true, spend: true, impressions: true },
       }),
     )),
-    // All-Meta gender bars - per-attribution rather than Meta's audience-level
-    // breakdown, so we can COALESCE in the name-inferred gender. Meta's
-    // breakdown API only returns rows when audience size clears its privacy
-    // threshold, so historical / small date ranges look empty. Per-attribution
-    // covers every matched order; the inferredGender fallback fills the long
-    // tail. Pivot on Order.createdAt (NOT Attribution.matchedAt - the latter
-    // is when the matcher ran, not when the order happened - see
-    // memory: attribution_matchedat_gotcha.md).
-    time("allMetaCombinedGender", queryCached(
-      `${shopDomain}:attrAllGender:${dateFromStr}:${dateToStr}`, DEFAULT_TTL,
-      () => db.$queryRaw<Array<{ gender: string | null; conversions: bigint | number; revenue: number | null }>>`
-        SELECT CASE
-                 WHEN c.inferredGenderConfidence >= 0.95 AND c.inferredGender IS NOT NULL THEN c.inferredGender
-                 WHEN a.metaGender IS NOT NULL THEN a.metaGender
-                 ELSE c.inferredGender
-               END AS gender,
-               COUNT(*) AS conversions,
-               SUM(a.metaConversionValue) AS revenue
-        FROM Attribution a
-        JOIN "Order" o
-          ON o.shopDomain = a.shopDomain AND o.shopifyOrderId = a.shopifyOrderId
-        JOIN Customer c
-          ON c.shopDomain = o.shopDomain AND c.shopifyCustomerId = o.shopifyCustomerId
-        WHERE a.shopDomain = ${shopDomain}
-          AND a.confidence > 0
-          AND o.createdAt >= ${fromDate}
-          AND o.createdAt <= ${toDate}
-          AND (a.metaGender IS NOT NULL OR c.inferredGender IS NOT NULL)
-        GROUP BY CASE
-                   WHEN c.inferredGenderConfidence >= 0.95 AND c.inferredGender IS NOT NULL THEN c.inferredGender
-                   WHEN a.metaGender IS NOT NULL THEN a.metaGender
-                   ELSE c.inferredGender
-                 END
-      `,
-    )),
-    // New-Meta gender bars - same combined approach scoped to first-order
-    // attributions. Replaces the old findMany() that required metaAge NOT
-    // NULL (which silently dropped most rows on date ranges where Meta's
-    // breakdown enrichment hadn't covered the audience).
-    time("newMetaCombinedGender", queryCached(
-      `${shopDomain}:attrNewGender:${dateFromStr}:${dateToStr}`, DEFAULT_TTL,
-      () => db.$queryRaw<Array<{ gender: string | null; conversions: bigint | number; revenue: number | null }>>`
-        SELECT CASE
-                 WHEN c.inferredGenderConfidence >= 0.95 AND c.inferredGender IS NOT NULL THEN c.inferredGender
-                 WHEN a.metaGender IS NOT NULL THEN a.metaGender
-                 ELSE c.inferredGender
-               END AS gender,
-               COUNT(*) AS conversions,
-               SUM(a.metaConversionValue) AS revenue
-        FROM Attribution a
-        JOIN "Order" o
-          ON o.shopDomain = a.shopDomain AND o.shopifyOrderId = a.shopifyOrderId
-        JOIN Customer c
-          ON c.shopDomain = o.shopDomain AND c.shopifyCustomerId = o.shopifyCustomerId
-        WHERE a.shopDomain = ${shopDomain}
-          AND a.confidence > 0
-          AND a.isNewCustomer = 1
-          AND o.createdAt >= ${fromDate}
-          AND o.createdAt <= ${toDate}
-          AND (a.metaGender IS NOT NULL OR c.inferredGender IS NOT NULL)
-        GROUP BY CASE
-                   WHEN c.inferredGenderConfidence >= 0.95 AND c.inferredGender IS NOT NULL THEN c.inferredGender
-                   WHEN a.metaGender IS NOT NULL THEN a.metaGender
-                   ELSE c.inferredGender
-                 END
-      `,
-    )),
-    // All-Customers gender - every order in range joined to Customer.inferredGender.
-    // Surfaces gender for organic customers, where neither Meta breakdown nor
-    // Attribution has a row. £0 orders excluded to match rollup conventions.
-    time("allCustomerGender", queryCached(
-      `${shopDomain}:allCustGender:${dateFromStr}:${dateToStr}`, DEFAULT_TTL,
-      () => db.$queryRaw<Array<{ gender: string | null; orders: bigint | number; revenue: number | null }>>`
-        SELECT c.inferredGender AS gender,
-               COUNT(*) AS orders,
-               SUM(o.frozenTotalPrice - COALESCE(o.totalRefunded, 0)) AS revenue
-        FROM "Order" o
-        JOIN Customer c
-          ON c.shopDomain = o.shopDomain AND c.shopifyCustomerId = o.shopifyCustomerId
-        WHERE o.shopDomain = ${shopDomain}
-          AND o.createdAt >= ${fromDate}
-          AND o.createdAt <= ${toDate}
-          AND o.frozenTotalPrice > 0
-          AND c.inferredGender IS NOT NULL
-        GROUP BY c.inferredGender
-      `,
-    )),
+    // Customer Demographics gender breakdowns - read from precomputed blob
+    // written by customerRollups.rebuildCustomerGenderDaily after each sync.
+    // The blob stores per-day gender buckets for the 3 tile sources
+    // (all-Meta combined, new-Meta combined, all-customer inferred); we
+    // sum across the date range below. Replaces 3 per-request raw $queryRaw
+    // joins that previously bypassed the rollup architecture.
+    time("genderDailyBlob", db.shopAnalysisCache.findUnique({
+      where: { shopDomain_cacheKey: { shopDomain, cacheKey: "customers:genderDaily" } },
+      select: { payload: true },
+    })),
     time("blobs", queryCached(`${shopDomain}:customersBlobs`, DEFAULT_TTL, loadAnalysisBlobs)),
     time("aiCache", getCachedInsights(shopDomain, "customers", dateFromStr, dateToStr)),
     // Unmatched attribution rows (confidence=0) - Meta conversions the matcher
@@ -600,6 +523,46 @@ export const loader = async ({ request }) => {
     metaBreakdownGenderSpend[label] = (metaBreakdownGenderSpend[label] || 0) + (r._sum?.spend || 0);
     metaBreakdownGenderConversions += (r._sum?.conversions || 0);
   }
+
+  // Materialize the 3 gender arrays out of the precomputed daily blob.
+  // The blob holds per-day buckets for the last 400 days; we sum the
+  // entries falling inside [fromKey..toKey]. Shape matches what the
+  // downstream code expected from the now-removed $queryRaw calls.
+  const genderDay: Record<string, {
+    allMeta: Record<string, { c: number; r: number }>;
+    newMeta: Record<string, { c: number; r: number }>;
+    allCustomer: Record<string, { o: number; r: number }>;
+  }> = (() => {
+    if (!genderDailyBlob?.payload) return {};
+    try { return JSON.parse(genderDailyBlob.payload).days || {}; }
+    catch { return {}; }
+  })();
+  const sumGenderBucket = (kind: "allMeta" | "newMeta" | "allCustomer", valueKey: "c" | "o") => {
+    const totals: Record<string, { count: number; revenue: number }> = {};
+    for (const day in genderDay) {
+      if (day < dateFromStr || day > dateToStr) continue;
+      const sub = (genderDay[day] as any)[kind] || {};
+      for (const g in sub) {
+        const row = sub[g];
+        if (!totals[g]) totals[g] = { count: 0, revenue: 0 };
+        totals[g].count += row[valueKey] || 0;
+        totals[g].revenue += row.r || 0;
+      }
+    }
+    return totals;
+  };
+  const allMetaSum = sumGenderBucket("allMeta", "c");
+  const newMetaSum = sumGenderBucket("newMeta", "c");
+  const allCustomerSum = sumGenderBucket("allCustomer", "o");
+  const allMetaCombinedGenderRaw = Object.entries(allMetaSum).map(([gender, v]) => ({
+    gender: gender === "unknown" ? null : gender, conversions: v.count, revenue: v.revenue,
+  }));
+  const newMetaCombinedGenderRaw = Object.entries(newMetaSum).map(([gender, v]) => ({
+    gender: gender === "unknown" ? null : gender, conversions: v.count, revenue: v.revenue,
+  }));
+  const allCustomerGenderRaw = Object.entries(allCustomerSum).map(([gender, v]) => ({
+    gender: gender === "unknown" ? null : gender, orders: v.count, revenue: v.revenue,
+  }));
 
   // genderBreakdown (All Meta) - now per-attribution + COALESCE so it
   // populates whenever there are matched orders, not just when Meta's

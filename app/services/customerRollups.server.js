@@ -1095,6 +1095,157 @@ export async function rebuildCustomerSegments(shopDomain) {
 }
 
 // ═══════════════════════════════════════════════════════════════
+// rebuildCustomerGenderDaily - daily gender buckets for the
+// Customer Demographics tiles. Replaces 3 per-request $queryRaw
+// scans in app.customers.tsx (lines 174-252) that joined
+// Attribution + Order + Customer at request time.
+//
+// Blob: ShopAnalysisCache cacheKey = "customers:genderDaily"
+//   {
+//     days: {
+//       "YYYY-MM-DD": {
+//         allMeta:     { <gender>: { c, r } },   // conversions, sum(metaConversionValue)
+//         newMeta:     { <gender>: { c, r } },   // same shape, isNewCustomer subset
+//         allCustomer: { <gender>: { o, r } },   // orders, sum(net rev)
+//       }
+//     },
+//     computedAt: ISO
+//   }
+// Loader: filter days in [fromKey..toKey], sum per gender, render.
+//
+// Lookback: 400 days. Customers page date pickers don't exceed 1y.
+// ═══════════════════════════════════════════════════════════════
+const GENDER_LOOKBACK_DAYS = 400;
+
+export async function rebuildCustomerGenderDaily(shopDomain) {
+  const t0 = Date.now();
+
+  const shopRow = await db.shop.findUnique({
+    where: { shopDomain },
+    select: { shopifyTimezone: true },
+  });
+  const tz = shopRow?.shopifyTimezone || "UTC";
+
+  const lookbackStart = new Date(Date.now() - GENDER_LOOKBACK_DAYS * DAY_MS);
+
+  // ── Source rows ──
+  // 1. Matched attributions + their order + customer.inferredGender. We
+  //    bucket by Order.createdAt in shop-local time (NOT matchedAt - see
+  //    attribution_matchedat_gotcha memory).
+  // 2. All orders + their customer.inferredGender, frozenTotalPrice>0,
+  //    inferredGender NOT NULL (matches the existing All-Customers query).
+  const [attrRows, orderRows] = await Promise.all([
+    db.$queryRaw`
+      SELECT o.createdAt AS createdAt,
+             a.metaGender AS metaGender,
+             c.inferredGender AS inferredGender,
+             c.inferredGenderConfidence AS inferredGenderConfidence,
+             a.metaConversionValue AS metaConversionValue,
+             a.isNewCustomer AS isNewCustomer
+      FROM Attribution a
+      JOIN "Order" o
+        ON o.shopDomain = a.shopDomain AND o.shopifyOrderId = a.shopifyOrderId
+      JOIN Customer c
+        ON c.shopDomain = o.shopDomain AND c.shopifyCustomerId = o.shopifyCustomerId
+      WHERE a.shopDomain = ${shopDomain}
+        AND a.confidence > 0
+        AND o.createdAt >= ${lookbackStart}
+        AND (a.metaGender IS NOT NULL OR c.inferredGender IS NOT NULL)
+    `,
+    db.$queryRaw`
+      SELECT o.createdAt AS createdAt,
+             c.inferredGender AS inferredGender,
+             o.frozenTotalPrice AS frozenTotalPrice,
+             o.totalRefunded AS totalRefunded
+      FROM "Order" o
+      JOIN Customer c
+        ON c.shopDomain = o.shopDomain AND c.shopifyCustomerId = o.shopifyCustomerId
+      WHERE o.shopDomain = ${shopDomain}
+        AND o.createdAt >= ${lookbackStart}
+        AND o.frozenTotalPrice > 0
+        AND c.inferredGender IS NOT NULL
+    `,
+  ]);
+
+  // ── Bucket per day ──
+  const days = Object.create(null);
+  const ensureDay = (key) => {
+    let d = days[key];
+    if (!d) {
+      d = days[key] = { allMeta: {}, newMeta: {}, allCustomer: {} };
+    }
+    return d;
+  };
+  const bump = (bucket, gender, kind, valueKey, value) => {
+    const g = gender || "unknown";
+    let row = bucket[g];
+    if (!row) row = bucket[g] = { c: 0, r: 0, o: 0 };
+    row[kind] = (row[kind] || 0) + 1;
+    row[valueKey] = (row[valueKey] || 0) + value;
+  };
+
+  // Attribution rows → allMeta + newMeta (combined-gender via resolveGender)
+  for (const a of attrRows) {
+    const day = shopLocalDayKey(tz, a.createdAt);
+    if (!day) continue;
+    const gender = resolveGender(
+      a.metaGender || null,
+      a.inferredGender || null,
+      a.inferredGenderConfidence ?? null,
+    );
+    // The existing query's WHERE clause requires at least one of metaGender
+    // or inferredGender to be present, but resolveGender can still return
+    // null if neither resolves. Drop those - matches existing UI filter.
+    if (!gender) continue;
+    const bucket = ensureDay(day);
+    const rev = Number(a.metaConversionValue) || 0;
+    bump(bucket.allMeta, gender, "c", "r", rev);
+    if (a.isNewCustomer === 1 || a.isNewCustomer === true) {
+      bump(bucket.newMeta, gender, "c", "r", rev);
+    }
+  }
+
+  // Order rows → allCustomer (raw inferredGender, no combination - matches
+  // existing query, which uses c.inferredGender directly)
+  for (const o of orderRows) {
+    const day = shopLocalDayKey(tz, o.createdAt);
+    if (!day) continue;
+    const gender = o.inferredGender;
+    if (!gender) continue;
+    const bucket = ensureDay(day);
+    const rev = (o.frozenTotalPrice || 0) - (o.totalRefunded || 0);
+    bump(bucket.allCustomer, gender, "o", "r", rev);
+  }
+
+  // Round revenue to 2dp on the way out to shrink blob size.
+  for (const day in days) {
+    for (const kind of ["allMeta", "newMeta", "allCustomer"]) {
+      const sub = days[day][kind];
+      for (const g in sub) {
+        sub[g].r = r2(sub[g].r);
+      }
+    }
+  }
+
+  const blob = {
+    days,
+    lookbackDays: GENDER_LOOKBACK_DAYS,
+    computedAt: new Date().toISOString(),
+  };
+
+  await db.shopAnalysisCache.upsert({
+    where: { shopDomain_cacheKey: { shopDomain, cacheKey: "customers:genderDaily" } },
+    create: { shopDomain, cacheKey: "customers:genderDaily", payload: JSON.stringify(blob) },
+    update: { payload: JSON.stringify(blob), computedAt: new Date() },
+  });
+
+  console.log(
+    `[customerRollups] gender daily: ${Object.keys(days).length} days, attrRows=${attrRows.length}, orderRows=${orderRows.length} in ${Date.now() - t0}ms`,
+  );
+  return { days: Object.keys(days).length, ms: Date.now() - t0 };
+}
+
+// ═══════════════════════════════════════════════════════════════
 // rebuildCustomerRollups - daily per-segment aggregates
 // ═══════════════════════════════════════════════════════════════
 

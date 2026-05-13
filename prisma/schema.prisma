@@ -522,10 +522,66 @@ model DailyAdRollup {
   existingCustomerRevenue Float  @default(0)
   // Unverified (confidence=0 placeholder attributions)
   unverifiedRevenue     Float    @default(0)
+  unverifiedOrders      Int      @default(0)
   utmOnlyOrders         Int      @default(0)
   utmOnlyRevenue        Float    @default(0)
 
   @@unique([shopDomain, date, adId])
+  @@index([shopDomain, date])
+}
+
+/// Per-day per-country rollup powering the Geo report.
+/// Rows at level="overall" (entityId="") carry the country-only totals plus
+/// Shopify-side counts; rows at level="campaign"|"adset"|"ad" carry the same
+/// per-country Meta+attribution slice scoped to one entity so the loader can
+/// reconstruct "country share within entity" without re-aggregating raw
+/// MetaBreakdown + Order + Attribution. Rebuilt at the end of every
+/// incremental sync, identical staleness contract to DailyAdRollup.
+model DailyGeoRollup {
+  id                       Int      @id @default(autoincrement())
+  shopDomain               String
+  date                     DateTime
+  level                    String   // "overall" | "campaign" | "adset" | "ad"
+  entityId                 String   // "" for overall
+  country                  String
+  // Entity denorm (null/empty above the relevant level)
+  entityName               String?
+  campaignId               String?
+  campaignName             String?
+  adSetId                  String?
+  adSetName                String?
+  // Meta breakdown sums (shop-local-day aggregated)
+  spend                    Float    @default(0)
+  impressions              Int      @default(0)
+  clicks                   Int      @default(0)
+  reach                    Int      @default(0)
+  metaConversions          Int      @default(0)
+  metaConversionValue      Float    @default(0)
+  linkClicks               Int      @default(0)
+  landingPageViews         Int      @default(0)
+  // Matched attribution sums (confidence>0, this country)
+  attributedOrders         Int      @default(0)
+  attributedRevenue        Float    @default(0)
+  newCustomerOrders        Int      @default(0)
+  newCustomerRevenue       Float    @default(0)
+  existingCustomerOrders   Int      @default(0)
+  existingCustomerRevenue  Float    @default(0)
+  // Set-of-new-customer-ids JSON-encoded; loader merges across the range for
+  // unique-new-customer counts (per-day uniqueness is not enough for windows).
+  newCustomerIdsJson       String   @default("[]")
+  // UTM-only orders (utmConfirmedMeta && !matched-by-Layer-2)
+  utmOnlyOrders            Int      @default(0)
+  utmOnlyRevenue           Float    @default(0)
+  utmOnlyNewOrders         Int      @default(0)
+  utmOnlyNewRevenue        Float    @default(0)
+  utmOnlyNewCustomerIdsJson String  @default("[]")
+  // Unverified revenue redistributed by entity-country conversion share
+  unverifiedRevenue        Float    @default(0)
+  // Shopify-side totals (level="overall" only — zero on entity rows)
+  shopifyOrders            Int      @default(0)
+  shopifyRevenue           Float    @default(0)
+
+  @@unique([shopDomain, date, level, entityId, country])
   @@index([shopDomain, date])
 }
 

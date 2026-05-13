@@ -110,11 +110,15 @@ export const loader = async ({ request }) => {
       where: { shopDomain, isOnlineStore: true, createdAt: { gte: prevMonday, lte: prevSunday } },
       select: { shopifyOrderId: true, shopifyCustomerId: true, frozenTotalPrice: true, createdAt: true, country: true, countryCode: true, lineItems: true, utmConfirmedMeta: true, metaAdId: true, metaAdName: true, metaCampaignName: true, metaAdSetName: true, customerOrderCountAtPurchase: true },
     })),
-    queryCached(cacheKey("insights"), DEFAULT_TTL, () => db.metaInsight.findMany({
+    // DailyAdRollup is rebuilt at end of every incremental sync. Per-day
+    // spend by ad is already pre-summed there, so we avoid scanning the raw
+    // hourly MetaInsight table (the largest table in the DB) on every Weekly
+    // Report load. Same column set as the legacy select.
+    queryCached(cacheKey("insights"), DEFAULT_TTL, () => db.dailyAdRollup.findMany({
       where: { shopDomain, date: { gte: monday, lte: sunday } },
       select: { date: true, spend: true, adId: true, adName: true, campaignName: true, adSetName: true },
     })),
-    queryCached(cacheKey("prevInsights"), DEFAULT_TTL, () => db.metaInsight.findMany({
+    queryCached(cacheKey("prevInsights"), DEFAULT_TTL, () => db.dailyAdRollup.findMany({
       where: { shopDomain, date: { gte: prevMonday, lte: prevSunday } },
       select: { date: true, spend: true, adId: true, adName: true, campaignName: true, adSetName: true },
     })),

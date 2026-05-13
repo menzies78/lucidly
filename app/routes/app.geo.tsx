@@ -13,7 +13,6 @@ import { authenticate } from "../shopify.server";
 import db from "../db.server";
 import { parseDateRange } from "../utils/dateRange.server";
 import { currencySymbolFromCode } from "../utils/currency";
-import { cached as queryCached } from "../services/queryCache.server";
 import { getCachedInsights, computeDataHash, generateInsights } from "../services/aiAnalysis.server";
 import { setProgress, failProgress, completeProgress } from "../services/progress.server";
 import AiInsightsPanel from "../components/AiInsightsPanel";
@@ -32,44 +31,16 @@ export const loader = async ({ request }) => {
 
   const tz = shop?.shopifyTimezone || "UTC";
   const { fromDate, toDate, fromKey, toKey, preset } = parseDateRange(request, tz);
-  const { DEFAULT_TTL } = await import("../services/queryCache.server");
 
-  // ── All queries in parallel, with caching ──
-  const [breakdownData, ordersInRange] = await Promise.all([
-    queryCached(`${shopDomain}:geoBreakdown:${fromKey}:${toKey}`, DEFAULT_TTL, () =>
-      db.metaBreakdown.findMany({
-        where: { shopDomain, breakdownType: "country", date: { gte: fromDate, lte: toDate } },
-      }),
-    ),
-    queryCached(`${shopDomain}:geoOrders:${fromKey}:${toKey}`, DEFAULT_TTL, () =>
-      db.order.findMany({
-        where: { shopDomain, isOnlineStore: true, createdAt: { gte: fromDate, lte: toDate } },
-      }),
-    ),
-  ]);
-  const orderIdsForAttr = ordersInRange.map(o => o.shopifyOrderId);
-  const attributions = await queryCached(`${shopDomain}:geoAttrs:${fromKey}:${toKey}`, DEFAULT_TTL, () =>
-    db.attribution.findMany({
-      where: {
-        shopDomain,
-        OR: [
-          { shopifyOrderId: { in: orderIdsForAttr } },
-          { confidence: 0, matchedAt: { gte: fromDate, lte: toDate } },
-        ],
-      },
-    }),
-  );
-  const allOrders = ordersInRange;
-  const orderIdsInRange = new Set(ordersInRange.map(o => o.shopifyOrderId));
-  const attrsInRange = attributions.filter(a => {
-    if (a.confidence > 0) return orderIdsInRange.has(a.shopifyOrderId);
-    const match = a.shopifyOrderId.match(/(\d{4}-\d{2}-\d{2})/);
-    if (!match) return false;
-    return match[1] >= fromKey && match[1] <= toKey;
+  // ── DailyGeoRollup is rebuilt at the end of every incremental sync. The
+  // loader simply scans the window-of-interest and sums in JS. No raw
+  // MetaBreakdown/Order/Attribution scans, no orderLineItem×customer joins.
+  // Customer-map and top-products are pre-computed ShopAnalysisCache blobs
+  // (all-time, page-level date filter intentionally doesn't apply per the
+  // existing UX). ──
+  const geoRows = await db.dailyGeoRollup.findMany({
+    where: { shopDomain, date: { gte: fromDate, lte: toDate } },
   });
-
-  const orderMap: Record<string, any> = {};
-  for (const o of allOrders) orderMap[o.shopifyOrderId] = o;
 
   const r2 = (v: number) => Math.round(v * 100) / 100;
 
@@ -98,26 +69,14 @@ export const loader = async ({ request }) => {
     unverifiedRevenue: 0,
   });
 
-  // Track unique new customers per country (overall) and per entity-country combo
+  // Track unique new customers per country (overall) and per entity-country combo.
+  // Sets are unioned across daily rollup rows from newCustomerIdsJson so that a
+  // customer placing two new-orders in the window counts once.
   const newCustByCountry: Record<string, Set<string>> = {};
   const newCustByEntityCountry: Record<string, Set<string>> = {};
 
   // ── Overall country aggregation (Meta side) ──
   const overallByCountry: Record<string, GeoAgg> = {};
-
-  for (const bd of breakdownData) {
-    const cc = bd.breakdownValue;
-    if (!overallByCountry[cc]) overallByCountry[cc] = makeAgg(cc);
-    const row = overallByCountry[cc];
-    row.spend += bd.spend;
-    row.impressions += bd.impressions;
-    row.clicks += bd.clicks;
-    row.reach += bd.reach;
-    row.metaConversions += bd.conversions;
-    row.metaConversionValue += bd.conversionValue;
-    row.linkClicks += bd.linkClicks;
-    row.landingPageViews += bd.landingPageViews;
-  }
 
   // ── Per-entity country aggregation (Meta side) ──
   type EntityGeoAgg = GeoAgg & {
@@ -134,231 +93,79 @@ export const loader = async ({ request }) => {
   const makeEntityKey = (level: string, entityId: string, country: string) =>
     `${level}:${entityId}:${country}`;
 
-  for (const bd of breakdownData) {
-    const cc = bd.breakdownValue;
-
-    // Campaign level
-    const ck = makeEntityKey("campaign", bd.campaignId, cc);
-    if (!entityGeo[ck]) {
-      entityGeo[ck] = {
-        ...makeAgg(cc),
-        entityId: bd.campaignId,
-        entityName: bd.campaignName || bd.campaignId,
-      };
-    }
-    const cr = entityGeo[ck];
-    cr.spend += bd.spend; cr.impressions += bd.impressions; cr.clicks += bd.clicks;
-    cr.reach += bd.reach; cr.metaConversions += bd.conversions;
-    cr.metaConversionValue += bd.conversionValue;
-    cr.linkClicks += bd.linkClicks; cr.landingPageViews += bd.landingPageViews;
-
-    // Ad Set level
-    if (bd.adSetId) {
-      const ak = makeEntityKey("adset", bd.adSetId, cc);
-      if (!entityGeo[ak]) {
-        entityGeo[ak] = {
-          ...makeAgg(cc),
-          entityId: bd.adSetId,
-          entityName: bd.adSetName || bd.adSetId,
-          campaignId: bd.campaignId,
-          campaignName: bd.campaignName || bd.campaignId,
-        };
-      }
-      const ar = entityGeo[ak];
-      ar.spend += bd.spend; ar.impressions += bd.impressions; ar.clicks += bd.clicks;
-      ar.reach += bd.reach; ar.metaConversions += bd.conversions;
-      ar.metaConversionValue += bd.conversionValue;
-      ar.linkClicks += bd.linkClicks; ar.landingPageViews += bd.landingPageViews;
-    }
-
-    // Ad level
-    if (bd.adId) {
-      const dk = makeEntityKey("ad", bd.adId, cc);
-      if (!entityGeo[dk]) {
-        entityGeo[dk] = {
-          ...makeAgg(cc),
-          entityId: bd.adId,
-          entityName: bd.adName || bd.adId,
-          campaignId: bd.campaignId,
-          campaignName: bd.campaignName || bd.campaignId,
-          adSetId: bd.adSetId || undefined,
-          adSetName: bd.adSetName || bd.adSetId || undefined,
-        };
-      }
-      const dr = entityGeo[dk];
-      dr.spend += bd.spend; dr.impressions += bd.impressions; dr.clicks += bd.clicks;
-      dr.reach += bd.reach; dr.metaConversions += bd.conversions;
-      dr.metaConversionValue += bd.conversionValue;
-      dr.linkClicks += bd.linkClicks; dr.landingPageViews += bd.landingPageViews;
-    }
-  }
-
-  // ── Revenue by country (from Shopify order billing address + attribution) ──
-  const matchedAttrs = attrsInRange.filter(a => a.confidence > 0);
-  const unmatchedAttrs = attrsInRange.filter(a => a.confidence === 0);
-
-  for (const attr of matchedAttrs) {
-    const order = orderMap[attr.shopifyOrderId];
-    if (!order) continue;
-    const gross = order.frozenTotalPrice || 0;
-    if (gross === 0) continue; // Skip £0 orders from geo metrics
-    // Net of refunds for revenue aggregates; clamp for over-refund edge.
-    const rev = Math.max(0, gross - (order.totalRefunded || 0));
-    const cc = order.countryCode || "XX";
-    const custId = order.shopifyCustomerId || null;
-
-    if (!overallByCountry[cc]) overallByCountry[cc] = makeAgg(cc);
-    overallByCountry[cc].attributedOrders++;
-    overallByCountry[cc].attributedRevenue += rev;
-    if (attr.isNewCustomer) {
-      overallByCountry[cc].newCustomerOrders++;
-      overallByCountry[cc].newCustomerRevenue += rev;
-      if (custId) {
-        if (!newCustByCountry[cc]) newCustByCountry[cc] = new Set();
-        newCustByCountry[cc].add(custId);
-      }
+  // ── Sum daily rollup rows into the same overallByCountry/entityGeo maps the
+  // legacy aggregation block produced. Net effect: identical downstream shape,
+  // but the per-day partial-sums come pre-baked from the rollup rather than
+  // re-computed from raw MetaBreakdown + Order + Attribution every page load. ──
+  for (const r of geoRows) {
+    const cc = r.country;
+    if (r.level === "overall") {
+      if (!overallByCountry[cc]) overallByCountry[cc] = makeAgg(cc);
+      const row = overallByCountry[cc];
+      row.spend += r.spend;
+      row.impressions += r.impressions;
+      row.clicks += r.clicks;
+      row.reach += r.reach;
+      row.metaConversions += r.metaConversions;
+      row.metaConversionValue += r.metaConversionValue;
+      row.linkClicks += r.linkClicks;
+      row.landingPageViews += r.landingPageViews;
+      row.attributedOrders += r.attributedOrders;
+      row.attributedRevenue += r.attributedRevenue;
+      row.newCustomerOrders += r.newCustomerOrders;
+      row.newCustomerRevenue += r.newCustomerRevenue;
+      row.existingCustomerOrders += r.existingCustomerOrders;
+      row.existingCustomerRevenue += r.existingCustomerRevenue;
+      row.unverifiedRevenue += r.unverifiedRevenue;
+      try {
+        const ids: string[] = JSON.parse(r.newCustomerIdsJson || "[]");
+        if (ids.length) {
+          if (!newCustByCountry[cc]) newCustByCountry[cc] = new Set();
+          for (const id of ids) newCustByCountry[cc].add(id);
+        }
+      } catch { /* ignore malformed JSON */ }
     } else {
-      overallByCountry[cc].existingCustomerOrders++;
-      overallByCountry[cc].existingCustomerRevenue += rev;
-    }
-
-    for (const level of ["campaign", "adset", "ad"]) {
-      const entityId = level === "campaign" ? attr.metaCampaignId
-        : level === "adset" ? attr.metaAdSetId
-        : attr.metaAdId;
-      if (!entityId) continue;
-      const ek = makeEntityKey(level, entityId, cc);
+      const ek = makeEntityKey(r.level, r.entityId, cc);
       if (!entityGeo[ek]) {
         entityGeo[ek] = {
           ...makeAgg(cc),
-          entityId,
-          entityName: level === "campaign" ? (attr.metaCampaignName || entityId)
-            : level === "adset" ? (attr.metaAdSetName || entityId)
-            : (attr.metaAdName || entityId),
-          campaignId: attr.metaCampaignId || undefined,
-          campaignName: attr.metaCampaignName || undefined,
-          adSetId: attr.metaAdSetId || undefined,
-          adSetName: attr.metaAdSetName || undefined,
+          entityId: r.entityId,
+          entityName: r.entityName || r.entityId,
+          campaignId: r.campaignId || undefined,
+          campaignName: r.campaignName || undefined,
+          adSetId: r.adSetId || undefined,
+          adSetName: r.adSetName || undefined,
         };
       }
-      const er = entityGeo[ek];
-      er.attributedOrders++;
-      er.attributedRevenue += rev;
-      if (attr.isNewCustomer) {
-        er.newCustomerOrders++;
-        er.newCustomerRevenue += rev;
-        if (custId) {
+      const row = entityGeo[ek];
+      // Refresh denorm names from most-recent row (most-recent wins)
+      if (r.entityName) row.entityName = r.entityName;
+      if (r.campaignId) row.campaignId = r.campaignId;
+      if (r.campaignName) row.campaignName = r.campaignName;
+      if (r.adSetId) row.adSetId = r.adSetId;
+      if (r.adSetName) row.adSetName = r.adSetName;
+      row.spend += r.spend;
+      row.impressions += r.impressions;
+      row.clicks += r.clicks;
+      row.reach += r.reach;
+      row.metaConversions += r.metaConversions;
+      row.metaConversionValue += r.metaConversionValue;
+      row.linkClicks += r.linkClicks;
+      row.landingPageViews += r.landingPageViews;
+      row.attributedOrders += r.attributedOrders;
+      row.attributedRevenue += r.attributedRevenue;
+      row.newCustomerOrders += r.newCustomerOrders;
+      row.newCustomerRevenue += r.newCustomerRevenue;
+      row.existingCustomerOrders += r.existingCustomerOrders;
+      row.existingCustomerRevenue += r.existingCustomerRevenue;
+      row.unverifiedRevenue += r.unverifiedRevenue;
+      try {
+        const ids: string[] = JSON.parse(r.newCustomerIdsJson || "[]");
+        if (ids.length) {
           if (!newCustByEntityCountry[ek]) newCustByEntityCountry[ek] = new Set();
-          newCustByEntityCountry[ek].add(custId);
+          for (const id of ids) newCustByEntityCountry[ek].add(id);
         }
-      } else {
-        er.existingCustomerOrders++;
-        er.existingCustomerRevenue += rev;
-      }
-    }
-  }
-
-  // UTM-only orders: utmConfirmedMeta=true but no Layer 2 match
-  const matchedOrderIdSet = new Set(matchedAttrs.map(a => a.shopifyOrderId));
-  for (const order of ordersInRange) {
-    if (!order.utmConfirmedMeta) continue;
-    if (matchedOrderIdSet.has(order.shopifyOrderId)) continue;
-    const gross = order.frozenTotalPrice || 0;
-    if (gross === 0) continue; // Same £0 exclusion as matched orders
-    // Net of refunds for revenue aggregates; clamp for over-refund edge.
-    const rev = Math.max(0, gross - (order.totalRefunded || 0));
-    const cc = order.countryCode || "XX";
-    const custId = order.shopifyCustomerId || null;
-
-    if (!overallByCountry[cc]) overallByCountry[cc] = makeAgg(cc);
-    overallByCountry[cc].attributedOrders++;
-    overallByCountry[cc].attributedRevenue += rev;
-    if (order.isNewCustomerOrder) {
-      overallByCountry[cc].newCustomerOrders++;
-      overallByCountry[cc].newCustomerRevenue += rev;
-      if (custId) {
-        if (!newCustByCountry[cc]) newCustByCountry[cc] = new Set();
-        newCustByCountry[cc].add(custId);
-      }
-    } else {
-      overallByCountry[cc].existingCustomerOrders++;
-      overallByCountry[cc].existingCustomerRevenue += rev;
-    }
-
-    for (const level of ["campaign", "adset", "ad"]) {
-      const entityId = level === "campaign" ? order.metaCampaignId
-        : level === "adset" ? order.metaAdSetId
-        : order.metaAdId;
-      if (!entityId) continue;
-      const ek = makeEntityKey(level, entityId, cc);
-      if (!entityGeo[ek]) {
-        entityGeo[ek] = {
-          ...makeAgg(cc),
-          entityId,
-          entityName: level === "campaign" ? (order.metaCampaignName || entityId)
-            : level === "adset" ? (order.metaAdSetName || entityId)
-            : (order.metaAdName || entityId),
-          campaignId: order.metaCampaignId || undefined,
-          campaignName: order.metaCampaignName || undefined,
-          adSetId: order.metaAdSetId || undefined,
-          adSetName: order.metaAdSetName || undefined,
-        };
-      }
-      const er = entityGeo[ek];
-      er.attributedOrders++;
-      er.attributedRevenue += rev;
-      if (order.isNewCustomerOrder) {
-        er.newCustomerOrders++;
-        er.newCustomerRevenue += rev;
-        if (custId) {
-          if (!newCustByEntityCountry[ek]) newCustByEntityCountry[ek] = new Set();
-          newCustByEntityCountry[ek].add(custId);
-        }
-      } else {
-        er.existingCustomerOrders++;
-        er.existingCustomerRevenue += rev;
-      }
-    }
-  }
-
-  // Unmatched: distribute by country proportionally based on Meta conversion data
-  for (const attr of unmatchedAttrs) {
-    const val = attr.metaConversionValue || 0;
-    if (val === 0) continue;
-
-    for (const level of ["campaign", "adset", "ad"]) {
-      const entityId = level === "campaign" ? attr.metaCampaignId
-        : level === "adset" ? attr.metaAdSetId
-        : attr.metaAdId;
-      if (!entityId) continue;
-
-      const entityBreakdowns = breakdownData.filter(bd => {
-        if (level === "campaign") return bd.campaignId === entityId;
-        if (level === "adset") return bd.adSetId === entityId;
-        return bd.adId === entityId;
-      });
-
-      const countryConv: Record<string, number> = {};
-      let totalConv = 0;
-      for (const bd of entityBreakdowns) {
-        countryConv[bd.breakdownValue] = (countryConv[bd.breakdownValue] || 0) + bd.conversions;
-        totalConv += bd.conversions;
-      }
-
-      if (totalConv === 0) continue;
-
-      for (const [cc, conv] of Object.entries(countryConv)) {
-        const weight = conv / totalConv;
-        const ek = makeEntityKey(level, entityId, cc);
-        if (entityGeo[ek]) {
-          entityGeo[ek].unverifiedRevenue += val * weight;
-        }
-
-        if (level === "campaign") {
-          if (!overallByCountry[cc]) overallByCountry[cc] = makeAgg(cc);
-          overallByCountry[cc].unverifiedRevenue += val * weight;
-        }
-      }
+      } catch { /* ignore malformed JSON */ }
     }
   }
 
@@ -476,131 +283,34 @@ export const loader = async ({ request }) => {
   const adEntities = buildEntityLevel("ad");
 
   // ── All Shopify orders by country (for map "All Customers" scope) ──
+  // Sum the per-day overall rollup rows. These are date-range scoped so the
+  // page-level date selector applies here (unlike the topProductsByCountry
+  // and customerMapBlob, which are all-time by design).
   const shopifyByCountry: Record<string, { orders: number; revenue: number }> = {};
-  for (const o of ordersInRange) {
-    const cc = o.countryCode;
+  for (const r of geoRows) {
+    if (r.level !== "overall") continue;
+    const cc = r.country;
     if (!cc) continue;
     if (!shopifyByCountry[cc]) shopifyByCountry[cc] = { orders: 0, revenue: 0 };
-    shopifyByCountry[cc].orders++;
-    shopifyByCountry[cc].revenue += (o.frozenTotalPrice || 0) - (o.totalRefunded || 0);
+    shopifyByCountry[cc].orders += r.shopifyOrders;
+    shopifyByCountry[cc].revenue += r.shopifyRevenue;
   }
 
-  // ── Top Products per Country ──
-  // Cross-tab of (countryCode × parent product title × segment × gender),
-  // limited to 8 products per country. Client filters live without going
-  // back to the loader. Aggregating to the parent-product level (via
-  // toParentProduct) collapses Vollebak's "Foo." / "Foo" duplicate listings
-  // and Acid Wash colour variants - same logic productRollups uses.
-  const { toParentProduct } = await import("../services/productRollups.server.js");
-
-  const orderIdsList = ordersInRange.map(o => o.shopifyOrderId);
-  const customerIdsList = [...new Set(ordersInRange.map(o => o.shopifyCustomerId).filter(Boolean) as string[])];
-
-  const [lineItems, customers] = await Promise.all([
-    queryCached(`${shopDomain}:geoLineItems:${fromKey}:${toKey}`, DEFAULT_TTL, () =>
-      db.orderLineItem.findMany({
-        where: { shopDomain, shopifyOrderId: { in: orderIdsList } },
-        select: { shopifyOrderId: true, title: true, quantity: true, totalPrice: true, refundedQuantity: true, refundedAmount: true },
-      })
-    ),
-    queryCached(`${shopDomain}:geoCustomers:${fromKey}:${toKey}`, DEFAULT_TTL, () =>
-      db.customer.findMany({
-        where: { shopDomain, shopifyCustomerId: { in: customerIdsList } },
-        select: { shopifyCustomerId: true, metaSegment: true, inferredGender: true, inferredGenderConfidence: true },
-      })
-    ),
-  ]);
-
-  const custBySid: Record<string, { seg: string | null; g: string | null; gc: number | null }> = {};
-  for (const c of customers) {
-    custBySid[c.shopifyCustomerId] = {
-      seg: c.metaSegment,
-      g: c.inferredGender, // "male" | "female" | null
-      gc: (c as any).inferredGenderConfidence ?? null,
-    };
-  }
-
-  // Attribution metaGender - Meta's audience signal. Sparse, and now
-  // outranked by high-confidence (>=0.95) name inference per the
-  // unified gender precedence (resolveGender). Resolution happens
-  // inline below where the cell key is built.
-  const attrGenderById: Record<string, string> = {};
-  for (const a of attributions) {
-    if ((a as any).metaGender && (a as any).metaGender !== "unknown") {
-      attrGenderById[a.shopifyOrderId] = (a as any).metaGender;
-    }
-  }
-
-  type ProductCell = {
-    mn_F: number; mn_M: number; mn_U: number;     // metaNew × gender
-    mr_F: number; mr_M: number; mr_U: number;     // metaRetargeted × gender
-    o_F: number;  o_M: number;  o_U: number;      // organic × gender
-    totalUnits: number; totalRevenue: number;
-  };
-  const emptyCell = (): ProductCell => ({
-    mn_F: 0, mn_M: 0, mn_U: 0, mr_F: 0, mr_M: 0, mr_U: 0, o_F: 0, o_M: 0, o_U: 0,
-    totalUnits: 0, totalRevenue: 0,
+  // ── Top Products per Country (pre-computed all-time blob) ──
+  // Page-level date filter intentionally NOT applied; the tile shows the
+  // merchant's lifetime best sellers per country. See geoRollups.server.js
+  // for the cube definition.
+  const topProductsRow = await db.shopAnalysisCache.findUnique({
+    where: { shopDomain_cacheKey: { shopDomain, cacheKey: "geo:topProducts" } },
+    select: { payload: true },
   });
-
-  const productsByCountry: Record<string, Record<string, ProductCell>> = {};
-
-  for (const li of lineItems) {
-    const ord = orderMap[li.shopifyOrderId];
-    if (!ord) continue;
-    const cc = ord.countryCode;
-    if (!cc) continue;
-
-    const cust = ord.shopifyCustomerId ? custBySid[ord.shopifyCustomerId] : null;
-    const segPrefix = cust?.seg === "metaNew" ? "mn"
-                    : cust?.seg === "metaRetargeted" ? "mr"
-                    : "o";
-
-    // Unified gender precedence: high-conf name inference (>=0.95) beats
-    // Meta's audience signal so the merchant's billing-name sense-check
-    // holds; Meta wins for ambiguous names; low-conf name fills the tail.
-    const metaG = attrGenderById[li.shopifyOrderId];
-    const inferredHighConf = cust?.g && cust?.gc != null && cust.gc >= 0.95 ? cust.g : null;
-    const resolvedG = inferredHighConf || metaG || cust?.g || null;
-    const g = resolvedG === "female" ? "F"
-            : resolvedG === "male" ? "M"
-            : "U";
-
-    const cellKey = `${segPrefix}_${g}` as keyof ProductCell;
-    const title = toParentProduct(li.title);
-    if (!title) continue;
-
-    const netUnits = (li.quantity || 0) - (li.refundedQuantity || 0);
-    if (netUnits <= 0) continue;
-    const netRev = (li.totalPrice || 0) - (li.refundedAmount || 0);
-
-    if (!productsByCountry[cc]) productsByCountry[cc] = {};
-    if (!productsByCountry[cc][title]) productsByCountry[cc][title] = emptyCell();
-
-    const row = productsByCountry[cc][title];
-    (row as any)[cellKey] += netUnits;
-    row.totalUnits += netUnits;
-    row.totalRevenue += netRev;
-  }
-
-  const productImagesMap: Record<string, string> = (() => {
-    try { return shop?.productImagesJson ? JSON.parse(shop.productImagesJson) : {}; } catch { return {}; }
+  const topProductsByCountry = (() => {
+    if (!topProductsRow?.payload) return [];
+    try {
+      const parsed = JSON.parse(topProductsRow.payload);
+      return parsed?.topProductsByCountry || [];
+    } catch { return []; }
   })();
-
-  const topProductsByCountry = Object.entries(productsByCountry)
-    .map(([cc, products]) => {
-      const sorted = Object.entries(products)
-        .map(([title, cell]) => ({
-          title,
-          image: productImagesMap[title] || productImagesMap[toParentProduct(title)] || null,
-          ...cell,
-        }))
-        .sort((a, b) => b.totalUnits - a.totalUnits)
-        .slice(0, 8);
-      const totalCountryUnits = sorted.reduce((s, p) => s + p.totalUnits, 0);
-      return { cc, products: sorted, totalCountryUnits };
-    })
-    .filter(c => c.totalCountryUnits >= 3) // suppress noisy 1-2 order tail
-    .sort((a, b) => b.totalCountryUnits - a.totalCountryUnits);
 
   // ── Customer Map Explorer blob (computed at rollup time) ──
   // The blob is all-time. The tile has its own time-window control (default
@@ -637,7 +347,7 @@ export const loader = async ({ request }) => {
     topProductsByCountry,
     currencySymbol,
     protomapsKey,
-    hasData: breakdownData.length > 0,
+    hasData: overallRows.some(r => r.spend > 0 || r.attributedOrders > 0),
     aiCachedInsights,
     aiGeneratedAt,
     aiIsStale,

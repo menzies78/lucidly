@@ -12,7 +12,6 @@ import { runAttribution, runDateRangeRematch, runFillGaps } from "../services/ma
 import { runIncrementalSync, clearTodayForRematch } from "../services/incrementalSync.server";
 import { setProgress, failProgress, getProgress, completeProgress } from "../services/progress.server";
 import { parseDateRange } from "../utils/dateRange.server";
-import { shopLocalDayKey } from "../utils/shopTime.server";
 import { currencySymbolFromCode } from "../utils/currency";
 import { cached as queryCached } from "../services/queryCache.server";
 import { isInternalShop } from "../utils/access.server";
@@ -45,11 +44,9 @@ export const loader = async ({ request }) => {
   const { fromDate, toDate, fromKey, toKey } = parseDateRange(request, tz);
   const dateFilter = { gte: fromDate, lte: toDate };
 
-  // 30 days ago for health charts (always, independent of date picker)
+  // 7 days ago for "recently stopped campaigns" health alert.
   const now = new Date();
-  const thirtyDaysAgo = new Date(now.getTime() - 30 * 86400000);
   const sevenDaysAgo = new Date(now.getTime() - 7 * 86400000);
-  const oneDayAgo = new Date(now.getTime() - 24 * 3600000);
 
   // Parallel batch 1: all independent DB queries
   const [
@@ -63,8 +60,7 @@ export const loader = async ({ request }) => {
     allAttrs,
     utmOnlyOrders,
     // Health-specific queries
-    liveMetaInsights30d,
-    liveMatchedOrders30d,
+    matchAccuracyBlob,
     recentlyStoppedCampaigns,
     activeCampaignCount,
   ] = await Promise.all([
@@ -103,47 +99,23 @@ export const loader = async ({ request }) => {
       where: { shopDomain, utmConfirmedMeta: true, isOnlineStore: true, createdAt: dateFilter },
       select: { shopifyOrderId: true, frozenTotalPrice: true, totalRefunded: true },
     }),
-    // Match Accuracy chart sources - last 30 days, bucketed by the *day
-    // the conversion / order actually happened*, not by `matchedAt`.
+    // Match Accuracy chart - read from precomputed blob written by
+    // dashboardRollups.server.js after each incremental sync. Blob holds
+    // 90 days of daily {date, matched, total, matchRate} buckets plus
+    // rolling 30d/7d rates. We slice last 30 below.
     //
-    // Why we don't use Attribution.matchedAt:
-    //   matchedAt is "the moment the matcher created/recreated this row".
-    //   Full Re-matches stamp every row with `now`, and unmatched
-    //   placeholders for old conversions get re-emitted on every cycle.
-    //   Bucketing the chart by matchedAt therefore tells you "how busy
-    //   the matcher was on that day", not the actual match rate. We hit
-    //   this on 22/04 (chart said 50%, truth was 100%) and 05/04 (chart
-    //   showed 4,025 rows from a Full Re-match; truth was 4 conversions).
-    //
-    // Authoritative shape:
+    // Authoritative shape (computed in dashboardRollups):
     //   denominator = SUM(MetaInsight.conversions) on day D
     //   numerator   = COUNT(Attribution rows with confidence>0 whose
     //                       Order.createdAt falls on day D, shop-local)
-    db.metaInsight.findMany({
-      where: { shopDomain, date: { gte: thirtyDaysAgo } },
-      select: { date: true, conversions: true },
+    //
+    // We deliberately do NOT bucket Attribution rows by matchedAt - that
+    // field tracks "when the matcher created the row", not the conversion
+    // day, and Full Re-matches would skew the chart heavily.
+    db.shopAnalysisCache.findUnique({
+      where: { shopDomain_cacheKey: { shopDomain, cacheKey: "dashboard:matchAccuracy" } },
+      select: { payload: true },
     }),
-    (async () => {
-      // Order <-> Attribution have no Prisma relation, only a shopifyOrderId
-      // string link. Two-step: pull recent order IDs first, then check which
-      // ones have a confidence>0 Attribution row.
-      const recentOrders = await db.order.findMany({
-        where: { shopDomain, createdAt: { gte: thirtyDaysAgo } },
-        select: { shopifyOrderId: true, createdAt: true },
-      });
-      if (recentOrders.length === 0) return [];
-      const ids = recentOrders.map(o => o.shopifyOrderId);
-      const matched = await db.attribution.findMany({
-        where: {
-          shopDomain,
-          shopifyOrderId: { in: ids },
-          confidence: { gt: 0 },
-        },
-        select: { shopifyOrderId: true },
-      });
-      const matchedSet = new Set(matched.map(a => a.shopifyOrderId));
-      return recentOrders.filter(o => matchedSet.has(o.shopifyOrderId));
-    })(),
     // Campaigns + ad sets that stopped delivering in last 7 days. Ad sets
     // are flagged separately so the merchant sees adset-level pauses even
     // when the parent campaign is still ACTIVE - common case where one
@@ -212,40 +184,37 @@ export const loader = async ({ request }) => {
 
   const isNewInstall = !shop?.lastOrderSync && orderCount === 0;
 
-  // Build 30-day match accuracy chart from authoritative sources.
-  // Denominator = SUM(MetaInsight.conversions) for day D
-  // Numerator   = COUNT(matched orders whose Order.createdAt falls on D, shop-local)
-  // We deliberately DO NOT bucket Attribution rows by matchedAt - that field
-  // tracks "when the matcher created the row", not the conversion day.
-  const metaConvByDay = new Map();
-  for (const r of liveMetaInsights30d) {
-    const day = r.date ? new Date(r.date).toISOString().slice(0, 10) : null;
-    if (!day) continue;
-    metaConvByDay.set(day, (metaConvByDay.get(day) || 0) + (r.conversions || 0));
+  // Slice 30-day window out of the precomputed match-accuracy blob. The
+  // blob stores 90 days so future tile expansions don't force a rebuild.
+  // If the blob hasn't been written yet (fresh install, pre-first-sync),
+  // we render an empty chart - dashboardRollups will populate it on the
+  // first cycle.
+  let matchAccuracyChart: Array<{ date: string; matchRate: number | null; matched: number; total: number }> = [];
+  let matchRate30d: number | null = null;
+  let allMatched30d = 0;
+  let allTotal30d = 0;
+  if (matchAccuracyBlob?.payload) {
+    try {
+      const parsed = JSON.parse(matchAccuracyBlob.payload);
+      const allDays = Array.isArray(parsed.days) ? parsed.days : [];
+      matchAccuracyChart = allDays.slice(Math.max(0, allDays.length - 30));
+      // Prefer the precomputed rate30d if present; otherwise re-derive
+      // from the 30-day slice we just took so old blobs still work.
+      if (typeof parsed.rate30d === "number" || parsed.rate30d === null) {
+        matchRate30d = parsed.rate30d;
+        allMatched30d = parsed.rate30dDetail?.matched || 0;
+        allTotal30d = parsed.rate30dDetail?.total || 0;
+      } else {
+        allMatched30d = matchAccuracyChart.reduce((s, d) => s + d.matched, 0);
+        allTotal30d = matchAccuracyChart.reduce((s, d) => s + d.total, 0);
+        matchRate30d = allTotal30d > 0
+          ? Math.min(100, Math.round((allMatched30d / allTotal30d) * 100))
+          : null;
+      }
+    } catch (err) {
+      console.error(`[app._index] failed to parse matchAccuracyBlob: ${(err as Error).message}`);
+    }
   }
-  const matchedByDay = new Map();
-  for (const o of liveMatchedOrders30d) {
-    if (!o.createdAt) continue;
-    const day = shopLocalDayKey(tz, o.createdAt);
-    if (!day) continue;
-    matchedByDay.set(day, (matchedByDay.get(day) || 0) + 1);
-  }
-  const allDays = new Set([...metaConvByDay.keys(), ...matchedByDay.keys()]);
-  const matchAccuracyChart = Array.from(allDays)
-    .sort((a, b) => a.localeCompare(b))
-    .map(day => {
-      const total = Math.round(metaConvByDay.get(day) || 0);
-      const matched = matchedByDay.get(day) || 0;
-      const matchRate = total > 0
-        ? Math.min(100, Math.round((matched / total) * 100))
-        : null;
-      return { date: day, matchRate, matched, total };
-    });
-
-  // 30-day average match accuracy (headline number)
-  const allMatched30d = matchAccuracyChart.reduce((s, d) => s + d.matched, 0);
-  const allTotal30d = matchAccuracyChart.reduce((s, d) => s + d.total, 0);
-  const matchRate30d = allTotal30d > 0 ? Math.min(100, Math.round((allMatched30d / allTotal30d) * 100)) : null;
 
   // UTM health from shop record
   const utmHealth = {

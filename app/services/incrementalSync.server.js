@@ -90,13 +90,32 @@ async function rebuildAllRollups(shopDomain, { force }) {
       console.error(`[IncrementalSync] Ad demographic rollup rebuild failed (non-fatal): ${err.message}`);
     }
     if (global.gc) global.gc();
+
+    console.log(`[IncrementalSync] Rebuilding geo rollups for ${shopDomain}...`);
+    try {
+      const { rebuildGeoRollups } = await import("./geoRollups.server.js");
+      await rebuildGeoRollups(shopDomain);
+    } catch (err) {
+      console.error(`[IncrementalSync] Geo rollup rebuild failed (non-fatal): ${err.message}`);
+    }
+    if (global.gc) global.gc();
+
+    console.log(`[IncrementalSync] Rebuilding dashboard match accuracy for ${shopDomain}...`);
+    try {
+      const { rebuildMatchAccuracy } = await import("./dashboardRollups.server.js");
+      await rebuildMatchAccuracy(shopDomain);
+    } catch (err) {
+      console.error(`[IncrementalSync] Match accuracy rebuild failed (non-fatal): ${err.message}`);
+    }
+    if (global.gc) global.gc();
   }
 
   console.log(`[IncrementalSync] Rebuilding customer rollups for ${shopDomain}...`);
   try {
-    const { rebuildCustomerSegments, rebuildCustomerRollups } = await import("./customerRollups.server.js");
+    const { rebuildCustomerSegments, rebuildCustomerRollups, rebuildCustomerGenderDaily } = await import("./customerRollups.server.js");
     await rebuildCustomerSegments(shopDomain);
     await rebuildCustomerRollups(shopDomain);
+    await rebuildCustomerGenderDaily(shopDomain);
   } catch (err) {
     console.error(`[IncrementalSync] Customer rollup rebuild failed (non-fatal): ${err.message}`);
   }

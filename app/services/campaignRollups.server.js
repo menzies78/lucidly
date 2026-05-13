@@ -91,6 +91,7 @@ export async function rebuildCampaignRollups(shopDomain) {
         newCustomerOrders: 0, newCustomerRevenue: 0,
         existingCustomerOrders: 0, existingCustomerRevenue: 0,
         unverifiedRevenue: 0,
+        unverifiedOrders: 0,
         utmOnlyOrders: 0,
         utmOnlyRevenue: 0,
       };
@@ -162,6 +163,7 @@ export async function rebuildCampaignRollups(shopDomain) {
       const date = new Date(`${m[1]}T00:00:00.000Z`);
       const b = getBucket(date, a.metaAdId, null);
       b.unverifiedRevenue += a.metaConversionValue || 0;
+      b.unverifiedOrders += 1;
     }
   }
 
@@ -235,6 +237,7 @@ export async function rebuildCampaignRollups(shopDomain) {
     existingCustomerOrders: b.existingCustomerOrders,
     existingCustomerRevenue: b.existingCustomerRevenue,
     unverifiedRevenue: b.unverifiedRevenue,
+    unverifiedOrders: b.unverifiedOrders,
     utmOnlyOrders: b.utmOnlyOrders,
     utmOnlyRevenue: b.utmOnlyRevenue,
   }));
