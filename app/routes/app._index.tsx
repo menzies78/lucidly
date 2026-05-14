@@ -3,7 +3,7 @@ import { useLoaderData, useSubmit, useNavigate, useNavigation, useRevalidator, u
 import { Page, Layout, Card, Text, Button, BlockStack, InlineStack, Banner, ProgressBar, Spinner } from "@shopify/polaris";
 import ReportTabs from "../components/ReportTabs";
 import OnboardingFlow from "../components/OnboardingFlow";
-import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { authenticate, unauthenticated } from "../shopify.server";
 import db from "../db.server";
 import { syncOrders } from "../services/orderSync.server";
@@ -755,7 +755,7 @@ function MatchTile({
         <InlineStack align="space-between" blockAlign="center">
           <Text as="h2" variant="headingLg">{title}</Text>
           <div style={{ display: "inline-flex", gap: "6px" }}>
-            <PillButton active={range === "lifetime"} onClick={() => setRange("lifetime")}>Lifetime</PillButton>
+            <PillButton active={range === "lifetime"} onClick={() => setRange("lifetime")}>2 years</PillButton>
             <PillButton active={range === "30d"} onClick={() => setRange("30d")}>30 days</PillButton>
           </div>
         </InlineStack>
@@ -781,7 +781,7 @@ function MatchTile({
         <MatchAccuracyChart data={slice} accent={accent} metric={metric} />
 
         <Text as="p" variant="bodySm" tone="subdued">
-          {description}{days.length > 60 && range === "lifetime" ? " Chart bucketed weekly for lifetime view." : ""}
+          {description}
         </Text>
       </BlockStack>
     </Card>
@@ -795,34 +795,13 @@ function MatchTile({
 function MatchAccuracyChart({ data, accent, metric }: { data: ChartDay[]; accent: string; metric: "rate" | "confidence" }) {
   const [hoverIdx, setHoverIdx] = useState<number | null>(null);
 
-  // When showing >60 points, bucket into weekly aggregates to keep the
-  // chart readable. Headline rolling totals are computed server-side from
-  // the full daily series, so this is purely a visual smoothing.
-  const bucketed: ChartDay[] = useMemo(() => {
-    if (data.length <= 60) return data;
-    const out: ChartDay[] = [];
-    for (let i = 0; i < data.length; i += 7) {
-      const week = data.slice(i, i + 7);
-      if (week.length === 0) continue;
-      const matched = week.reduce((s, d) => s + d.matched, 0);
-      const total = week.reduce((s, d) => s + d.total, 0);
-      const confSum = week.reduce((s, d) => s + d.confSum, 0);
-      out.push({
-        date: week[0].date,
-        matched,
-        total,
-        confSum,
-        matchRate: total > 0 ? Math.min(100, Math.round((matched / total) * 100)) : null,
-        confAvg: matched > 0 ? Math.round(confSum / matched) : null,
-      });
-    }
-    return out;
-  }, [data]);
-
   const valueOf = (d: ChartDay) => metric === "rate" ? d.matchRate : d.confAvg;
 
-  // Filter to days with data
-  const points = bucketed.filter(d => valueOf(d) !== null);
+  // Daily bars - no bucketing. Days without data are skipped (filtered out
+  // below) so the bar series only shows days where there's something to
+  // measure. With up to ~730 daily points across 600px the bars become a
+  // dense band you can scan for dips at-a-glance.
+  const points = data.filter(d => valueOf(d) !== null);
   if (points.length < 2) {
     return (
       <div style={{ padding: "20px", textAlign: "center", color: "#6B7280" }}>
@@ -843,15 +822,15 @@ function MatchAccuracyChart({ data, accent, metric }: { data: ChartDay[]; accent
   // Y-axis: 0-100%
   const yMin = 0;
   const yMax = 100;
-  const xStep = chartW / (points.length - 1);
 
-  const toX = (i: number) => padL + i * xStep;
+  // Bar layout: each day claims an even slice of chartW. Gap is 15% of
+  // slice width (capped at 1.5px so dense series stay readable).
+  const slotW = chartW / points.length;
+  const gap = Math.min(1.5, slotW * 0.15);
+  const barW = Math.max(0.6, slotW - gap);
+
+  const toX = (i: number) => padL + i * slotW + gap / 2;
   const toY = (v: number) => padT + chartH - ((v - yMin) / (yMax - yMin)) * chartH;
-
-  // Build line path
-  const linePath = points.map((p, i) => `${i === 0 ? "M" : "L"} ${toX(i).toFixed(1)} ${toY(valueOf(p)!).toFixed(1)}`).join(" ");
-  // Area fill
-  const areaPath = `${linePath} L ${toX(points.length - 1).toFixed(1)} ${toY(0).toFixed(1)} L ${toX(0).toFixed(1)} ${toY(0).toFixed(1)} Z`;
 
   // 90% reference line
   const refY = toY(90);
@@ -861,10 +840,8 @@ function MatchAccuracyChart({ data, accent, metric }: { data: ChartDay[]; accent
   const labelStep = Math.max(1, Math.floor((points.length - 1) / (labelCount - 1)));
   const xLabels: { i: number; label: string }[] = [];
   for (let i = 0; i < points.length; i += labelStep) {
-    const d = points[i].date;
-    xLabels.push({ i, label: d.slice(5) }); // MM-DD
+    xLabels.push({ i, label: points[i].date.slice(5) }); // MM-DD
   }
-  // Always include last point
   if (xLabels[xLabels.length - 1]?.i !== points.length - 1) {
     xLabels.push({ i: points.length - 1, label: points[points.length - 1].date.slice(5) });
   }
@@ -890,34 +867,31 @@ function MatchAccuracyChart({ data, accent, metric }: { data: ChartDay[]; accent
         <line x1={padL} y1={refY} x2={W - padR} y2={refY} stroke="#10B981" strokeWidth={1} strokeDasharray="4 3" opacity={0.6} />
         <text x={W - padR + 2} y={refY + 3} fontSize="9" fill="#10B981" fontWeight="600">target</text>
 
-        {/* Area fill */}
-        <path d={areaPath} fill={accent} opacity={0.08} />
-
-        {/* Line */}
-        <path d={linePath} fill="none" stroke={accent} strokeWidth={2} strokeLinejoin="round" />
-
-        {/* Data points */}
+        {/* Daily bars */}
         {points.map((p, i) => {
           const v = valueOf(p)!;
+          const y = toY(v);
+          const h = padT + chartH - y;
+          const fill = v >= 90 ? "#10B981" : v >= 70 ? "#F59E0B" : "#EF4444";
           return (
-          <circle
-            key={i}
-            cx={toX(i)}
-            cy={toY(v)}
-            r={hoverIdx === i ? 5 : 3}
-            fill={v >= 90 ? "#10B981" : v >= 70 ? "#F59E0B" : "#EF4444"}
-            stroke="#fff"
-            strokeWidth={1.5}
-            style={{ cursor: "pointer", transition: "r 0.1s" }}
-            onMouseEnter={() => setHoverIdx(i)}
-            onMouseLeave={() => setHoverIdx(null)}
-          />
+            <rect
+              key={i}
+              x={toX(i)}
+              y={y}
+              width={barW}
+              height={Math.max(1, h)}
+              fill={fill}
+              opacity={hoverIdx === i ? 1 : 0.85}
+              style={{ cursor: "pointer", transition: "opacity 0.1s" }}
+              onMouseEnter={() => setHoverIdx(i)}
+              onMouseLeave={() => setHoverIdx(null)}
+            />
           );
         })}
 
         {/* X-axis labels */}
         {xLabels.map(({ i, label }) => (
-          <text key={i} x={toX(i)} y={H - 4} textAnchor="middle" fontSize="10" fill="#9CA3AF">{label}</text>
+          <text key={i} x={toX(i) + barW / 2} y={H - 4} textAnchor="middle" fontSize="10" fill="#9CA3AF">{label}</text>
         ))}
       </svg>
 
@@ -926,7 +900,7 @@ function MatchAccuracyChart({ data, accent, metric }: { data: ChartDay[]; accent
         <div
           style={{
             position: "absolute",
-            left: `${(toX(hoverIdx) / W) * 100}%`,
+            left: `${((toX(hoverIdx) + barW / 2) / W) * 100}%`,
             top: `${toY(valueOf(points[hoverIdx])!) - 8}px`,
             transform: "translate(-50%, -100%)",
             background: "#1F2937",
