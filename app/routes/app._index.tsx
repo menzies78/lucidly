@@ -3,7 +3,7 @@ import { useLoaderData, useSubmit, useNavigate, useNavigation, useRevalidator, u
 import { Page, Layout, Card, Text, Button, BlockStack, InlineStack, Banner, ProgressBar, Spinner } from "@shopify/polaris";
 import ReportTabs from "../components/ReportTabs";
 import OnboardingFlow from "../components/OnboardingFlow";
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { authenticate, unauthenticated } from "../shopify.server";
 import db from "../db.server";
 import { syncOrders } from "../services/orderSync.server";
@@ -184,31 +184,65 @@ export const loader = async ({ request }) => {
 
   const isNewInstall = !shop?.lastOrderSync && orderCount === 0;
 
-  // Slice 30-day window out of the precomputed match-accuracy blob. The
-  // blob stores 90 days so future tile expansions don't force a rebuild.
-  // If the blob hasn't been written yet (fresh install, pre-first-sync),
-  // we render an empty chart - dashboardRollups will populate it on the
-  // first cycle.
-  let matchAccuracyChart: Array<{ date: string; matchRate: number | null; matched: number; total: number }> = [];
+  // Pull the precomputed match-accuracy blob. Blob stores up to 730 days of
+  // daily {matched, total, confSum, confAvg} buckets plus rolling 7d / 30d /
+  // lifetime totals for both match rate and match confidence. Client decides
+  // which window to render via the toggle on the Match Rate / Match
+  // Confidence tiles.
+  type DayBucket = { date: string; matchRate: number | null; matched: number; total: number; confSum: number; confAvg: number | null };
+  let matchAccuracyDays: DayBucket[] = [];
   let matchRate30d: number | null = null;
-  let allMatched30d = 0;
-  let allTotal30d = 0;
+  let matchRateLifetime: number | null = null;
+  let matchRate30dDetail = { matched: 0, total: 0 };
+  let matchRateLifetimeDetail = { matched: 0, total: 0 };
+  let matchConf30d: number | null = null;
+  let matchConfLifetime: number | null = null;
+  let matchConf30dDetail = { matched: 0, confSum: 0 };
+  let matchConfLifetimeDetail = { matched: 0, confSum: 0 };
   if (matchAccuracyBlob?.payload) {
     try {
       const parsed = JSON.parse(matchAccuracyBlob.payload);
-      const allDays = Array.isArray(parsed.days) ? parsed.days : [];
-      matchAccuracyChart = allDays.slice(Math.max(0, allDays.length - 30));
-      // Prefer the precomputed rate30d if present; otherwise re-derive
-      // from the 30-day slice we just took so old blobs still work.
-      if (typeof parsed.rate30d === "number" || parsed.rate30d === null) {
-        matchRate30d = parsed.rate30d;
-        allMatched30d = parsed.rate30dDetail?.matched || 0;
-        allTotal30d = parsed.rate30dDetail?.total || 0;
-      } else {
-        allMatched30d = matchAccuracyChart.reduce((s, d) => s + d.matched, 0);
-        allTotal30d = matchAccuracyChart.reduce((s, d) => s + d.total, 0);
-        matchRate30d = allTotal30d > 0
-          ? Math.min(100, Math.round((allMatched30d / allTotal30d) * 100))
+      matchAccuracyDays = Array.isArray(parsed.days) ? parsed.days : [];
+      // Back-fill missing fields on old blobs so the UI doesn't NaN out.
+      matchAccuracyDays = matchAccuracyDays.map((d: any) => ({
+        date: d.date,
+        matchRate: d.matchRate ?? null,
+        matched: d.matched || 0,
+        total: d.total || 0,
+        confSum: d.confSum || 0,
+        confAvg: d.confAvg ?? (d.matched > 0 && d.confSum ? Math.round(d.confSum / d.matched) : null),
+      }));
+
+      matchRate30d = parsed.rate30d ?? null;
+      matchRate30dDetail = parsed.rate30dDetail || { matched: 0, total: 0 };
+      matchRateLifetime = parsed.rateLifetime ?? null;
+      matchRateLifetimeDetail = parsed.rateLifetimeDetail || { matched: 0, total: 0 };
+
+      matchConf30d = parsed.conf30d ?? null;
+      matchConf30dDetail = parsed.conf30dDetail || { matched: 0, confSum: 0 };
+      matchConfLifetime = parsed.confLifetime ?? null;
+      matchConfLifetimeDetail = parsed.confLifetimeDetail || { matched: 0, confSum: 0 };
+
+      // Old blob (pre-confidence rollup) - derive rate fields from days if
+      // they're missing so the tiles still render after a deploy but before
+      // the next rollup cycle.
+      if (matchRate30d === null && matchAccuracyDays.length > 0) {
+        const tail = matchAccuracyDays.slice(Math.max(0, matchAccuracyDays.length - 30));
+        matchRate30dDetail = {
+          matched: tail.reduce((s, d) => s + d.matched, 0),
+          total: tail.reduce((s, d) => s + d.total, 0),
+        };
+        matchRate30d = matchRate30dDetail.total > 0
+          ? Math.min(100, Math.round((matchRate30dDetail.matched / matchRate30dDetail.total) * 100))
+          : null;
+      }
+      if (matchRateLifetime === null && matchAccuracyDays.length > 0) {
+        matchRateLifetimeDetail = {
+          matched: matchAccuracyDays.reduce((s, d) => s + d.matched, 0),
+          total: matchAccuracyDays.reduce((s, d) => s + d.total, 0),
+        };
+        matchRateLifetime = matchRateLifetimeDetail.total > 0
+          ? Math.min(100, Math.round((matchRateLifetimeDetail.matched / matchRateLifetimeDetail.total) * 100))
           : null;
       }
     } catch (err) {
@@ -292,9 +326,15 @@ export const loader = async ({ request }) => {
       results: shop?.metaValueCalibrationResults ? (() => { try { return JSON.parse(shop.metaValueCalibrationResults); } catch { return null; } })() : null,
     },
     // Health-specific data
-    matchAccuracyChart,
+    matchAccuracyDays,
     matchRate30d,
-    matchRate30dDetail: { matched: allMatched30d, total: allTotal30d },
+    matchRate30dDetail,
+    matchRateLifetime,
+    matchRateLifetimeDetail,
+    matchConf30d,
+    matchConf30dDetail,
+    matchConfLifetime,
+    matchConfLifetimeDetail,
     utmHealth,
     syncFreshness,
     recentlyStoppedCampaigns: recentlyStoppedCampaigns.map(c => ({
@@ -660,14 +700,129 @@ export const action = async ({ request }) => {
 };
 
 // ═══════════════════════════════════════════════════════════════
-// Match Accuracy Line Chart - hand-rolled SVG, 30 days
+// Match Rate / Match Confidence tile - shared shell with toggle
 // ═══════════════════════════════════════════════════════════════
 
-function MatchAccuracyChart({ data, accent }: { data: { date: string; matchRate: number | null; matched: number; total: number }[]; accent: string }) {
+type ChartDay = { date: string; matchRate: number | null; matched: number; total: number; confSum: number; confAvg: number | null };
+
+function MatchTile({
+  title, description, accent, metric, days,
+  value30, valueLifetime, detail30, detailLifetime,
+  detailLabel, detailTotalLabel,
+}: {
+  title: string;
+  description: string;
+  accent: string;
+  metric: "rate" | "confidence";
+  days: ChartDay[];
+  value30: number | null;
+  valueLifetime: number | null;
+  detail30: { matched: number; total: number };
+  detailLifetime: { matched: number; total: number };
+  detailLabel: string;
+  detailTotalLabel: string;
+}) {
+  const [range, setRange] = useState<"lifetime" | "30d">("lifetime");
+  const headline = range === "lifetime" ? valueLifetime : value30;
+  const detail = range === "lifetime" ? detailLifetime : detail30;
+  const slice = range === "lifetime" ? days : days.slice(Math.max(0, days.length - 30));
+
+  const headlineColor = headline === null
+    ? "#6B7280"
+    : headline >= 90 ? "#059669" : headline >= 70 ? "#D97706" : "#DC2626";
+
+  const PillButton = ({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) => (
+    <button
+      onClick={onClick}
+      style={{
+        padding: "4px 10px",
+        borderRadius: "12px",
+        border: active ? `1px solid ${accent}` : "1px solid #E5E7EB",
+        background: active ? `${accent}15` : "#fff",
+        color: active ? accent : "#6B7280",
+        fontSize: "12px",
+        fontWeight: 600,
+        cursor: "pointer",
+      }}
+    >
+      {children}
+    </button>
+  );
+
+  return (
+    <Card>
+      <BlockStack gap="300">
+        <InlineStack align="space-between" blockAlign="center">
+          <Text as="h2" variant="headingLg">{title}</Text>
+          <div style={{ display: "inline-flex", gap: "6px" }}>
+            <PillButton active={range === "lifetime"} onClick={() => setRange("lifetime")}>Lifetime</PillButton>
+            <PillButton active={range === "30d"} onClick={() => setRange("30d")}>30 days</PillButton>
+          </div>
+        </InlineStack>
+
+        {headline !== null ? (
+          <div style={{
+            fontSize: "32px", fontWeight: 800, letterSpacing: "-0.02em",
+            color: headlineColor, lineHeight: 1.1,
+          }}>
+            {headline}%
+            <span style={{ fontSize: "13px", fontWeight: 500, color: "#6B7280", marginLeft: "10px" }}>
+              {metric === "rate"
+                ? `${detail.matched} ${detailLabel} / ${detail.total} ${detailTotalLabel}`
+                : `across ${detail.matched} ${detailTotalLabel}`}
+            </span>
+          </div>
+        ) : (
+          <Text as="p" variant="bodySm" tone="subdued">
+            {range === "lifetime" ? "No data yet" : "No conversion data in the last 30 days"}
+          </Text>
+        )}
+
+        <MatchAccuracyChart data={slice} accent={accent} metric={metric} />
+
+        <Text as="p" variant="bodySm" tone="subdued">
+          {description}{days.length > 60 && range === "lifetime" ? " Chart bucketed weekly for lifetime view." : ""}
+        </Text>
+      </BlockStack>
+    </Card>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Match Accuracy Line Chart - hand-rolled SVG
+// ═══════════════════════════════════════════════════════════════
+
+function MatchAccuracyChart({ data, accent, metric }: { data: ChartDay[]; accent: string; metric: "rate" | "confidence" }) {
   const [hoverIdx, setHoverIdx] = useState<number | null>(null);
 
+  // When showing >60 points, bucket into weekly aggregates to keep the
+  // chart readable. Headline rolling totals are computed server-side from
+  // the full daily series, so this is purely a visual smoothing.
+  const bucketed: ChartDay[] = useMemo(() => {
+    if (data.length <= 60) return data;
+    const out: ChartDay[] = [];
+    for (let i = 0; i < data.length; i += 7) {
+      const week = data.slice(i, i + 7);
+      if (week.length === 0) continue;
+      const matched = week.reduce((s, d) => s + d.matched, 0);
+      const total = week.reduce((s, d) => s + d.total, 0);
+      const confSum = week.reduce((s, d) => s + d.confSum, 0);
+      out.push({
+        date: week[0].date,
+        matched,
+        total,
+        confSum,
+        matchRate: total > 0 ? Math.min(100, Math.round((matched / total) * 100)) : null,
+        confAvg: matched > 0 ? Math.round(confSum / matched) : null,
+      });
+    }
+    return out;
+  }, [data]);
+
+  const valueOf = (d: ChartDay) => metric === "rate" ? d.matchRate : d.confAvg;
+
   // Filter to days with data
-  const points = data.filter(d => d.matchRate !== null);
+  const points = bucketed.filter(d => valueOf(d) !== null);
   if (points.length < 2) {
     return (
       <div style={{ padding: "20px", textAlign: "center", color: "#6B7280" }}>
@@ -694,7 +849,7 @@ function MatchAccuracyChart({ data, accent }: { data: { date: string; matchRate:
   const toY = (v: number) => padT + chartH - ((v - yMin) / (yMax - yMin)) * chartH;
 
   // Build line path
-  const linePath = points.map((p, i) => `${i === 0 ? "M" : "L"} ${toX(i).toFixed(1)} ${toY(p.matchRate!).toFixed(1)}`).join(" ");
+  const linePath = points.map((p, i) => `${i === 0 ? "M" : "L"} ${toX(i).toFixed(1)} ${toY(valueOf(p)!).toFixed(1)}`).join(" ");
   // Area fill
   const areaPath = `${linePath} L ${toX(points.length - 1).toFixed(1)} ${toY(0).toFixed(1)} L ${toX(0).toFixed(1)} ${toY(0).toFixed(1)} Z`;
 
@@ -742,20 +897,23 @@ function MatchAccuracyChart({ data, accent }: { data: { date: string; matchRate:
         <path d={linePath} fill="none" stroke={accent} strokeWidth={2} strokeLinejoin="round" />
 
         {/* Data points */}
-        {points.map((p, i) => (
+        {points.map((p, i) => {
+          const v = valueOf(p)!;
+          return (
           <circle
             key={i}
             cx={toX(i)}
-            cy={toY(p.matchRate!)}
+            cy={toY(v)}
             r={hoverIdx === i ? 5 : 3}
-            fill={p.matchRate! >= 90 ? "#10B981" : p.matchRate! >= 70 ? "#F59E0B" : "#EF4444"}
+            fill={v >= 90 ? "#10B981" : v >= 70 ? "#F59E0B" : "#EF4444"}
             stroke="#fff"
             strokeWidth={1.5}
             style={{ cursor: "pointer", transition: "r 0.1s" }}
             onMouseEnter={() => setHoverIdx(i)}
             onMouseLeave={() => setHoverIdx(null)}
           />
-        ))}
+          );
+        })}
 
         {/* X-axis labels */}
         {xLabels.map(({ i, label }) => (
@@ -769,7 +927,7 @@ function MatchAccuracyChart({ data, accent }: { data: { date: string; matchRate:
           style={{
             position: "absolute",
             left: `${(toX(hoverIdx) / W) * 100}%`,
-            top: `${toY(points[hoverIdx].matchRate!) - 8}px`,
+            top: `${toY(valueOf(points[hoverIdx])!) - 8}px`,
             transform: "translate(-50%, -100%)",
             background: "#1F2937",
             color: "#fff",
@@ -783,8 +941,17 @@ function MatchAccuracyChart({ data, accent }: { data: { date: string; matchRate:
           }}
         >
           <div style={{ fontWeight: 700 }}>{points[hoverIdx].date}</div>
-          <div>Match rate: {points[hoverIdx].matchRate}%</div>
-          <div>{points[hoverIdx].matched} matched / {points[hoverIdx].total} total</div>
+          {metric === "rate" ? (
+            <>
+              <div>Match rate: {points[hoverIdx].matchRate}%</div>
+              <div>{points[hoverIdx].matched} matched / {points[hoverIdx].total} total</div>
+            </>
+          ) : (
+            <>
+              <div>Avg confidence: {points[hoverIdx].confAvg}%</div>
+              <div>{points[hoverIdx].matched} matched orders</div>
+            </>
+          )}
         </div>
       )}
     </div>
@@ -852,7 +1019,11 @@ export default function Index() {
     utmOnlyCount, utmOnlyRevenue, utmAndLucidlyCount, onboardingCompleted,
     onboardingPhase, onboardingStartedAt, fitTestScore, fitTestComputedAt,
     webhooksRegisteredAt, webhooksFirstFiredAt, pixelCalibration,
-    matchAccuracyChart, matchRate30d, matchRate30dDetail, utmHealth, syncFreshness,
+    matchAccuracyDays, matchRate30d, matchRate30dDetail,
+    matchRateLifetime, matchRateLifetimeDetail,
+    matchConf30d, matchConf30dDetail,
+    matchConfLifetime, matchConfLifetimeDetail,
+    utmHealth, syncFreshness,
     recentlyStoppedCampaigns, activeCampaignCount, isInternal, backups,
   } = useLoaderData();
   const submit = useSubmit();
@@ -1089,35 +1260,42 @@ export default function Index() {
           />
         </div>
 
-        {/* ═══ Match Accuracy + UTM Health ═══ */}
+        {/* ═══ Match Rate + Match Confidence ═══ */}
         <Layout>
           <Layout.Section variant="oneHalf">
-            <Card>
-              <BlockStack gap="300">
-                <InlineStack align="space-between" blockAlign="center">
-                  <Text as="h2" variant="headingLg">Match Accuracy</Text>
-                  {matchRate30d !== null && (
-                    <div style={{
-                      fontSize: "28px", fontWeight: 800, letterSpacing: "-0.02em",
-                      color: matchRate30d >= 90 ? "#059669" : matchRate30d >= 70 ? "#D97706" : "#DC2626",
-                    }}>
-                      {matchRate30d}%
-                      <span style={{ fontSize: "13px", fontWeight: 500, color: "#6B7280", marginLeft: "6px" }}>
-                        30 days ({matchRate30dDetail.matched}/{matchRate30dDetail.total})
-                      </span>
-                    </div>
-                  )}
-                </InlineStack>
-                {matchRate30d === null && (
-                  <Text as="p" variant="bodySm" tone="subdued">No conversion data in the last 30 days</Text>
-                )}
-                <MatchAccuracyChart data={matchAccuracyChart} accent="#5C6AC4" />
-                <Text as="p" variant="bodySm" tone="subdued">
-                  Matched attributions / total attributions per day (live data). Green dashed line = 90% target.
-                </Text>
-              </BlockStack>
-            </Card>
+            <MatchTile
+              title="Match Rate"
+              description="Matched orders / Meta-reported conversions. Tells you what share of Meta's conversions we successfully linked back to a Shopify order."
+              accent="#5C6AC4"
+              metric="rate"
+              days={matchAccuracyDays}
+              value30={matchRate30d}
+              valueLifetime={matchRateLifetime}
+              detail30={matchRate30dDetail}
+              detailLifetime={matchRateLifetimeDetail}
+              detailLabel="matched"
+              detailTotalLabel="conversions"
+            />
           </Layout.Section>
+          <Layout.Section variant="oneHalf">
+            <MatchTile
+              title="Match Confidence"
+              description="Average confidence per matched order, weighted across the window. 100% = no rival candidates; lower means the matcher saw multiple compatible orders for the same Meta conversion."
+              accent="#0D9488"
+              metric="confidence"
+              days={matchAccuracyDays}
+              value30={matchConf30d}
+              valueLifetime={matchConfLifetime}
+              detail30={{ matched: matchConf30dDetail.matched, total: matchConf30dDetail.matched }}
+              detailLifetime={{ matched: matchConfLifetimeDetail.matched, total: matchConfLifetimeDetail.matched }}
+              detailLabel="matches"
+              detailTotalLabel="orders"
+            />
+          </Layout.Section>
+        </Layout>
+
+        {/* ═══ UTM Health ═══ */}
+        <Layout>
           <Layout.Section variant="oneHalf">
             <Card>
               <BlockStack gap="300">

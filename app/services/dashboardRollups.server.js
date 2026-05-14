@@ -7,9 +7,13 @@
  *
  * Blobs written:
  *   - "dashboard:matchAccuracy"
- *       { days: [{ date, matched, total, matchRate }],
+ *       { days: [{ date, matched, total, matchRate, confSum, confAvg }],
  *         rate30d, rate30dDetail: { matched, total },
- *         rate7d, rate7dDetail: { matched, total },
+ *         rate7d,  rate7dDetail:  { matched, total },
+ *         rateLifetime, rateLifetimeDetail: { matched, total },
+ *         conf30d, conf30dDetail: { matched, confSum },
+ *         conf7d,  conf7dDetail:  { matched, confSum },
+ *         confLifetime, confLifetimeDetail: { matched, confSum },
  *         computedAt }
  *
  * Called from incrementalSync.server.js after each cycle.
@@ -20,10 +24,12 @@ import { shopLocalDayKey } from "../utils/shopTime.server";
 
 const DAY_MS = 86400000;
 
-// How far back to keep daily buckets. Dashboard chart shows 30 days, but we
-// pre-compute 90 so future tile expansions (60d, 90d trend) don't need a
-// rebuild.
-const LOOKBACK_DAYS = 90;
+// How far back to keep daily buckets. Two-year window covers the "lifetime"
+// view on the dashboard's Match Rate / Match Confidence tiles - any installs
+// older than this still get correct headline numbers (rateLifetime is
+// computed from the full attribution table, not the days slice), but the
+// chart is capped at 2yrs of daily points for performance.
+const LOOKBACK_DAYS = 730;
 
 export async function rebuildMatchAccuracy(shopDomain) {
   const t0 = Date.now();
@@ -42,8 +48,8 @@ export async function rebuildMatchAccuracy(shopDomain) {
   // original loader's bucketing - MetaInsight.date is already a UTC-midnight
   // canonical handle, so toISOString().slice(0,10) gives the right key).
   //
-  // Numerator: orders in the last 90 days with a confidence>0 Attribution
-  // row, bucketed by Order.createdAt in shop-local time.
+  // Numerator: orders in the last LOOKBACK_DAYS days with a confidence>0
+  // Attribution row, bucketed by Order.createdAt in shop-local time.
   //
   // We deliberately do NOT use Attribution.matchedAt - that field tracks
   // when the matcher created the row, not the conversion day, and Full
@@ -59,7 +65,9 @@ export async function rebuildMatchAccuracy(shopDomain) {
     }),
   ]);
 
-  let matchedSet = new Set();
+  // Pull matched orderId -> confidence so we can build per-day avg
+  // confidence alongside the matched count.
+  const matchedConf = new Map();
   if (recentOrders.length > 0) {
     const ids = recentOrders.map((o) => o.shopifyOrderId);
     // Chunk the IN query - SQLite param limit is ~32k.
@@ -72,9 +80,14 @@ export async function rebuildMatchAccuracy(shopDomain) {
           shopifyOrderId: { in: slice },
           confidence: { gt: 0 },
         },
-        select: { shopifyOrderId: true },
+        select: { shopifyOrderId: true, confidence: true },
       });
-      for (const r of rows) matchedSet.add(r.shopifyOrderId);
+      for (const r of rows) {
+        // If somehow there are two attributions for one order (Layer 1 +
+        // Layer 2 collision is the only path), keep the highest confidence.
+        const prev = matchedConf.get(r.shopifyOrderId) || 0;
+        if (r.confidence > prev) matchedConf.set(r.shopifyOrderId, r.confidence);
+      }
     }
   }
 
@@ -86,13 +99,16 @@ export async function rebuildMatchAccuracy(shopDomain) {
     metaConvByDay.set(day, (metaConvByDay.get(day) || 0) + (r.conversions || 0));
   }
 
-  const matchedByDay = new Map();
+  const matchedByDay = new Map();   // day -> matched count
+  const confSumByDay = new Map();   // day -> sum of confidence (for avg calc)
   for (const o of recentOrders) {
-    if (!matchedSet.has(o.shopifyOrderId)) continue;
+    const conf = matchedConf.get(o.shopifyOrderId);
+    if (!conf) continue;
     if (!o.createdAt) continue;
     const day = shopLocalDayKey(tz, o.createdAt);
     if (!day) continue;
     matchedByDay.set(day, (matchedByDay.get(day) || 0) + 1);
+    confSumByDay.set(day, (confSumByDay.get(day) || 0) + conf);
   }
 
   const allDays = new Set([...metaConvByDay.keys(), ...matchedByDay.keys()]);
@@ -101,15 +117,16 @@ export async function rebuildMatchAccuracy(shopDomain) {
     .map((day) => {
       const total = Math.round(metaConvByDay.get(day) || 0);
       const matched = matchedByDay.get(day) || 0;
+      const confSum = confSumByDay.get(day) || 0;
       const matchRate =
         total > 0 ? Math.min(100, Math.round((matched / total) * 100)) : null;
-      return { date: day, matchRate, matched, total };
+      const confAvg = matched > 0 ? Math.round(confSum / matched) : null;
+      return { date: day, matchRate, matched, total, confSum, confAvg };
     });
 
-  // ── Rolling rates ──
-  // 30d / 7d windows over the last completed period. Slice from the end of
-  // `days` rather than re-filtering by date so we get the same set the
-  // loader would: trailing 30 buckets ordered ascending.
+  // ── Rolling windows ──
+  // 30d / 7d / lifetime over the days array. Slice from the end rather than
+  // re-filter by date so we get the same set the loader would.
   const tail = (n) => days.slice(Math.max(0, days.length - n));
   const sumRate = (slice) => {
     const matched = slice.reduce((s, d) => s + d.matched, 0);
@@ -117,8 +134,19 @@ export async function rebuildMatchAccuracy(shopDomain) {
     const rate = total > 0 ? Math.min(100, Math.round((matched / total) * 100)) : null;
     return { rate, matched, total };
   };
+  const sumConf = (slice) => {
+    const matched = slice.reduce((s, d) => s + d.matched, 0);
+    const confSum = slice.reduce((s, d) => s + d.confSum, 0);
+    const conf = matched > 0 ? Math.round(confSum / matched) : null;
+    return { conf, matched, confSum };
+  };
+
   const r30 = sumRate(tail(30));
-  const r7 = sumRate(tail(7));
+  const r7  = sumRate(tail(7));
+  const rL  = sumRate(days);
+  const c30 = sumConf(tail(30));
+  const c7  = sumConf(tail(7));
+  const cL  = sumConf(days);
 
   const blob = {
     days,
@@ -126,6 +154,14 @@ export async function rebuildMatchAccuracy(shopDomain) {
     rate30dDetail: { matched: r30.matched, total: r30.total },
     rate7d: r7.rate,
     rate7dDetail: { matched: r7.matched, total: r7.total },
+    rateLifetime: rL.rate,
+    rateLifetimeDetail: { matched: rL.matched, total: rL.total },
+    conf30d: c30.conf,
+    conf30dDetail: { matched: c30.matched, confSum: c30.confSum },
+    conf7d: c7.conf,
+    conf7dDetail: { matched: c7.matched, confSum: c7.confSum },
+    confLifetime: cL.conf,
+    confLifetimeDetail: { matched: cL.matched, confSum: cL.confSum },
     computedAt: new Date().toISOString(),
   };
 
@@ -136,7 +172,7 @@ export async function rebuildMatchAccuracy(shopDomain) {
   });
 
   console.log(
-    `[dashboardRollups] match accuracy for ${shopDomain}: ${days.length} days, 30d=${r30.rate}% (${r30.matched}/${r30.total}) in ${Date.now() - t0}ms`,
+    `[dashboardRollups] match accuracy for ${shopDomain}: ${days.length} days, lifetime=${rL.rate}% rate / ${cL.conf}% conf (${rL.matched}/${rL.total}) in ${Date.now() - t0}ms`,
   );
   return { days: days.length, ms: Date.now() - t0 };
 }

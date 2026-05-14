@@ -36,7 +36,7 @@ const PADDING_MINUTES = 6;
 // occasional order where the Meta pixel fired ≥7 minutes after checkout.
 const PADDING_MINUTES_WIDE = 10;
 const REVENUE_TOLERANCE = 0.02;
-const REVENUE_TOLERANCE_MEDIUM = 0.05;
+const REVENUE_TOLERANCE_MEDIUM = 0.02;
 const PER_AD_BUDGET_MS = 120000;
 const FAST_FALLBACK_BUDGET_MS = 12000;
 const MAX_CANDIDATES = 300;
@@ -950,7 +950,7 @@ export async function runDateRangeRematch(shopDomain, fromDate, toDate) {
           .sort((a, b) => (((b.countryMatch ? 1 : 0) - (a.countryMatch ? 1 : 0)) || (b.isNew - a.isNew) || (b.total - a.total)))
           .slice(0, MAX_CANDIDATES_FAST);
         const fastResult = fastGreedyMatch(fastPool, R, slotCaps, metaRevenue, FAST_FALLBACK_BUDGET_MS);
-        picks = fastResult.diffPct <= 0.05 ? fastResult.picks : [];
+        picks = fastResult.diffPct <= REVENUE_TOLERANCE_MEDIUM ? fastResult.picks : [];
         matchMethod = "fast_greedy";
       }
 
@@ -1537,7 +1537,7 @@ export async function runFillGaps(shopDomain, lookbackDays = 30) {
           .sort((a, b) => (((b.countryMatch ? 1 : 0) - (a.countryMatch ? 1 : 0)) || (b.isNew - a.isNew) || (b.total - a.total)))
           .slice(0, MAX_CANDIDATES_FAST);
         const fastResult = fastGreedyMatch(fastPool, R, slotCaps, remainingRevenue, FAST_FALLBACK_BUDGET_MS);
-        picks = fastResult.diffPct <= 0.05 ? fastResult.picks : [];
+        picks = fastResult.diffPct <= REVENUE_TOLERANCE_MEDIUM ? fastResult.picks : [];
         matchMethod = "fast_greedy";
       }
 
