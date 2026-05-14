@@ -67,6 +67,16 @@ export async function rebuildMatchAccuracy(shopDomain) {
 
   // Pull matched orderId -> confidence so we can build per-day avg
   // confidence alongside the matched count.
+  //
+  // Restricted to Layer 2 (statistical matcher) attributions. The Match
+  // Rate tile compares matched orders against Meta-reported conversions;
+  // Layer 1 UTM-only orders don't reconcile against Meta's reporting (they
+  // exist precisely because Meta failed to log the conversion - iOS
+  // opt-outs, pixel drop, ad blockers), so including them produces a
+  // numerator that can exceed the denominator. The Match Confidence tile
+  // has the same issue worse: L1 confidence is 100 by definition, which
+  // would falsely inflate the average. L1 orders are still surfaced
+  // separately on the UTM Health tile and Customer Demographics.
   const matchedConf = new Map();
   if (recentOrders.length > 0) {
     const ids = recentOrders.map((o) => o.shopifyOrderId);
@@ -79,12 +89,11 @@ export async function rebuildMatchAccuracy(shopDomain) {
           shopDomain,
           shopifyOrderId: { in: slice },
           confidence: { gt: 0 },
+          layer: 2,
         },
         select: { shopifyOrderId: true, confidence: true },
       });
       for (const r of rows) {
-        // If somehow there are two attributions for one order (Layer 1 +
-        // Layer 2 collision is the only path), keep the highest confidence.
         const prev = matchedConf.get(r.shopifyOrderId) || 0;
         if (r.confidence > prev) matchedConf.set(r.shopifyOrderId, r.confidence);
       }

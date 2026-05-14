@@ -1239,7 +1239,7 @@ export default function Index() {
           <Layout.Section variant="oneHalf">
             <MatchTile
               title="Match Rate"
-              description="Matched orders / Meta-reported conversions. Tells you what share of Meta's conversions we successfully linked back to a Shopify order."
+              description="Orders linked to a Meta-reported conversion (Layer 2 matcher) / Meta-reported conversions. UTM-only rescues are excluded so the rate stays comparable to Meta's own numbers."
               accent="#5C6AC4"
               metric="rate"
               days={matchAccuracyDays}
@@ -1254,7 +1254,7 @@ export default function Index() {
           <Layout.Section variant="oneHalf">
             <MatchTile
               title="Match Confidence"
-              description="Average confidence per matched order, weighted across the window. 100% = no rival candidates; lower means the matcher saw multiple compatible orders for the same Meta conversion."
+              description="Average confidence across Layer 2 matched orders, weighted by match count. 100% = no rival candidates; lower means the matcher saw multiple compatible orders for the same Meta conversion."
               accent="#0D9488"
               metric="confidence"
               days={matchAccuracyDays}
