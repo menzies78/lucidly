@@ -445,7 +445,7 @@ const RIVAL_VALUE_TOLERANCE = 0.02;
  *
  * @returns { layer1Written: number, slotCreditsConsumed: number }
  */
-async function runUtmLayer1Pass(shopDomain, dayStr, dayOrders, newConversions, metaOffsetMinutes) {
+export async function runUtmLayer1Pass(shopDomain, dayStr, dayOrders, newConversions, metaOffsetMinutes) {
   const utmOrders = dayOrders.filter(o =>
     o.utmConfirmedMeta === true && ((o.metaAdId && o.metaAdId.length > 0) || (o.metaAdIdFromUtm && o.metaAdIdFromUtm.length > 0))
   );

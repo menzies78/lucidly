@@ -2,6 +2,7 @@ import db from "../db.server";
 import { setProgress, completeProgress, failProgress } from "./progress.server";
 import { shopLocalDayKey } from "../utils/shopTime.server";
 import { invalidateShop } from "./queryCache.server";
+import { runUtmLayer1Pass } from "./incrementalSync.server.js";
 import { Worker } from "node:worker_threads";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -399,23 +400,14 @@ export async function runAttribution(shopDomain) {
   const metaSpendCountriesByDate = await buildMetaSpendCountries(shopDomain);
   console.log(`[Attribution] Country preference data for ${metaSpendCountriesByDate.size} dates`);
 
-  // Full re-match: delete all Layer 2
-  await db.attribution.deleteMany({ where: { shopDomain, layer: 2 } });
-
-  // Pre-populate usedOrders with any Layer 1 matches (future-proofing)
-  const layer1Attrs = await db.attribution.findMany({
-    where: { shopDomain, layer: 1 },
-    select: { shopifyOrderId: true },
-  });
-  const usedOrders = new Set();
-  for (const a of layer1Attrs) {
-    // Find the order DB id for this shopifyOrderId
-    const order = allOrders.find(o => o.shopifyOrderId === a.shopifyOrderId);
-    if (order) usedOrders.add(order.id);
-  }
-  if (layer1Attrs.length > 0) {
-    console.log(`[Attribution] ${layer1Attrs.length} Layer 1 (cookie/UTM) matches preserved`);
-  }
+  // Full re-match: delete all Layer 2 AND Layer 1. We rebuild both from
+  // scratch — the Layer 1 pre-pass below re-creates UTM-confirmed Meta
+  // attributions deterministically against the current MetaInsight + Order
+  // state, so any stale Layer 1 rows (older mappings, ad IDs that no longer
+  // resolve, orders that have since lost their utm flag) would only confuse
+  // the picture. The incremental matcher's own runUtmLayer1Pass on the next
+  // hourly cycle is idempotent and will re-claim anything we wrote here.
+  await db.attribution.deleteMany({ where: { shopDomain, layer: { in: [1, 2] } } });
 
   const insightsByDate = new Map();
   for (const ins of metaInsights) {
@@ -433,6 +425,84 @@ export async function runAttribution(shopDomain) {
 
   const dates = Array.from(insightsByDate.keys()).sort();
   console.log(`[Attribution] ${dates.length} days to match`);
+
+  // ── Layer 1 pre-pass ──
+  //
+  // Why this runs *before* the statistical workers: utmConfirmedMeta orders
+  // are deterministic Meta attributions (Elevar/Web Pixel confirmed the
+  // click-through). Without this pass the statistical matcher in Layer 2
+  // claims those orders first, and runUtmLayer1Pass in subsequent hourly
+  // cycles refuses to upgrade an order that already has a confident
+  // statistical attribution (incrementalSync.server.js:487-499 — that guard
+  // is correct for incremental, prevents Layer 1 from flapping Layer 2 picks,
+  // but means new installs lose every UTM-confirmed order to exhaustive). On
+  // a fresh install: 100% of UTM orders end up as matchMethod="exhaustive"
+  // unless we make Layer 1 the first writer.
+  //
+  // For each day we synthesise a `newConversions` shape with deltaConversions
+  // = full Meta-reported count (since this is a from-scratch re-match), let
+  // runUtmLayer1Pass claim utmConfirmedMeta orders against those slots, and
+  // capture per-bucket claim counts. The bucket caps fed to the Layer 2
+  // workers are then reduced by those counts so the statistical pass doesn't
+  // over-orphan, and the MetaSnapshot rows written after each day's Layer 2
+  // batch add the Layer 1 claims back in so snapshot.conversions reflects
+  // total (L1+L2) attributed conversions per bucket.
+  const usedOrders = new Set();
+  const layer1ClaimsByBucket = new Map(); // `${day}|${adId}|${hour}` -> { count, value }
+  let totalLayer1Written = 0;
+
+  for (const day of dates) {
+    const dayInsights = insightsByDate.get(day) || [];
+    if (dayInsights.length === 0) continue;
+    const dayOrders = ordersByDate.get(day) || [];
+    if (dayOrders.length === 0) continue;
+    const metaOffset = getTimezoneOffsetMinutes(metaAccountTimezone, day);
+
+    // Synthesise a newConversions array. runUtmLayer1Pass mutates each row's
+    // deltaConversions/deltaValue as it claims slots — we capture the
+    // before-state per-row so we can derive per-bucket claim counts.
+    const newConversions = dayInsights.map(ins => ({
+      adId: ins.adId, adName: ins.adName,
+      campaignId: ins.campaignId, campaignName: ins.campaignName,
+      adSetId: ins.adSetId, adSetName: ins.adSetName,
+      hourSlot: ins.hourSlot,
+      deltaConversions: ins.conversions,
+      deltaValue: ins.conversionValue,
+    }));
+    const beforeConv = newConversions.map(nc => nc.deltaConversions);
+
+    const result = await runUtmLayer1Pass(shopDomain, day, dayOrders, newConversions, metaOffset);
+    totalLayer1Written += result?.layer1Written || 0;
+
+    for (let i = 0; i < newConversions.length; i++) {
+      const nc = newConversions[i];
+      const claimedCount = beforeConv[i] - nc.deltaConversions;
+      if (claimedCount <= 0) continue;
+      // Use Meta's per-conv value (Meta-reported value / Meta-reported count)
+      // rather than Order.frozenTotalPrice, so snapshot.conversionValue stays
+      // on the Meta-reported scale that findNewConversions compares against.
+      const perConv = beforeConv[i] > 0
+        ? (dayInsights[i].conversionValue || 0) / beforeConv[i]
+        : 0;
+      const claimedValue = Math.round(perConv * claimedCount * 100) / 100;
+      layer1ClaimsByBucket.set(`${day}|${nc.adId}|${nc.hourSlot}`, {
+        count: claimedCount,
+        value: claimedValue,
+      });
+    }
+  }
+
+  // Reload Layer 1 attributions we just wrote and add them to usedOrders so
+  // the statistical workers can't re-pick them.
+  const layer1Attrs = await db.attribution.findMany({
+    where: { shopDomain, layer: 1 },
+    select: { shopifyOrderId: true },
+  });
+  for (const a of layer1Attrs) {
+    const order = allOrders.find(o => o.shopifyOrderId === a.shopifyOrderId);
+    if (order) usedOrders.add(order.id);
+  }
+  console.log(`[Attribution] Layer 1 pre-pass: wrote ${totalLayer1Written} UTM attributions across ${layer1ClaimsByBucket.size} buckets`);
 
   // Build per-day worker contexts once on the main thread. Each context has
   // everything the matcher needs: that day's insights, candidate orders
@@ -468,17 +538,29 @@ export async function runAttribution(shopDomain) {
       countryCode: o.countryCode,
       shopifyCustomerId: o.shopifyCustomerId,
     }));
-    const dayInsightsLite = dayInsights.map(i => ({
-      adId: i.adId,
-      campaignId: i.campaignId,
-      campaignName: i.campaignName || "",
-      adSetId: i.adSetId || "",
-      adSetName: i.adSetName || "",
-      adName: i.adName || "",
-      hourSlot: i.hourSlot,
-      conversions: i.conversions,
-      conversionValue: i.conversionValue,
-    }));
+    // Subtract Layer 1 claims from the bucket caps fed to the Layer 2 workers.
+    // Without this, the statistical pass would treat the full Meta-reported
+    // count as available slots, over-orphan any slots already filled by Layer
+    // 1, and the snapshot.conversions written for that bucket would have to
+    // double-count to stay consistent. We carry Meta-reported per-conv value
+    // through proportionally so the worker's slotValue/cap math stays sound.
+    const dayInsightsLite = dayInsights.map(i => {
+      const claim = layer1ClaimsByBucket.get(`${day}|${i.adId}|${i.hourSlot}`) || { count: 0, value: 0 };
+      const effConv = Math.max(0, i.conversions - claim.count);
+      const perConv = i.conversions > 0 ? i.conversionValue / i.conversions : 0;
+      const effValue = Math.max(0, i.conversionValue - perConv * claim.count);
+      return {
+        adId: i.adId,
+        campaignId: i.campaignId,
+        campaignName: i.campaignName || "",
+        adSetId: i.adSetId || "",
+        adSetName: i.adSetName || "",
+        adName: i.adName || "",
+        hourSlot: i.hourSlot,
+        conversions: effConv,
+        conversionValue: effValue,
+      };
+    });
     const dayCountries = Array.from(metaSpendCountriesByDate.get(day) || []);
     ctxByDay.set(day, {
       shopDomain,
@@ -611,22 +693,52 @@ export async function runAttribution(shopDomain) {
             // Snapshot stores MATCHED count, not Meta-reported, so genuinely
             // unmatched conversions remain visible to subsequent sweeps and
             // can be retried when delayed webhook orders arrive.
-            if (bucketStats && bucketStats.length) {
+            // Merge Layer 1 claims into bucketStats so the snapshot upserts
+            // capture (L1 + L2) per bucket in a single pass. Buckets that the
+            // workers skipped (e.g. all conversions consumed by Layer 1, so
+            // effConv=0 in dayInsightsLite) won't appear in bucketStats — we
+            // synthesise rows for those from layer1ClaimsByBucket so their
+            // snapshots get written too. Otherwise the next sweep would see
+            // snapshot.conversions=0, treat the Meta-reported count as a
+            // fresh delta, and re-fire phantom orphan placeholders.
+            const snapshotRows = [];
+            const coveredKeys = new Set();
+            for (const b of (bucketStats || [])) {
+              const key = `${day}|${b.adId}|${b.hour}`;
+              coveredKeys.add(key);
+              const claim = layer1ClaimsByBucket.get(key) || { count: 0, value: 0 };
+              snapshotRows.push({
+                adId: b.adId, hour: b.hour,
+                conversions: b.matchedConv + claim.count,
+                conversionValue: Math.round((b.matchedValue + claim.value) * 100) / 100,
+              });
+            }
+            for (const [key, claim] of layer1ClaimsByBucket.entries()) {
+              if (!key.startsWith(`${day}|`)) continue;
+              if (coveredKeys.has(key)) continue;
+              const parts = key.split("|");
+              snapshotRows.push({
+                adId: parts[1], hour: Number(parts[2]),
+                conversions: claim.count,
+                conversionValue: Math.round(claim.value * 100) / 100,
+              });
+            }
+            if (snapshotRows.length) {
               const SNAP_BATCH = 200;
-              for (let i = 0; i < bucketStats.length; i += SNAP_BATCH) {
-                const sliceRows = bucketStats.slice(i, i + SNAP_BATCH);
+              for (let i = 0; i < snapshotRows.length; i += SNAP_BATCH) {
+                const sliceRows = snapshotRows.slice(i, i + SNAP_BATCH);
                 await db.$transaction(
-                  sliceRows.map(b => db.metaSnapshot.upsert({
+                  sliceRows.map(r => db.metaSnapshot.upsert({
                     where: {
                       shopDomain_date_adId_hourSlot: {
-                        shopDomain, date: day, adId: b.adId, hourSlot: b.hour,
+                        shopDomain, date: day, adId: r.adId, hourSlot: r.hour,
                       },
                     },
                     create: {
-                      shopDomain, date: day, adId: b.adId, hourSlot: b.hour,
-                      conversions: b.matchedConv, conversionValue: b.matchedValue,
+                      shopDomain, date: day, adId: r.adId, hourSlot: r.hour,
+                      conversions: r.conversions, conversionValue: r.conversionValue,
                     },
-                    update: { conversions: b.matchedConv, conversionValue: b.matchedValue },
+                    update: { conversions: r.conversions, conversionValue: r.conversionValue },
                   })),
                 );
               }
