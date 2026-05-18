@@ -313,6 +313,39 @@ async function runIngest(shopDomain) {
     console.error(`[ingestOrchestrator] ${shopDomain}: ad demographic rollup rebuild failed (non-fatal): ${err.message}`);
   }
 
+  // Dashboard Match Accuracy + Match Confidence tiles read from the
+  // `dashboard:matchAccuracy` ShopAnalysisCache blob. Without this rebuild,
+  // the merchant lands on an empty pair of headline tiles until the first
+  // hourly cycle runs with new conversions (force=true).
+  try {
+    const { rebuildMatchAccuracy } = await import("./dashboardRollups.server.js");
+    await rebuildMatchAccuracy(shopDomain);
+    console.log(`[ingestOrchestrator] ${shopDomain}: dashboard match accuracy rebuilt`);
+  } catch (err) {
+    console.error(`[ingestOrchestrator] ${shopDomain}: dashboard match accuracy rebuild failed (non-fatal): ${err.message}`);
+  }
+
+  // Customer Map + geo tiles read from DailyGeoRollup. Without this rebuild,
+  // the map is empty post-install.
+  try {
+    const { rebuildGeoRollups } = await import("./geoRollups.server.js");
+    await rebuildGeoRollups(shopDomain);
+    console.log(`[ingestOrchestrator] ${shopDomain}: geo rollups rebuilt`);
+  } catch (err) {
+    console.error(`[ingestOrchestrator] ${shopDomain}: geo rollup rebuild failed (non-fatal): ${err.message}`);
+  }
+
+  // Customer Demographics gender breakdown reads from the genderDailyBlob
+  // produced by rebuildCustomerGenderDaily. Without this rebuild, the
+  // gender chart is empty.
+  try {
+    const { rebuildCustomerGenderDaily } = await import("./customerRollups.server.js");
+    await rebuildCustomerGenderDaily(shopDomain);
+    console.log(`[ingestOrchestrator] ${shopDomain}: customer gender daily blob rebuilt`);
+  } catch (err) {
+    console.error(`[ingestOrchestrator] ${shopDomain}: customer gender daily rebuild failed (non-fatal): ${err.message}`);
+  }
+
   // Persist the rebuild timestamp so the hourly incremental sync's gated
   // rebuildAllRollups (24h throttle) skips a redundant run. Without this,
   // the merchant's first hourly tick post-install would re-do all rebuilds.
