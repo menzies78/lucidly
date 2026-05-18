@@ -1239,7 +1239,7 @@ export default function Index() {
           <Layout.Section variant="oneHalf">
             <MatchTile
               title="Match Rate"
-              description="Orders linked to a Meta-reported conversion (Layer 2 matcher) / Meta-reported conversions. UTM-only rescues are excluded so the rate stays comparable to Meta's own numbers."
+              description="Orders linked to a Meta-reported conversion (Layer 1 UTM-confirmed + Layer 2 statistical matcher) / Meta-reported conversions. Both layers reconcile against Meta's reported conversion count."
               accent="#5C6AC4"
               metric="rate"
               days={matchAccuracyDays}

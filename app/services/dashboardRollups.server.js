@@ -65,19 +65,23 @@ export async function rebuildMatchAccuracy(shopDomain) {
     }),
   ]);
 
-  // Pull matched orderId -> confidence so we can build per-day avg
-  // confidence alongside the matched count.
+  // Pull matched orderId -> { confidence, layer } so we can build per-day
+  // matched count + avg confidence.
   //
-  // Restricted to Layer 2 (statistical matcher) attributions. The Match
-  // Rate tile compares matched orders against Meta-reported conversions;
-  // Layer 1 UTM-only orders don't reconcile against Meta's reporting (they
-  // exist precisely because Meta failed to log the conversion - iOS
-  // opt-outs, pixel drop, ad blockers), so including them produces a
-  // numerator that can exceed the denominator. The Match Confidence tile
-  // has the same issue worse: L1 confidence is 100 by definition, which
-  // would falsely inflate the average. L1 orders are still surfaced
-  // separately on the UTM Health tile and Customer Demographics.
-  const matchedConf = new Map();
+  // Match Rate numerator: BOTH Layer 1 (UTM-confirmed Meta) and Layer 2
+  // (statistical matcher). Layer 1 attributions are created in
+  // incrementalSync.server.js for orders with utmConfirmedMeta=true, and
+  // they actively claim a Meta conversion slot (decrementing deltaConversions
+  // for that ad - see incrementalSync.server.js:534). So they DO reconcile
+  // against Meta-reported conversions. Excluding them caused the recent-day
+  // dip on shops with high UTM coverage: the matched orders existed but were
+  // attributed by Layer 1, so the tile's `layer = 2` filter dropped them.
+  //
+  // Match Confidence: only Layer 2 contributes to the confidence average.
+  // Layer 1 confidence is 100 by definition (UTM is a deterministic signal),
+  // which would falsely inflate the statistical matcher's average. We
+  // capture the layer per order and gate the confidence sum on it.
+  const matched = new Map(); // orderId -> { confidence, layer }
   if (recentOrders.length > 0) {
     const ids = recentOrders.map((o) => o.shopifyOrderId);
     // Chunk the IN query - SQLite param limit is ~32k.
@@ -89,13 +93,14 @@ export async function rebuildMatchAccuracy(shopDomain) {
           shopDomain,
           shopifyOrderId: { in: slice },
           confidence: { gt: 0 },
-          layer: 2,
         },
-        select: { shopifyOrderId: true, confidence: true },
+        select: { shopifyOrderId: true, confidence: true, layer: true },
       });
       for (const r of rows) {
-        const prev = matchedConf.get(r.shopifyOrderId) || 0;
-        if (r.confidence > prev) matchedConf.set(r.shopifyOrderId, r.confidence);
+        // One Attribution row per (shop, order) by unique constraint - so
+        // no merging needed. The matcher gives Layer 1 priority and skips
+        // L1-claimed orders in Layer 2.
+        matched.set(r.shopifyOrderId, { confidence: r.confidence, layer: r.layer });
       }
     }
   }
@@ -108,16 +113,20 @@ export async function rebuildMatchAccuracy(shopDomain) {
     metaConvByDay.set(day, (metaConvByDay.get(day) || 0) + (r.conversions || 0));
   }
 
-  const matchedByDay = new Map();   // day -> matched count
-  const confSumByDay = new Map();   // day -> sum of confidence (for avg calc)
+  const matchedByDay = new Map();   // day -> matched count (L1 + L2)
+  const confSumByDay = new Map();   // day -> sum of L2 confidence (for avg calc)
+  const confCountByDay = new Map(); // day -> count of L2 attributions (denominator for avg)
   for (const o of recentOrders) {
-    const conf = matchedConf.get(o.shopifyOrderId);
-    if (!conf) continue;
+    const m = matched.get(o.shopifyOrderId);
+    if (!m) continue;
     if (!o.createdAt) continue;
     const day = shopLocalDayKey(tz, o.createdAt);
     if (!day) continue;
     matchedByDay.set(day, (matchedByDay.get(day) || 0) + 1);
-    confSumByDay.set(day, (confSumByDay.get(day) || 0) + conf);
+    if (m.layer === 2) {
+      confSumByDay.set(day, (confSumByDay.get(day) || 0) + m.confidence);
+      confCountByDay.set(day, (confCountByDay.get(day) || 0) + 1);
+    }
   }
 
   const allDays = new Set([...metaConvByDay.keys(), ...matchedByDay.keys()]);
@@ -127,10 +136,13 @@ export async function rebuildMatchAccuracy(shopDomain) {
       const total = Math.round(metaConvByDay.get(day) || 0);
       const matched = matchedByDay.get(day) || 0;
       const confSum = confSumByDay.get(day) || 0;
+      const confCount = confCountByDay.get(day) || 0;
       const matchRate =
         total > 0 ? Math.min(100, Math.round((matched / total) * 100)) : null;
-      const confAvg = matched > 0 ? Math.round(confSum / matched) : null;
-      return { date: day, matchRate, matched, total, confSum, confAvg };
+      // Confidence average is over Layer 2 attributions only - Layer 1 is
+      // 100 by definition and would mask the statistical matcher's accuracy.
+      const confAvg = confCount > 0 ? Math.round(confSum / confCount) : null;
+      return { date: day, matchRate, matched, total, confSum, confCount, confAvg };
     });
 
   // ── Rolling windows ──
@@ -144,10 +156,12 @@ export async function rebuildMatchAccuracy(shopDomain) {
     return { rate, matched, total };
   };
   const sumConf = (slice) => {
-    const matched = slice.reduce((s, d) => s + d.matched, 0);
+    // Confidence is averaged over Layer 2 attributions only (see day-level
+    // confAvg comment above).
+    const confCount = slice.reduce((s, d) => s + (d.confCount || 0), 0);
     const confSum = slice.reduce((s, d) => s + d.confSum, 0);
-    const conf = matched > 0 ? Math.round(confSum / matched) : null;
-    return { conf, matched, confSum };
+    const conf = confCount > 0 ? Math.round(confSum / confCount) : null;
+    return { conf, matched: confCount, confSum };
   };
 
   const r30 = sumRate(tail(30));
