@@ -316,6 +316,12 @@ function fastGreedyMatch(pool, R, slotCaps, metaRevenue, budgetMs) {
 //     attributions: [...rows ready to db.attribution.create({ data })],
 //     pickedOrderIds: [Order.id, ...]   // to add to the global usedOrders set
 //     matched: int, unmatched: int,
+//     bucketStats: [{ adId, hour, metaConv, metaValue, matchedConv, matchedValue }, ...]
+//       One entry per (ad, hourSlot) seen in dayInsights. Orchestrator writes
+//       these into MetaSnapshot so the hourly/daily delta matcher knows how
+//       many conversions the bulk pass already attributed for each bucket —
+//       without this, the next sweep recomputes delta=meta_reported and
+//       creates phantom orphans for every conversion the bulk pass matched.
 //   }
 export function matchDay(ctx) {
   const {
@@ -347,7 +353,38 @@ export function matchDay(ctx) {
 
   const attributions = [];
   const pickedOrderIds = [];
+  const bucketStats = [];
   let matched = 0, unmatched = 0;
+
+  // Resolve which slot index a pick belongs to. Picks from the exhaustive
+  // backtracker carry a numeric `slot`; picks from `chooseRItemsIgnoreCaps`
+  // (the no-cap fallback) and from the zero-revenue branch don't, so we
+  // fall back to matching by time window. Used to attribute matched counts
+  // to the correct bucket for the snapshot write.
+  function resolveSlotIdx(pick, slots) {
+    if (typeof pick.slot === "number" && pick.slot >= 0 && pick.slot < slots.length) return pick.slot;
+    if (Array.isArray(pick.slots) && pick.slots.length > 0) return pick.slots[0];
+    if (pick.time && typeof pick.time.getUTCHours === "function") {
+      const m = pick.time.getUTCHours() * 60 + pick.time.getUTCMinutes();
+      for (let si = 0; si < slots.length; si++) {
+        if (minuteInRange(m, slots[si].start, slots[si].end)) return si;
+      }
+    }
+    return 0;
+  }
+
+  function pushBucketStats(ad, slots, matchedBySlot, matchedValueBySlot) {
+    for (let si = 0; si < slots.length; si++) {
+      bucketStats.push({
+        adId: ad.adId,
+        hour: slots[si].hour,
+        metaConv: slots[si].cap,
+        metaValue: Math.round((slots[si].slotValue || 0) * 100) / 100,
+        matchedConv: matchedBySlot[si] || 0,
+        matchedValue: Math.round((matchedValueBySlot[si] || 0) * 100) / 100,
+      });
+    }
+  }
 
   for (const ad of sortedAds) {
     const metaRevenue = ad.totalConversionValue;
@@ -356,6 +393,8 @@ export function matchDay(ctx) {
 
     const slots = ad.slots.sort((a, b) => a.hour - b.hour);
     const slotCaps = slots.map(s => Math.max(0, s.cap));
+    const matchedBySlot = new Array(slots.length).fill(0);
+    const matchedValueBySlot = new Array(slots.length).fill(0);
 
     const candidates = [];
     for (const order of dayOrders) {
@@ -409,6 +448,7 @@ export function matchDay(ctx) {
           });
         }
       }
+      pushBucketStats(ad, slots, matchedBySlot, matchedValueBySlot);
       continue;
     }
 
@@ -424,6 +464,8 @@ export function matchDay(ctx) {
           usedSet.add(pick.id);
           pickedOrderIds.push(pick.id);
           matched++;
+          const slotIdx = resolveSlotIdx(pick, slots);
+          if (slotIdx >= 0 && slotIdx < slots.length) matchedBySlot[slotIdx]++;
           let rivalCount = 0;
           for (const cand of zeroCandidates) {
             if (pickedIds.has(cand.id)) continue;
@@ -453,6 +495,7 @@ export function matchDay(ctx) {
           });
         }
       }
+      pushBucketStats(ad, slots, matchedBySlot, matchedValueBySlot);
       continue;
     }
 
@@ -497,11 +540,13 @@ export function matchDay(ctx) {
           });
         }
       }
+      pushBucketStats(ad, slots, matchedBySlot, matchedValueBySlot);
       continue;
     }
 
     for (const pick of picks) {
-      const assignedSlot = slots[pick.slot];
+      const slotIdx = resolveSlotIdx(pick, slots);
+      const assignedSlot = slots[slotIdx];
       const perPickValue = assignedSlot
         ? Math.round((assignedSlot.slotValue / Math.max(1, assignedSlot.cap)) * 100) / 100
         : Math.round((metaRevenue / picks.length) * 100) / 100;
@@ -509,6 +554,10 @@ export function matchDay(ctx) {
       usedSet.add(pick.id);
       pickedOrderIds.push(pick.id);
       matched++;
+      if (slotIdx >= 0 && slotIdx < slots.length) {
+        matchedBySlot[slotIdx]++;
+        matchedValueBySlot[slotIdx] += perPickValue;
+      }
 
       const { confidence, rivalCount } = calculateConfidence(pick, candidates, picks);
 
@@ -521,7 +570,34 @@ export function matchDay(ctx) {
         matchMethod, metaConversionValue: perPickValue,
       });
     }
+
+    // Partial-pick orphans. Before this, the matcher would silently drop any
+    // slot the exhaustive/fast picker couldn't fill — leaving the snapshot
+    // accounting believing the bucket had `picks.length` matches while Meta
+    // reported `totalCap`. The next hourly/daily delta sweep then resurfaced
+    // those gaps as phantom orphans on top of the matched orders. By emitting
+    // the unfilled placeholders here, the snapshot we write below stays
+    // self-consistent: snapshot.conversions = matched count, orphan rows
+    // cover the rest, and the daily sweep's idempotent upsert is a no-op.
+    for (let si = 0; si < slots.length; si++) {
+      const slot = slots[si];
+      const unfilled = slot.cap - matchedBySlot[si];
+      if (unfilled <= 0) continue;
+      unmatched += unfilled;
+      const slotPerConv = slot.cap > 0 ? Math.round((slot.slotValue / slot.cap) * 100) / 100 : 0;
+      for (let ui = 0; ui < unfilled; ui++) {
+        attributions.push({
+          shopDomain, shopifyOrderId: `unmatched_${ad.adId}_${day}_${slot.hour}_c${ui + 1}`,
+          layer: 2, confidence: 0,
+          metaCampaignId: ad.campaignId, metaCampaignName: ad.campaignName,
+          metaAdSetId: ad.adSetId, metaAdSetName: ad.adSetName, metaAdId: ad.adId, metaAdName: ad.adName,
+          matchMethod: "none", metaConversionValue: slotPerConv,
+        });
+      }
+    }
+
+    pushBucketStats(ad, slots, matchedBySlot, matchedValueBySlot);
   }
 
-  return { day, attributions, pickedOrderIds, matched, unmatched };
+  return { day, attributions, pickedOrderIds, matched, unmatched, bucketStats };
 }

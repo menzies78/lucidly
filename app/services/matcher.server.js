@@ -583,7 +583,7 @@ export async function runAttribution(shopDomain) {
           if (msg.type !== "match-day-result") return;
           const slot = inFlight.get(msg.jobId);
           inFlight.delete(msg.jobId);
-          const { day, attributions, pickedOrderIds, matched, unmatched } = msg.result;
+          const { day, attributions, pickedOrderIds, matched, unmatched, bucketStats } = msg.result;
 
           // Serialise SQLite writes on the main thread. Per-day batches keep
           // the connection pool happy; 200 per transaction is the same batch
@@ -595,6 +595,39 @@ export async function runAttribution(shopDomain) {
                 const sliceRows = attributions.slice(i, i + TX_BATCH);
                 await db.$transaction(
                   sliceRows.map(data => db.attribution.create({ data })),
+                );
+              }
+            }
+            // Write MetaSnapshot rows so the hourly + nightly delta sweep
+            // knows how many conversions the bulk pass already attributed for
+            // each (ad, day, hour) bucket. Without this, findNewConversions
+            // sees prev.conversions = 0, treats the full Meta-reported count
+            // as a fresh delta, and matchSingleConversion (which filters out
+            // already-attributed orders) generates a phantom orphan for every
+            // conversion the bulk pass matched. See incrementalSync.server.js
+            // ::findNewConversions / ::matchSingleConversion (line ~703 query
+            // excludes confidence>0 non-UTM orders).
+            //
+            // Snapshot stores MATCHED count, not Meta-reported, so genuinely
+            // unmatched conversions remain visible to subsequent sweeps and
+            // can be retried when delayed webhook orders arrive.
+            if (bucketStats && bucketStats.length) {
+              const SNAP_BATCH = 200;
+              for (let i = 0; i < bucketStats.length; i += SNAP_BATCH) {
+                const sliceRows = bucketStats.slice(i, i + SNAP_BATCH);
+                await db.$transaction(
+                  sliceRows.map(b => db.metaSnapshot.upsert({
+                    where: {
+                      shopDomain_date_adId_hourSlot: {
+                        shopDomain, date: day, adId: b.adId, hourSlot: b.hour,
+                      },
+                    },
+                    create: {
+                      shopDomain, date: day, adId: b.adId, hourSlot: b.hour,
+                      conversions: b.matchedConv, conversionValue: b.matchedValue,
+                    },
+                    update: { conversions: b.matchedConv, conversionValue: b.matchedValue },
+                  })),
                 );
               }
             }
