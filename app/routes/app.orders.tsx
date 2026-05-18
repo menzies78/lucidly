@@ -55,7 +55,16 @@ export const loader = async ({ request }) => {
           shopDomain,
           OR: [
             { shopifyOrderId: { in: orderIdsInRange } },
-            { confidence: 0, matchedAt: { gte: fromDate, lte: toDate } },
+            // Unmatched Meta conversions (orphan attributions). Their
+            // conversion date lives in the synthetic shopifyOrderId
+            // ("unmatched_<adId>_<YYYY-MM-DD>_..."), NOT in matchedAt
+            // (which is when the matcher ran, often days later). Pull all
+            // orphans for the shop and let the render-time date filter
+            // (which parses the date from the ID) do the precise gating.
+            // Previously filtered on matchedAt - that hid orphans from
+            // narrow date ranges because matchedAt fell outside the window
+            // even when the conversion date sat inside it.
+            { confidence: 0, shopifyOrderId: { startsWith: "unmatched_" } },
           ],
         },
         orderBy: { matchedAt: "desc" },
