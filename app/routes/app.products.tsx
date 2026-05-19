@@ -303,10 +303,43 @@ export const loader = async ({ request }) => {
     .map(([product, data]) => ({ product, qty: data.qty, revenue: Math.round(data.revenue * 100) / 100 }))
     .sort((a, b) => b.qty - a.qty).slice(0, 20);
 
-  // ── Combos, add-ons, journeys: read from precomputed blob ──
-  // NOTE: these are all-time analyses, not date-scoped. Blob refreshes on each sync.
-  const metaCombos = blob.metaCombos || [];
-  const nonMetaCombos = blob.nonMetaCombos || [];
+  // ── Basket Combinations: date-scoped via blob.dailyBaskets ──
+  // Combos can't be additively summed across days (a co-purchase pair only
+  // counts within a single basket), so we filter blob.dailyBaskets to the
+  // window and re-run the combo builder. The all-time blob.metaCombos /
+  // blob.nonMetaCombos are kept as a fallback for rollups that predate
+  // dailyBaskets but ignored when dailyBaskets is present.
+  const buildCombosWindow = (baskets: string[][]) => {
+    const combos: Record<string, { product1: string; product2: string; count: number }> = {};
+    for (const basket of baskets) {
+      const sorted = [...basket].sort();
+      for (let i = 0; i < sorted.length; i++) {
+        for (let j = i + 1; j < sorted.length; j++) {
+          const key = `${sorted[i]}|||${sorted[j]}`;
+          if (!combos[key]) combos[key] = { product1: sorted[i], product2: sorted[j], count: 0 };
+          combos[key].count++;
+        }
+      }
+    }
+    return Object.values(combos).sort((a, b) => b.count - a.count).slice(0, 15);
+  };
+  let metaCombos: { product1: string; product2: string; count: number }[];
+  let nonMetaCombos: { product1: string; product2: string; count: number }[];
+  if (blob.dailyBaskets && Object.keys(blob.dailyBaskets).length > 0) {
+    const metaBasketsInRange: string[][] = [];
+    const nonMetaBasketsInRange: string[][] = [];
+    for (const dateStr of Object.keys(blob.dailyBaskets)) {
+      if (dateStr < fromKey || dateStr > toKey) continue;
+      const d = blob.dailyBaskets[dateStr];
+      if (d?.meta) metaBasketsInRange.push(...d.meta);
+      if (d?.nonMeta) nonMetaBasketsInRange.push(...d.nonMeta);
+    }
+    metaCombos = buildCombosWindow(metaBasketsInRange);
+    nonMetaCombos = buildCombosWindow(nonMetaBasketsInRange);
+  } else {
+    metaCombos = blob.metaCombos || [];
+    nonMetaCombos = blob.nonMetaCombos || [];
+  }
   // Date-scoped add-ons: sum over blob.dailyAddonBaskets entries whose date
   // falls inside fromKey..toKey. allBaskets / metaBaskets are the denominators
   // for the "appearances ÷ basket total" rate. Per-product appearances come

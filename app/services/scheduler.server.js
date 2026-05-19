@@ -252,21 +252,46 @@ async function runHistoricalDemographicsBackfillIfNeeded() {
       console.log(`[HistoricalBackfill] ${shopDomain}: skipping (manual sync running)`);
       continue;
     }
-    const earliest = await db.metaBreakdown.aggregate({
+    // Check coverage PER breakdown type, not globally. Vollebak had a
+    // stray country-breakdown row from 2025-04 (initial onboarding sync)
+    // which set the global min(date) > 30 days ago and made the check
+    // conclude "already backfilled" — even though age / gender /
+    // age_gender / platform_position / publisher_platform only covered
+    // the last 14 days. Result: Product Demographics / Lowest CPA /
+    // platform breakdowns silently empty across longer windows.
+    //
+    // Backfill if ANY required type lacks 30-day coverage.
+    const perType = await db.metaBreakdown.groupBy({
+      by: ["breakdownType"],
       where: { shopDomain },
       _min: { date: true },
     });
-    const minDate = earliest._min.date;
-    if (!minDate) {
+    if (perType.length === 0) {
       console.log(`[HistoricalBackfill] ${shopDomain}: no breakdown rows yet, skipping`);
       continue;
     }
-    if (minDate < cutoff) {
-      // Already has > 30 days of breakdown data — nothing to do.
+    const REQUIRED_TYPES = [
+      "country",
+      "age",
+      "gender",
+      "age_gender",
+      "platform_position",
+      "publisher_platform",
+    ];
+    const earliestByType = Object.fromEntries(
+      perType.map((p) => [p.breakdownType, p._min.date])
+    );
+    const stale = REQUIRED_TYPES.filter((t) => {
+      const d = earliestByType[t];
+      return !d || d >= cutoff;
+    });
+    if (stale.length === 0) {
+      // Every required type has > 30 days of coverage — done.
       continue;
     }
+    console.log(`[HistoricalBackfill] ${shopDomain}: per-type coverage gap: ${stale.join(", ")}`);
 
-    console.log(`[HistoricalBackfill] ${shopDomain}: earliest breakdown is ${minDate.toISOString().slice(0,10)} - running 400-day backfill`);
+    console.log(`[HistoricalBackfill] ${shopDomain}: running 400-day backfill`);
     try {
       const { syncMetaBreakdowns } = await import("./metaBreakdownSync.server.js");
       const r = await syncMetaBreakdowns(shopDomain, `historical-backfill:${shopDomain}`, 400);

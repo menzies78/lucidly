@@ -391,6 +391,12 @@ async function buildAnalysisBlob({ orders, attrByOrderId, metaAcquiredCustomers,
   // Products loader can compute date-scoped Top Add-ons without re-reading
   // raw orders. Replaces the per-request periodOrders findMany.
   const dailyAddonBaskets = {}; // date → { allBaskets, metaBaskets, allApps:{p:n}, metaApps:{p:n} }
+  // Raw per-date baskets (lists of parent-product arrays, split by Meta vs
+  // non-Meta) so the loader can rebuild date-scoped Basket Combinations
+  // without iterating raw orders. Combos cannot be summed across days like
+  // appearance counts can — a co-purchase pair only counts within a single
+  // basket, so the loader filters the date range and re-runs buildCombos.
+  const dailyBaskets = {}; // date → { meta: [[p1,p2,...], ...], nonMeta: [[...], ...] }
 
   let _blobLoopI = 0;
   for (const order of orders) {
@@ -461,6 +467,11 @@ async function buildAnalysisBlob({ orders, attrByOrderId, metaAcquiredCustomers,
     if (uniqueParents.length >= 2) {
       if (isMeta) metaBaskets.push(uniqueParents);
       else nonMetaBaskets.push(uniqueParents);
+      // Mirror into per-day baskets so the Basket Combinations tile can
+      // recompute combos for the active date window. Keeping the all-time
+      // arrays around for buildAddons / metaCombos legacy fields below.
+      if (!dailyBaskets[dateStr]) dailyBaskets[dateStr] = { meta: [], nonMeta: [] };
+      (isMeta ? dailyBaskets[dateStr].meta : dailyBaskets[dateStr].nonMeta).push(uniqueParents);
       // Per-date split: every multi-product basket contributes 1 to allBaskets
       // and (when meta) 1 to metaBaskets. Each unique parent in the basket
       // contributes 1 to the appearances map; loader sums over the date range.
@@ -632,6 +643,7 @@ async function buildAnalysisBlob({ orders, attrByOrderId, metaAcquiredCustomers,
     dailyBasketStats,
     dailyRefundByProduct,
     dailyAddonBaskets,
+    dailyBaskets,
     customerEntries,
   };
 }

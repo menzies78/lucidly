@@ -304,21 +304,53 @@ export const loader = async ({ request }) => {
     shopifyByCountry[cc].revenue += r.shopifyRevenue;
   }
 
-  // ── Top Products per Country (pre-computed all-time blob) ──
-  // Page-level date filter intentionally NOT applied; the tile shows the
-  // merchant's lifetime best sellers per country. See geoRollups.server.js
-  // for the cube definition.
-  const topProductsRow = await db.shopAnalysisCache.findUnique({
-    where: { shopDomain_cacheKey: { shopDomain, cacheKey: "geo:topProducts" } },
-    select: { payload: true },
+  // ── Top Products per Country (built on-demand for the selected window) ──
+  // The tile UI says "in this period" - so it now respects the page-level
+  // date selector. Previously this read an all-time ShopAnalysisCache blob
+  // which surfaced stale names when merchants renamed products mid-history
+  // (HM dropped "Cotton Jacquard" from titles in Aug 2025 — old long-name
+  // rollup keys dominated USA top-3 even at "Last 30 days").
+  const { buildTopProductsCube } = await import("../services/geoRollups.server.js");
+  const { toParentProduct } = await import("../services/productRollups.server.js");
+  const windowOrders = await db.order.findMany({
+    where: { shopDomain, isOnlineStore: true, createdAt: { gte: fromDate, lte: toDate } },
+    select: { shopifyOrderId: true, shopifyCustomerId: true, countryCode: true },
   });
-  const topProductsByCountry = (() => {
-    if (!topProductsRow?.payload) return [];
-    try {
-      const parsed = JSON.parse(topProductsRow.payload);
-      return parsed?.topProductsByCountry || [];
-    } catch { return []; }
+  const windowOrderIds = windowOrders.map(o => o.shopifyOrderId);
+  const windowCustIds: string[] = [...new Set(windowOrders.map(o => o.shopifyCustomerId).filter((s): s is string => !!s))];
+  const [windowLineItems, windowCustomers, windowAttrs] = await Promise.all([
+    windowOrderIds.length === 0 ? Promise.resolve([]) : db.orderLineItem.findMany({
+      where: { shopDomain, shopifyOrderId: { in: windowOrderIds } },
+      select: {
+        shopifyOrderId: true, title: true,
+        quantity: true, refundedQuantity: true,
+        totalPrice: true, refundedAmount: true,
+      },
+    }),
+    windowCustIds.length === 0 ? Promise.resolve([]) : db.customer.findMany({
+      where: { shopDomain, shopifyCustomerId: { in: windowCustIds } },
+      select: {
+        shopifyCustomerId: true, metaSegment: true,
+        inferredGender: true, inferredGenderConfidence: true,
+      },
+    }),
+    windowOrderIds.length === 0 ? Promise.resolve([]) : db.attribution.findMany({
+      where: { shopDomain, shopifyOrderId: { in: windowOrderIds } },
+      select: { shopifyOrderId: true, confidence: true, metaGender: true },
+    }),
+  ]);
+  const productImagesMap = (() => {
+    try { return shop?.productImagesJson ? JSON.parse(shop.productImagesJson) : {}; }
+    catch { return {}; }
   })();
+  const topProductsByCountry = buildTopProductsCube({
+    orders: windowOrders,
+    lineItems: windowLineItems,
+    attributions: windowAttrs,
+    customers: windowCustomers,
+    productImagesMap,
+    toParentProduct,
+  });
 
   // ── Customer Map Explorer blob (computed at rollup time) ──
   // The blob is all-time. The tile has its own time-window control (default
@@ -1691,7 +1723,7 @@ export default function GeoPerformance() {
           <VipsByCountryTile blob={customerMapBlob} cs={cs} />
 
           {/* ═══ Top Products per Country ═══ */}
-          <TopProductsByCountryTile data={topProductsByCountry} cs={cs} />
+          <TopProductsByCountryTile data={topProductsByCountry as CountryProducts[]} cs={cs} />
 
           {/* ═══ 2. VISUAL TILES (50/50 row) ═══ */}
           {/* Spend vs Revenue and Untapped Markets read together - one shows

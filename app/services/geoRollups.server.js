@@ -395,18 +395,30 @@ export async function rebuildGeoRollups(shopDomain) {
     await db.dailyGeoRollup.createMany({ data: rows.slice(i, i + CHUNK) });
   }
 
-  // ── 7. geo:topProducts blob (all-time, per-country product cube) ──
-  const { toParentProduct } = await import("./productRollups.server.js");
+  // Top Products per Country is now built on-demand in the loader for the
+  // selected date window (see buildTopProductsCube below + app.geo.tsx).
+  // The all-time geo:topProducts ShopAnalysisCache blob was removed because
+  // it caused stale-product / wrong-name results when merchants renamed
+  // Shopify products mid-history (HM dropped "Cotton Jacquard" from titles
+  // in Aug 2025 — old long-name rollup keys still dominated USA top-3
+  // even at "Last 30 days").
+  console.log(`[geoRollups] ${shopDomain} rebuilt ${rows.length} rows in ${Date.now() - t0}ms (bd=${breakdowns.length}, orders=${orders.length}, attrs=${attributions.length}, li=${lineItems.length})`);
+  return { rows: rows.length, ms: Date.now() - t0 };
+}
 
-  // Build attribution metaGender index + customer demographic index.
-  const customerIds = [...new Set(orders.map(o => o.shopifyCustomerId).filter(Boolean))];
-  const customers = await db.customer.findMany({
-    where: { shopDomain, shopifyCustomerId: { in: customerIds } },
-    select: {
-      shopifyCustomerId: true, metaSegment: true,
-      inferredGender: true, inferredGenderConfidence: true,
-    },
-  });
+/**
+ * Build a per-country top-products cube (segment × gender) from pre-loaded
+ * orders / line items / attributions / customers. Shared between the
+ * full-history rebuild path and the geo.tsx loader's on-demand windowed
+ * computation. Pure function — no DB access.
+ *
+ * Returns: [{ cc, products: [{ title, image, mn_F, mn_M, ..., totalUnits,
+ * totalRevenue }, ...up to 8], totalCountryUnits }, ...sorted desc].
+ */
+export function buildTopProductsCube({ orders, lineItems, attributions, customers, productImagesMap, toParentProduct }) {
+  const orderMap = new Map();
+  for (const o of orders) orderMap.set(o.shopifyOrderId, o);
+
   const custBySid = new Map();
   for (const c of customers) custBySid.set(c.shopifyCustomerId, c);
 
@@ -451,12 +463,7 @@ export async function rebuildGeoRollups(shopDomain) {
     cell.totalRevenue += netRev;
   }
 
-  const productImagesMap = (() => {
-    try { return shopRow?.productImagesJson ? JSON.parse(shopRow.productImagesJson) : {}; }
-    catch { return {}; }
-  })();
-
-  const topProductsByCountry = Object.entries(productsByCountry)
+  return Object.entries(productsByCountry)
     .map(([cc, products]) => {
       const sorted = Object.entries(products)
         .map(([title, cell]) => ({
@@ -471,18 +478,4 @@ export async function rebuildGeoRollups(shopDomain) {
     })
     .filter(c => c.totalCountryUnits >= 3)
     .sort((a, b) => b.totalCountryUnits - a.totalCountryUnits);
-
-  await db.shopAnalysisCache.upsert({
-    where: { shopDomain_cacheKey: { shopDomain, cacheKey: "geo:topProducts" } },
-    create: {
-      shopDomain, cacheKey: "geo:topProducts",
-      payload: JSON.stringify({ topProductsByCountry, computedAt: new Date().toISOString() }),
-    },
-    update: {
-      payload: JSON.stringify({ topProductsByCountry, computedAt: new Date().toISOString() }),
-    },
-  });
-
-  console.log(`[geoRollups] ${shopDomain} rebuilt ${rows.length} rows + ${topProductsByCountry.length} country products in ${Date.now() - t0}ms (bd=${breakdowns.length}, orders=${orders.length}, attrs=${attributions.length}, li=${lineItems.length})`);
-  return { rows: rows.length, countries: topProductsByCountry.length, ms: Date.now() - t0 };
 }
