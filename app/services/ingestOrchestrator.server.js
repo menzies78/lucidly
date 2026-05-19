@@ -128,27 +128,18 @@ const TRACKS = {
       },
     },
     {
-      // Fast recent path: last 7 days of all 6 breakdown types. Keeps the
-      // Demographics tab populated quickly for the merchant's first visit.
-      key: "breakdowns-recent",
-      label: "Recent demographic breakdowns (last 7 days)",
-      progressKey: (shopDomain) => `ingest:${shopDomain}:breakdowns-recent`,
+      // 13-month daily-aggregate backfill for all 6 breakdown types. Aggregate-
+      // only — does NOT drive per-order metaAge/metaGender tags (going-forward
+      // deltas in syncTodayBreakdowns handle that), so historical accuracy is
+      // preserved without faking probabilistic tags. The full pull is a strict
+      // superset of any "last N days" window, so no separate recent phase is
+      // needed — the app is gated until onboardingCompleted, the merchant
+      // never sees a partially populated Demographics tab.
+      key: "breakdowns",
+      label: "Demographic breakdowns (13 months, daily aggregates)",
+      progressKey: (shopDomain) => `ingest:${shopDomain}:breakdowns`,
       run: async (shopDomain) => {
-        const r = await syncMetaBreakdowns(shopDomain, `ingest:${shopDomain}:breakdowns-recent`, 7);
-        return { rowsWritten: r?.totalRows || 0 };
-      },
-    },
-    {
-      // Historical backfill: 13 months of daily-aggregate breakdowns so the
-      // Demographics tab works across the full lookback selector range. These
-      // are aggregate-only — they do NOT drive per-order metaAge/metaGender
-      // tags (going-forward deltas in syncTodayBreakdowns handle that), so
-      // historical accuracy is preserved without faking probabilistic tags.
-      key: "breakdowns-historical",
-      label: "Historical demographic backfill (13 months, daily aggregates)",
-      progressKey: (shopDomain) => `ingest:${shopDomain}:breakdowns-historical`,
-      run: async (shopDomain) => {
-        const r = await syncMetaBreakdowns(shopDomain, `ingest:${shopDomain}:breakdowns-historical`, 400);
+        const r = await syncMetaBreakdowns(shopDomain, `ingest:${shopDomain}:breakdowns`, 400);
         return { rowsWritten: r?.totalRows || 0 };
       },
     },
