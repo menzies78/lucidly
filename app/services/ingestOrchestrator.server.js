@@ -39,6 +39,8 @@ import { syncMetaEntities } from "./metaEntitySync.server.js";
 import { refreshAdCreatives } from "./metaAdCreativeSync.server.js";
 import { runAttribution } from "./matcher.server.js";
 import { sendOnboardingCompleteEmail } from "./email.server.js";
+import { refreshProductImages } from "./productImageSync.server.js";
+import { setProgress, completeProgress } from "./progress.server.js";
 import { unauthenticated } from "../shopify.server";
 import { logIngestEvent, errInfo } from "./ingestEventLog.server.js";
 
@@ -126,11 +128,27 @@ const TRACKS = {
       },
     },
     {
-      key: "breakdowns",
-      label: "Country, platform, age & gender breakdowns",
-      progressKey: (shopDomain) => `ingest:${shopDomain}:breakdowns`,
+      // Fast recent path: last 7 days of all 6 breakdown types. Keeps the
+      // Demographics tab populated quickly for the merchant's first visit.
+      key: "breakdowns-recent",
+      label: "Recent demographic breakdowns (last 7 days)",
+      progressKey: (shopDomain) => `ingest:${shopDomain}:breakdowns-recent`,
       run: async (shopDomain) => {
-        const r = await syncMetaBreakdowns(shopDomain, `ingest:${shopDomain}:breakdowns`, 7);
+        const r = await syncMetaBreakdowns(shopDomain, `ingest:${shopDomain}:breakdowns-recent`, 7);
+        return { rowsWritten: r?.totalRows || 0 };
+      },
+    },
+    {
+      // Historical backfill: 13 months of daily-aggregate breakdowns so the
+      // Demographics tab works across the full lookback selector range. These
+      // are aggregate-only — they do NOT drive per-order metaAge/metaGender
+      // tags (going-forward deltas in syncTodayBreakdowns handle that), so
+      // historical accuracy is preserved without faking probabilistic tags.
+      key: "breakdowns-historical",
+      label: "Historical demographic backfill (13 months, daily aggregates)",
+      progressKey: (shopDomain) => `ingest:${shopDomain}:breakdowns-historical`,
+      run: async (shopDomain) => {
+        const r = await syncMetaBreakdowns(shopDomain, `ingest:${shopDomain}:breakdowns-historical`, 400);
         return { rowsWritten: r?.totalRows || 0 };
       },
     },
@@ -166,12 +184,90 @@ const FINAL_PHASE = {
   },
 };
 
+// Tidying-up phase. Bakes EVERY rollup table BEFORE flipping
+// onboardingCompleted. The merchant is about to land on a dashboard that
+// reads from DailyCustomerRollup + DailyProductRollup + ShopAnalysisCache
+// (Campaign Performance + Demographics + Customer Map). Skipping any of
+// these means empty panels until the next hourly cycle.
+//
+// Previously this work ran silently after FINAL_PHASE. Now it's a visible
+// phase row so the merchant sees "Tidying up & preparing dashboard" with
+// live sub-step progress, instead of the dashboard hanging on FinalisingCard.
+const FINAL_PHASE_2 = {
+  key: "finalize",
+  label: "Tidying up & preparing dashboard",
+  progressKey: (shopDomain) => `ingest:${shopDomain}:finalize`,
+  run: async (shopDomain) => {
+    const pkey = `ingest:${shopDomain}:finalize`;
+    const STEPS = [
+      ["Building customer segments", async () => {
+        const { rebuildCustomerSegments, rebuildCustomerRollups } = await import("./customerRollups.server.js");
+        await rebuildCustomerSegments(shopDomain);
+        await rebuildCustomerRollups(shopDomain);
+      }],
+      ["Building product rollups", async () => {
+        const { rebuildProductRollups } = await import("./productRollups.server.js");
+        await rebuildProductRollups(shopDomain);
+      }],
+      ["Building campaign rollups", async () => {
+        const { rebuildCampaignRollups } = await import("./campaignRollups.server.js");
+        await rebuildCampaignRollups(shopDomain);
+      }],
+      ["Building ad demographic rollups", async () => {
+        const { rebuildAdDemographicRollups } = await import("./adDemographicRollups.server.js");
+        await rebuildAdDemographicRollups(shopDomain);
+      }],
+      ["Building dashboard match accuracy", async () => {
+        const { rebuildMatchAccuracy } = await import("./dashboardRollups.server.js");
+        await rebuildMatchAccuracy(shopDomain);
+      }],
+      ["Building geographic rollups", async () => {
+        const { rebuildGeoRollups } = await import("./geoRollups.server.js");
+        await rebuildGeoRollups(shopDomain);
+      }],
+      ["Building customer gender chart data", async () => {
+        const { rebuildCustomerGenderDaily } = await import("./customerRollups.server.js");
+        await rebuildCustomerGenderDaily(shopDomain);
+      }],
+      ["Refreshing product images", async () => {
+        await refreshProductImages(shopDomain);
+      }],
+      ["Calibrating Meta pixel", async () => {
+        const { calibratePixel } = await import("./pixelCalibration.server.js");
+        await calibratePixel(shopDomain);
+      }],
+    ];
+    const total = STEPS.length;
+    for (let i = 0; i < STEPS.length; i++) {
+      const [label, fn] = STEPS[i];
+      setProgress(pkey, { status: "running", current: i, total, message: label });
+      try {
+        await fn();
+        console.log(`[ingestOrchestrator] ${shopDomain}: ${label} done`);
+      } catch (err) {
+        // Non-fatal: a partial dashboard beats a blank one. Log + continue.
+        console.error(`[ingestOrchestrator] ${shopDomain}: ${label} failed (non-fatal): ${err.message}`);
+      }
+    }
+    // Persist rebuild timestamp so the hourly cycle's gated rebuildAllRollups
+    // (24h throttle) skips a redundant run for the next 24h.
+    try {
+      await db.shop.update({ where: { shopDomain }, data: { lastRollupRebuild: new Date() } });
+    } catch (err) {
+      console.warn(`[ingestOrchestrator] ${shopDomain}: failed to update lastRollupRebuild: ${err.message}`);
+    }
+    completeProgress(pkey, { current: total, total, message: "Dashboard ready" });
+    return { rowsWritten: 0 };
+  },
+};
+
 // Flat list of every phase, in declaration order. Used by the status API to
 // render the phase list deterministically.
 export const ALL_PHASES = [
   ...TRACKS.shopify.map(p => ({ ...p, track: "shopify" })),
   ...TRACKS.meta.map(p => ({ ...p, track: "meta" })),
   { ...FINAL_PHASE, track: "final" },
+  { ...FINAL_PHASE_2, track: "final" },
 ];
 
 // Singleton guard - one ingest at a time per shop. If the OAuth callback
@@ -269,105 +365,11 @@ async function runIngest(shopDomain) {
   // Final phase: matcher needs both Shopify orders AND Meta insights present.
   await runPhase(shopDomain, FINAL_PHASE, ctx);
 
-  // Bake EVERY rollup table BEFORE flipping onboardingCompleted. The merchant
-  // is about to land on a dashboard that reads from DailyCustomerRollup +
-  // DailyProductRollup + ShopAnalysisCache + (campaign rollups for the
-  // Campaign Performance tab) + AdDemographicRollup (Demographics tabs).
-  // Skipping any of these means empty panels until the next hourly cycle
-  // (worst-case 24h via the throttle in incrementalSync.rebuildAllRollups).
-  //
-  // Each rebuild is wrapped in try/catch so a failure in one doesn't block
-  // the others - partial dashboards beat blank ones. We also persist
-  // lastRollupRebuild so the hourly cycle's gated rebuildAllRollups skips a
-  // duplicate run for the next 24h.
-  try {
-    const { rebuildCustomerSegments, rebuildCustomerRollups } = await import("./customerRollups.server.js");
-    await rebuildCustomerSegments(shopDomain);
-    await rebuildCustomerRollups(shopDomain);
-    console.log(`[ingestOrchestrator] ${shopDomain}: customer rollups rebuilt`);
-  } catch (err) {
-    console.error(`[ingestOrchestrator] ${shopDomain}: customer rollup rebuild failed (non-fatal): ${err.message}`);
-  }
-
-  try {
-    const { rebuildProductRollups } = await import("./productRollups.server.js");
-    await rebuildProductRollups(shopDomain);
-    console.log(`[ingestOrchestrator] ${shopDomain}: product rollups rebuilt`);
-  } catch (err) {
-    console.error(`[ingestOrchestrator] ${shopDomain}: product rollup rebuild failed (non-fatal): ${err.message}`);
-  }
-
-  try {
-    const { rebuildCampaignRollups } = await import("./campaignRollups.server.js");
-    await rebuildCampaignRollups(shopDomain);
-    console.log(`[ingestOrchestrator] ${shopDomain}: campaign rollups rebuilt`);
-  } catch (err) {
-    console.error(`[ingestOrchestrator] ${shopDomain}: campaign rollup rebuild failed (non-fatal): ${err.message}`);
-  }
-
-  try {
-    const { rebuildAdDemographicRollups } = await import("./adDemographicRollups.server.js");
-    await rebuildAdDemographicRollups(shopDomain);
-    console.log(`[ingestOrchestrator] ${shopDomain}: ad demographic rollups rebuilt`);
-  } catch (err) {
-    console.error(`[ingestOrchestrator] ${shopDomain}: ad demographic rollup rebuild failed (non-fatal): ${err.message}`);
-  }
-
-  // Dashboard Match Accuracy + Match Confidence tiles read from the
-  // `dashboard:matchAccuracy` ShopAnalysisCache blob. Without this rebuild,
-  // the merchant lands on an empty pair of headline tiles until the first
-  // hourly cycle runs with new conversions (force=true).
-  try {
-    const { rebuildMatchAccuracy } = await import("./dashboardRollups.server.js");
-    await rebuildMatchAccuracy(shopDomain);
-    console.log(`[ingestOrchestrator] ${shopDomain}: dashboard match accuracy rebuilt`);
-  } catch (err) {
-    console.error(`[ingestOrchestrator] ${shopDomain}: dashboard match accuracy rebuild failed (non-fatal): ${err.message}`);
-  }
-
-  // Customer Map + geo tiles read from DailyGeoRollup. Without this rebuild,
-  // the map is empty post-install.
-  try {
-    const { rebuildGeoRollups } = await import("./geoRollups.server.js");
-    await rebuildGeoRollups(shopDomain);
-    console.log(`[ingestOrchestrator] ${shopDomain}: geo rollups rebuilt`);
-  } catch (err) {
-    console.error(`[ingestOrchestrator] ${shopDomain}: geo rollup rebuild failed (non-fatal): ${err.message}`);
-  }
-
-  // Customer Demographics gender breakdown reads from the genderDailyBlob
-  // produced by rebuildCustomerGenderDaily. Without this rebuild, the
-  // gender chart is empty.
-  try {
-    const { rebuildCustomerGenderDaily } = await import("./customerRollups.server.js");
-    await rebuildCustomerGenderDaily(shopDomain);
-    console.log(`[ingestOrchestrator] ${shopDomain}: customer gender daily blob rebuilt`);
-  } catch (err) {
-    console.error(`[ingestOrchestrator] ${shopDomain}: customer gender daily rebuild failed (non-fatal): ${err.message}`);
-  }
-
-  // Persist the rebuild timestamp so the hourly incremental sync's gated
-  // rebuildAllRollups (24h throttle) skips a redundant run. Without this,
-  // the merchant's first hourly tick post-install would re-do all rebuilds.
-  try {
-    await db.shop.update({ where: { shopDomain }, data: { lastRollupRebuild: new Date() } });
-  } catch (err) {
-    console.warn(`[ingestOrchestrator] ${shopDomain}: failed to update lastRollupRebuild: ${err.message}`);
-  }
-
-  // Pixel calibration. Compares attribution-window options against actual
-  // matched conversions and picks the best-fitting "winner". Flips the
-  // Health → Pixel pill from red ("not calibrated") to green. Non-fatal:
-  // a merchant with <N matched orders won't have enough signal for a
-  // winner, but calibratedAt will still be set so the pill shows yellow
-  // ("insufficient data") rather than red.
-  try {
-    const { calibratePixel } = await import("./pixelCalibration.server.js");
-    await calibratePixel(shopDomain);
-    console.log(`[ingestOrchestrator] ${shopDomain}: pixel calibration complete`);
-  } catch (err) {
-    console.error(`[ingestOrchestrator] ${shopDomain}: pixel calibration failed (non-fatal): ${err.message}`);
-  }
+  // Tidying-up phase: bake every rollup table, refresh product images, and
+  // calibrate the pixel BEFORE flipping onboardingCompleted. Runs as a
+  // visible phase row in the OnboardingFlow checklist so the merchant sees
+  // live progress instead of a static FinalisingCard.
+  await runPhase(shopDomain, FINAL_PHASE_2, ctx);
 
   // Mark onboarding complete.
   await db.shop.update({

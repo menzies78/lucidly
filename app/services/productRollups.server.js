@@ -212,9 +212,14 @@ export async function rebuildProductRollups(shopDomain) {
   let _orderLoopI = 0;
   for (const order of orders) {
     if (++_orderLoopI % YIELD_EVERY === 0) await yieldEventLoop();
-    // Skip £0 orders (staff / replacement / warranty) from product metrics
-    // so they don't inflate order counts and drag down per-product AOV.
-    if ((order.frozenTotalPrice || 0) === 0) continue;
+    // £0 orders (staff / replacement / warranty / preorder-fulfilment) are
+    // tracked for product surface area (unit counts, first-purchase counts)
+    // but contribute zero revenue. Skipping them outright hid products that
+    // ship primarily as £0 orders from the Products tab entirely
+    // (e.g. "Dalton Cotton Jacquard" appearing on Countries but missing
+    // from Products). Geo rollups filter per-line-item on `netUnits <= 0`
+    // instead — match that semantic here so the two reports agree.
+    const isFreeOrder = (order.frozenTotalPrice || 0) === 0;
 
     const segment = tagOrder(order, attrByOrderId, metaAcquiredCustomers, customerFirstOrderMap, tz);
     const dateStr = shopLocalDayKey(tz, order.createdAt);
@@ -293,10 +298,13 @@ export async function rebuildProductRollups(shopDomain) {
       const b = ensure(dateStr, p.parent, segment);
       b.orders++;
       b.items += p.lines;
-      b.revenue += p.revenue;
+      // £0 orders: keep units and order counts so the product surfaces,
+      // but contribute zero revenue (and zero first-purchase revenue) so
+      // AOV / revenue numbers stay accurate.
+      if (!isFreeOrder) b.revenue += p.revenue;
       if (isFirstPurchase) {
         b.firstPurchases++;
-        b.firstPurchaseRevenue += p.revenue;
+        if (!isFreeOrder) b.firstPurchaseRevenue += p.revenue;
       }
       for (const col of orderCollections) b.collections.add(col);
       if (attr?.metaCampaignName) b.campaigns[attr.metaCampaignName] = (b.campaigns[attr.metaCampaignName] || 0) + 1;

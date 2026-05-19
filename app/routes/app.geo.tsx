@@ -188,7 +188,15 @@ export const loader = async ({ request }) => {
     unverifiedRevenue: r2(agg.unverifiedRevenue),
     blendedROAS: agg.spend > 0 ? r2((agg.attributedRevenue + agg.unverifiedRevenue) / agg.spend) : 0,
     ctr: agg.impressions > 0 ? r2((agg.clicks / agg.impressions) * 100) : 0,
-    cpa: agg.attributedOrders > 0 ? r2(agg.spend / agg.attributedOrders) : 0,
+    // CPA uses Meta-reported conversions (same breakdown row as the spend) so
+    // numerator and denominator share semantics — both are "this audience
+    // country, per Meta". Using Shopify attributedOrders here mixes audience
+    // country (numerator) with shipping country (denominator), which on
+    // HM-style shops produced artificially low UK CPA because UK shipping
+    // dominated the denominator while only a fraction of spend got country-
+    // tagged by Meta. metaConversions also lets the tile rank countries
+    // consistently regardless of how matching is going on the Shopify side.
+    cpa: agg.metaConversions > 0 ? r2(agg.spend / agg.metaConversions) : 0,
     newCustomerCPA: agg.newCustomers > 0 ? r2(agg.spend / agg.newCustomers) : null,
     aov: agg.attributedOrders > 0 ? r2(agg.attributedRevenue / agg.attributedOrders) : null,
     spendPct: 0,
@@ -391,11 +399,12 @@ export const action = async ({ request }) => {
         const aiNewCustByCountry: Record<string, Set<string>> = {};
         for (const b of breakdownData) {
           const cc = b.breakdownValue;
-          if (!countryAgg[cc]) countryAgg[cc] = { country: cc, spend: 0, impressions: 0, clicks: 0, reach: 0, attributedOrders: 0, attributedRevenue: 0, newCustomerOrders: 0, newCustomers: 0, newCustomerRevenue: 0, existingCustomerOrders: 0, existingCustomerRevenue: 0 };
+          if (!countryAgg[cc]) countryAgg[cc] = { country: cc, spend: 0, impressions: 0, clicks: 0, reach: 0, metaConversions: 0, attributedOrders: 0, attributedRevenue: 0, newCustomerOrders: 0, newCustomers: 0, newCustomerRevenue: 0, existingCustomerOrders: 0, existingCustomerRevenue: 0 };
           countryAgg[cc].spend += b.spend;
           countryAgg[cc].impressions += b.impressions;
           countryAgg[cc].clicks += b.clicks;
           countryAgg[cc].reach += b.reach;
+          countryAgg[cc].metaConversions += b.conversions || 0;
         }
 
         // Add attribution revenue by country
@@ -432,7 +441,10 @@ export const action = async ({ request }) => {
         const overallRows = Object.values(countryAgg).map(c => ({
           ...c,
           blendedROAS: c.spend > 0 ? Math.round((c.attributedRevenue / c.spend) * 100) / 100 : 0,
-          cpa: c.attributedOrders > 0 ? Math.round((c.spend / c.attributedOrders) * 100) / 100 : 0,
+          // CPA uses Meta-reported conversions (audience country, same
+          // breakdown row as the spend) — see Part D fix above for why
+          // attributedOrders (shipping country) is the wrong denominator.
+          cpa: c.metaConversions > 0 ? Math.round((c.spend / c.metaConversions) * 100) / 100 : 0,
           newCustomerCPA: c.newCustomers > 0 ? Math.round((c.spend / c.newCustomers) * 100) / 100 : 0,
         })).sort((a, b) => b.spend - a.spend);
 
@@ -1364,9 +1376,14 @@ export default function GeoPerformance() {
       .filter((r: any) => r.aov > 0)
       .sort((a: any, b: any) => b.aov - a.aov)[0] || null;
 
-    // 4. Lowest Meta CPA (cheapest cost per attributed order).
-    const lowestCPA = eligible
-      .filter((r: any) => r.cpa > 0)
+    // 4. Lowest Meta CPA (cheapest cost per Meta-reported conversion,
+    //    per audience country). Eligibility tightened to require
+    //    metaConversions >= MIN_ORDERS rather than attributedOrders —
+    //    the CPA denominator switched to metaConversions (Part D fix),
+    //    so we filter on the same axis to avoid surfacing countries that
+    //    only crossed the floor on the shipping-country side.
+    const lowestCPA = overallRows
+      .filter((r: any) => (r.metaConversions || 0) >= MIN_ORDERS && r.cpa > 0)
       .sort((a: any, b: any) => a.cpa - b.cpa)[0] || null;
 
     return { highestNewCustRev, highestROAS, highestAOV, lowestCPA, MIN_ORDERS };

@@ -338,6 +338,17 @@ model MetaBreakdown {
   outboundClicks      Int      @default(0)
   importedAt          DateTime @default(now())
 
+  // Previous-cycle observation snapshot. Cumulative breakdown totals from
+  // the prior hourly poll, kept so we can compute (current - previous)
+  // deltas per cycle. The deltas pinpoint which demographic bucket a new
+  // conversion landed in - going forward this lets us assign per-order
+  // metaAge / metaGender / metaPlatform with demographicExact = true
+  // instead of falling back to value-based heuristics over a full-day
+  // candidate pool.
+  prevConversions     Int       @default(0)
+  prevConversionValue Float     @default(0)
+  prevObservedAt      DateTime?
+
   @@unique([shopDomain, date, adId, breakdownType, breakdownValue])
   @@index([shopDomain, breakdownType])
   @@index([shopDomain, date])

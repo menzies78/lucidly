@@ -962,18 +962,69 @@ async function matchSingleConversion(shopDomain, conv, todayOrders, revenueField
 
 async function syncTodayBreakdowns(shopDomain, metaAccessToken, metaAdAccountId, today, rate = 1.0) {
   let totalRows = 0;
+  // Per-cycle deltas keyed by adId. Each entry: { date, breakdownType,
+  // breakdownValue, deltaConv, deltaValue }. Used by enrichFromDelta to assign
+  // ground-truth demographic tags to attributions matched in this cycle.
+  const deltaMap = new Map();
+
   for (const config of BREAKDOWN_CONFIGS) {
     try {
       const rows = await fetchBreakdown(metaAccessToken, metaAdAccountId, today, config);
       for (const row of rows) {
         convertMetaFields(row, rate);
+
+        // Read previous-cycle observation BEFORE we overwrite. If there's no
+        // existing row, `prev` defaults to 0 — but the migration seeded prev =
+        // current for all rows present at migration time, so post-migration
+        // the first delta we observe is genuinely "what changed this cycle".
+        const existing = await db.metaBreakdown.findUnique({
+          where: {
+            shopDomain_date_adId_breakdownType_breakdownValue: {
+              shopDomain, date: row.date, adId: row.adId,
+              breakdownType: row.breakdownType, breakdownValue: row.breakdownValue,
+            },
+          },
+          select: { conversions: true, conversionValue: true, importedAt: true },
+        });
+
+        const prevConv = existing?.conversions || 0;
+        const prevVal = existing?.conversionValue || 0;
+        const curConv = row.conversions || 0;
+        const curVal = row.conversionValue || 0;
+        const deltaConv = Math.max(0, curConv - prevConv);
+        const deltaValue = Math.max(0, curVal - prevVal);
+
+        // Only stash deltas we'll actually use — positive conversion deltas
+        // on demographic / placement breakdowns. Country/region breakdowns
+        // aren't used for per-order tag assignment.
+        if (deltaConv > 0 &&
+            (row.breakdownType === "age" || row.breakdownType === "gender" ||
+             row.breakdownType === "publisher_platform" || row.breakdownType === "platform_position")) {
+          if (row.adId) {
+            const arr = deltaMap.get(row.adId) || [];
+            arr.push({
+              date: row.date,
+              breakdownType: row.breakdownType,
+              breakdownValue: row.breakdownValue,
+              deltaConv,
+              deltaValue,
+            });
+            deltaMap.set(row.adId, arr);
+          }
+        }
+
         const insightData = {
           campaignName: row.campaignName, adSetName: row.adSetName, adName: row.adName,
           impressions: row.impressions, clicks: row.clicks, spend: row.spend, reach: row.reach,
-          conversions: row.conversions, conversionValue: row.conversionValue,
+          conversions: curConv, conversionValue: curVal,
           linkClicks: row.linkClicks, landingPageViews: row.landingPageViews,
           addToCart: row.addToCart, initiateCheckout: row.initiateCheckout,
           viewContent: row.viewContent, outboundClicks: row.outboundClicks,
+          // Roll the previous observation forward so the NEXT cycle can
+          // compute its delta against this one.
+          prevConversions: prevConv,
+          prevConversionValue: prevVal,
+          prevObservedAt: existing?.importedAt || null,
         };
         await db.metaBreakdown.upsert({
           where: {
@@ -996,8 +1047,8 @@ async function syncTodayBreakdowns(shopDomain, metaAccessToken, metaAdAccountId,
       console.error(`[IncrementalSync] Breakdown ${config.type} failed:`, err.message);
     }
   }
-  console.log(`[IncrementalSync] Synced ${totalRows} breakdown rows for today`);
-  return totalRows;
+  console.log(`[IncrementalSync] Synced ${totalRows} breakdown rows for today (${deltaMap.size} ads with positive deltas)`);
+  return { totalRows, deltaMap };
 }
 
 /**
@@ -1594,20 +1645,31 @@ export async function runIncrementalSync(shopDomain) {
 
   setProgress(`incrementalSync:${shopDomain}`, { status: "running", message: "Syncing today's breakdowns..." });
   let breakdownRows = 0;
+  let breakdownDeltaMap = new Map();
   try {
-    breakdownRows = await syncTodayBreakdowns(shopDomain, shop.metaAccessToken, shop.metaAdAccountId, today, rate);
+    const r = await syncTodayBreakdowns(shopDomain, shop.metaAccessToken, shop.metaAdAccountId, today, rate);
+    breakdownRows = r.totalRows;
+    breakdownDeltaMap = r.deltaMap || new Map();
   } catch (err) {
     console.error(`[IncrementalSync] Breakdown sync failed (non-fatal): ${err.message}`);
   }
 
-  // Enrich any unenriched attribution in the last 7 days. Self-heals when
-  // Meta breakdown data arrives later than hourly insights (typical 1-3h lag) —
-  // yesterday's matches get re-checked on today's cycle.
-  setProgress(`incrementalSync:${shopDomain}`, { status: "running", message: "Enriching attribution demographics..." });
+  // Delta-based per-order demographic assignment (ground truth, going-forward).
+  // Uses the per-cycle deltas captured above to assign demographic tags to the
+  // attributions matched in THIS cycle. Attribution gets demographicExact=true
+  // when the delta unambiguously points at one bucket. After this pass, run
+  // the catch-up enricher to backfill any attribution still NULL (e.g. Meta
+  // breakdown data hasn't caught up yet — typical 1-3h lag).
+  setProgress(`incrementalSync:${shopDomain}`, { status: "running", message: "Assigning demographics from cycle deltas..." });
   let enrichResult = { enriched: 0 };
   try {
-    const { enrichRecentUnenriched } = await import("./attributionEnrichment.server.js");
-    enrichResult = await enrichRecentUnenriched(shopDomain, 7);
+    const { enrichFromDelta, enrichRecentUnenriched } = await import("./attributionEnrichment.server.js");
+    if (matchedOrderIds.length > 0 && breakdownDeltaMap.size > 0) {
+      const deltaRes = await enrichFromDelta(shopDomain, breakdownDeltaMap, matchedOrderIds);
+      console.log(`[IncrementalSync] Delta enrichment: ${deltaRes.enriched} (${deltaRes.exact} exact, ${deltaRes.probabilistic} probabilistic)`);
+    }
+    // Catch-up: anything still NULL after delta pass.
+    enrichResult = await enrichRecentUnenriched(shopDomain, 1);
   } catch (err) {
     console.error(`[IncrementalSync] Demographic enrichment failed (non-fatal): ${err.message}`);
   }

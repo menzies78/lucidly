@@ -3,19 +3,26 @@ import db from "../db.server";
 /**
  * Enriches Attribution records with demographic data from MetaBreakdown.
  *
- * For each matched attribution (confidence > 0), looks up MetaBreakdown
- * for the same adId + date across age, gender, publisher_platform, and
- * platform_position breakdown types.
+ * Two paths now coexist:
  *
- * Allocation rules:
- * - 1 bucket for a breakdown type → exact assignment (demographicExact = true)
- * - Multiple buckets → assign the value with highest conversion count (probabilistic)
- * - If matched orders exceed conversions in top bucket → still assign top bucket
- *   but mark as probabilistic (demographicExact = false)
+ * 1. `enrichFromDelta(shopDomain, deltaMap, matchedOrderIds)` — preferred for
+ *    new attributions written in the current hourly cycle. Uses per-cycle
+ *    cumulative deltas captured by syncTodayBreakdowns. When the delta for a
+ *    given (adId, date, breakdownType) unambiguously identifies the bucket
+ *    that gained the new conversions, we assign demographicExact=true. This
+ *    is GROUND TRUTH — not a value-based heuristic.
  *
- * Can run in two modes:
- * - enrichAll(shopDomain): enriches ALL attributions missing demographics (for full re-match)
- * - enrichForDate(shopDomain, date): enriches attributions for a specific date (for incremental)
+ * 2. `enrichAll` / `enrichForDate` / `enrichRecentUnenriched` — the legacy
+ *    value-based pairing, kept for:
+ *      - Bulk re-match (historical attributions where deltas are gone).
+ *      - Catch-up backfill when Meta breakdown lags hourly insights
+ *        (typical 1-3h lag means today's matches enrich on tomorrow's cycle).
+ *    These paths assign top-bucket guesses with `demographicExact=false`.
+ *
+ * IMPORTANT: historical attributions (pre-deploy) intentionally lack
+ * demographic tags unless enrichAll runs. The Demographics tab loaders
+ * aggregate from MetaBreakdown rows directly, NOT from Attribution.metaAge —
+ * so historical aggregate reports work without faking probabilistic tags.
  */
 
 const BREAKDOWN_TYPES = ["age", "gender", "publisher_platform", "platform_position"];
@@ -226,6 +233,136 @@ export async function enrichForDate(shopDomain, date) {
   const result = await enrichAttributions(attrs, shopDomain);
   console.log(`[AttrEnrichment] ${date}: ${result.enriched} enriched (${result.exact} exact, ${result.probabilistic} probabilistic)`);
   return result;
+}
+
+/**
+ * Delta-based enrichment for the current cycle's freshly-matched attributions.
+ *
+ * `deltaMap` is the per-cycle map captured by syncTodayBreakdowns:
+ *   Map<adId, Array<{ date, breakdownType, breakdownValue, deltaConv, deltaValue }>>
+ *
+ * `matchedOrderIds` are the order ids the matcher wrote attributions for this
+ * cycle (Layer 1 UTM + Layer 2 statistical, both included — they all need
+ * demographic tags applied).
+ *
+ * Algorithm per (adId, date) group:
+ *   - Pull the attributions matched THIS cycle for that ad on that date.
+ *   - For each breakdown type (age, gender, platform, placement):
+ *     - Filter the ad's deltas for that breakdown type + date.
+ *     - If a single bucket contains a positive delta == attrCount: exact.
+ *     - If sum(positive deltas) == attrCount and dev within tolerance:
+ *       distribute via value-pairing WITHIN those deltas only (much tighter
+ *       than today's full-day heuristic). Mark exact if dev ≤ 2%.
+ *     - Otherwise: leave field NULL — next cycle's enrichRecentUnenriched
+ *       picks it up when Meta breakdown data catches up.
+ */
+export async function enrichFromDelta(shopDomain, deltaMap, matchedOrderIds) {
+  if (!matchedOrderIds || matchedOrderIds.length === 0 || !deltaMap || deltaMap.size === 0) {
+    return { enriched: 0, exact: 0, probabilistic: 0 };
+  }
+
+  const attrs = await db.attribution.findMany({
+    where: {
+      shopDomain,
+      shopifyOrderId: { in: matchedOrderIds },
+      confidence: { gt: 0 },
+      metaAdId: { not: null },
+    },
+    select: { id: true, shopifyOrderId: true, metaAdId: true },
+  });
+  if (attrs.length === 0) return { enriched: 0, exact: 0, probabilistic: 0 };
+
+  const orderInfo = await getOrderInfo(shopDomain, attrs.map(a => a.shopifyOrderId));
+
+  // Group attributions by adId+date.
+  const groups = {};
+  for (const attr of attrs) {
+    const info = orderInfo[attr.shopifyOrderId];
+    if (!info || !info.date || !attr.metaAdId) continue;
+    const key = `${attr.metaAdId}|${info.date}`;
+    if (!groups[key]) groups[key] = { adId: attr.metaAdId, date: info.date, attrs: [] };
+    groups[key].attrs.push({ id: attr.id, shopifyOrderId: attr.shopifyOrderId, value: info.value });
+  }
+
+  let enriched = 0, exact = 0, probabilistic = 0;
+  const updates = [];
+
+  for (const group of Object.values(groups)) {
+    const { adId, date, attrs: gAttrs } = group;
+    const adDeltas = deltaMap.get(adId);
+    if (!adDeltas || adDeltas.length === 0) continue;
+
+    // Per-attribution field map.
+    const perAttr = new Map();
+    for (const a of gAttrs) perAttr.set(a.id, { fields: {}, exact: true });
+
+    for (const type of BREAKDOWN_TYPES) {
+      // Buckets for this ad+date+type with positive deltas.
+      const buckets = adDeltas
+        .filter(d => {
+          // Compare delta date (Date object) to group's order date (YYYY-MM-DD string).
+          const dStr = d.date instanceof Date
+            ? d.date.toISOString().split("T")[0]
+            : String(d.date).split("T")[0];
+          return d.breakdownType === type && dStr === date && d.deltaConv > 0;
+        })
+        .map(d => ({
+          value: d.breakdownValue,
+          conversions: d.deltaConv,
+          conversionValue: d.deltaValue,
+          avgValue: d.deltaConv > 0 ? d.deltaValue / d.deltaConv : 0,
+        }));
+      if (buckets.length === 0) continue;
+      const field = FIELD_MAP[type];
+
+      if (buckets.length === 1) {
+        // Single bucket got the delta — unambiguous ground truth.
+        for (const a of gAttrs) perAttr.get(a.id).fields[field] = buckets[0].value;
+        continue;
+      }
+
+      // Multi-bucket: capacity-based value pairing within the cycle's deltas.
+      const totalCapacity = buckets.reduce((s, b) => s + b.conversions, 0);
+      const allHaveValue = gAttrs.every(a => a.value > 0);
+      if (totalCapacity >= gAttrs.length && allHaveValue) {
+        const capacity = buckets.map(b => ({ ...b, remaining: b.conversions }));
+        const ordered = [...gAttrs].sort((x, y) => y.value - x.value);
+        for (const a of ordered) {
+          let best = null;
+          let bestDev = Infinity;
+          for (const b of capacity) {
+            if (b.remaining <= 0) continue;
+            const dev = Math.abs(b.avgValue - a.value) / Math.max(a.value, 0.01);
+            if (dev < bestDev) { bestDev = dev; best = b; }
+          }
+          if (!best) { perAttr.get(a.id).exact = false; continue; }
+          perAttr.get(a.id).fields[field] = best.value;
+          best.remaining -= 1;
+          if (bestDev > VALUE_MATCH_TOLERANCE) perAttr.get(a.id).exact = false;
+        }
+      } else {
+        // Capacity < count or order values missing: leave NULL for this type.
+        // The catch-up enricher will retry on next cycle once Meta catches up.
+        continue;
+      }
+    }
+
+    for (const a of gAttrs) {
+      const ass = perAttr.get(a.id);
+      if (Object.keys(ass.fields).length === 0) continue;
+      updates.push({ id: a.id, data: { ...ass.fields, demographicExact: ass.exact } });
+      enriched++;
+      if (ass.exact) exact++; else probabilistic++;
+    }
+  }
+
+  for (let i = 0; i < updates.length; i += 100) {
+    const chunk = updates.slice(i, i + 100);
+    await Promise.all(
+      chunk.map(u => db.attribution.update({ where: { id: u.id }, data: u.data }))
+    );
+  }
+  return { enriched, exact, probabilistic };
 }
 
 /**

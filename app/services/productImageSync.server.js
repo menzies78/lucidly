@@ -34,7 +34,11 @@ export async function refreshProductImages(shopDomain) {
       query GetProductImages($cursor: String) {
         products(first: 250, after: $cursor) {
           edges {
-            node { title featuredImage { url } }
+            node {
+              title
+              featuredImage { url }
+              images(first: 1) { edges { node { url } } }
+            }
             cursor
           }
           pageInfo { hasNextPage }
@@ -45,11 +49,21 @@ export async function refreshProductImages(shopDomain) {
     const edges = data?.data?.products?.edges || [];
     for (const edge of edges) {
       const title = edge.node.title;
-      const url = edge.node.featuredImage?.url;
+      // Fall back to images.first when featuredImage is null — some
+      // products have variant-level images only, in which case featuredImage
+      // resolves to null and the parent key would never be populated,
+      // producing letter-placeholder fallbacks on the Countries tab tile.
+      const url =
+        edge.node.featuredImage?.url ||
+        edge.node.images?.edges?.[0]?.node?.url ||
+        null;
       if (title && url) {
         imgMap[title] = url;
         const parent = toParentProduct(title);
-        if (!imgMap[parent]) imgMap[parent] = url;
+        // Unconditional overwrite: every variant contributes a candidate
+        // image, last-wins keeps the parent key resolvable even if an
+        // earlier variant happened to have a null featuredImage.
+        imgMap[parent] = url;
       }
     }
     hasNext = data?.data?.products?.pageInfo?.hasNextPage || false;
