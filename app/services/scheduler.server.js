@@ -222,6 +222,103 @@ async function runDailyCycle() {
   }
 }
 
+/**
+ * One-shot per shop: if the earliest MetaBreakdown row is younger than
+ * 30 days, run the 400-day historical breakdown sync followed by
+ * enrichAll (re-populates metaAge/metaGender/metaPlatform/metaPlacement
+ * on attributions that previously failed to enrich because the breakdown
+ * data didn't exist yet) and rebuild the affected rollups.
+ *
+ * Skips shops mid-onboarding (the new FINAL_PHASE_2 path handles them)
+ * and shops with no breakdown rows at all (no Meta connection).
+ *
+ * Self-determining: after the backfill min(date) jumps to ~13 months
+ * ago so the same check returns false on the next boot.
+ */
+async function runHistoricalDemographicsBackfillIfNeeded() {
+  const shops = await db.shop.findMany({
+    where: {
+      metaAccessToken: { not: null },
+      metaAdAccountId: { not: null },
+      onboardingCompleted: true,
+    },
+    select: { shopDomain: true },
+  });
+  if (shops.length === 0) return;
+
+  const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+  for (const { shopDomain } of shops) {
+    if (isManualSyncRunning(shopDomain)) {
+      console.log(`[HistoricalBackfill] ${shopDomain}: skipping (manual sync running)`);
+      continue;
+    }
+    const earliest = await db.metaBreakdown.aggregate({
+      where: { shopDomain },
+      _min: { date: true },
+    });
+    const minDate = earliest._min.date;
+    if (!minDate) {
+      console.log(`[HistoricalBackfill] ${shopDomain}: no breakdown rows yet, skipping`);
+      continue;
+    }
+    if (minDate < cutoff) {
+      // Already has > 30 days of breakdown data — nothing to do.
+      continue;
+    }
+
+    console.log(`[HistoricalBackfill] ${shopDomain}: earliest breakdown is ${minDate.toISOString().slice(0,10)} - running 400-day backfill`);
+    try {
+      const { syncMetaBreakdowns } = await import("./metaBreakdownSync.server.js");
+      const r = await syncMetaBreakdowns(shopDomain, `historical-backfill:${shopDomain}`, 400);
+      console.log(`[HistoricalBackfill] ${shopDomain}: breakdown sync wrote ${r?.totalRows || 0} rows`);
+
+      const { enrichAll } = await import("./attributionEnrichment.server.js");
+      const enriched = await enrichAll(shopDomain);
+      console.log(`[HistoricalBackfill] ${shopDomain}: enrichAll done - ${enriched.enriched} attributions enriched (${enriched.exact} exact / ${enriched.probabilistic} probabilistic)`);
+
+      // Rebuild the rollups that depend on the now-populated demographic
+      // fields. Product / customer rollups consume Attribution columns
+      // directly; campaign rollups read MetaBreakdown for platform /
+      // placement aggregates. Geo rollups read MetaBreakdown for the
+      // country-breakdown spend.
+      try {
+        const { rebuildProductRollups } = await import("./productRollups.server.js");
+        await rebuildProductRollups(shopDomain);
+      } catch (err) {
+        console.error(`[HistoricalBackfill] ${shopDomain}: product rollup rebuild failed: ${err.message}`);
+      }
+      try {
+        const { rebuildCustomerSegments, rebuildCustomerRollups } = await import("./customerRollups.server.js");
+        await rebuildCustomerSegments(shopDomain);
+        await rebuildCustomerRollups(shopDomain);
+      } catch (err) {
+        console.error(`[HistoricalBackfill] ${shopDomain}: customer rollup rebuild failed: ${err.message}`);
+      }
+      try {
+        const { rebuildAdDemographicRollups } = await import("./adDemographicRollups.server.js");
+        await rebuildAdDemographicRollups(shopDomain);
+      } catch (err) {
+        console.error(`[HistoricalBackfill] ${shopDomain}: ad demographic rollup rebuild failed: ${err.message}`);
+      }
+      try {
+        const { rebuildGeoRollups } = await import("./geoRollups.server.js");
+        await rebuildGeoRollups(shopDomain);
+      } catch (err) {
+        console.error(`[HistoricalBackfill] ${shopDomain}: geo rollup rebuild failed: ${err.message}`);
+      }
+      try {
+        const { invalidateShop } = await import("./queryCache.server.js");
+        invalidateShop(shopDomain);
+      } catch (err) {
+        console.error(`[HistoricalBackfill] ${shopDomain}: cache invalidation failed: ${err.message}`);
+      }
+      console.log(`[HistoricalBackfill] ${shopDomain}: complete`);
+    } catch (err) {
+      console.error(`[HistoricalBackfill] ${shopDomain}: failed (will retry on next boot): ${err.message}`);
+    }
+  }
+}
+
 export function startScheduler() {
   // Clear previous intervals on HMR restart - old callbacks reference stale modules
   if (global.__lucidlySchedulerHourly) clearInterval(global.__lucidlySchedulerHourly);
@@ -259,6 +356,26 @@ export function startScheduler() {
       console.error("[Scheduler] Ingest resume failed (non-fatal):", err.message);
     }
   }, 15_000);
+
+  // Self-healing historical demographics backfill. Detects shops that
+  // onboarded under the old 7-day MetaBreakdown window (so their Product
+  // Demographics / Customer Demographics / Platform / Placement tiles
+  // are empty for any order > ~7 days old at install time) and runs the
+  // 400-day historical backfill + enrichAll catch-up exactly once.
+  //
+  // No schema flag needed: we infer "needs backfill" purely from
+  // min(MetaBreakdown.date) — if the earliest breakdown row is younger
+  // than 30 days the shop is stuck on the recent window. After the
+  // backfill min(date) becomes ~13 months ago and the check naturally
+  // returns false on subsequent boots.
+  if (global.__lucidlyHistoricalBackfill) clearTimeout(global.__lucidlyHistoricalBackfill);
+  global.__lucidlyHistoricalBackfill = setTimeout(async () => {
+    try {
+      await runHistoricalDemographicsBackfillIfNeeded();
+    } catch (err) {
+      console.error("[Scheduler] Historical demographics backfill check failed (non-fatal):", err.message);
+    }
+  }, 60_000);
 
   // Run first hourly cycle after 5 minutes (let rate limits recover after deploys)
   global.__lucidlySchedulerBoot = setTimeout(() => {
