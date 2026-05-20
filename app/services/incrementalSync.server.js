@@ -1699,6 +1699,25 @@ export async function runIncrementalSync(shopDomain) {
     console.error(`[IncrementalSync] Demographic enrichment failed (non-fatal): ${err.message}`);
   }
 
+  // Self-heal pixel calibration. If the install-time run landed before enough
+  // UTM-confirmed orders existed (samples < 5 minimum), the dashboard pill
+  // stays stuck on "gathering signal (0/5)" indefinitely. Re-run when we now
+  // have more candidates than last time. Cheap — the function bails fast if
+  // candidate count hasn't grown past the minimum.
+  try {
+    if ((shop.metaValueCalibrationSamples ?? 0) < 5) {
+      const { calibratePixel } = await import("./pixelCalibration.server.js");
+      const calRes = await calibratePixel(shopDomain);
+      if (calRes?.winner) {
+        console.log(`[IncrementalSync] Pixel re-calibrated: winner=${calRes.winner} samples=${calRes.sampleSize}`);
+      } else {
+        console.log(`[IncrementalSync] Pixel re-calibration: still insufficient (${calRes?.sampleSize ?? 0}/5)`);
+      }
+    }
+  } catch (err) {
+    console.error(`[IncrementalSync] Pixel re-calibration failed (non-fatal): ${err.message}`);
+  }
+
   // Mark sync complete IMMEDIATELY so the UI unblocks.
   await db.shop.update({ where: { shopDomain }, data: { lastMetaSync: new Date() } });
   completeProgress(`incrementalSync:${shopDomain}`, { newConversions: newConversions.length, layer1: layer1.layer1Written, matched: totalMatched, unmatched: totalUnmatched, breakdownRows, ...enrichResult });
