@@ -426,83 +426,23 @@ export async function runAttribution(shopDomain) {
   const dates = Array.from(insightsByDate.keys()).sort();
   console.log(`[Attribution] ${dates.length} days to match`);
 
-  // ── Layer 1 pre-pass ──
+  // ── Meta-first attribution ──
   //
-  // Why this runs *before* the statistical workers: utmConfirmedMeta orders
-  // are deterministic Meta attributions (Elevar/Web Pixel confirmed the
-  // click-through). Without this pass the statistical matcher in Layer 2
-  // claims those orders first, and runUtmLayer1Pass in subsequent hourly
-  // cycles refuses to upgrade an order that already has a confident
-  // statistical attribution (incrementalSync.server.js:487-499 — that guard
-  // is correct for incremental, prevents Layer 1 from flapping Layer 2 picks,
-  // but means new installs lose every UTM-confirmed order to exhaustive). On
-  // a fresh install: 100% of UTM orders end up as matchMethod="exhaustive"
-  // unless we make Layer 1 the first writer.
+  // Layer 2 (statistical exhaustive backtracker) runs FIRST across all orders,
+  // with NO UTM pre-claiming. The matcher considers time/value/country only,
+  // exactly as Meta itself models a purchase conversion.
   //
-  // For each day we synthesise a `newConversions` shape with deltaConversions
-  // = full Meta-reported count (since this is a from-scratch re-match), let
-  // runUtmLayer1Pass claim utmConfirmedMeta orders against those slots, and
-  // capture per-bucket claim counts. The bucket caps fed to the Layer 2
-  // workers are then reduced by those counts so the statistical pass doesn't
-  // over-orphan, and the MetaSnapshot rows written after each day's Layer 2
-  // batch add the Layer 1 claims back in so snapshot.conversions reflects
-  // total (L1+L2) attributed conversions per bucket.
+  // UTM is a fallback: after Layer 2 finishes, any utmConfirmedMeta order that
+  // Layer 2 left unmatched is bound to its UTM-stated ad via a fallback Layer
+  // 1 pass below (after the worker phases complete).
+  //
+  // Rationale: UTM is last-click only — it can disagree with Meta's actual
+  // conversion attribution. Previously, UTM-pre-claiming starved Layer 2 of
+  // slot capacity on the "real" Meta-attributed ad (e.g., a Saudi Arabia
+  // order with utm=DPA_Broad was Layer 1-bound to DPA_Broad, even though
+  // Meta reported the conversion against DPA_Broad_Non_US). Meta-first
+  // recovers those orphan slots and lets Layer 2's value+time fit win.
   const usedOrders = new Set();
-  const layer1ClaimsByBucket = new Map(); // `${day}|${adId}|${hour}` -> { count, value }
-  let totalLayer1Written = 0;
-
-  for (const day of dates) {
-    const dayInsights = insightsByDate.get(day) || [];
-    if (dayInsights.length === 0) continue;
-    const dayOrders = ordersByDate.get(day) || [];
-    if (dayOrders.length === 0) continue;
-    const metaOffset = getTimezoneOffsetMinutes(metaAccountTimezone, day);
-
-    // Synthesise a newConversions array. runUtmLayer1Pass mutates each row's
-    // deltaConversions/deltaValue as it claims slots — we capture the
-    // before-state per-row so we can derive per-bucket claim counts.
-    const newConversions = dayInsights.map(ins => ({
-      adId: ins.adId, adName: ins.adName,
-      campaignId: ins.campaignId, campaignName: ins.campaignName,
-      adSetId: ins.adSetId, adSetName: ins.adSetName,
-      hourSlot: ins.hourSlot,
-      deltaConversions: ins.conversions,
-      deltaValue: ins.conversionValue,
-    }));
-    const beforeConv = newConversions.map(nc => nc.deltaConversions);
-
-    const result = await runUtmLayer1Pass(shopDomain, day, dayOrders, newConversions, metaOffset);
-    totalLayer1Written += result?.layer1Written || 0;
-
-    for (let i = 0; i < newConversions.length; i++) {
-      const nc = newConversions[i];
-      const claimedCount = beforeConv[i] - nc.deltaConversions;
-      if (claimedCount <= 0) continue;
-      // Use Meta's per-conv value (Meta-reported value / Meta-reported count)
-      // rather than Order.frozenTotalPrice, so snapshot.conversionValue stays
-      // on the Meta-reported scale that findNewConversions compares against.
-      const perConv = beforeConv[i] > 0
-        ? (dayInsights[i].conversionValue || 0) / beforeConv[i]
-        : 0;
-      const claimedValue = Math.round(perConv * claimedCount * 100) / 100;
-      layer1ClaimsByBucket.set(`${day}|${nc.adId}|${nc.hourSlot}`, {
-        count: claimedCount,
-        value: claimedValue,
-      });
-    }
-  }
-
-  // Reload Layer 1 attributions we just wrote and add them to usedOrders so
-  // the statistical workers can't re-pick them.
-  const layer1Attrs = await db.attribution.findMany({
-    where: { shopDomain, layer: 1 },
-    select: { shopifyOrderId: true },
-  });
-  for (const a of layer1Attrs) {
-    const order = allOrders.find(o => o.shopifyOrderId === a.shopifyOrderId);
-    if (order) usedOrders.add(order.id);
-  }
-  console.log(`[Attribution] Layer 1 pre-pass: wrote ${totalLayer1Written} UTM attributions across ${layer1ClaimsByBucket.size} buckets`);
 
   // Build per-day worker contexts once on the main thread. Each context has
   // everything the matcher needs: that day's insights, candidate orders
@@ -538,29 +478,20 @@ export async function runAttribution(shopDomain) {
       countryCode: o.countryCode,
       shopifyCustomerId: o.shopifyCustomerId,
     }));
-    // Subtract Layer 1 claims from the bucket caps fed to the Layer 2 workers.
-    // Without this, the statistical pass would treat the full Meta-reported
-    // count as available slots, over-orphan any slots already filled by Layer
-    // 1, and the snapshot.conversions written for that bucket would have to
-    // double-count to stay consistent. We carry Meta-reported per-conv value
-    // through proportionally so the worker's slotValue/cap math stays sound.
-    const dayInsightsLite = dayInsights.map(i => {
-      const claim = layer1ClaimsByBucket.get(`${day}|${i.adId}|${i.hourSlot}`) || { count: 0, value: 0 };
-      const effConv = Math.max(0, i.conversions - claim.count);
-      const perConv = i.conversions > 0 ? i.conversionValue / i.conversions : 0;
-      const effValue = Math.max(0, i.conversionValue - perConv * claim.count);
-      return {
-        adId: i.adId,
-        campaignId: i.campaignId,
-        campaignName: i.campaignName || "",
-        adSetId: i.adSetId || "",
-        adSetName: i.adSetName || "",
-        adName: i.adName || "",
-        hourSlot: i.hourSlot,
-        conversions: effConv,
-        conversionValue: effValue,
-      };
-    });
+    // Layer 2 sees the full Meta-reported slot capacity. UTM fallback (which
+    // runs AFTER all worker phases finish) only claims residual slots that
+    // Layer 2 couldn't fill.
+    const dayInsightsLite = dayInsights.map(i => ({
+      adId: i.adId,
+      campaignId: i.campaignId,
+      campaignName: i.campaignName || "",
+      adSetId: i.adSetId || "",
+      adSetName: i.adSetName || "",
+      adName: i.adName || "",
+      hourSlot: i.hourSlot,
+      conversions: i.conversions,
+      conversionValue: i.conversionValue,
+    }));
     const dayCountries = Array.from(metaSpendCountriesByDate.get(day) || []);
     ctxByDay.set(day, {
       shopDomain,
@@ -693,36 +624,16 @@ export async function runAttribution(shopDomain) {
             // Snapshot stores MATCHED count, not Meta-reported, so genuinely
             // unmatched conversions remain visible to subsequent sweeps and
             // can be retried when delayed webhook orders arrive.
-            // Merge Layer 1 claims into bucketStats so the snapshot upserts
-            // capture (L1 + L2) per bucket in a single pass. Buckets that the
-            // workers skipped (e.g. all conversions consumed by Layer 1, so
-            // effConv=0 in dayInsightsLite) won't appear in bucketStats — we
-            // synthesise rows for those from layer1ClaimsByBucket so their
-            // snapshots get written too. Otherwise the next sweep would see
-            // snapshot.conversions=0, treat the Meta-reported count as a
-            // fresh delta, and re-fire phantom orphan placeholders.
-            const snapshotRows = [];
-            const coveredKeys = new Set();
-            for (const b of (bucketStats || [])) {
-              const key = `${day}|${b.adId}|${b.hour}`;
-              coveredKeys.add(key);
-              const claim = layer1ClaimsByBucket.get(key) || { count: 0, value: 0 };
-              snapshotRows.push({
-                adId: b.adId, hour: b.hour,
-                conversions: b.matchedConv + claim.count,
-                conversionValue: Math.round((b.matchedValue + claim.value) * 100) / 100,
-              });
-            }
-            for (const [key, claim] of layer1ClaimsByBucket.entries()) {
-              if (!key.startsWith(`${day}|`)) continue;
-              if (coveredKeys.has(key)) continue;
-              const parts = key.split("|");
-              snapshotRows.push({
-                adId: parts[1], hour: Number(parts[2]),
-                conversions: claim.count,
-                conversionValue: Math.round(claim.value * 100) / 100,
-              });
-            }
+            // Snapshot reflects what Layer 2 matched. UTM fallback pass (run
+            // after all worker phases) will subsequently upsert these rows to
+            // include any UTM-claimed slots so the next incremental sweep sees
+            // the full (L2 + L1 fallback) attributed count and doesn't refire
+            // phantom orphan placeholders.
+            const snapshotRows = (bucketStats || []).map(b => ({
+              adId: b.adId, hour: b.hour,
+              conversions: b.matchedConv,
+              conversionValue: Math.round(b.matchedValue * 100) / 100,
+            }));
             if (snapshotRows.length) {
               const SNAP_BATCH = 200;
               for (let i = 0; i < snapshotRows.length; i += SNAP_BATCH) {
@@ -780,6 +691,77 @@ export async function runAttribution(shopDomain) {
       try { await w.terminate(); } catch {}
     }
   }
+
+  // ── Layer 1 fallback (UTM last-resort) ──
+  //
+  // For each day, find utmConfirmedMeta orders that Layer 2 didn't pick.
+  // Compute residual slot capacity on each (adId, hour) by subtracting the
+  // Layer 2 matched count (which is what we wrote to MetaSnapshot) from the
+  // Meta-reported total. runUtmLayer1Pass then claims any order whose
+  // resolved ad has a slot with leftover capacity in the right time window.
+  //
+  // This is "Meta said yes to N conversions on this slot, Layer 2 matched M,
+  // there are N-M leftover slots — if a UTM-confirmed order points at this
+  // ad and falls in the window, the leftover slot is its best home."
+  setProgress(`runAttribution:${shopDomain}`, { status: "running", detail: "UTM fallback pass" });
+  let utmFallbackTotal = 0;
+  for (const day of dates) {
+    const dayInsights = insightsByDate.get(day) || [];
+    if (!dayInsights.length) continue;
+    const dayOrders = ordersByDate.get(day) || [];
+    if (!dayOrders.length) continue;
+    const metaOffset = getTimezoneOffsetMinutes(metaAccountTimezone, day);
+
+    // Residual slot capacity = Meta-reported total - Layer 2 matched (from snapshot).
+    const snapshots = await db.metaSnapshot.findMany({
+      where: { shopDomain, date: day },
+      select: { adId: true, hourSlot: true, conversions: true, conversionValue: true },
+    });
+    const matchedByKey = new Map();
+    for (const s of snapshots) {
+      matchedByKey.set(`${s.adId}|${s.hourSlot}`, { conv: s.conversions, value: s.conversionValue });
+    }
+    const residualConversions = dayInsights.map(ins => {
+      const matched = matchedByKey.get(`${ins.adId}|${ins.hourSlot}`) || { conv: 0, value: 0 };
+      return {
+        adId: ins.adId, adName: ins.adName,
+        campaignId: ins.campaignId, campaignName: ins.campaignName,
+        adSetId: ins.adSetId, adSetName: ins.adSetName,
+        hourSlot: ins.hourSlot,
+        deltaConversions: Math.max(0, ins.conversions - matched.conv),
+        deltaValue: Math.max(0, ins.conversionValue - matched.value),
+      };
+    }).filter(c => c.deltaConversions > 0);
+
+    if (!residualConversions.length) continue;
+
+    // runUtmLayer1Pass mutates deltaConversions/deltaValue as it claims slots,
+    // and skips orders that already have any confident attribution — so
+    // Layer 2 picks are preserved automatically.
+    const beforeConv = residualConversions.map(nc => nc.deltaConversions);
+    const result = await runUtmLayer1Pass(shopDomain, day, dayOrders, residualConversions, metaOffset);
+    utmFallbackTotal += result?.layer1Written || 0;
+
+    // Roll the fallback claims into MetaSnapshot so the next incremental
+    // sweep sees the full attributed count and doesn't re-fire orphans.
+    for (let i = 0; i < residualConversions.length; i++) {
+      const nc = residualConversions[i];
+      const claimedCount = beforeConv[i] - nc.deltaConversions;
+      if (claimedCount <= 0) continue;
+      const ins = dayInsights.find(d => d.adId === nc.adId && d.hourSlot === nc.hourSlot);
+      if (!ins) continue;
+      const prevMatched = matchedByKey.get(`${ins.adId}|${ins.hourSlot}`) || { conv: 0, value: 0 };
+      const perConv = ins.conversions > 0 ? ins.conversionValue / ins.conversions : 0;
+      const finalConv = prevMatched.conv + claimedCount;
+      const finalValue = Math.round((prevMatched.value + perConv * claimedCount) * 100) / 100;
+      await db.metaSnapshot.upsert({
+        where: { shopDomain_date_adId_hourSlot: { shopDomain, date: day, adId: nc.adId, hourSlot: nc.hourSlot } },
+        create: { shopDomain, date: day, adId: nc.adId, hourSlot: nc.hourSlot, conversions: finalConv, conversionValue: finalValue },
+        update: { conversions: finalConv, conversionValue: finalValue },
+      });
+    }
+  }
+  console.log(`[Attribution] Layer 1 UTM fallback: ${utmFallbackTotal} additional attributions across ${dates.length} days`);
 
   // Enrich all attributions with demographic data from MetaBreakdown
   setProgress(`runAttribution:${shopDomain}`, { status: "running", detail: "Enriching customer demographics" });
@@ -854,9 +836,13 @@ export async function runDateRangeRematch(shopDomain, fromDate, toDate) {
   // This includes both matched orders (by looking up order dates) and unmatched records.
   const rangeOrderIds = new Set(rangeOrders.map(o => o.shopifyOrderId));
 
-  // Find all Layer 2 attributions linked to orders in this date range
+  // Find all Layer 1 + Layer 2 attributions linked to orders in this date range.
+  // Layer 1 is deleted too so the Meta-first rematch can rewrite them from a
+  // clean slate. (The old priority-Layer-1 rows may bind orders to ads that
+  // Meta's actual conversion data contradicts.) The post-Layer-2 UTM fallback
+  // pass below rebuilds Layer 1 for orders Layer 2 leaves unmatched.
   const existingAttrs = await db.attribution.findMany({
-    where: { shopDomain, layer: 2 },
+    where: { shopDomain, layer: { in: [1, 2] } },
     select: { id: true, shopifyOrderId: true },
   });
 
@@ -1146,15 +1132,66 @@ export async function runDateRangeRematch(shopDomain, fromDate, toDate) {
     }
   }
 
+  // ── Layer 1 fallback (UTM last-resort) within the date range ──
+  // For each day in the range, claim any leftover slot capacity for
+  // utmConfirmedMeta orders Layer 2 didn't pick.
+  setProgress(taskKey, { status: "running", message: "UTM fallback pass..." });
+  let utmFallbackTotal = 0;
+  for (const day of dates) {
+    const dayInsights = insightsByDate.get(day) || [];
+    if (!dayInsights.length) continue;
+    const dayOrders = ordersByDate.get(day) || [];
+    if (!dayOrders.length) continue;
+    const metaOffset = getTimezoneOffsetMinutes(shop.metaAccountTimezone, day);
+
+    // Count Layer 2 matches per (adId, hour) for this day from the rows we
+    // just wrote. We can't read MetaSnapshot here because runDateRangeRematch
+    // does not write snapshots (it's a one-off backfill).
+    const dayOrderIdSet = new Set(dayOrders.map(o => o.shopifyOrderId));
+    const layer2Rows = await db.attribution.findMany({
+      where: { shopDomain, layer: 2, confidence: { gt: 0 }, shopifyOrderId: { in: [...dayOrderIdSet] } },
+      select: { shopifyOrderId: true, metaAdId: true },
+    });
+    const orderTimeById = new Map();
+    for (const o of dayOrders) orderTimeById.set(o.shopifyOrderId, o.createdAt);
+    const matchedByKey = new Map();
+    for (const a of layer2Rows) {
+      const ts = orderTimeById.get(a.shopifyOrderId);
+      if (!ts || !a.metaAdId) continue;
+      const metaLocalMs = ts.getTime() + metaOffset * 60000;
+      const metaHour = new Date(metaLocalMs).getUTCHours();
+      const key = `${a.metaAdId}|${metaHour}`;
+      matchedByKey.set(key, (matchedByKey.get(key) || 0) + 1);
+    }
+
+    const residualConversions = dayInsights.map(ins => {
+      const matchedCount = matchedByKey.get(`${ins.adId}|${ins.hourSlot}`) || 0;
+      const perConv = ins.conversions > 0 ? ins.conversionValue / ins.conversions : 0;
+      return {
+        adId: ins.adId, adName: ins.adName,
+        campaignId: ins.campaignId, campaignName: ins.campaignName,
+        adSetId: ins.adSetId, adSetName: ins.adSetName,
+        hourSlot: ins.hourSlot,
+        deltaConversions: Math.max(0, ins.conversions - matchedCount),
+        deltaValue: Math.max(0, ins.conversionValue - perConv * matchedCount),
+      };
+    }).filter(c => c.deltaConversions > 0);
+
+    if (!residualConversions.length) continue;
+    const result = await runUtmLayer1Pass(shopDomain, day, dayOrders, residualConversions, metaOffset);
+    utmFallbackTotal += result?.layer1Written || 0;
+  }
+  console.log(`[Attribution] Date-range UTM fallback: ${utmFallbackTotal} additional attributions across ${dates.length} days`);
+
   // Enrich attributions in the date range with demographic data
   setProgress(taskKey, { status: "running", message: "Enriching attribution demographics..." });
   const { enrichAll } = await import("./attributionEnrichment.server.js");
   const enrichResult = await enrichAll(shopDomain);
 
   invalidateShop(shopDomain);
-  completeProgress(taskKey, { matched: totalMatched, unmatched: totalUnmatched, deleted: idsToDelete.length, ...enrichResult });
-  console.log(`[Attribution] Date range re-match complete: ${totalMatched} matched, ${totalUnmatched} unmatched, ${idsToDelete.length} old attributions replaced, ${enrichResult.enriched} demographics enriched`);
-  return { matched: totalMatched, unmatched: totalUnmatched, deleted: idsToDelete.length, ...enrichResult };
+  completeProgress(taskKey, { matched: totalMatched, unmatched: totalUnmatched, deleted: idsToDelete.length, layer1Fallback: utmFallbackTotal, ...enrichResult });
+  console.log(`[Attribution] Date range re-match complete: ${totalMatched} matched, ${totalUnmatched} unmatched, ${utmFallbackTotal} UTM fallback, ${idsToDelete.length} old attributions replaced, ${enrichResult.enriched} demographics enriched`);
+  return { matched: totalMatched, unmatched: totalUnmatched, deleted: idsToDelete.length, layer1Fallback: utmFallbackTotal, ...enrichResult };
 }
 
 /**

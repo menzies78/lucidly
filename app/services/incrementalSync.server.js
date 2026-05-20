@@ -1114,11 +1114,10 @@ export async function matchDayDeltas(shopDomain, dayStr) {
     orderBy: { createdAt: "asc" },
   });
 
-  // LAYER 1: UTM ground truth pass before the statistical matcher. Claims
-  // utmConfirmedMeta orders and reduces each conv's deltaConversions/deltaValue.
-  const layer1 = await runUtmLayer1Pass(shopDomain, dayStr, dayOrders, newConversions, metaOffsetMinutes);
-  // Drop conversions fully consumed by Layer 1.
-  const remainingNewConversions = newConversions.filter(c => c.deltaConversions > 0);
+  // Meta-first: statistical matcher runs first against ALL new conversions
+  // with full Meta-reported caps. UTM is consulted only as a fallback below
+  // for utmConfirmedMeta orders the stat matcher couldn't bind.
+  const remainingNewConversions = newConversions;
 
   const dayOrderIds = new Set(dayOrders.map(o => o.shopifyOrderId));
 
@@ -1199,8 +1198,10 @@ export async function matchDayDeltas(shopDomain, dayStr) {
             skippedIncremental++;
             continue;
           }
-          // Preserve UTM Layer 1 unless the daily-sweep pick is unambiguous.
-          if (existing.matchMethod === "utm" && (pick.rivalCount || 0) > 0) continue;
+          // Meta-first: a statistical pick ALWAYS overrides a UTM Layer 1
+          // row. UTM is now a fallback, only written for orders the stat
+          // matcher could not bind. If we get here, the stat matcher found
+          // a value+time fit — that's authoritative.
         }
         // Blend label when UTM and daily-sweep agree on the ad.
         const finalMethod = (existing && existing.matchMethod === "utm" && existing.metaAdId === conv.adId)
@@ -1242,13 +1243,21 @@ export async function matchDayDeltas(shopDomain, dayStr) {
     }
   }
 
+  // ── Layer 1 fallback (UTM last-resort) ──
+  // For each conv that still has residual deltaConversions after stat matching,
+  // let UTM-confirmed orders claim the leftover slot capacity.
+  const residualForFallback = newConversions.filter(c => c.deltaConversions > 0);
+  const layer1 = residualForFallback.length > 0
+    ? await runUtmLayer1Pass(shopDomain, dayStr, dayOrders, residualForFallback, metaOffsetMinutes)
+    : { layer1Written: 0, slotCreditsConsumed: 0 };
+
   // Post-match: recalculate confidence for orders whose rivals were resolved
   await recalculateConfidence(shopDomain, dailyMatchedOrderIds);
 
   // Update snapshots for this day
   await saveSnapshot(shopDomain, dayStr, currentData);
 
-  console.log(`[DeltaMatch] ${dayStr}: ${layer1.layer1Written} UTM layer1, ${totalMatched} matched, ${totalUnmatched} unmatched, ${skippedIncremental} preserved incremental`);
+  console.log(`[DeltaMatch] ${dayStr}: ${totalMatched} stat-matched, ${layer1.layer1Written} UTM-fallback, ${totalUnmatched} unmatched, ${skippedIncremental} preserved incremental`);
   return { newConversions: newConversions.length, layer1: layer1.layer1Written, matched: totalMatched, unmatched: totalUnmatched, skippedIncremental };
 }
 
@@ -1453,12 +1462,10 @@ export async function runIncrementalSync(shopDomain) {
   });
   const metaSpendCountries = new Set(countryRows.map(r => r.breakdownValue.toUpperCase()));
 
-  // LAYER 1: UTM ground truth pass - claims utmConfirmedMeta orders before
-  // the statistical matcher runs and consumes slot capacity from newConversions.
-  const layer1 = await runUtmLayer1Pass(shopDomain, today, todayOrders, newConversions, metaOffsetMinutes);
-
-  // Filter out conversions fully consumed by the Layer 1 pass.
-  const remainingConversions = newConversions.filter(c => c.deltaConversions > 0);
+  // Meta-first: statistical matcher runs first against the full Meta-reported
+  // slot capacity. UTM fallback runs AFTER stat matching for any residual
+  // slot capacity left unfilled.
+  const remainingConversions = newConversions;
 
   // Load existing attributions so the statistical write can decide whether to
   // overwrite a UTM Layer 1 row. Rule: overwrite only when the Layer 2 pick is
@@ -1532,9 +1539,10 @@ export async function runIncrementalSync(shopDomain) {
         ? Math.round((conv.deltaValue / conv.deltaConversions) * 100) / 100 : 0;
       for (const pick of matched) {
         const existing = existingAttrByOrderId.get(pick.orderId);
-        // Preserve UTM Layer 1 unless this pick is unambiguous.
-        if (existing && existing.matchMethod === "utm" && (pick.rivalCount || 0) > 0) continue;
-        // Blend label when UTM and stat agree on the ad.
+        // Meta-first: a statistical pick ALWAYS overrides a prior UTM Layer 1
+        // row (UTM is now fallback, used only when stat matcher can't bind).
+        // Blend label when UTM and stat agree on the ad (preserves
+        // attribution-method visibility in the UI).
         const finalMethod = (existing && existing.matchMethod === "utm" && existing.metaAdId === conv.adId)
           ? "utm + incremental" : "incremental";
         matchedOrderIds.push(pick.orderId);
@@ -1569,6 +1577,17 @@ export async function runIncrementalSync(shopDomain) {
     }
   }
 
+  // ── Post-stat UTM fallback (today) ──
+  // Layer 2 has had first crack at all of today's Meta capacity. Any slot
+  // capacity still unfilled (deltaConversions > 0) is offered to UTM Layer 1
+  // as a fallback. Confidence stays at the level UTM provides; the key change
+  // vs. the old flow is that statistical matching is no longer pre-empted by
+  // UTM claims when UTM and stat disagree on which order belongs to a slot.
+  const todayResidualForFallback = remainingConversions.filter(c => c.deltaConversions > 0);
+  const layer1 = todayResidualForFallback.length > 0
+    ? await runUtmLayer1Pass(shopDomain, today, todayOrders, todayResidualForFallback, metaOffsetMinutes)
+    : { layer1Written: 0, slotCreditsConsumed: 0 };
+
   // ── Match yesterday's uncaptured conversions ──
   if (yesterdayNewConversions.length > 0) {
     setProgress(`incrementalSync:${shopDomain}`, {
@@ -1584,9 +1603,9 @@ export async function runIncrementalSync(shopDomain) {
       orderBy: { createdAt: "asc" },
     });
 
-    // UTM Layer 1 for yesterday's uncaptured
-    const yLayer1 = await runUtmLayer1Pass(shopDomain, yesterday, yesterdayOrders, yesterdayNewConversions, yesterdayMetaOffset);
-    const yRemaining = yesterdayNewConversions.filter(c => c.deltaConversions > 0);
+    // Meta-first: yesterday's uncaptured conversions are matched statistically
+    // first, then any residual slot capacity falls back to UTM Layer 1 below.
+    const yRemaining = yesterdayNewConversions;
 
     const yCountryRows = await db.metaBreakdown.findMany({
       where: { shopDomain, breakdownType: "country", spend: { gt: 0 }, date: new Date(yesterday + "T00:00:00.000Z") },
@@ -1601,7 +1620,8 @@ export async function runIncrementalSync(shopDomain) {
           ? Math.round((conv.deltaValue / conv.deltaConversions) * 100) / 100 : 0;
         for (const pick of matched) {
           const existing = existingAttrByOrderId.get(pick.orderId);
-          if (existing && existing.matchMethod === "utm" && (pick.rivalCount || 0) > 0) continue;
+          // Meta-first: statistical pick overrides any prior UTM row. Blend
+          // label when UTM and stat agree on the ad.
           const finalMethod = (existing && existing.matchMethod === "utm" && existing.metaAdId === conv.adId)
             ? "utm + incremental" : "incremental";
           matchedOrderIds.push(pick.orderId);
@@ -1634,8 +1654,13 @@ export async function runIncrementalSync(shopDomain) {
         totalUnmatched += Math.max(conv.deltaConversions, 1);
       }
     }
+    // Post-stat UTM fallback for yesterday's residual slot capacity
+    const yResidualForFallback = yRemaining.filter(c => c.deltaConversions > 0);
+    const yLayer1 = yResidualForFallback.length > 0
+      ? await runUtmLayer1Pass(shopDomain, yesterday, yesterdayOrders, yResidualForFallback, yesterdayMetaOffset)
+      : { layer1Written: 0, slotCreditsConsumed: 0 };
     if (yLayer1.layer1Written > 0 || yRemaining.length > 0) {
-      console.log(`[IncrementalSync] Previous-day: ${yLayer1.layer1Written} UTM, ${yRemaining.length} statistical matches attempted`);
+      console.log(`[IncrementalSync] Previous-day: ${yRemaining.length} statistical matches attempted, ${yLayer1.layer1Written} UTM fallback`);
     }
   }
 
