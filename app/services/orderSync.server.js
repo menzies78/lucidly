@@ -601,7 +601,20 @@ export async function syncOrders(admin, shopDomain) {
       console.warn(`[OrderSync] order.count failed: ${err.message}`);
     }
   }
-  const effectiveTotal = () => expectedOrderTotal;
+  let hasNextPage = true;
+  let cursor = null;
+  let totalImported = 0;
+  let totalCustomers = 0;
+  let pageCount = 0;
+  const touchedCustomerIds = new Set();
+
+  // Keep total >= current so the bar never overshoots 100%. The skeleton
+  // pre-count is exact at the moment we query it, but webhook-driven order
+  // creates during the detail walk (or any new orders Shopify streams in
+  // between the two queries) push the detail walk's processed count past it.
+  // Widening total to match avoids "43,505 of 43,503" visuals.
+  const effectiveTotal = () =>
+    expectedOrderTotal == null ? null : Math.max(expectedOrderTotal, totalImported);
   const expectedOrderTotalIsApprox = false;
 
   // Seed the progress map immediately so the onboarding UI shows the bar
@@ -614,13 +627,6 @@ export async function syncOrders(admin, shopDomain) {
     unitLabel: "orders",
     detail: "Importing order details",
   });
-
-  let hasNextPage = true;
-  let cursor = null;
-  let totalImported = 0;
-  let totalCustomers = 0;
-  let pageCount = 0;
-  const touchedCustomerIds = new Set();
   // isInitialBackfill is already resolved from resolveSyncWindow above. Full
   // backfills do a shop-wide recompute; incremental scoped to touched customers.
 
