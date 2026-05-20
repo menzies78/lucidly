@@ -115,6 +115,17 @@ interface InteractiveTableProps {
   columnProfiles?: ColumnProfile[];
   defaultFilters?: ColumnFiltersState;
   initialSorting?: SortingState;
+  // When true: switch to native column auto-sizing (no fixed layout, no
+  // truncation) and wrap the table in a horizontal scroll container. Each
+  // column then sizes to its content / header — at the cost of not lining up
+  // with adjacent tables.
+  fitContentColumns?: boolean;
+  // When true: render a "Download" popover in the toolbar offering CSV / TSV
+  // exports of the *currently visible columns* and *currently filtered +
+  // sorted rows*. Raw values via row.getValue() are used, not formatted cells,
+  // so spreadsheets get numbers instead of currency strings.
+  enableDownload?: boolean;
+  downloadFilename?: string;
 }
 
 function MultiSelectFilter({
@@ -226,6 +237,9 @@ export default function InteractiveTable({
   columnProfiles,
   defaultFilters,
   initialSorting,
+  fitContentColumns,
+  enableDownload,
+  downloadFilename,
 }: InteractiveTableProps) {
   const pageTheme = usePageTheme();
   const [sorting, setSorting] = useState<SortingState>(initialSorting || []);
@@ -267,6 +281,7 @@ export default function InteractiveTable({
 
   const [columnVisibility, setColumnVisibility] = useState<VisibilityState>(initialVisibility);
   const [colPickerOpen, setColPickerOpen] = useState(false);
+  const [downloadOpen, setDownloadOpen] = useState(false);
   const [tooltip, setTooltip] = useState<TooltipData | null>(null);
   const [savedFeedback, setSavedFeedback] = useState(false);
   const [activeProfileId, setActiveProfileId] = useState<string | null>(null);
@@ -359,6 +374,61 @@ export default function InteractiveTable({
     setColumnVisibility(defaultVisibility);
     setActiveProfileId(null);
   }, [tableId, defaultVisibility]);
+
+  // ── Download / export ──
+  // Exports the currently visible columns and currently filtered+sorted rows.
+  // Uses row.getValue() (raw) so spreadsheets get unformatted numbers — e.g.
+  // 1234.5 instead of "£1,234.50" — which preserves their usefulness for
+  // further analysis. Formatted cells are JSX so can't be flattened safely.
+  const handleDownload = useCallback((format: "csv" | "tsv") => {
+    setDownloadOpen(false);
+    const visibleCols = table.getVisibleLeafColumns().filter(c => !alwaysOnColumns.has(c.id));
+    const headerLabel = (col: any) =>
+      typeof col.columnDef.header === "string" ? col.columnDef.header : col.id;
+
+    const escapeCsv = (val: any): string => {
+      const s = val == null ? "" : String(val);
+      // Quote if contains comma, quote, or newline; double internal quotes.
+      if (/[",\r\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+      return s;
+    };
+    const escapeTsv = (val: any): string => {
+      const s = val == null ? "" : String(val);
+      // Strip tabs/newlines from cells in TSV — they break the format and most
+      // sane spreadsheet rows shouldn't contain them anyway.
+      return s.replace(/[\t\r\n]+/g, " ");
+    };
+
+    const sep = format === "csv" ? "," : "\t";
+    const esc = format === "csv" ? escapeCsv : escapeTsv;
+
+    const lines: string[] = [];
+    lines.push(visibleCols.map(c => esc(headerLabel(c))).join(sep));
+    for (const row of allRows) {
+      lines.push(
+        visibleCols.map(c => {
+          const v = row.getValue(c.id);
+          return esc(v);
+        }).join(sep),
+      );
+    }
+
+    const content = lines.join("\r\n");
+    // BOM keeps Excel happy with non-ASCII column headers / values.
+    const bom = "\uFEFF";
+    const mime = format === "csv" ? "text/csv;charset=utf-8" : "text/tab-separated-values;charset=utf-8";
+    const blob = new Blob([bom + content], { type: mime });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    const stamp = new Date().toISOString().slice(0, 10);
+    const base = downloadFilename || tableId || "export";
+    a.href = url;
+    a.download = `${base}-${stamp}.${format}`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }, [table, allRows, alwaysOnColumns, downloadFilename, tableId]);
 
   // Column resize handling
   const resizingRef = useRef<{ colId: string; startX: number; startW: number } | null>(null);
@@ -525,6 +595,30 @@ export default function InteractiveTable({
               </Box>
             </Popover.Pane>
           </Popover>
+          {enableDownload && (
+            <Popover
+              active={downloadOpen}
+              activator={
+                <Button size="slim" onClick={() => setDownloadOpen(v => !v)}>
+                  Download
+                </Button>
+              }
+              onClose={() => setDownloadOpen(false)}
+              preferredAlignment="right"
+            >
+              <Popover.Pane>
+                <Box padding="300" minWidth="200px">
+                  <BlockStack gap="100">
+                    <Text as="p" variant="bodySm" tone="subdued">
+                      {`Exports ${allRows.length} row${allRows.length !== 1 ? "s" : ""} (visible columns, filtered + sorted)`}
+                    </Text>
+                    <Button size="slim" onClick={() => handleDownload("csv")}>CSV (Excel)</Button>
+                    <Button size="slim" onClick={() => handleDownload("tsv")}>TSV (Sheets)</Button>
+                  </BlockStack>
+                </Box>
+              </Popover.Pane>
+            </Popover>
+          )}
           {columnProfiles && columnProfiles.length > 0 && (
             <div style={{ display: "flex", gap: "4px", flexWrap: "wrap" }}>
               {columnProfiles.map(profile => {
@@ -653,18 +747,22 @@ export default function InteractiveTable({
         </InlineStack>
       </div>
 
+      <div style={fitContentColumns ? { overflowX: "auto" } : undefined}>
       <table ref={tableRef} style={{
-        width: "100%",
+        width: fitContentColumns ? "max-content" : "100%",
+        minWidth: fitContentColumns ? "100%" : undefined,
         borderCollapse: "separate",
         borderSpacing: 0,
         fontSize: "13px",
-        tableLayout: "fixed",
+        tableLayout: fitContentColumns ? "auto" : "fixed",
         borderLeft: "1px solid var(--l-border)",
         borderRight: "1px solid var(--l-border)",
       }}>
         <colgroup>
           {table.getVisibleLeafColumns().map(col => {
             if (alwaysOnColumns.has(col.id)) return <col key={col.id} style={{ width: "41px" }} />;
+            // Fit-content mode: don't force widths, let the browser auto-size.
+            if (fitContentColumns) return <col key={col.id} />;
             const w = columnWidths[col.id];
             return <col key={col.id} style={w ? { width: `${w}px` } : undefined} />;
           })}
@@ -812,8 +910,8 @@ export default function InteractiveTable({
                         whiteSpace: "nowrap",
                         textAlign: (cell.column.columnDef.meta as any)?.align === "right" ? "right" : "left",
                         fontSize: isBdRow ? "12px" : "13px",
-                        overflow: "hidden",
-                        textOverflow: "ellipsis",
+                        overflow: fitContentColumns ? "visible" : "hidden",
+                        textOverflow: fitContentColumns ? "clip" : "ellipsis",
                         borderRight: isLast ? "none" : "1px solid #ebebeb",
                         color: isBdRow ? "#555" : undefined,
                       }}
@@ -862,6 +960,7 @@ export default function InteractiveTable({
           </tfoot>
         )}
       </table>
+      </div>
       <FixedTooltip tip={tooltip} />
     </div>
   );

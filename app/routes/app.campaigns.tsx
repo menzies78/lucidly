@@ -1288,11 +1288,30 @@ export const loader = async ({ request }) => {
   const topNewCustAdRow = (adRows as any[]).slice().sort((a, b) =>
     (b.newCustomerOrders || 0) - (a.newCustomerOrders || 0)
   )[0] || null;
-  // Worst-performing ad: must be statistically significant - require
-  // spend in the upper half of all spending ads (so a £5 dud doesn't
-  // top the list). Among those, pick the highest CPA, falling back to
-  // worst ROAS if no new-customer orders.
-  const spendingAds = (adRows as any[]).filter(r => (r.spend || 0) > 0);
+  // Worst-performing ad: must be (a) currently LIVE and (b) statistically
+  // significant - require spend in the upper half of all live spending ads
+  // (so a £5 dud doesn't top the list). Live = delivered (spend>0 OR
+  // impressions>0) on the most recent day in the window. Same behavioural
+  // definition as the Live Ads tile.
+  const liveAdIds: Set<string> = new Set();
+  if (lastDay?.date) {
+    const lastDayDate = lastDay.date instanceof Date ? lastDay.date : new Date(lastDay.date);
+    const lastDayStart = new Date(lastDayDate); lastDayStart.setUTCHours(0, 0, 0, 0);
+    const lastDayEnd = new Date(lastDayDate); lastDayEnd.setUTCHours(23, 59, 59, 999);
+    const liveAdRows = await queryCached(
+      `${shopDomain}:campLiveAdIds:${lastDayDate.toISOString().slice(0, 10)}`,
+      DEFAULT_TTL,
+      () => db.$queryRaw<Array<{ adId: string | null }>>`
+        SELECT DISTINCT adId FROM DailyAdRollup
+        WHERE shopDomain = ${shopDomain}
+          AND date >= ${lastDayStart} AND date <= ${lastDayEnd}
+          AND (spend > 0 OR impressions > 0)
+          AND adId IS NOT NULL
+      `,
+    );
+    for (const r of liveAdRows) if (r.adId) liveAdIds.add(String(r.adId));
+  }
+  const spendingAds = (adRows as any[]).filter(r => (r.spend || 0) > 0 && liveAdIds.has(String(r.id)));
   const sortedSpend = spendingAds.map(r => r.spend).sort((a, b) => a - b);
   const spendThreshold = sortedSpend.length > 0
     ? sortedSpend[Math.floor(sortedSpend.length / 2)]
@@ -4555,11 +4574,15 @@ export default function Campaigns() {
     return cols;
   }, [cs, showBreakdown, breakdown, level, nameHeader, currentSelectedIds, filteredRows, toggleSelectAll, toggleSelect, handleDrillDown, changeCountsByObjectId]);
 
-  // Default view = Overview profile
+  // Show ALL columns by default — the table is now fit-content + horizontal
+  // scroll, so the full set fits without truncation. Saved per-merchant
+  // selection (via the "Save as Default" button in the column picker)
+  // persists in localStorage and takes precedence over this default.
   const defaultVisibleColumns = useMemo(() => {
-    return ["select", "name", "adAgeDays", "spend", "impressions", "clicks", "ctr",
-      "metaConversions", "attributedRevenue", "blendedROAS", "cpa"];
-  }, []);
+    return columns
+      .map(c => (c as any).accessorKey || (c as any).id)
+      .filter(Boolean) as string[];
+  }, [columns]);
 
   const columnProfiles = useMemo(() => [
     {
@@ -5089,7 +5112,7 @@ export default function Campaigns() {
             backgroundColor: "#fff",
             paddingTop: "4px",
           }}>
-            <Text as="h2" variant="headingLg">Performance</Text>
+            <Text as="h2" variant="headingLg">Ad Performance</Text>
             <div style={{ display: "flex", alignItems: "flex-end", marginTop: "12px" }}>
               {TAB_LABELS.map((label, i) => (
                 <button
@@ -5119,15 +5142,10 @@ export default function Campaigns() {
                 data={displayRows}
                 footerRow={footerRow}
                 defaultVisibleColumns={defaultVisibleColumns}
-                defaultColumnWidths={{
-                  name: 260,
-                  spend: 90,
-                  impressions: 95,
-                  clicks: 70,
-                  ctr: 60,
-                  cpa: 75,
-                }}
                 tableId="campaigns"
+                fitContentColumns
+                enableDownload
+                downloadFilename="ad-performance"
                 stickyTopOffset={perfTabsHeight}
                 rowBackgroundFn={showBreakdown ? (original) => {
                   if (original._isBreakdownRow) return "#fff";

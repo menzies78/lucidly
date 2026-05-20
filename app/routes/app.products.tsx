@@ -1,5 +1,5 @@
 import { json } from "@remix-run/node";
-import { useLoaderData, useSubmit, useActionData, useRevalidator } from "@remix-run/react";
+import { useLoaderData, useSubmit, useActionData, useRevalidator, useSearchParams } from "@remix-run/react";
 import { Page, Card, Text, BlockStack } from "@shopify/polaris";
 import React, { useState, useMemo, useRef, useEffect } from "react";
 import { createPortal } from "react-dom";
@@ -33,6 +33,27 @@ export const loader = async ({ request }) => {
   const shopForTz = await db.shop.findUnique({ where: { shopDomain } });
   const tz = shopForTz?.shopifyTimezone || "UTC";
   const { fromDate, toDate, fromKey, toKey, preset } = parseDateRange(request, tz);
+
+  // ── Tile-level window selectors ──
+  // Entry-to-LTV and Customer Product Journey deliberately run on their own
+  // windows (independent of the page date selector). Both default to the last
+  // 12 months because the underlying signal — "first-order product → second-
+  // order product" — needs enough cohort depth to be useful. Selector lives
+  // inside each tile; options are 3m / 6m / 12m / lifetime.
+  const _url = new URL(request.url);
+  const entryLtvWin = _url.searchParams.get("entryLtvWin") || "12m";
+  const journeyWin = _url.searchParams.get("journeyWin") || "12m";
+  const _winFromKey = (win: string): string => {
+    if (win === "lifetime") return "0000-01-01";
+    const months = win === "3m" ? 3 : win === "6m" ? 6 : 12;
+    const todayKey = shopLocalDayKey(tz, new Date());
+    const [y, m, d] = todayKey.split("-").map(Number);
+    const past = new Date(Date.UTC(y, m - 1 - months, d, 12, 0, 0, 0));
+    return shopLocalDayKey(tz, past);
+  };
+  const entryLtvFromKey = _winFromKey(entryLtvWin);
+  const journeyFromKey = _winFromKey(journeyWin);
+  const tileTodayKey = shopLocalDayKey(tz, new Date());
 
   const addDaysKey = (key: string, delta: number): string => {
     const [y, m, d] = key.split("-").map(Number);
@@ -379,14 +400,17 @@ export const loader = async ({ request }) => {
     totalSpent: number; firstParents: string[]; secondParents: string[] | null;
   };
   const allEntries = (blob.customerEntries || []) as CustEntry[];
-  const periodEntries = allEntries.filter(
-    (e) => e.firstOrderDateLocal >= fromKey && e.firstOrderDateLocal <= toKey,
+  // Journey runs on its own selectable window (3m / 6m / 12m / lifetime),
+  // independent of the page date selector. Default 12m gives enough cohort
+  // depth to spot meaningful first→second-order patterns.
+  const journeyEntries = allEntries.filter(
+    (e) => e.firstOrderDateLocal >= journeyFromKey && e.firstOrderDateLocal <= tileTodayKey,
   );
-  const buildJourney = (filterFn: (segment: string | null) => boolean) => {
+  const buildJourney = (entries: CustEntry[], filterFn: (segment: string | null) => boolean) => {
     const jFlows: Record<string, Record<string, number>> = {};
     const gProducts: Record<string, number> = {};
     const sProducts: Record<string, number> = {};
-    for (const rec of periodEntries) {
+    for (const rec of entries) {
       if (!filterFn(rec.segment)) continue;
       const firstItems = rec.firstParents || [];
       const secondItems = rec.secondParents || [];
@@ -421,8 +445,8 @@ export const loader = async ({ request }) => {
     }
     return { topGateway: tGateway, topSecond: tSecond, flows: fArr };
   };
-  const metaJourneyPeriod = buildJourney((seg) => seg === "metaNew" || seg === "metaRepeat" || seg === "metaRetargeted");
-  const allJourneyPeriod = buildJourney(() => true);
+  const metaJourneyPeriod = buildJourney(journeyEntries, (seg) => seg === "metaNew" || seg === "metaRepeat" || seg === "metaRetargeted");
+  const allJourneyPeriod = buildJourney(journeyEntries, () => true);
   const topGateway = metaJourneyPeriod.topGateway;
   const topSecond = metaJourneyPeriod.topSecond;
   const flows = metaJourneyPeriod.flows;
@@ -529,9 +553,15 @@ export const loader = async ({ request }) => {
   // Entry-to-LTV: group metaNew customers by their gateway product (first
   // line item on their earliest order), then surface avg Customer.totalSpent
   // per group. Min 5 customers per product to avoid noisy rankings on
-  // low-volume SKUs. Parent-stripped so variants roll up.
+  // low-volume SKUs. Parent-stripped so variants roll up. Runs on its own
+  // window (3m / 6m / 12m / lifetime, default 12m) — LTV needs enough
+  // post-acquisition runway to converge, so this is intentionally decoupled
+  // from the page date selector.
+  const entryLtvEntries = allEntries.filter(
+    (e) => e.firstOrderDateLocal >= entryLtvFromKey && e.firstOrderDateLocal <= tileTodayKey,
+  );
   const entryToLtvMap: Record<string, { customers: number; totalSpent: number }> = {};
-  for (const e of periodEntries) {
+  for (const e of entryLtvEntries) {
     if (e.segment !== 'metaNew') continue;
     const parent = e.firstParents[0];
     if (!parent || parent.toLowerCase() === 'gift card') continue;
@@ -922,6 +952,7 @@ export const loader = async ({ request }) => {
     demoRecords, demoCountries, demoGems,
     nonMetaDemoRecords, nonMetaDemoCountries,
     entryToLtv, entryToLtvCohortAvg,
+    entryLtvWin, journeyWin,
     fromKey, toKey, preset,
   });
 };
@@ -1715,10 +1746,19 @@ export default function Products() {
     demoRecords, demoCountries, demoGems,
     nonMetaDemoRecords, nonMetaDemoCountries,
     entryToLtv, entryToLtvCohortAvg,
+    entryLtvWin, journeyWin,
     fromKey, toKey, preset,
   } = useLoaderData<typeof loader>();
 
   const fmtPrice = (v: number) => `${cs}${Math.round(v).toLocaleString()}`;
+  const [searchParams, setSearchParams] = useSearchParams();
+  // Tile-level window switcher: navigates with the new window value while
+  // preserving every other URL param (date selector, breakdown, etc.).
+  const setTileWindow = (param: "entryLtvWin" | "journeyWin", value: "3m" | "6m" | "12m" | "lifetime") => {
+    const next = new URLSearchParams(searchParams);
+    next.set(param, value);
+    setSearchParams(next, { replace: true, preventScrollReset: true });
+  };
   const [firstPurchaseMode, setFirstPurchaseMode] = useState<"meta" | "other">("meta");
   const [basketMode, setBasketMode] = useState<"meta" | "other">("meta");
   const [refundMode, setRefundMode] = useState<"meta" | "all">("all");
@@ -1842,10 +1882,14 @@ export default function Products() {
       cell: ({ getValue }) => (getValue() as string) || "\u2014" },
   ], [cs]);
 
-  const defaultVisibleColumns = useMemo(() => [
-    "product", "metaOrders", "metaRevenue", "metaNewOrders", "metaRepeatOrders",
-    "metaRetargetedOrders", "metaPct", "gatewayPct", "topCampaign",
-  ], []);
+  // Show ALL columns by default. Table uses fit-content sizing + horizontal
+  // scroll, so the full set fits without truncation. Users who prefer a
+  // narrower view can hide columns and "Save as Default" via the column
+  // picker — saved selection persists per-merchant via localStorage.
+  const defaultVisibleColumns = useMemo(
+    () => columns.map(c => (c as any).accessorKey || (c as any).id).filter(Boolean) as string[],
+    [columns],
+  );
 
   const columnProfiles = useMemo(() => [
     { id: "overview", label: "Overview", icon: "\ud83d\udcca", description: "Key product metrics at a glance",
@@ -2306,12 +2350,20 @@ export default function Products() {
             <Card>
               <div style={{ height: 340, display: "flex", flexDirection: "column" }}>
               <BlockStack gap="300">
-                <BlockStack gap="100">
-                  <Text as="h2" variant="headingLg">Entry-to-LTV Map</Text>
-                  <Text as="p" variant="bodySm" tone="subdued">
-                    Which first-purchase products produce the highest-value customers over their lifetime. Min 5 new Meta customers per product.
-                  </Text>
-                </BlockStack>
+                <div className="tile-header-row">
+                  <BlockStack gap="100">
+                    <Text as="h2" variant="headingLg">Entry-to-LTV Map</Text>
+                    <Text as="p" variant="bodySm" tone="subdued">
+                      Which first-purchase products produce the highest-value customers over their lifetime. Min 5 new Meta customers per product.
+                    </Text>
+                  </BlockStack>
+                  <div className="segment-toggle" style={{ flexShrink: 0 }}>
+                    <button className={entryLtvWin === "3m" ? "active" : ""} onClick={() => setTileWindow("entryLtvWin", "3m")}>3m</button>
+                    <button className={entryLtvWin === "6m" ? "active" : ""} onClick={() => setTileWindow("entryLtvWin", "6m")}>6m</button>
+                    <button className={entryLtvWin === "12m" ? "active" : ""} onClick={() => setTileWindow("entryLtvWin", "12m")}>12m</button>
+                    <button className={entryLtvWin === "lifetime" ? "active" : ""} onClick={() => setTileWindow("entryLtvWin", "lifetime")}>All</button>
+                  </div>
+                </div>
                 {entryToLtv.length === 0 ? (
                   <div style={{ padding: 20, textAlign: "center", color: "#9CA3AF" }}>Not enough Meta-acquired customers in this period</div>
                 ) : (
@@ -2375,9 +2427,17 @@ export default function Products() {
                     <Text as="h2" variant="headingLg">Customer Product Journey</Text>
                     <Text as="p" variant="bodySm" tone="subdued">What customers buy first, and what different product they buy next. Same-product repurchases excluded.</Text>
                   </BlockStack>
-                  <div className="segment-toggle">
-                    <button className={journeyMode === "meta" ? "active" : ""} onClick={() => setJourneyMode("meta")}>Meta Customers</button>
-                    <button className={journeyMode === "all" ? "active" : ""} onClick={() => setJourneyMode("all")}>All Customers</button>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 6, alignItems: "flex-end", flexShrink: 0 }}>
+                    <div className="segment-toggle">
+                      <button className={journeyMode === "meta" ? "active" : ""} onClick={() => setJourneyMode("meta")}>Meta Customers</button>
+                      <button className={journeyMode === "all" ? "active" : ""} onClick={() => setJourneyMode("all")}>All Customers</button>
+                    </div>
+                    <div className="segment-toggle">
+                      <button className={journeyWin === "3m" ? "active" : ""} onClick={() => setTileWindow("journeyWin", "3m")}>3m</button>
+                      <button className={journeyWin === "6m" ? "active" : ""} onClick={() => setTileWindow("journeyWin", "6m")}>6m</button>
+                      <button className={journeyWin === "12m" ? "active" : ""} onClick={() => setTileWindow("journeyWin", "12m")}>12m</button>
+                      <button className={journeyWin === "lifetime" ? "active" : ""} onClick={() => setTileWindow("journeyWin", "lifetime")}>All</button>
+                    </div>
                   </div>
                 </div>
                 <div style={{ maxHeight: 560, overflow: "auto" }}>
@@ -2406,6 +2466,9 @@ export default function Products() {
               defaultVisibleColumns={defaultVisibleColumns}
               tableId="products"
               footerRow={footerRow}
+              fitContentColumns
+              enableDownload
+              downloadFilename="product-breakdown"
             />
           </BlockStack>
         </Card>
