@@ -1,24 +1,27 @@
 import db from "../db.server";
 
 /**
- * Pixel Calibration (v2 - UTM ground-truth)
- * -----------------------------------------
+ * Pixel Calibration (v3 - matcher-confidence ground-truth)
+ * --------------------------------------------------------
  * Determines which Shopify price field the merchant's Meta pixel reports as the
- * Purchase `value`. Uses UTM-confirmed orders as ground truth: when an order
- * carries Meta UTM tags AND Meta reported a conversion for that exact ad in
- * that exact hour, we KNOW the two refer to the same purchase event.
+ * Purchase `value`. Uses unambiguous attribution matches as ground truth:
+ * confidence=100 + rivalCount=0 (the matcher picked a unique candidate, whether
+ * via UTM ↔ ad link or via exhaustive backtracking on a single-occupant slot).
  *
  * Sample selection (strictest first):
- *   1. Order has `utmConfirmedMeta = true` (UTM ↔ ad link)
- *   2. Order has NOT been refunded or edited (`totalRefunded == 0`, `refundStatus == "none"`)
- *   3. A MetaInsight row exists for the order's adId on the order's Meta-TZ date+hour
- *      with EXACTLY 1 conversion in that slot (unambiguous value)
- *   4. Walk orders newest → oldest (most relevant, least likely to have changed
- *      since purchase). Stop after MAX_SAMPLES.
+ *   1. Attribution row with matchMethod IN ("utm", "exhaustive"), confidence=100,
+ *      rivalCount=0 — i.e. the only viable candidate in that ad+hour slot.
+ *   2. Joined Order has NOT been refunded or edited (`totalRefunded == 0`,
+ *      `refundStatus == "none"`, `isOnlineStore == true`, `frozenTotalPrice > 0`).
+ *   3. The MetaInsight slot for adId+date+hour has EXACTLY 1 conversion
+ *      (defence-in-depth: pairs the Attribution-side uniqueness with Meta-side
+ *      uniqueness — guarantees the insight's conversionValue refers to THIS order).
+ *   4. Walk newest → oldest, stop after MAX_SAMPLES.
  *
- * NOTE: We only count Shopify orders that Meta ACTUALLY REPORTED as conversions.
- * Orders with Meta UTMs but no Meta report ("bonus" orders) are ignored - we
- * have nothing to compare against.
+ * v3 (2026-05-20): broadened from "utmConfirmedMeta only" to "any conf=100
+ * matcher pick". Calibration was stuck at 0/5 after install because UTM-confirmed
+ * orders only accumulate post-install, while the exhaustive matcher produces
+ * thousands of unambiguous picks during install itself.
  */
 
 const CANDIDATE_FIELDS = [
@@ -124,9 +127,16 @@ export async function calibratePixel(shopDomain) {
 }
 
 /**
- * Walks UTM-confirmed orders newest → oldest. For each, looks up the matching
- * MetaInsight slot. Keeps only pairs where Meta reported exactly 1 conversion
- * in that slot for that ad (so the Meta value is unambiguously this order's).
+ * Walks high-confidence Attribution rows (matchMethod IN ("utm", "exhaustive"),
+ * confidence = 100, rivalCount = 0) newest → oldest. Confidence=100 + rivalCount=0
+ * means the matcher picked a unique candidate — equivalent ground truth to UTM-
+ * confirmed orders. For each, looks up the MetaInsight slot and keeps only pairs
+ * where Meta reported exactly 1 conversion (so the per-pick Meta value is the
+ * unambiguous Meta-side value for THIS order).
+ *
+ * This is a strict superset of the previous UTM-only pool. After a fresh install
+ * the exhaustive matcher produces thousands of conf=100 rows even before any
+ * UTM-tagged orders flow in, so calibration succeeds at install time.
  */
 async function findGroundTruthPairs(shopDomain, shop) {
   const pairs = [];
@@ -134,29 +144,46 @@ async function findGroundTruthPairs(shopDomain, shop) {
   let skip = 0;
 
   while (pairs.length < MAX_SAMPLES) {
-    const orders = await db.order.findMany({
+    const attrs = await db.attribution.findMany({
       where: {
         shopDomain,
-        utmConfirmedMeta: true,
-        isOnlineStore: true,
-        totalRefunded: 0,
-        refundStatus: "none",
+        confidence: 100,
+        rivalCount: 0,
+        matchMethod: { in: ["utm", "exhaustive"] },
         metaAdId: { not: null },
       },
-      orderBy: { createdAt: "desc" },
+      orderBy: { matchedAt: "desc" },
       skip,
       take: PAGE,
       select: {
-        id: true, shopifyOrderId: true, createdAt: true,
-        frozenTotalPrice: true, frozenSubtotalPrice: true,
+        shopifyOrderId: true,
         metaAdId: true,
       },
     });
-    if (!orders.length) break;
-    skip += orders.length;
+    if (!attrs.length) break;
+    skip += attrs.length;
 
-    for (const o of orders) {
-      if (!o.frozenTotalPrice || o.frozenTotalPrice <= 0) continue;
+    // Fetch the corresponding orders in one batch (clean filter applied)
+    const orderIds = attrs.map(a => a.shopifyOrderId);
+    const orders = await db.order.findMany({
+      where: {
+        shopDomain,
+        shopifyOrderId: { in: orderIds },
+        isOnlineStore: true,
+        totalRefunded: 0,
+        refundStatus: "none",
+        frozenTotalPrice: { gt: 0 },
+      },
+      select: {
+        shopifyOrderId: true, createdAt: true,
+        frozenTotalPrice: true, frozenSubtotalPrice: true,
+      },
+    });
+    const orderMap = new Map(orders.map(o => [o.shopifyOrderId, o]));
+
+    for (const a of attrs) {
+      const o = orderMap.get(a.shopifyOrderId);
+      if (!o) continue;
 
       // Convert order createdAt (UTC) → Meta-TZ date + hour
       const { dateStr, hourSlot } = utcToMetaSlot(o.createdAt, shop.metaAccountTimezone || "Europe/London");
@@ -165,7 +192,7 @@ async function findGroundTruthPairs(shopDomain, shop) {
       const insight = await db.metaInsight.findUnique({
         where: {
           shopDomain_date_hourSlot_adId: {
-            shopDomain, date: slotDate, hourSlot, adId: o.metaAdId,
+            shopDomain, date: slotDate, hourSlot, adId: a.metaAdId,
           },
         },
         select: { conversions: true, conversionValue: true },

@@ -295,7 +295,7 @@ export const loader = async ({ request }) => {
   }
 
   // Check if any background task is currently running for this shop
-  const taskNames = ["syncOrders", "syncMeta", "syncMetaHistorical", "runAttribution", "dateRangeRematch", "fillGaps", "incrementalSync", "startOngoingSync", "calibratePixel", "inferGender", "backfillFirstNames", "forceRollups", "refreshAdThumbnails", "backupShop", "wipeShop", "restoreShop", "verifyBackup"];
+  const taskNames = ["syncOrders", "syncMeta", "syncMetaHistorical", "runAttribution", "dateRangeRematch", "fillGaps", "incrementalSync", "startOngoingSync", "calibratePixel", "inferGender", "backfillFirstNames", "forceRollups", "refreshAdThumbnails", "backupShop", "wipeShop", "restoreShop", "verifyBackup", "purgeData"];
   let activeTaskFromServer = null;
   for (const t of taskNames) {
     const p = getProgress(`${t}:${shopDomain}`);
@@ -1633,6 +1633,19 @@ export default function Index() {
                   {backups && backups.length > 0 && !backups[0].verified
                     ? "Disabled: latest backup is unverified."
                     : "Forces reinstall via App Store link."}
+                </Text>
+              </BlockStack>
+              <BlockStack gap="100">
+                <Button tone="critical" onClick={() => {
+                  if (!window.confirm("Purge ALL data and restart from Fit Test?\n\nThis:\n  • Deletes orders, attributions, Meta data, customers, rollups, ingest jobs\n  • Resets onboarding state (Fit Test → fresh ingest)\n  • Preserves Shopify + Meta OAuth tokens (no reinstall)\n  • Kicks the orchestrator immediately\n\nNo backup required. Designed for dev iteration.")) return;
+                  if (!window.confirm("Final confirm: all rollups + matches + Meta history for this shop will be deleted. Continue?")) return;
+                  startTask("purgeData");
+                }} disabled={isRunning}
+                  loading={activeTask === "purgeData"}>
+                  {activeTask === "purgeData" ? "Purging..." : "Purge Data + Restart"}
+                </Button>
+                <Text as="p" variant="bodySm" tone="subdued">
+                  No backup needed. Keeps OAuth, restarts ingest.
                 </Text>
               </BlockStack>
             </InlineStack>
