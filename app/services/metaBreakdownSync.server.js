@@ -1,7 +1,7 @@
 import db from "../db.server";
 import { setProgress, completeProgress, failProgress } from "./progress.server";
 import { prefetchExchangeRates, convertMetaFields } from "./exchangeRate.server";
-import { fetchAllPages, getMetaApiUsage } from "./metaFetch.server";
+import { fetchAllPages, getMetaApiUsage, TransientServiceError } from "./metaFetch.server";
 
 const CONCURRENCY = 10; // Match insights concurrency
 const BREAKDOWN_RANGE_SIZE = 14; // 14 days per API call (breakdowns are lighter than hourly)
@@ -57,8 +57,48 @@ export const BREAKDOWN_CONFIGS = [
   { type: "age_gender", breakdown: "age,gender", valueField: (row) => `${row.age}|${row.gender}` },
 ];
 
-// Fetch a breakdown for a date range, return parsed rows
+// Helper: ISO-day arithmetic without timezone surprises.
+function daysBetween(since, until) {
+  const a = new Date(since + "T00:00:00.000Z").getTime();
+  const b = new Date(until + "T00:00:00.000Z").getTime();
+  return Math.round((b - a) / 86400000) + 1; // inclusive
+}
+function addDaysIso(since, n) {
+  const d = new Date(since + "T00:00:00.000Z");
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().split("T")[0];
+}
+
+// Fetch a breakdown for a date range, return parsed rows. On
+// TransientServiceError (persistent code=2 — Meta's edge can't compute the
+// query as posed) or ReduceDataError (Meta explicitly said the query is too
+// heavy), split the range in half and recurse. Single-day ranges that still
+// fail are logged + skipped — historical breakdowns are best-effort.
 async function fetchBreakdownRange(metaAccessToken, metaAdAccountId, since, until, breakdownConfig) {
+  try {
+    return await fetchBreakdownRangeRaw(metaAccessToken, metaAdAccountId, since, until, breakdownConfig);
+  } catch (err) {
+    const splittable = err instanceof TransientServiceError || err?.name === "ReduceDataError";
+    if (!splittable) throw err;
+
+    const span = daysBetween(since, until);
+    if (span <= 1) {
+      console.warn(`[BreakdownSync] Giving up on ${breakdownConfig.type} ${since}..${until} (single day, ${err.name}): ${err.message}`);
+      return [];
+    }
+    const half = Math.floor(span / 2);
+    const mid = addDaysIso(since, half - 1);
+    const nextStart = addDaysIso(since, half);
+    console.warn(`[BreakdownSync] ${err.name} on ${breakdownConfig.type} ${since}..${until} (${span}d) — splitting into ${since}..${mid} + ${nextStart}..${until}`);
+    const [a, b] = await Promise.all([
+      fetchBreakdownRange(metaAccessToken, metaAdAccountId, since, mid, breakdownConfig),
+      fetchBreakdownRange(metaAccessToken, metaAdAccountId, nextStart, until, breakdownConfig),
+    ]);
+    return [...a, ...b];
+  }
+}
+
+async function fetchBreakdownRangeRaw(metaAccessToken, metaAdAccountId, since, until, breakdownConfig) {
   const fields = [
     "date_start", "ad_id", "ad_name", "campaign_id", "campaign_name",
     "adset_id", "adset_name", "impressions", "clicks", "spend", "reach",

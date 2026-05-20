@@ -30,6 +30,18 @@ export class ReduceDataError extends Error {
   }
 }
 
+// Persistent code=2 ("Service temporarily unavailable") on a specific query
+// usually means the query is too expensive for Meta's edge to compute (large
+// time_range × breakdowns × old data). After N retries we surface this as a
+// distinct error so callers can split the range and recurse — same recovery
+// path as ReduceDataError but triggered by a different signal.
+export class TransientServiceError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "TransientServiceError";
+  }
+}
+
 // Back-compat shim. Old callers asked for getMetaApiUsage() to display a
 // single number; we surface the worst observed util across all accounts
 // so the meaning is consistent.
@@ -57,11 +69,18 @@ export function getMetaApiUsage() {
 export async function fetchWithRetry(url, label = "MetaAPI", accountKey = null) {
   const MAX_REAL_ERROR_RETRIES = 8;
   const MAX_NETWORK_RETRIES = 5;
+  // Cap on persistent code=2. ~5 retries with exp-backoff ≈ 93s wall-clock
+  // before we hand back to the caller so it can split-and-recurse. Rate
+  // limits (code 4/17) still retry indefinitely — those are time-based and
+  // genuinely transient; code=2 on the same query is almost always an
+  // "expensive query" signal that will not self-resolve.
+  const MAX_TRANSIENT_SERVICE_RETRIES = 5;
   const acctKey = accountKey || accountKeyFromUrl(url);
 
   let realErrorCount = 0;
   let networkErrorCount = 0;
   let rateLimitRetries = 0;
+  let transientServiceRetries = 0;
 
   // Account lock holds across the entire retry loop so backoffs don't release
   // and re-acquire (which would let other in-flight calls jump in front and
@@ -122,11 +141,22 @@ export async function fetchWithRetry(url, label = "MetaAPI", accountKey = null) 
           continue;
         }
 
-        if (isRateLimit || isTransientService) {
+        if (isTransientService) {
+          transientServiceRetries++;
+          if (transientServiceRetries > MAX_TRANSIENT_SERVICE_RETRIES) {
+            console.warn(`[${label}] Transient service error persisted past ${MAX_TRANSIENT_SERVICE_RETRIES} retries on ${acctKey} — surfacing for split-retry`);
+            throw new TransientServiceError(`${label}: code=2 persisted ${MAX_TRANSIENT_SERVICE_RETRIES} retries — query likely too heavy, split range and retry`);
+          }
+          const wait = Math.min(3000 * Math.pow(2, transientServiceRetries - 1), 60000);
+          console.warn(`[${label}] Transient service error (retry #${transientServiceRetries}/${MAX_TRANSIENT_SERVICE_RETRIES}) on ${acctKey}, util=${getEffectiveUtil(acctKey)}%, code=${errCode}, waiting ${Math.round(wait/1000)}s`);
+          await new Promise(r => setTimeout(r, wait));
+          continue;
+        }
+
+        if (isRateLimit) {
           rateLimitRetries++;
           const wait = Math.min(3000 * Math.pow(2, rateLimitRetries - 1), 120000);
-          const reason = isTransientService ? "Transient service error" : "Rate limited";
-          console.warn(`[${label}] ${reason} (retry #${rateLimitRetries}) on ${acctKey}, util=${getEffectiveUtil(acctKey)}%, code=${errCode}, waiting ${Math.round(wait/1000)}s`);
+          console.warn(`[${label}] Rate limited (retry #${rateLimitRetries}) on ${acctKey}, util=${getEffectiveUtil(acctKey)}%, code=${errCode}, waiting ${Math.round(wait/1000)}s`);
           await new Promise(r => setTimeout(r, wait));
           continue;
         }
@@ -142,6 +172,7 @@ export async function fetchWithRetry(url, label = "MetaAPI", accountKey = null) 
         await new Promise(r => setTimeout(r, realErrorWait));
       } catch (err) {
         if (err instanceof ReduceDataError) throw err;
+        if (err instanceof TransientServiceError) throw err;
         if (err.message && err.message.startsWith(`${label}:`)) throw err;
         networkErrorCount++;
         console.error(`[${label}] Network error (${networkErrorCount}/${MAX_NETWORK_RETRIES}): ${err.message}`);
