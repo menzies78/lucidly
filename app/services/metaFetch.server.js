@@ -41,14 +41,21 @@ export function getMetaApiUsage() {
 //  - Rate limits (code 4/17): retries indefinitely with exponential backoff (cap 120s)
 //  - Error subcode 1504022: parks account for max(60s, BUC.estimated × 1.5), retries
 //  - Error code 1 ("reduce data"): throws ReduceDataError immediately
-//  - Real errors (bad token, invalid params): retries 3 times then throws
+//  - Transient errors (code 2 "Service temporarily unavailable" — Meta's own
+//    docs say retry): treated like a rate-limit, retried indefinitely with
+//    exponential backoff (cap 120s). Killed HM's 2026-05-19 breakdowns-historical
+//    phase after only 3 retries × 3s.
+//  - Other real errors (bad token, invalid params): retries 8 times with
+//    exponential backoff (cap 60s) then throws. Bumped from 3 retries × 3s
+//    after the same HM failure — many "real" errors are actually transient
+//    edge proxy hiccups and benefit from more aggressive retry.
 //  - Network errors: retries 5 times then throws
 //
 // The accountKey argument lets callers explicitly bind a request to an
 // ad account that wouldn't be parseable from the URL (rare). When omitted
 // we infer from the URL (/act_xxx/...).
 export async function fetchWithRetry(url, label = "MetaAPI", accountKey = null) {
-  const MAX_REAL_ERROR_RETRIES = 3;
+  const MAX_REAL_ERROR_RETRIES = 8;
   const MAX_NETWORK_RETRIES = 5;
   const acctKey = accountKey || accountKeyFromUrl(url);
 
@@ -90,6 +97,12 @@ export async function fetchWithRetry(url, label = "MetaAPI", accountKey = null) 
           || errMsg.includes("request limit") || errMsg.includes("too many calls");
         const isReduceData = errCode === 1 && errMsg.includes("reduce the amount of data");
         const isAccountThrottled = errSubcode === 1504022;
+        // Code 2 is Meta's "Service temporarily unavailable" — Meta's own docs
+        // mark it retryable. Treating it like a rate-limit (indefinite retry
+        // with exponential backoff) prevents a 3-retry-then-die failure mode
+        // we saw on HM 2026-05-19.
+        const isTransientService = errCode === 2
+          || errMsg.includes("Service temporarily unavailable");
 
         if (isReduceData) {
           throw new ReduceDataError(`${label}: ${errMsg}`);
@@ -109,10 +122,11 @@ export async function fetchWithRetry(url, label = "MetaAPI", accountKey = null) 
           continue;
         }
 
-        if (isRateLimit) {
+        if (isRateLimit || isTransientService) {
           rateLimitRetries++;
           const wait = Math.min(3000 * Math.pow(2, rateLimitRetries - 1), 120000);
-          console.warn(`[${label}] Rate limited (retry #${rateLimitRetries}) on ${acctKey}, util=${getEffectiveUtil(acctKey)}%, waiting ${Math.round(wait/1000)}s`);
+          const reason = isTransientService ? "Transient service error" : "Rate limited";
+          console.warn(`[${label}] ${reason} (retry #${rateLimitRetries}) on ${acctKey}, util=${getEffectiveUtil(acctKey)}%, code=${errCode}, waiting ${Math.round(wait/1000)}s`);
           await new Promise(r => setTimeout(r, wait));
           continue;
         }
@@ -122,7 +136,10 @@ export async function fetchWithRetry(url, label = "MetaAPI", accountKey = null) 
         if (realErrorCount >= MAX_REAL_ERROR_RETRIES) {
           throw new Error(`${label}: API error after ${MAX_REAL_ERROR_RETRIES} retries: [${errCode}] ${errMsg}`);
         }
-        await new Promise(r => setTimeout(r, 3000));
+        // Exponential backoff (3s, 6s, 12s, ..., cap 60s) so transient edge
+        // proxy hiccups get a chance to recover instead of failing the phase.
+        const realErrorWait = Math.min(3000 * Math.pow(2, realErrorCount - 1), 60000);
+        await new Promise(r => setTimeout(r, realErrorWait));
       } catch (err) {
         if (err instanceof ReduceDataError) throw err;
         if (err.message && err.message.startsWith(`${label}:`)) throw err;
