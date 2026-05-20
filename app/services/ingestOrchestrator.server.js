@@ -32,7 +32,7 @@
 // failed but keep going - partial data is much better than a blank dashboard.
 
 import db from "../db.server.js";
-import { syncOrders, syncOrdersSkeleton } from "./orderSync.server.js";
+import { syncOrders, syncOrdersSkeleton, backfillCustomerFirstNames } from "./orderSync.server.js";
 import { syncMetaPass1, syncMetaPass2, syncMetaEntityPreflight } from "./metaSync.server.js";
 import { syncMetaBreakdowns } from "./metaBreakdownSync.server.js";
 import { syncMetaEntities } from "./metaEntitySync.server.js";
@@ -188,9 +188,27 @@ const FINAL_PHASE_2 = {
   key: "finalize",
   label: "Tidying up & preparing dashboard",
   progressKey: (shopDomain) => `ingest:${shopDomain}:finalize`,
-  run: async (shopDomain) => {
+  run: async (shopDomain, ctx) => {
     const pkey = `ingest:${shopDomain}:finalize`;
     const STEPS = [
+      // Pulls billing first names from Shopify (the initial order sync stores
+      // them only when present on the order at sync time — older customers
+      // who placed orders before the billing-name field was reliably set
+      // come back with empty firstName fields). Then runs inferGender against
+      // every customer with a firstName, populating Customer.inferredGender
+      // used by the demographics tile, Customer Map, and Product Demographics.
+      // Without this, those views fall back to Meta-only gender (~30% coverage)
+      // instead of Meta + inference (~85% coverage). The internal rollup
+      // rebuild that follows is wasted work given the rebuilds below, but is
+      // cheap (~15s) and the alternative is leaking the order of operations
+      // into orderSync.server.js, so we accept the duplication.
+      ["Inferring customer demographics", async () => {
+        if (!ctx?.admin) {
+          console.warn(`[ingestOrchestrator] ${shopDomain}: no admin client, skipping first-name backfill`);
+          return;
+        }
+        await backfillCustomerFirstNames(ctx.admin, shopDomain);
+      }],
       ["Building customer segments", async () => {
         const { rebuildCustomerSegments, rebuildCustomerRollups } = await import("./customerRollups.server.js");
         await rebuildCustomerSegments(shopDomain);
