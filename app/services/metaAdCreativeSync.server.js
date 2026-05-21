@@ -324,6 +324,21 @@ export async function refreshAdCreatives(shopDomain) {
     select: { entityId: true, thumbnailUrl: true, thumbnailFetchedAt: true, productSetId: true },
   });
 
+  // WARN loudly if MetaEntity has zero ad rows. Previously this returned a
+  // silent { fetched, updated: 0, missing: 0 } and the orchestrator's
+  // creatives phase reported success — even though no thumbnails were ever
+  // written. Symptom: Vollebak had blank ad images while HM (smaller account,
+  // entities phase always completed) had them. If entities partially
+  // populated MetaEntity but stopped early, we still want a visible
+  // breadcrumb in logs so we can spot the gap.
+  if (knownAds.length === 0) {
+    console.warn(`[MetaAdCreativeSync] ${shopDomain}: no ad rows in MetaEntity — entities phase did not run or returned zero. Re-run syncMetaEntities before refreshAdCreatives.`);
+    return { fetched: bulkAds.length, updated: 0, cached: 0, missing: 0, knownAds: 0, noEntities: true };
+  }
+  if (bulkAds.length > knownAds.length * 1.2) {
+    console.warn(`[MetaAdCreativeSync] ${shopDomain}: bulk fetch returned ${bulkAds.length} ads but MetaEntity only has ${knownAds.length} — entities phase likely incomplete.`);
+  }
+
   let updated = 0;
   let cached = 0;
   const missingFromBulk = [];

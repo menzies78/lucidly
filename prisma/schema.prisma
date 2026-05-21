@@ -50,6 +50,12 @@ model Shop {
   utmAdsWithTags        Int      @default(0)
   utmAdsMissing         Int      @default(0)
   utmAdsFixed           Int      @default(0)
+  // UTM consistency tracking — populated by nightly audit. "Consistent" = ad's
+  // url_tags equals the dominant pattern. "Inconsistent" = has UTMs but they
+  // differ from the dominant. Surfaced on the UTM Health dashboard tile.
+  utmDominantPattern    String   @default("")
+  utmAdsConsistent      Int      @default(0)
+  utmAdsInconsistent    Int      @default(0)
   onboardingCompleted   Boolean  @default(false)
   webhooksRegisteredAt  DateTime?
   webhooksFirstFiredAt  DateTime?

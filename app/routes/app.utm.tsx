@@ -168,6 +168,17 @@ export default function UtmManagement() {
 
   const editCount = Object.keys(editedUtms).length;
 
+  // Map of adId -> per-ad detail from the last upload. Surfaced in the table
+  // so the merchant sees exactly which ad failed and the precise Meta error
+  // (usually "object cannot have url_tags" for Advantage+ / DPA creatives).
+  const pushEditsDetailById = useMemo(() => {
+    const m: Record<string, any> = {};
+    if (pushEditsResult?.details) {
+      for (const d of pushEditsResult.details) m[d.adId] = d;
+    }
+    return m;
+  }, [pushEditsResult]);
+
   // Build table data from audit results
   const adRows = useMemo(() => {
     if (!auditResult?.adList) return [];
@@ -175,8 +186,9 @@ export default function UtmManagement() {
       ...ad,
       currentUtm: ad.urlTags,
       editedUtm: editedUtms[ad.adId] ?? null,
+      lastUploadResult: pushEditsDetailById[ad.adId] || null,
     }));
-  }, [auditResult, editedUtms]);
+  }, [auditResult, editedUtms, pushEditsDetailById]);
 
   const columns = useMemo<ColumnDef<any>[]>(() => [
     { accessorKey: "campaignName", header: "Campaign",
@@ -239,10 +251,43 @@ export default function UtmManagement() {
         );
       },
     },
+    // Last-upload result column. Populated after the merchant clicks "Upload
+    // X Edits to Meta" — shows fixed / failed / skipped + the precise Meta
+    // error per row. Previously this info was hidden inside the success
+    // banner's "8 failed" summary, leaving the merchant guessing.
+    { id: "lastUploadResult", header: "Last upload",
+      meta: { description: "Outcome of the most recent upload to Meta. Hover the chip to read Meta's reason." },
+      accessorFn: (row) => row.lastUploadResult?.status || "",
+      cell: ({ row }) => {
+        const d = row.original.lastUploadResult;
+        if (!d) return <span style={{ color: "#9ca3af", fontSize: "12px" }}>—</span>;
+        if (d.status === "fixed") {
+          return <Badge tone="success">Updated</Badge>;
+        }
+        if (d.status === "skipped") {
+          return (
+            <span title={d.message || "Skipped"}>
+              <Badge tone="attention">Skipped</Badge>
+            </span>
+          );
+        }
+        // failed — surface Meta's reason inline + on hover.
+        const msg = d.errorUserMessage || d.message || "Meta rejected the request";
+        const code = d.errorCode != null ? ` [${d.errorCode}${d.errorSubcode != null ? `/${d.errorSubcode}` : ""}]` : "";
+        return (
+          <div title={msg + code} style={{ maxWidth: "260px" }}>
+            <Badge tone="critical">Failed</Badge>
+            <div style={{ fontSize: "11px", color: "#7c2d12", marginTop: "2px", whiteSpace: "normal", lineHeight: 1.3 }}>
+              {msg}{code}
+            </div>
+          </div>
+        );
+      },
+    },
   ], [editedUtms]);
 
   const defaultVisibleColumns = useMemo(() => [
-    "campaignName", "adsetName", "adName", "effectiveStatus", "utm",
+    "campaignName", "adsetName", "adName", "effectiveStatus", "utm", "lastUploadResult",
   ], []);
 
   if (!data.metaConnected) {
@@ -267,6 +312,9 @@ export default function UtmManagement() {
   return (
     <Page title="UTM Management" fullWidth>
       <ReportTabs />
+      {/* Top padding so the first row of tiles isn't visually flush against the
+          ReportTabs strip. Matches the breathing room on other report tabs. */}
+      <div style={{ paddingTop: 24 }} />
       <BlockStack gap="500">
         {/* Summary tiles */}
         <div style={{ display: "flex", gap: "12px", flexWrap: "wrap" }}>
@@ -344,6 +392,9 @@ export default function UtmManagement() {
                   {pushEditsResult.fixed} ads updated.
                   {pushEditsResult.failed > 0 && <> {pushEditsResult.failed} failed.</>}
                   {pushEditsResult.skipped > 0 && <> {pushEditsResult.skipped} skipped (no story ID).</>}
+                  {(pushEditsResult.failed > 0 || pushEditsResult.skipped > 0) && (
+                    <> See the "Last upload" column for the precise reason per ad.</>
+                  )}
                 </p>
               </Banner>
             )}

@@ -747,7 +747,19 @@ export default function InteractiveTable({
         </InlineStack>
       </div>
 
-      <div style={fitContentColumns ? { overflowX: "auto" } : undefined}>
+      {/* fit-content mode needs a horizontal scroll wrapper so the wide table
+          can scroll left-right without forcing the whole page wide. BUT: a
+          plain `overflow-x: auto` wrapper establishes a sticky scroll context
+          for BOTH axes (CSS spec) — which means the sticky <thead> below
+          anchors to the wrapper, not the page. With `top: headerTop` (44px or
+          so), the header then renders 44px DOWN from the wrapper top — i.e.
+          floating mid-table, after the first one or two rows. Visible bug on
+          Ad Performance (2026-05-21 screenshot).
+          Fix: pair `overflow-x: auto` with `overflow-y: clip`. `clip` is the
+          one non-visible overflow value that does NOT create a sticky scroll
+          context, so vertical sticky propagates up to the page scroll as
+          intended. Horizontal scrolling continues to work. */}
+      <div style={fitContentColumns ? { overflowX: "auto", overflowY: "clip" } : undefined}>
       <table ref={tableRef} style={{
         width: fitContentColumns ? "max-content" : "100%",
         minWidth: fitContentColumns ? "100%" : undefined,

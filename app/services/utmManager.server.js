@@ -15,18 +15,25 @@ const DEFAULT_UTM_TEMPLATE =
   "utm_source=facebook&utm_medium=cpc&utm_campaign={{campaign.name}}&utm_content={{ad.name}}&utm_term={{adset.name}}";
 
 async function fetchWithRetry(url, options = {}, retries = 3) {
+  let lastError = null;
   for (let attempt = 1; attempt <= retries; attempt++) {
     try {
       const res = await fetch(url, options);
       const data = await res.json();
       if (!data.error) return data;
+      lastError = data.error;
       console.error(`[UTMManager] Attempt ${attempt} failed: ${data.error.message}`);
     } catch (err) {
+      lastError = { message: err.message, code: "network_error" };
       console.error(`[UTMManager] Attempt ${attempt} fetch error: ${err.message}`);
     }
     if (attempt < retries) await new Promise(r => setTimeout(r, 2000));
   }
-  return null;
+  // Return the last error wrapped so callers can surface a precise message to
+  // the merchant. Previously we returned `null` here — that erased Meta's
+  // explanation (e.g. "Object cannot have url_tags set" for Advantage+/DPA
+  // creatives) and the UI could only say "8 failed".
+  return { __failed: true, error: lastError };
 }
 
 async function fetchAllPages(url) {
@@ -167,6 +174,19 @@ export async function auditUtms(shopDomain) {
     adList,
   };
 
+  // Compute consistency: among DELIVERING ads with UTMs, how many match the
+  // dominant pattern vs differ from it. Reported on the dashboard UTM Health
+  // tile so merchants notice tag drift without opening the UTM Manager.
+  let consistentCount = 0;
+  let inconsistentCount = 0;
+  for (const ad of allAds) {
+    if (!DELIVERING.includes(ad.effective_status)) continue;
+    const tags = ad.creative?.url_tags || "";
+    if (!tags) continue;
+    if (tags === dominantPattern) consistentCount++;
+    else inconsistentCount++;
+  }
+
   // Update shop with audit results - store delivering counts as the headline numbers
   await db.shop.update({
     where: { shopDomain },
@@ -175,11 +195,14 @@ export async function auditUtms(shopDomain) {
       utmAdsTotal: deliveringTotal,
       utmAdsWithTags: deliveringTotal - deliveringMissing,
       utmAdsMissing: deliveringMissing,
+      utmDominantPattern: dominantPattern || "",
+      utmAdsConsistent: consistentCount,
+      utmAdsInconsistent: inconsistentCount,
       ...(shop.utmTemplate ? {} : { utmTemplate: dominantPattern }),
     },
   });
 
-  console.log(`[UTMManager] Audit complete: ${deliveringMissing} delivering ads missing UTMs (${notDeliveringMissing} non-delivering also missing)`);
+  console.log(`[UTMManager] Audit complete: ${deliveringMissing} delivering ads missing UTMs (${notDeliveringMissing} non-delivering also missing); ${consistentCount} consistent / ${inconsistentCount} inconsistent`);
   return result;
 }
 
@@ -329,12 +352,26 @@ export async function pushUtmsToAds(shopDomain, adUpdates) {
   for (const ad of allAds) adMap[ad.id] = ad;
 
   let fixed = 0, failed = 0, skipped = 0;
-  const errors = [];
+  // Per-ad detail surfaced to the UI so the merchant can see exactly which ad
+  // failed and why. Previously we returned only counts, leaving "8 of 9 failed"
+  // a mystery — almost always Advantage+ catalog ads (DPA) where Meta rejects
+  // url_tags on the creative type, or video/dynamic creatives missing a story
+  // ID. Surfacing the Meta error message per-ad lets the merchant act on it.
+  const details = [];
 
   for (const update of adUpdates) {
     const ad = adMap[update.adId];
     const storyId = ad?.creative?.effective_object_story_id;
-    if (!storyId) { skipped++; continue; }
+    if (!storyId) {
+      skipped++;
+      details.push({
+        adId: update.adId,
+        status: "skipped",
+        reason: "no_story_id",
+        message: "Ad has no story ID — usually a DPA / Advantage+ catalog ad. Fix manually in Ads Manager.",
+      });
+      continue;
+    }
 
     const createResult = await fetchWithRetry(
       `https://graph.facebook.com/v21.0/${accountId}/adcreatives`,
@@ -351,7 +388,16 @@ export async function pushUtmsToAds(shopDomain, adUpdates) {
 
     if (!createResult?.id) {
       failed++;
-      errors.push({ adId: update.adId, error: createResult });
+      const e = createResult?.error || {};
+      details.push({
+        adId: update.adId,
+        status: "failed",
+        step: "create_creative",
+        errorCode: e.code ?? null,
+        errorSubcode: e.error_subcode ?? null,
+        errorUserMessage: e.error_user_msg || null,
+        message: e.message || "Meta rejected the new creative — common cause: Advantage+ creative or dynamic-creative ad.",
+      });
       continue;
     }
 
@@ -367,14 +413,32 @@ export async function pushUtmsToAds(shopDomain, adUpdates) {
       }
     );
 
-    if (updateResult?.success) { fixed++; }
-    else { failed++; errors.push({ adId: update.adId, error: updateResult }); }
+    if (updateResult?.success) {
+      fixed++;
+      details.push({ adId: update.adId, status: "fixed", newCreativeId: createResult.id });
+    } else {
+      failed++;
+      const e = updateResult?.error || {};
+      details.push({
+        adId: update.adId,
+        status: "failed",
+        step: "update_ad",
+        newCreativeId: createResult.id,
+        errorCode: e.code ?? null,
+        errorSubcode: e.error_subcode ?? null,
+        errorUserMessage: e.error_user_msg || null,
+        message: e.message || "Created the new creative but Meta wouldn't attach it to the ad.",
+      });
+    }
 
     if ((fixed + failed) % 10 === 0) await new Promise(r => setTimeout(r, 500));
   }
 
   console.log(`[UTMManager] Push to specific ads: ${fixed} fixed, ${failed} failed, ${skipped} skipped`);
-  return { fixed, failed, skipped, errors: errors.slice(0, 10) };
+  // Keep `errors` for backwards-compat with the older summary banner; `details`
+  // is the per-row source of truth for the new in-table error display.
+  const errors = details.filter(d => d.status === "failed").slice(0, 10);
+  return { fixed, failed, skipped, errors, details };
 }
 
 // ── Nightly audit (called during nightly sync) ──────────────────────
@@ -401,9 +465,20 @@ export async function nightlyUtmAudit(shopDomain) {
   const withTags = activeAds.filter(ad => ad.creative?.url_tags);
   const missing = activeAds.filter(ad => !ad.creative?.url_tags);
 
-  // Check for mixed patterns
-  const patterns = new Set(withTags.map(a => a.creative.url_tags));
-  const hasInconsistency = patterns.size > 1;
+  // Tally patterns to find the dominant one + count consistency.
+  const patternCounts = {};
+  for (const a of withTags) {
+    const t = a.creative.url_tags;
+    patternCounts[t] = (patternCounts[t] || 0) + 1;
+  }
+  const sortedPatterns = Object.entries(patternCounts).sort((a, b) => b[1] - a[1]);
+  const dominantPattern = sortedPatterns[0]?.[0] || "";
+  let consistentCount = 0, inconsistentCount = 0;
+  for (const a of withTags) {
+    if (a.creative.url_tags === dominantPattern) consistentCount++;
+    else inconsistentCount++;
+  }
+  const hasInconsistency = sortedPatterns.length > 1;
 
   await db.shop.update({
     where: { shopDomain },
@@ -412,6 +487,9 @@ export async function nightlyUtmAudit(shopDomain) {
       utmAdsTotal: activeAds.length,
       utmAdsWithTags: withTags.length,
       utmAdsMissing: missing.length,
+      utmDominantPattern: dominantPattern,
+      utmAdsConsistent: consistentCount,
+      utmAdsInconsistent: inconsistentCount,
     },
   });
 

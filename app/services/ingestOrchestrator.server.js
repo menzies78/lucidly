@@ -241,6 +241,23 @@ const FINAL_PHASE_2 = {
       ["Refreshing product images", async () => {
         await refreshProductImages(shopDomain);
       }],
+      // Belt-and-braces re-run of refreshAdCreatives. The `creatives` phase
+      // runs immediately after `entities`, which on large accounts (Vollebak
+      // ~450+ ads, Advantage+ DPA) can finish before MetaEntity has settled
+      // every row. The first creatives pass then operates on a partial set
+      // and silently reports success while many ads still have no
+      // imageUrl. Re-running here, after every other phase has completed,
+      // ensures any newly-discovered ads get their thumbnails resolved
+      // before the dashboard goes live. Cost: one extra bulk fetch +
+      // hash-resolve cycle, governed by the Meta rate-limit governor.
+      ["Filling in any missing ad creative images", async () => {
+        const knownCount = await db.metaEntity.count({ where: { shopDomain, entityType: "ad" } });
+        if (knownCount === 0) {
+          console.warn(`[ingestOrchestrator] ${shopDomain}: skipping creatives-retry — no ad rows in MetaEntity`);
+          return;
+        }
+        await refreshAdCreatives(shopDomain);
+      }],
       ["Calibrating Meta pixel", async () => {
         const { calibratePixel } = await import("./pixelCalibration.server.js");
         await calibratePixel(shopDomain);

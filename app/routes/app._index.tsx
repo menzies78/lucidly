@@ -250,11 +250,17 @@ export const loader = async ({ request }) => {
     }
   }
 
-  // UTM health from shop record
+  // UTM health from shop record. Tile is cached — only the nightly audit
+  // refreshes these counters, so the dashboard never blocks on a live Meta API
+  // call. Consistency = how many ads use the dominant template vs how many
+  // differ ("drifted"). Drift is usually a sign of an old template change or
+  // manual edits that should be reconciled.
   const utmHealth = {
     total: shop?.utmAdsTotal || 0,
     withTags: shop?.utmAdsWithTags || 0,
     missing: shop?.utmAdsMissing || 0,
+    consistent: shop?.utmAdsConsistent || 0,
+    inconsistent: shop?.utmAdsInconsistent || 0,
     lastAudit: shop?.utmLastAudit || null,
     coveragePct: (shop?.utmAdsTotal || 0) > 0
       ? Math.round(((shop?.utmAdsWithTags || 0) / (shop?.utmAdsTotal || 1)) * 100) : null,
@@ -722,10 +728,12 @@ function MatchTile({
   detailLabel: string;
   detailTotalLabel: string;
 }) {
-  const [range, setRange] = useState<"lifetime" | "30d">("lifetime");
+  const [range, setRange] = useState<"lifetime" | "30d">("30d");
   const headline = range === "lifetime" ? valueLifetime : value30;
   const detail = range === "lifetime" ? detailLifetime : detail30;
-  const slice = range === "lifetime" ? days : days.slice(Math.max(0, days.length - 30));
+  const slice = range === "lifetime"
+    ? days.slice(Math.max(0, days.length - 365))
+    : days.slice(Math.max(0, days.length - 30));
 
   const headlineColor = headline === null
     ? "#6B7280"
@@ -755,7 +763,7 @@ function MatchTile({
         <InlineStack align="space-between" blockAlign="center">
           <Text as="h2" variant="headingLg">{title}</Text>
           <div style={{ display: "inline-flex", gap: "6px" }}>
-            <PillButton active={range === "lifetime"} onClick={() => setRange("lifetime")}>2 years</PillButton>
+            <PillButton active={range === "lifetime"} onClick={() => setRange("lifetime")}>1 year</PillButton>
             <PillButton active={range === "30d"} onClick={() => setRange("30d")}>30 days</PillButton>
           </div>
         </InlineStack>
@@ -1298,18 +1306,38 @@ export default function Index() {
                         <div style={{ fontSize: "12px", color: "#6B7280" }}>missing UTMs</div>
                       </div>
                     </div>
+
+                    {/* Consistency section — shows how many tagged ads match the
+                        dominant template vs differ. Drift usually indicates
+                        either a template change that wasn't rolled out, or
+                        manual edits to individual ads. */}
+                    {(utmHealth.consistent + utmHealth.inconsistent) > 0 && (
+                      <div style={{ display: "flex", gap: "16px", flexWrap: "wrap" }}>
+                        <div style={{ flex: 1, minWidth: "120px", padding: "12px 16px", borderRadius: "8px", background: "#EFF6FF", textAlign: "center" }}>
+                          <div style={{ fontSize: "22px", fontWeight: 700, color: "#1D4ED8" }}>{utmHealth.consistent}</div>
+                          <div style={{ fontSize: "12px", color: "#6B7280" }}>consistent</div>
+                        </div>
+                        <div style={{ flex: 1, minWidth: "120px", padding: "12px 16px", borderRadius: "8px", background: utmHealth.inconsistent > 0 ? "#FFFBEB" : "#F9FAFB", textAlign: "center" }}>
+                          <div style={{ fontSize: "22px", fontWeight: 700, color: utmHealth.inconsistent > 0 ? "#92400E" : "#374151" }}>{utmHealth.inconsistent}</div>
+                          <div style={{ fontSize: "12px", color: "#6B7280" }}>inconsistent</div>
+                        </div>
+                      </div>
+                    )}
+
                     {utmHealth.lastAudit && (
                       <Text as="p" variant="bodySm" tone="subdued">
-                        Last audit: {new Date(utmHealth.lastAudit).toLocaleDateString()} ({utmHealth.total} ads scanned)
+                        Last audit: {new Date(utmHealth.lastAudit).toLocaleDateString()} ({utmHealth.total} ads scanned). Audits run nightly.
                       </Text>
                     )}
                   </BlockStack>
                 ) : (
-                  <Text as="p" variant="bodySm" tone="subdued">No UTM audit run yet</Text>
+                  <Text as="p" variant="bodySm" tone="subdued">No UTM audit run yet. The next nightly audit will populate this tile.</Text>
                 )}
 
                 <Button onClick={() => navigate(`/app/utm${dateQuery()}`)}>
-                  Open UTM Manager
+                  {utmHealth.missing > 0 || utmHealth.inconsistent > 0
+                    ? "Audit & fix UTM issues"
+                    : "Open UTM Manager"}
                 </Button>
               </BlockStack>
             </Card>
