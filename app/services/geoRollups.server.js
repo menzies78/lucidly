@@ -352,8 +352,8 @@ export async function rebuildGeoRollups(shopDomain) {
   }
 
   // ── 6. Wipe + chunked insert ──
-  await db.dailyGeoRollup.deleteMany({ where: { shopDomain } });
-
+  // Atomic delete+insert. Without the transaction, concurrent readers see
+  // an empty table mid-rebuild and cache zero-value tile data for up to TTL.
   const rows = Array.from(buckets.values()).map(b => ({
     shopDomain,
     date: b.date,
@@ -391,9 +391,12 @@ export async function rebuildGeoRollups(shopDomain) {
   }));
 
   const CHUNK = 500;
-  for (let i = 0; i < rows.length; i += CHUNK) {
-    await db.dailyGeoRollup.createMany({ data: rows.slice(i, i + CHUNK) });
-  }
+  await db.$transaction(async (tx) => {
+    await tx.dailyGeoRollup.deleteMany({ where: { shopDomain } });
+    for (let i = 0; i < rows.length; i += CHUNK) {
+      await tx.dailyGeoRollup.createMany({ data: rows.slice(i, i + CHUNK) });
+    }
+  }, { timeout: 60000 });
 
   // Top Products per Country is now built on-demand in the loader for the
   // selected date window (see buildTopProductsCube below + app.geo.tsx).

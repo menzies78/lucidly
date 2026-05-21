@@ -320,8 +320,8 @@ export async function rebuildProductRollups(shopDomain) {
   }
 
   // ── Wipe & replace (simple, safe, ~thousands of rows) ──
-  await db.dailyProductRollup.deleteMany({ where: { shopDomain } });
-
+  // Atomic delete+insert. Without the transaction, concurrent readers see
+  // an empty table mid-rebuild and cache zero-value tile data for up to TTL.
   const rows = [];
   for (const b of buckets.values()) {
     rows.push({
@@ -344,9 +344,12 @@ export async function rebuildProductRollups(shopDomain) {
 
   // Chunked createMany (SQLite has param limits)
   const CHUNK = 500;
-  for (let i = 0; i < rows.length; i += CHUNK) {
-    await db.dailyProductRollup.createMany({ data: rows.slice(i, i + CHUNK) });
-  }
+  await db.$transaction(async (tx) => {
+    await tx.dailyProductRollup.deleteMany({ where: { shopDomain } });
+    for (let i = 0; i < rows.length; i += CHUNK) {
+      await tx.dailyProductRollup.createMany({ data: rows.slice(i, i + CHUNK) });
+    }
+  }, { timeout: 60000 });
 
   // ── Build the analysis cache blob ──
   // Contains: journey flows, basket combos, add-ons, first-purchase lists,

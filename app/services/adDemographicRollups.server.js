@@ -143,9 +143,9 @@ export async function rebuildAdDemographicRollups(shopDomain) {
     }
   }
 
-  // 3. Delete + bulk insert
-  await db.dailyAdDemographicRollup.deleteMany({ where: { shopDomain } });
-
+  // 3. Atomic delete + bulk insert. Without the transaction, concurrent
+  // readers see an empty table mid-rebuild and cache zero-value tile data
+  // for up to TTL.
   const rows = Array.from(buckets.values()).map(b => ({
     shopDomain,
     date: b.date,
@@ -161,9 +161,12 @@ export async function rebuildAdDemographicRollups(shopDomain) {
   }));
 
   const CHUNK = 500;
-  for (let i = 0; i < rows.length; i += CHUNK) {
-    await db.dailyAdDemographicRollup.createMany({ data: rows.slice(i, i + CHUNK) });
-  }
+  await db.$transaction(async (tx) => {
+    await tx.dailyAdDemographicRollup.deleteMany({ where: { shopDomain } });
+    for (let i = 0; i < rows.length; i += CHUNK) {
+      await tx.dailyAdDemographicRollup.createMany({ data: rows.slice(i, i + CHUNK) });
+    }
+  }, { timeout: 60000 });
 
   console.log(`[adDemographicRollups] ${shopDomain} rebuilt ${rows.length} rows in ${Date.now() - t0}ms (attrs=${attributions.length})`);
   return { rows: rows.length, ms: Date.now() - t0 };

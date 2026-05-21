@@ -201,9 +201,9 @@ export async function rebuildCampaignRollups(shopDomain) {
     }
   }
 
-  // 3. Delete + bulk insert
-  await db.dailyAdRollup.deleteMany({ where: { shopDomain } });
-
+  // 3. Atomic delete + bulk insert. Wrapping in a transaction prevents
+  // concurrent readers (loaders, cache warmer) from seeing a partially-empty
+  // table mid-rebuild and caching bad zero-value data for the TTL window.
   const rows = Array.from(buckets.values()).map(b => ({
     shopDomain,
     date: b.date,
@@ -243,9 +243,12 @@ export async function rebuildCampaignRollups(shopDomain) {
   }));
 
   const CHUNK = 500;
-  for (let i = 0; i < rows.length; i += CHUNK) {
-    await db.dailyAdRollup.createMany({ data: rows.slice(i, i + CHUNK) });
-  }
+  await db.$transaction(async (tx) => {
+    await tx.dailyAdRollup.deleteMany({ where: { shopDomain } });
+    for (let i = 0; i < rows.length; i += CHUNK) {
+      await tx.dailyAdRollup.createMany({ data: rows.slice(i, i + CHUNK) });
+    }
+  }, { timeout: 60000 });
 
   console.log(`[campaignRollups] ${shopDomain} rebuilt ${rows.length} rows in ${Date.now() - t0}ms (insights=${insights.length}, attrs=${attributions.length})`);
   return { rows: rows.length, ms: Date.now() - t0 };

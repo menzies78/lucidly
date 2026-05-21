@@ -1348,8 +1348,8 @@ export async function rebuildCustomerRollups(shopDomain) {
     }
   }
 
-  await db.dailyCustomerRollup.deleteMany({ where: { shopDomain } });
-
+  // Atomic delete+insert. Without the transaction, concurrent readers see
+  // an empty table mid-rebuild and cache zero-value tile data for up to TTL.
   const rows = [];
   for (const b of buckets.values()) {
     rows.push({
@@ -1366,9 +1366,12 @@ export async function rebuildCustomerRollups(shopDomain) {
   }
 
   const CHUNK = 500;
-  for (let i = 0; i < rows.length; i += CHUNK) {
-    await db.dailyCustomerRollup.createMany({ data: rows.slice(i, i + CHUNK) });
-  }
+  await db.$transaction(async (tx) => {
+    await tx.dailyCustomerRollup.deleteMany({ where: { shopDomain } });
+    for (let i = 0; i < rows.length; i += CHUNK) {
+      await tx.dailyCustomerRollup.createMany({ data: rows.slice(i, i + CHUNK) });
+    }
+  }, { timeout: 60000 });
 
   console.log(`[customerRollups] ${shopDomain}: ${rows.length} daily rollup rows in ${Date.now() - t0}ms`);
   return { rollupRows: rows.length, ms: Date.now() - t0 };

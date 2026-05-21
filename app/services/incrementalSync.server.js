@@ -1725,8 +1725,15 @@ export async function runIncrementalSync(shopDomain) {
 
   // Rollups + cache warm in background (fire-and-forget). New conversions
   // arrived so force rebuild, but don't block the user or the scheduler.
-  invalidateShop(shopDomain);
+  // IMPORTANT: invalidateShop runs AFTER rebuildAllRollups completes - not
+  // before. Invalidating beforehand means any user request that lands during
+  // the rebuild reads partial data (mid delete+insert window inside each
+  // rollup builder) and caches it for the full TTL, leaving tiles showing
+  // zero/null until the next sync. The transaction wrapping in each rollup
+  // builder removes the partial-read window even on cache miss; the order
+  // here keeps the warmer working off post-rebuild data.
   rebuildAllRollups(shopDomain, { force: true }).then(() => {
+    invalidateShop(shopDomain);
     import("./cacheWarmer.server.js").then(({ warmAllShops }) => {
       warmAllShops().catch(err => console.error("[IncrementalSync] post-sync warm failed:", err.message));
     }).catch(err => console.error("[IncrementalSync] warmer import failed:", err.message));
