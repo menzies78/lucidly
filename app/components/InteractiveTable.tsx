@@ -491,6 +491,11 @@ export default function InteractiveTable({
   const toolbarTop = stickyTopOffset;
   const headerTop = stickyTopOffset + toolbarHeight;
   const filterRowTop = headerTop + headerRowHeight;
+  // Sticky thead/tfoot cannot anchor to the page when the table is wrapped in
+  // an overflow-x scroll container (the wrapper becomes its own sticky scope
+  // for both axes). For fit-content tables we render thead/tfoot at natural
+  // position; for fixed-layout tables we keep sticky behaviour as before.
+  const useStickyHeader = !fitContentColumns;
 
   // Detect when header/footer are floating (stuck)
   const tableRef = useRef<HTMLTableElement>(null);
@@ -750,16 +755,18 @@ export default function InteractiveTable({
       {/* fit-content mode needs a horizontal scroll wrapper so the wide table
           can scroll left-right without forcing the whole page wide. BUT: a
           plain `overflow-x: auto` wrapper establishes a sticky scroll context
-          for BOTH axes (CSS spec) — which means the sticky <thead> below
-          anchors to the wrapper, not the page. With `top: headerTop` (44px or
-          so), the header then renders 44px DOWN from the wrapper top — i.e.
-          floating mid-table, after the first one or two rows. Visible bug on
-          Ad Performance (2026-05-21 screenshot).
-          Fix: pair `overflow-x: auto` with `overflow-y: clip`. `clip` is the
-          one non-visible overflow value that does NOT create a sticky scroll
-          context, so vertical sticky propagates up to the page scroll as
-          intended. Horizontal scrolling continues to work. */}
-      <div style={fitContentColumns ? { overflowX: "auto", overflowY: "clip" } : undefined}>
+          on BOTH axes regardless of overflow-y value (browsers coerce
+          `overflow-y: clip` here in some embed contexts including Shopify
+          Admin iframe). The sticky <thead> below then anchors to the wrapper
+          rather than the page, so `top: headerTop` (~44px) lands the header
+          inside the wrapper coords — floating mid-table after the first one
+          or two rows. Reported on Ad Performance 2026-05-21.
+          Pragmatic fix: in fit-content mode, drop sticky positioning on the
+          thead/filter row/tfoot entirely (see `useStickyHeader` below). The
+          header just sits at the natural top of the table. We lose
+          stick-on-scroll behaviour for wide tables, but the layout is
+          correct. Standard (non-fit-content) tables keep sticky thead. */}
+      <div style={fitContentColumns ? { overflowX: "auto" } : undefined}>
       <table ref={tableRef} style={{
         width: fitContentColumns ? "max-content" : "100%",
         minWidth: fitContentColumns ? "100%" : undefined,
@@ -804,14 +811,14 @@ export default function InteractiveTable({
                       fontSize: "12px",
                       fontWeight: 600,
                       color: "var(--l-accent-dark)",
-                      position: "sticky",
-                      top: headerTop,
+                      position: useStickyHeader ? "sticky" : "static",
+                      top: useStickyHeader ? headerTop : undefined,
                       backgroundColor: "var(--l-accent-light)",
                       zIndex: 4,
                       overflow: "hidden",
                       textOverflow: "ellipsis",
-                      boxShadow: (!hasFilterRow && headerIsFloating) ? "0 3px 6px rgba(0,0,0,0.10)" : "none",
-                      clipPath: (!hasFilterRow && headerIsFloating) ? "inset(0 -1px -6px -1px)" : "none",
+                      boxShadow: (useStickyHeader && !hasFilterRow && headerIsFloating) ? "0 3px 6px rgba(0,0,0,0.10)" : "none",
+                      clipPath: (useStickyHeader && !hasFilterRow && headerIsFloating) ? "inset(0 -1px -6px -1px)" : "none",
                     }}
                   >
                     <div
@@ -878,11 +885,11 @@ export default function InteractiveTable({
                     borderBottom: "2px solid var(--l-accent-20)",
                     borderRight: borderStyle,
                     backgroundColor: "var(--l-accent-light)",
-                    position: "sticky",
-                    top: filterRowTop,
+                    position: useStickyHeader ? "sticky" : "static",
+                    top: useStickyHeader ? filterRowTop : undefined,
                     zIndex: 4,
-                    boxShadow: headerIsFloating ? "0 3px 6px rgba(0,0,0,0.10)" : "none",
-                    clipPath: headerIsFloating ? "inset(0 -1px -6px -1px)" : "none",
+                    boxShadow: (useStickyHeader && headerIsFloating) ? "0 3px 6px rgba(0,0,0,0.10)" : "none",
+                    clipPath: (useStickyHeader && headerIsFloating) ? "inset(0 -1px -6px -1px)" : "none",
                   }}>
                     {filterType === "multi-select" ? (
                       <MultiSelectFilter
@@ -956,12 +963,12 @@ export default function InteractiveTable({
                       textOverflow: "ellipsis",
                       borderRight: isLast ? "none" : "1px solid #ebebeb",
                       borderTop: "2px solid var(--l-accent-20)",
-                      position: "sticky",
-                      bottom: 0,
+                      position: useStickyHeader ? "sticky" : "static",
+                      bottom: useStickyHeader ? 0 : undefined,
                       backgroundColor: "var(--l-accent-light)",
                       zIndex: 3,
-                      boxShadow: footerIsFloating ? "0 -3px 6px rgba(0,0,0,0.10)" : "none",
-                      clipPath: footerIsFloating ? "inset(-6px -1px 0 -1px)" : "none",
+                      boxShadow: (useStickyHeader && footerIsFloating) ? "0 -3px 6px rgba(0,0,0,0.10)" : "none",
+                      clipPath: (useStickyHeader && footerIsFloating) ? "inset(-6px -1px 0 -1px)" : "none",
                     }}
                   >
                     {content ?? ""}
