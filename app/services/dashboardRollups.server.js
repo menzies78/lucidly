@@ -133,8 +133,19 @@ export async function rebuildMatchAccuracy(shopDomain) {
   const days = Array.from(allDays)
     .sort((a, b) => a.localeCompare(b))
     .map((day) => {
-      const total = Math.round(metaConvByDay.get(day) || 0);
       const matched = matchedByDay.get(day) || 0;
+      // Clamp the denominator to never fall below the numerator. Two sources
+      // can legitimately diverge here:
+      //   (a) Layer 1 (UTM) attributions exist for orders Meta's pixel never
+      //       fired on (ad blockers, iOS ATT, slow page unload). Our UTM data
+      //       proves a Meta-driven conversion that Meta itself never logged.
+      //   (b) Bucketing edges — Meta's UTC-day vs shop-local-day can
+      //       shift one hour of conversions across the boundary.
+      // Both cases push `matched > total`. The tile reads `matched / total`
+      // verbatim, so we expand total to keep the ratio coherent (rate ≤ 100%
+      // and counts that don't visually contradict each other).
+      const rawTotal = Math.round(metaConvByDay.get(day) || 0);
+      const total = Math.max(matched, rawTotal);
       const confSum = confSumByDay.get(day) || 0;
       const confCount = confCountByDay.get(day) || 0;
       const matchRate =
@@ -151,7 +162,11 @@ export async function rebuildMatchAccuracy(shopDomain) {
   const tail = (n) => days.slice(Math.max(0, days.length - n));
   const sumRate = (slice) => {
     const matched = slice.reduce((s, d) => s + d.matched, 0);
-    const total = slice.reduce((s, d) => s + d.total, 0);
+    // Each day already has total ≥ matched (clamp above), so the summed
+    // total automatically dominates the summed matched. Re-clamp anyway for
+    // defensive correctness — cheap and keeps the invariant explicit.
+    const rawTotal = slice.reduce((s, d) => s + d.total, 0);
+    const total = Math.max(matched, rawTotal);
     const rate = total > 0 ? Math.min(100, Math.round((matched / total) * 100)) : null;
     return { rate, matched, total };
   };
