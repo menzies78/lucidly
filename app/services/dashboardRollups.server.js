@@ -120,6 +120,10 @@ export async function rebuildMatchAccuracy(shopDomain) {
     const m = matched.get(o.shopifyOrderId);
     if (!m) continue;
     if (!o.createdAt) continue;
+    // NOTE: deliberately NO £0 exclusion here, unlike DailyAdRollup. The
+    // Match Rate tile is a quality signal — every matched Attribution row
+    // (including swap/exchange £0 orders) represents the matcher doing its
+    // job. Excluding £0 here understates our match rate.
     const day = shopLocalDayKey(tz, o.createdAt);
     if (!day) continue;
     matchedByDay.set(day, (matchedByDay.get(day) || 0) + 1);
