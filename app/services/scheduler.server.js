@@ -94,6 +94,23 @@ async function runHourlyCycle() {
         } catch (err) {
           console.error(`[Scheduler] Change log delta failed for ${shop.shopDomain}:`, err.message);
         }
+
+        // 4. Fill any MetaEntity ad rows that still have no thumbnail. The
+        // daily 3am refreshAdCreatives walks every known ad, but entity
+        // rows added between 3am runs (new campaigns, new ads in existing
+        // campaigns) end up with thumbnailFetchedAt=null and would
+        // otherwise wait up to 24h to be resolved - which is why fresh
+        // live ads were surfacing as letter placeholders on the
+        // Campaigns tab. Bounded per run via the function's `limit` arg.
+        try {
+          const { fillBlankThumbnails } = await import("./metaAdCreativeSync.server.js");
+          const blankResult = await fillBlankThumbnails(shop.shopDomain);
+          if (blankResult.attempted > 0) {
+            console.log(`[Scheduler] Fill blank thumbnails for ${shop.shopDomain}: ${blankResult.updated} updated, ${blankResult.missing} unresolved (attempted ${blankResult.attempted})`);
+          }
+        } catch (err) {
+          console.error(`[Scheduler] Fill blank thumbnails failed for ${shop.shopDomain}:`, err.message);
+        }
       } catch (err) {
         console.error(`[Scheduler] Incremental sync failed for ${shop.shopDomain}:`, err.message);
       }

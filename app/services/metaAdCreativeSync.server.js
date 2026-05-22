@@ -372,10 +372,39 @@ export async function refreshAdCreatives(shopDomain) {
   }
 
   // 3) Fallback: per-ad fetch for ones missing from the bulk listing.
-  // Cap to 200 per run so a brand new install doesn't spend its API budget here.
+  // No slice-cap: a fresh install on a large account (Vollebak ~850 ads)
+  // had >227 ads slip past the bulk listing in a single run; the previous
+  // slice(0, 200) silently dropped 27+ of them every night, so live ads
+  // surfaced as letter placeholders for days. metaGovernor inside
+  // fetchWithRetry will pace us against the BUC limit.
+  //
+  // Parallelism: per-ad GETs at ~500ms serially means 200 fetches = 100s,
+  // which on a large account regularly bumps into runtime/cycle caps and
+  // truncates the work. Run in batches of FALLBACK_CONCURRENCY so the
+  // full list completes inside the daily cycle window.
+  const fallbackResult = await fallbackPerAdFetches(
+    missingFromBulk,
+    { shopDomain, accountId, token, fields, now },
+  );
+  updated += fallbackResult.updated;
+  cached += fallbackResult.cached;
+  const missing = fallbackResult.missing;
+
+  console.log(`[MetaAdCreativeSync] ${shopDomain}: ${updated} thumbnails refreshed, ${cached} bytes cached, ${missing} unresolved (bulk=${bulkMap.size}, known=${knownAds.length}, fallback=${missingFromBulk.length})`);
+  return { fetched: bulkMap.size, updated, cached, missing };
+}
+
+const FALLBACK_CONCURRENCY = 4;
+
+// Per-ad fetch + update for a list of ad ids that the bulk endpoint missed.
+// Used by both the nightly refreshAdCreatives sweep and the hourly
+// fillBlankThumbnails sweep that targets only no-stamp rows.
+async function fallbackPerAdFetches(adIds, { shopDomain, accountId, token, fields, now }) {
+  let updated = 0;
+  let cached = 0;
   let missing = 0;
-  const fallbackTargets = missingFromBulk.slice(0, 200);
-  for (const adId of fallbackTargets) {
+
+  async function processOne(adId) {
     try {
       const data = await fetchWithRetry(
         `https://graph.facebook.com/v21.0/${adId}?fields=${fields}&access_token=${token}`,
@@ -386,9 +415,6 @@ export async function refreshAdCreatives(shopDomain) {
       const hasAnyAsset = c.thumbnail_url || c.image_url || c.product_set_id
         || assets.hashes.size > 0 || assets.videoThumbs.length > 0;
       if (hasAnyAsset) {
-        // Resolve hashes inline. Per-ad fallback runs only for ads missing
-        // from the bulk listing (small N) so a one-off lookup here is
-        // cheaper than wiring it into the outer batch.
         let fullResUrl = null;
         if (assets.hashes.size > 0) {
           const m = await resolveImageHashUrls(assets.hashes, accountId, token);
@@ -414,7 +440,7 @@ export async function refreshAdCreatives(shopDomain) {
         if (wroteThumb || wroteFull) cached++;
       } else {
         missing++;
-        // Stamp fetchedAt so we don't keep retrying every night for ads with
+        // Stamp fetchedAt so we don't keep retrying every cycle for ads with
         // genuinely unrecoverable creative (deleted, etc).
         await db.metaEntity.update({
           where: { shopDomain_entityType_entityId: { shopDomain, entityType: "ad", entityId: adId } },
@@ -423,12 +449,69 @@ export async function refreshAdCreatives(shopDomain) {
       }
     } catch (err) {
       missing++;
+      // Stamp even on transient failure so the next cycle picks a fresh
+      // subset rather than retrying the same head of the list forever
+      // (only matters when the list is larger than concurrency*budget).
+      try {
+        await db.metaEntity.update({
+          where: { shopDomain_entityType_entityId: { shopDomain, entityType: "ad", entityId: adId } },
+          data: { thumbnailFetchedAt: now },
+        });
+      } catch { /* row may have been deleted by a parallel entity sweep */ }
       console.warn(`[MetaAdCreativeSync] per-ad fetch failed for ${adId}: ${err.message}`);
     }
   }
 
-  console.log(`[MetaAdCreativeSync] ${shopDomain}: ${updated} thumbnails refreshed, ${cached} bytes cached, ${missing} unresolved (bulk=${bulkMap.size}, known=${knownAds.length})`);
-  return { fetched: bulkMap.size, updated, cached, missing };
+  for (let i = 0; i < adIds.length; i += FALLBACK_CONCURRENCY) {
+    const batch = adIds.slice(i, i + FALLBACK_CONCURRENCY);
+    await Promise.all(batch.map(processOne));
+  }
+  return { updated, cached, missing };
+}
+
+/**
+ * Hourly targeted sweep: per-ad fetch for any MetaEntity ad row where
+ * thumbnailFetchedAt is null (i.e. we have never resolved a creative for
+ * this ad). Bounded by `limit` so a misconfigured account can't burn the
+ * whole Meta API budget on this path.
+ *
+ * Why this exists alongside refreshAdCreatives:
+ *   - refreshAdCreatives runs once a day at 3am and walks every known ad.
+ *   - syncMetaEntities runs every 3am AND ad-hoc when a new campaign is
+ *     spun up. New entity rows are inserted with thumbnailFetchedAt=null
+ *     and have to wait up to 24 hours for the next refreshAdCreatives,
+ *     which is why fresh live ads show as letter placeholders on the
+ *     Campaigns tab.
+ *   - This sweep closes that gap: hourly, it picks off whatever rows
+ *     showed up since the last sweep and fills their thumbnails in
+ *     under a minute.
+ *
+ * Idempotent: a successfully-resolved ad gets a fetchedAt stamp and stops
+ * being eligible. A genuinely unrecoverable ad (deleted creative) also
+ * gets stamped so it doesn't loop here forever.
+ */
+export async function fillBlankThumbnails(shopDomain, { limit = 200 } = {}) {
+  const shop = await db.shop.findUnique({ where: { shopDomain } });
+  if (!shop?.metaAccessToken || !shop?.metaAdAccountId) {
+    return { attempted: 0, updated: 0, missing: 0 };
+  }
+  const token = shop.metaAccessToken;
+  const accountId = shop.metaAdAccountId;
+  const targets = await db.metaEntity.findMany({
+    where: { shopDomain, entityType: "ad", thumbnailFetchedAt: null },
+    select: { entityId: true },
+    take: limit,
+  });
+  if (targets.length === 0) return { attempted: 0, updated: 0, missing: 0 };
+
+  const fields = "id,creative{thumbnail_url,image_url,image_hash,product_set_id,asset_feed_spec,object_story_spec}";
+  const now = new Date();
+  const res = await fallbackPerAdFetches(
+    targets.map(t => t.entityId),
+    { shopDomain, accountId, token, fields, now },
+  );
+  console.log(`[MetaAdCreativeSync] fillBlankThumbnails ${shopDomain}: ${res.updated} updated, ${res.missing} unresolved (attempted=${targets.length})`);
+  return { attempted: targets.length, updated: res.updated, missing: res.missing };
 }
 
 /**
