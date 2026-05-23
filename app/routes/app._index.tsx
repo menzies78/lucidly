@@ -531,6 +531,27 @@ export const action = async ({ request }) => {
         await rebuildProductRollups(shopDomain);
         if (global.gc) global.gc();
 
+        // Geo + matchAccuracy + customerGenderDaily were previously missing
+        // from this handler. When the orchestrator's geo step silently failed
+        // during onboarding (Vollebak: transaction timeout on 200k+ rows), the
+        // merchant had no recovery path — Countries tab stayed empty until
+        // the next conversion-bearing incremental sync. Including them here
+        // makes the button a true full rebuild.
+        setProgress(taskId, { status: "running", message: "Rebuilding geo rollups..." });
+        const { rebuildGeoRollups } = await import("../services/geoRollups.server.js");
+        await rebuildGeoRollups(shopDomain);
+        if (global.gc) global.gc();
+
+        setProgress(taskId, { status: "running", message: "Rebuilding dashboard match accuracy..." });
+        const { rebuildMatchAccuracy } = await import("../services/dashboardRollups.server.js");
+        await rebuildMatchAccuracy(shopDomain);
+        if (global.gc) global.gc();
+
+        setProgress(taskId, { status: "running", message: "Rebuilding customer gender chart data..." });
+        const { rebuildCustomerGenderDaily } = await import("../services/customerRollups.server.js");
+        await rebuildCustomerGenderDaily(shopDomain);
+        if (global.gc) global.gc();
+
         const { invalidateShop } = await import("../services/queryCache.server.js");
         invalidateShop(shopDomain);
         completeProgress(taskId, { ok: true });

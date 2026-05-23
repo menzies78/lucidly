@@ -391,12 +391,20 @@ export async function rebuildGeoRollups(shopDomain) {
   }));
 
   const CHUNK = 500;
+  // Vollebak-scale shops (128k+ country breakdown rows, 400+ days, 800+ ads)
+  // fan out into 200k–500k DailyGeoRollup rows. SQLite createMany under a
+  // transaction lands roughly 5–10k inserts/sec, so the original 60s budget
+  // silently rolled back the entire rebuild during onboarding and the merchant
+  // was left with an empty Countries tab. 10 minutes is a defensive ceiling
+  // that comfortably covers the largest current shops while still bounding
+  // any pathological case (the in-memory bucket map would OOM before the
+  // wall clock got near 10 min).
   await db.$transaction(async (tx) => {
     await tx.dailyGeoRollup.deleteMany({ where: { shopDomain } });
     for (let i = 0; i < rows.length; i += CHUNK) {
       await tx.dailyGeoRollup.createMany({ data: rows.slice(i, i + CHUNK) });
     }
-  }, { timeout: 60000 });
+  }, { timeout: 600000 });
 
   // Top Products per Country is now built on-demand in the loader for the
   // selected date window (see buildTopProductsCube below + app.geo.tsx).
