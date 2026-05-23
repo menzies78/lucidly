@@ -242,13 +242,17 @@ export async function rebuildCampaignRollups(shopDomain) {
     utmOnlyRevenue: b.utmOnlyRevenue,
   }));
 
+  // 10 min timeout — same defensive budget as geoRollups. Current Vollebak
+  // (32k+ rows) completes well under 60s but we removed the lower bound to
+  // future-proof against larger shops where the transaction would silently
+  // roll back to 0 rows.
   const CHUNK = 500;
   await db.$transaction(async (tx) => {
     await tx.dailyAdRollup.deleteMany({ where: { shopDomain } });
     for (let i = 0; i < rows.length; i += CHUNK) {
       await tx.dailyAdRollup.createMany({ data: rows.slice(i, i + CHUNK) });
     }
-  }, { timeout: 60000 });
+  }, { timeout: 600000 });
 
   console.log(`[campaignRollups] ${shopDomain} rebuilt ${rows.length} rows in ${Date.now() - t0}ms (insights=${insights.length}, attrs=${attributions.length})`);
   return { rows: rows.length, ms: Date.now() - t0 };

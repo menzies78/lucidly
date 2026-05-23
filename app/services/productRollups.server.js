@@ -342,14 +342,17 @@ export async function rebuildProductRollups(shopDomain) {
     });
   }
 
-  // Chunked createMany (SQLite has param limits)
+  // Chunked createMany (SQLite has param limits). Timeout matches the other
+  // wipe-and-replace rollup builders (10 min) — defensive against future
+  // shop sizes; current Vollebak completes in well under 60s but we removed
+  // the 60s lower bound after geo's onboarding silently rolled back at scale.
   const CHUNK = 500;
   await db.$transaction(async (tx) => {
     await tx.dailyProductRollup.deleteMany({ where: { shopDomain } });
     for (let i = 0; i < rows.length; i += CHUNK) {
       await tx.dailyProductRollup.createMany({ data: rows.slice(i, i + CHUNK) });
     }
-  }, { timeout: 60000 });
+  }, { timeout: 600000 });
 
   // ── Build the analysis cache blob ──
   // Contains: journey flows, basket combos, add-ons, first-purchase lists,

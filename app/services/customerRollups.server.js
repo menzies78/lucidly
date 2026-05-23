@@ -1365,13 +1365,16 @@ export async function rebuildCustomerRollups(shopDomain) {
     });
   }
 
+  // 10 min timeout — same defensive budget as geoRollups. Defends against
+  // larger shops where the wipe-and-replace transaction could silently roll
+  // back to 0 rows.
   const CHUNK = 500;
   await db.$transaction(async (tx) => {
     await tx.dailyCustomerRollup.deleteMany({ where: { shopDomain } });
     for (let i = 0; i < rows.length; i += CHUNK) {
       await tx.dailyCustomerRollup.createMany({ data: rows.slice(i, i + CHUNK) });
     }
-  }, { timeout: 60000 });
+  }, { timeout: 600000 });
 
   console.log(`[customerRollups] ${shopDomain}: ${rows.length} daily rollup rows in ${Date.now() - t0}ms`);
   return { rollupRows: rows.length, ms: Date.now() - t0 };
