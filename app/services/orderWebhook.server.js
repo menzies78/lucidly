@@ -115,11 +115,18 @@ function buildRefundLineItemsFromWebhook(refunds) {
 }
 
 export async function processOrderWebhook(shopDomain, payload, isCreate) {
-  // Mark first webhook fire for the shop (only if not already set)
+  // Mark first webhook fire for the shop (only if not already set).
+  // Also self-heal webhooksRegisteredAt: a fired webhook is ground truth
+  // that registration succeeded, so backfill it if ensureWebhooks raced
+  // the Shop row creation or pre-dates the registration column.
   try {
     await db.shop.updateMany({
       where: { shopDomain, webhooksFirstFiredAt: null },
       data: { webhooksFirstFiredAt: new Date() },
+    });
+    await db.shop.updateMany({
+      where: { shopDomain, webhooksRegisteredAt: null },
+      data: { webhooksRegisteredAt: new Date() },
     });
   } catch {}
 

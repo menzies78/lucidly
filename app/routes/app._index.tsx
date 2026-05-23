@@ -1194,7 +1194,12 @@ export default function Index() {
             // days on a quiet store (no new orders) - that's not a
             // problem. Only flag red if Shopify never accepted our
             // registration request (the merchant needs to reinstall).
-            ok={!!webhooksRegisteredAt}
+            // A fired webhook is itself ground truth that registration
+            // succeeded — even if webhooksRegisteredAt is null (e.g.
+            // ensureWebhooks ran before the Shop row existed, or the
+            // shop pre-dates the registration column), an arriving
+            // webhook proves the registration is live.
+            ok={!!webhooksRegisteredAt || !!webhooksFirstFiredAt}
             warning={false}
             detail={
               webhooksFirstFiredAt
