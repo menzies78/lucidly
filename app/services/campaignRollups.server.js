@@ -1,5 +1,6 @@
 import db from "../db.server.js";
 import { shopLocalDayKey } from "../utils/shopTime.server";
+import { netPaidOf } from "../utils/orderRevenue";
 
 /**
  * Rebuild DailyAdRollup rows for a shop.
@@ -51,7 +52,7 @@ export async function rebuildCampaignRollups(shopDomain) {
       where: { shopDomain, isOnlineStore: true },
       select: {
         shopifyOrderId: true, createdAt: true, frozenTotalPrice: true,
-        totalRefunded: true,
+        totalRefunded: true, netPaid: true,
         utmConfirmedMeta: true, isNewCustomerOrder: true, customerOrderCountAtPurchase: true,
         metaAdId: true, metaAdName: true,
         metaAdSetId: true, metaAdSetName: true,
@@ -141,9 +142,9 @@ export async function rebuildCampaignRollups(shopDomain) {
       // Skip £0 orders (staff / replacement / warranty) from attributed
       // metrics so they don't inflate order counts and drag down AOV/CPA.
       if (gross === 0) continue;
-      // Revenue is net of refunds. Clamp at 0 to defend against
-      // over-refunded rows (rare; would otherwise go negative).
-      const rev = Math.max(0, gross - (order.totalRefunded || 0));
+      // Exchange-aware net paid (Σ max(0, line.totalPrice − line.refundedAmount)).
+      // Falls back to gross − totalRefunded for legacy orders without netPaid.
+      const rev = netPaidOf(order);
       const b = getBucket(order.createdAt, a.metaAdId, null);
       b.attributedOrders += 1;
       b.attributedRevenue += rev;
@@ -179,8 +180,8 @@ export async function rebuildCampaignRollups(shopDomain) {
     if (!order.metaAdId) continue;
     const gross = order.frozenTotalPrice || 0;
     if (gross === 0) continue; // Same £0 exclusion as matched attributions above.
-    // Revenue net of refunds; clamp for over-refunded edge case.
-    const rev = Math.max(0, gross - (order.totalRefunded || 0));
+    // Exchange-aware net paid; same semantics as the matched branch above.
+    const rev = netPaidOf(order);
     const b = getBucket(order.createdAt, order.metaAdId, {
       campaignId: order.metaCampaignId,
       campaignName: order.metaCampaignName,

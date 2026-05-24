@@ -13,6 +13,7 @@
  */
 
 import db from "../db.server.js";
+import { netPaidOf } from "../utils/orderRevenue";
 
 const DAY_MS = 86400000;
 const r2g = (v) => Math.round(v * 100) / 100;
@@ -23,7 +24,7 @@ export async function loadLtvSnapshot(shopDomain) {
       where: { shopDomain, isOnlineStore: true },
       select: {
         shopifyOrderId: true, shopifyCustomerId: true, createdAt: true,
-        frozenTotalPrice: true, utmConfirmedMeta: true,
+        frozenTotalPrice: true, totalRefunded: true, netPaid: true, utmConfirmedMeta: true,
         metaCampaignId: true, metaAdSetId: true, metaAdId: true,
         customerOrderCountAtPurchase: true,
       },
@@ -92,7 +93,7 @@ export async function loadLtvSnapshot(shopDomain) {
       const acqTime = acq.acquisitionDate.getTime();
       let rev30 = 0, rev90 = 0, rev365 = 0, revAll = 0, orderCount = 0;
       for (const o of orders) {
-        const rev = o.frozenTotalPrice || 0;
+        const rev = netPaidOf(o);
         const daysSinceAcq = (o.createdAt.getTime() - acqTime) / DAY_MS;
         revAll += rev;
         orderCount++;

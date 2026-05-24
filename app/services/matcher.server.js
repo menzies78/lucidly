@@ -471,6 +471,10 @@ export async function runAttribution(shopDomain) {
       createdAt: o.createdAt,
       frozenTotalPrice: o.frozenTotalPrice,
       frozenSubtotalPrice: o.frozenSubtotalPrice,
+      // Canonical net-paid — exchange-aware. Matcher uses this in preference
+      // to frozenTotalPrice for total_price revenue matching. See
+      // app/utils/orderRevenue.ts.
+      netPaid: o.netPaid,
       customerOrderCountAtPurchase: o.customerOrderCountAtPurchase,
       // Forwarded so matcherCore can derive isNew from BOTH signals.
       // See matcherCore.server.js comment near `isNewOrder`.
@@ -964,8 +968,11 @@ export async function runDateRangeRematch(shopDomain, fromDate, toDate) {
       for (const order of dayOrders) {
         if (usedOrders.has(order.id)) continue;
         const orderMinute = dateToMinute(order.createdAt);
+        // Prefer Order.netPaid for total-price matching (exchange-aware).
+        // Subtotal path keeps frozenSubtotalPrice — separate Meta path.
         const orderTotal = revenueField === "subtotal_price"
-          ? order.frozenSubtotalPrice : order.frozenTotalPrice;
+          ? order.frozenSubtotalPrice
+          : (order.netPaid != null ? order.netPaid : order.frozenTotalPrice);
 
         const matchingSlots = [];
         for (let idx = 0; idx < slots.length; idx++) {
@@ -1532,8 +1539,11 @@ export async function runFillGaps(shopDomain, lookbackDays = 30) {
         if (existingAttr && existingAttr.confidence > 0 && existingAttr.matchMethod !== "utm") continue;
 
         const orderMinute = dateToMinute(order.createdAt);
+        // Prefer Order.netPaid for total-price matching (exchange-aware).
+        // Subtotal path keeps frozenSubtotalPrice — separate Meta path.
         const orderTotal = revenueField === "subtotal_price"
-          ? order.frozenSubtotalPrice : order.frozenTotalPrice;
+          ? order.frozenSubtotalPrice
+          : (order.netPaid != null ? order.netPaid : order.frozenTotalPrice);
 
         const matchingSlots = [];
         for (let idx = 0; idx < slots.length; idx++) {

@@ -13,6 +13,7 @@ import { authenticate } from "../shopify.server";
 import db from "../db.server";
 import { parseDateRange } from "../utils/dateRange.server";
 import { currencySymbolFromCode } from "../utils/currency";
+import { netPaidOf } from "../utils/orderRevenue";
 import { getCachedInsights, computeDataHash, generateInsights } from "../services/aiAnalysis.server";
 import { setProgress, failProgress, completeProgress } from "../services/progress.server";
 import AiInsightsPanel from "../components/AiInsightsPanel";
@@ -448,7 +449,7 @@ export const action = async ({ request }) => {
           if (!order) continue;
           const cc = order.countryCode || "XX";
           if (!countryAgg[cc]) continue;
-          const rev = order.frozenTotalPrice - (order.totalRefunded || 0);
+          const rev = netPaidOf(order); // exchange-aware
           countryAgg[cc].attributedOrders++;
           countryAgg[cc].attributedRevenue += rev;
           if (a.isNewCustomer) {
@@ -486,7 +487,7 @@ export const action = async ({ request }) => {
           const cc = o.countryCode || "XX";
           if (!shopifyByCountry[cc]) shopifyByCountry[cc] = { orders: 0, revenue: 0 };
           shopifyByCountry[cc].orders++;
-          shopifyByCountry[cc].revenue += o.frozenTotalPrice - (o.totalRefunded || 0);
+          shopifyByCountry[cc].revenue += netPaidOf(o); // exchange-aware
         }
 
         const pageData = { overallRows, shopifyByCountry, campaignEntities: [] };

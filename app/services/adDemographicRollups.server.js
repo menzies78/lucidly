@@ -1,6 +1,7 @@
 import db from "../db.server.js";
 import { shopLocalDayKey } from "../utils/shopTime.server";
 import { resolveGender } from "./genderResolution.server.js";
+import { netPaidOf } from "../utils/orderRevenue";
 
 /**
  * Rebuild DailyAdDemographicRollup for a shop.
@@ -53,6 +54,7 @@ export async function rebuildAdDemographicRollups(shopDomain) {
         createdAt: true,
         frozenTotalPrice: true,
         totalRefunded: true,
+        netPaid: true,
         utmConfirmedMeta: true,
         customerOrderCountAtPurchase: true,
         metaAdId: true,
@@ -99,7 +101,8 @@ export async function rebuildAdDemographicRollups(shopDomain) {
     if (!order) continue;
     const gross = order.frozenTotalPrice || 0;
     if (gross === 0) continue;
-    const rev = Math.max(0, gross - (order.totalRefunded || 0));
+    // Exchange-aware net paid; falls back to gross − totalRefunded pre-backfill.
+    const rev = netPaidOf(order);
 
     const cust = order.shopifyCustomerId ? customerMap.get(order.shopifyCustomerId) : null;
     const gender = resolveGender(a.metaGender, cust?.inferredGender || null, cust?.inferredGenderConfidence ?? null) || "unknown";
@@ -125,7 +128,8 @@ export async function rebuildAdDemographicRollups(shopDomain) {
     if (!order.metaAdId) continue;
     const gross = order.frozenTotalPrice || 0;
     if (gross === 0) continue;
-    const rev = Math.max(0, gross - (order.totalRefunded || 0));
+    // Exchange-aware net paid; same semantics as matched branch.
+    const rev = netPaidOf(order);
 
     const cust = order.shopifyCustomerId ? customerMap.get(order.shopifyCustomerId) : null;
     const gender = cust?.inferredGender || "unknown";

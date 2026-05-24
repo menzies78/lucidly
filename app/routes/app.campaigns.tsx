@@ -26,6 +26,7 @@ import { getCachedInsights, computeDataHash, generateInsights } from "../service
 import { setProgress, failProgress, completeProgress } from "../services/progress.server";
 import { cached as queryCached, DEFAULT_TTL } from "../services/queryCache.server";
 import { loadLtvSnapshot } from "../services/ltvSnapshot.server.js";
+import { netPaidOf } from "../utils/orderRevenue";
 
 // loadLtvSnapshot extracted to app/services/ltvSnapshot.server.js so the cache
 // warmer and the loader can both use it.
@@ -105,7 +106,7 @@ function aggregateInsights(insights, attributions, orders, level) {
 
     const order = orderMap[attr.shopifyOrderId];
     if (order) {
-      const rev = order.frozenTotalPrice || 0;
+      const rev = netPaidOf(order); // exchange-aware (was missing refund subtraction entirely)
       row.attributedOrders++;
       row.attributedRevenue += rev;
       if (attr.isNewCustomer) {
@@ -176,7 +177,7 @@ function aggregateInsights(insights, attributions, orders, level) {
     }
 
     const row = aggregated[key];
-    const rev = order.frozenTotalPrice || 0;
+    const rev = netPaidOf(order); // exchange-aware (was missing refund subtraction entirely)
     row.attributedOrders++;
     row.attributedRevenue += rev;
     row.utmOnlyOrders++;
@@ -368,7 +369,7 @@ export const loader = async ({ request }) => {
     videoP25: true, videoP50: true, videoP75: true, videoP100: true,
   };
   const orderSelect = {
-    shopifyOrderId: true, createdAt: true, frozenTotalPrice: true, totalRefunded: true,
+    shopifyOrderId: true, createdAt: true, frozenTotalPrice: true, totalRefunded: true, netPaid: true,
     isNewCustomerOrder: true, customerOrderCountAtPurchase: true, isOnlineStore: true, shopifyCustomerId: true, utmConfirmedMeta: true,
     metaCampaignId: true, metaCampaignName: true,
     metaAdSetId: true, metaAdSetName: true,
@@ -541,7 +542,7 @@ export const loader = async ({ request }) => {
   // Total store revenue in reporting period (all orders, not just Meta-attributed)
   // Net of refunds so it's comparable to attributed revenue on the same page.
   const totalStoreRevenue = ordersInRange.reduce(
-    (sum, o) => sum + Math.max(0, (o.frozenTotalPrice || 0) - (o.totalRefunded || 0)),
+    (sum, o) => sum + netPaidOf(o), // exchange-aware
     0,
   );
 
@@ -803,7 +804,7 @@ export const loader = async ({ request }) => {
           const weights = getWeights(entityId, dateStr);
           if (!weights) continue;
 
-          const rev = order.frozenTotalPrice || 0;
+          const rev = netPaidOf(order); // exchange-aware (was missing refund subtraction entirely)
           for (const { breakdownValue, weight } of weights) {
             const compoundKey = `${entityId}||${breakdownValue}`;
             const row = bdAgg[compoundKey];
@@ -924,7 +925,7 @@ export const loader = async ({ request }) => {
       if (!order) continue;
       const day = shopLocalDayKey(tz, order.createdAt);
       if (!dailyMap[day]) dailyMap[day] = { date: day, spend: 0, impressions: 0, attributedRevenue: 0, unverifiedRevenue: 0, newCustomerOrders: 0, newCustomerRevenue: 0, attributedOrders: 0, liveAds: 0 };
-      const rev = order.frozenTotalPrice || 0;
+      const rev = netPaidOf(order); // exchange-aware (was missing refund subtraction entirely)
       dailyMap[day].attributedRevenue += rev;
       dailyMap[day].attributedOrders += 1;
       if (attr.isNewCustomer) {
@@ -968,7 +969,7 @@ export const loader = async ({ request }) => {
       if (!order) continue;
       const day = shopLocalDayKey(tz, order.createdAt);
       if (!prevDailyMap[day]) prevDailyMap[day] = { date: day, spend: 0, impressions: 0, attributedRevenue: 0, unverifiedRevenue: 0, newCustomerOrders: 0, newCustomerRevenue: 0, attributedOrders: 0 };
-      const rev = order.frozenTotalPrice || 0;
+      const rev = netPaidOf(order); // exchange-aware (was missing refund subtraction entirely)
       prevDailyMap[day].attributedRevenue += rev;
       prevDailyMap[day].attributedOrders += 1;
       if (attr.isNewCustomer) {
@@ -1444,7 +1445,7 @@ export const action = async ({ request }) => {
         const attributions = await db.attribution.findMany({ where: { shopDomain } });
         const orders = await db.order.findMany({
           where: { shopDomain, isOnlineStore: true },
-          select: { shopifyOrderId: true, createdAt: true, frozenTotalPrice: true, totalRefunded: true },
+          select: { shopifyOrderId: true, createdAt: true, frozenTotalPrice: true, totalRefunded: true, netPaid: true },
         });
 
         // Build order lookup
@@ -1478,7 +1479,7 @@ export const action = async ({ request }) => {
           if (!order || order.createdAt < fromDate || order.createdAt > toDate) continue;
           const camp = campaignAgg[a.metaCampaignId];
           if (!camp) continue;
-          const rev = (order.frozenTotalPrice || 0) - (order.totalRefunded || 0);
+          const rev = netPaidOf(order); // exchange-aware
           camp.attributedOrders++;
           camp.attributedRevenue += rev;
           if (a.isNewCustomer) { camp.newCustomerOrders++; camp.newCustomerRevenue += rev; }
@@ -1517,7 +1518,7 @@ export const action = async ({ request }) => {
         // attributed revenue on the same page.
         const ordersInRange = orders.filter(o => o.createdAt >= fromDate && o.createdAt <= toDate);
         const totalStoreRevenue = ordersInRange.reduce(
-          (sum, o) => sum + Math.max(0, (o.frozenTotalPrice || 0) - (o.totalRefunded || 0)),
+          (sum, o) => sum + netPaidOf(o), // exchange-aware
           0,
         );
 

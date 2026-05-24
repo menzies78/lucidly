@@ -12,6 +12,7 @@ import { cached as queryCached, DEFAULT_TTL } from "../services/queryCache.serve
 import { parseDateRange } from "../utils/dateRange.server";
 import { shopLocalDayKey, shopRangeBounds } from "../utils/shopTime.server";
 import { currencySymbolFromCode } from "../utils/currency";
+import { netPaidOf } from "../utils/orderRevenue";
 import { getCachedInsights, computeDataHash, generateInsights } from "../services/aiAnalysis.server";
 import { setProgress, failProgress, completeProgress } from "../services/progress.server";
 import AiInsightsPanel from "../components/AiInsightsPanel";
@@ -188,7 +189,7 @@ export const loader = async ({ request }) => {
     time("attrNewCustomerOrders", (async () => {
       const newOrders = await db.order.findMany({
         where: { shopDomain, isOnlineStore: true, isNewCustomerOrder: true, createdAt: { gte: fromDate, lte: toDate } },
-        select: { shopifyOrderId: true, shopifyCustomerId: true, frozenTotalPrice: true, totalRefunded: true },
+        select: { shopifyOrderId: true, shopifyCustomerId: true, frozenTotalPrice: true, totalRefunded: true, netPaid: true },
       });
       const attrIds = newOrders.map(o => o.shopifyOrderId);
       const attrs = attrIds.length > 0 ? await db.attribution.findMany({
@@ -207,7 +208,7 @@ export const loader = async ({ request }) => {
           custIds.add(o.shopifyCustomerId);
           uniqueCount++;
         }
-        totalRev += (o.frozenTotalPrice || 0) - (o.totalRefunded || 0);
+        totalRev += netPaidOf(o);
       }
       return { uniqueCount, totalRev, orderCount: metaNewOrders.length };
     })()),
@@ -702,7 +703,7 @@ export const loader = async ({ request }) => {
         select: {
           shopifyOrderId: true, shopifyCustomerId: true,
           country: true, city: true,
-          frozenTotalPrice: true, totalRefunded: true,
+          frozenTotalPrice: true, totalRefunded: true, netPaid: true,
           // First-order signal taken from the Order row itself (Shopify
           // ground truth) rather than the matched Attribution. Attribution
           // .isNewCustomer can lag if a re-match hasn't run since the order
@@ -742,7 +743,7 @@ export const loader = async ({ request }) => {
       const newMetaCusts = new Set<string>();
 
       for (const o of orders) {
-        const net = Math.max(0, (o.frozenTotalPrice || 0) - (o.totalRefunded || 0));
+        const net = netPaidOf(o); // exchange-aware
         const cust = o.shopifyCustomerId || null;
         if (cust) allCusts.add(cust);
         add(aCountry, o.country || null, cust, net);
@@ -840,6 +841,7 @@ export const loader = async ({ request }) => {
           customerOrderCountAtPurchase: true,
           frozenTotalPrice: true,
           totalRefunded: true,
+          netPaid: true,
           createdAt: true,
         },
       });
@@ -851,7 +853,7 @@ export const loader = async ({ request }) => {
         if (!o.shopifyCustomerId) continue;
         let t = byCust.get(o.shopifyCustomerId);
         if (!t) { t = {}; byCust.set(o.shopifyCustomerId, t); }
-        const val = Math.max(0, (o.frozenTotalPrice || 0) - (o.totalRefunded || 0));
+        const val = netPaidOf(o); // exchange-aware
         const slot: Slot = { val, date: o.createdAt };
         if (o.customerOrderCountAtPurchase === 1) t.first = slot;
         else if (o.customerOrderCountAtPurchase === 2) t.second = slot;
@@ -930,7 +932,7 @@ export const loader = async ({ request }) => {
         },
         select: {
           shopifyOrderId: true, shopifyCustomerId: true,
-          frozenTotalPrice: true, totalRefunded: true,
+          frozenTotalPrice: true, totalRefunded: true, netPaid: true,
           customerOrderCountAtPurchase: true,
           utmConfirmedMeta: true,
         },
@@ -965,7 +967,7 @@ export const loader = async ({ request }) => {
         const isMatched = matchedOrderIds.has(o.shopifyOrderId);
         const isUtm = !!o.utmConfirmedMeta;
         const isFirst = o.customerOrderCountAtPurchase === 1;
-        const net = Math.max(0, (o.frozenTotalPrice || 0) - (o.totalRefunded || 0));
+        const net = netPaidOf(o); // exchange-aware
 
         let tag: "metaNew" | "metaRepeat" | "metaRetargeted" | null = null;
         if (isMatched || isUtm) {
@@ -1275,8 +1277,8 @@ export const action = async ({ request }) => {
 
         const metaCount = metaCustomerIds.size;
         const organicCount = organicCustomerIds.size;
-        const metaRevenue = metaOrders.reduce((s, o) => s + (o.frozenTotalPrice - (o.totalRefunded || 0)), 0);
-        const organicRevenue = organicOrders.reduce((s, o) => s + (o.frozenTotalPrice - (o.totalRefunded || 0)), 0);
+        const metaRevenue = metaOrders.reduce((s, o) => s + netPaidOf(o), 0);
+        const organicRevenue = organicOrders.reduce((s, o) => s + netPaidOf(o), 0);
 
         const metaAvgLtv = metaCount > 0 ? Math.round((metaRevenue / metaCount) * 100) / 100 : 0;
         const organicAvgLtv = organicCount > 0 ? Math.round((organicRevenue / organicCount) * 100) / 100 : 0;

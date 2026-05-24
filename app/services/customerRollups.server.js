@@ -28,6 +28,7 @@ import { shopLocalDayKey } from "../utils/shopTime.server";
 import { geocodeCity } from "./geo/geocoder.server.js";
 import { COUNTRY_CENTROIDS } from "./geo/countryCentroids.js";
 import { resolveGender } from "./genderResolution.server.js";
+import { netPaidOf } from "../utils/orderRevenue";
 
 const DAY_MS = 86400000;
 const MONTH_MS = 30 * DAY_MS;
@@ -98,7 +99,7 @@ export async function rebuildCustomerSegments(shopDomain) {
       orderBy: { createdAt: "asc" },
       select: {
         shopifyOrderId: true, shopifyCustomerId: true, createdAt: true,
-        frozenTotalPrice: true, totalRefunded: true,
+        frozenTotalPrice: true, totalRefunded: true, netPaid: true,
         utmConfirmedMeta: true, lineItems: true, discountCodes: true,
         metaCampaignName: true, metaAdSetName: true, metaAdName: true,
         utmCampaign: true, utmTerm: true, utmContent: true,
@@ -320,13 +321,14 @@ export async function rebuildCustomerSegments(shopDomain) {
     else if (retargetedCustomers.has(custId)) segment = "metaRetargeted";
 
     // Per-customer aggregates (single pass over their orders)
-    let totalRevenue = 0, totalRefunded = 0, metaOrdersCount = 0, discountOrdersCount = 0;
+    let totalRevenue = 0, totalRefunded = 0, totalNet = 0, metaOrdersCount = 0, discountOrdersCount = 0;
     let lineDiscountOrdersCount = 0;
     const productCounts = {};
     const confidences = [];
     for (const o of custOrders) {
       totalRevenue += (o.frozenTotalPrice || 0);
       totalRefunded += (o.totalRefunded || 0);
+      totalNet += netPaidOf(o); // exchange-aware net paid
       if (metaAttributedOrderIds.has(o.shopifyOrderId)) metaOrdersCount++;
       if (o.discountCodes) discountOrdersCount++;
       if (discountedOrderIds.has(o.shopifyOrderId)) lineDiscountOrdersCount++;
@@ -365,7 +367,12 @@ export async function rebuildCustomerSegments(shopDomain) {
         metaSegment: segment,
         totalOrders: custOrders.length,
         totalSpent: r2(totalRevenue),
-        totalRefunded: r2(totalRefunded),
+        // Redefined: gross−net, so legacy readers (cacheWarmer +
+        // app.customers.tsx) computing "totalSpent − totalRefunded" still
+        // yield the exchange-aware net paid (£380 for the #63261 case
+        // instead of £760). Cash-refund orders unchanged; pure-exchange
+        // orders now correctly contribute their swap value here.
+        totalRefunded: r2(Math.max(0, totalRevenue - totalNet)),
         metaOrders: metaOrdersCount,
         firstOrderValue: firstOrder?.frozenTotalPrice || 0,
         lastOrderDate: lastOrder?.createdAt || null,
@@ -452,7 +459,10 @@ export async function rebuildCustomerSegments(shopDomain) {
 
     const acqTime = firstOrder.createdAt.getTime();
     const daysSinceAcq = Math.floor((now - acqTime) / DAY_MS);
-    const netRevenue = totalRevenue - totalRefunded;
+    // Net = exchange-aware sum (Σ netPaidOf), not gross−totalRefunded.
+    // Pure-exchange orders carry refundedAmount on line items while
+    // totalRefunded=0; the old formula would have over-counted them.
+    const netRevenue = totalNet;
 
     // LTV all-history tile stats
     ltvAllCount++;
@@ -497,7 +507,7 @@ export async function rebuildCustomerSegments(shopDomain) {
       let windowRev = 0, windowOrd = 0;
       for (const o of custOrders) {
         if (o.createdAt.getTime() > windowEndTime) break;
-        windowRev += (o.frozenTotalPrice || 0) - (o.totalRefunded || 0);
+        windowRev += netPaidOf(o); // exchange-aware
         windowOrd++;
       }
       allLtvByWindow[w].count++;
@@ -555,7 +565,7 @@ export async function rebuildCustomerSegments(shopDomain) {
         let cumRev = 0;
         for (const o of custOrders) {
           if (o.createdAt.getTime() >= cutoff) break;
-          cumRev += (o.frozenTotalPrice || 0) - (o.totalRefunded || 0);
+          cumRev += netPaidOf(o); // exchange-aware
         }
         customerLtvByMonth.push(r2(cumRev));
       }
@@ -609,7 +619,7 @@ export async function rebuildCustomerSegments(shopDomain) {
       for (const o of custOrders) {
         const t = o.createdAt.getTime();
         if (t >= monthStart && t < monthEnd) {
-          monthRev += (o.frozenTotalPrice || 0) - (o.totalRefunded || 0);
+          monthRev += netPaidOf(o); // exchange-aware
           monthOrd++;
         }
       }
@@ -640,7 +650,7 @@ export async function rebuildCustomerSegments(shopDomain) {
         for (const o of custOrders) {
           const t = o.createdAt.getTime();
           if (t >= monthStart && t < monthEnd) {
-            monthRev += (o.frozenTotalPrice || 0) - (o.totalRefunded || 0);
+            monthRev += netPaidOf(o); // exchange-aware
             monthOrd++;
           }
         }
@@ -1156,7 +1166,8 @@ export async function rebuildCustomerGenderDaily(shopDomain) {
       SELECT o.createdAt AS createdAt,
              c.inferredGender AS inferredGender,
              o.frozenTotalPrice AS frozenTotalPrice,
-             o.totalRefunded AS totalRefunded
+             o.totalRefunded AS totalRefunded,
+             o.netPaid AS netPaid
       FROM "Order" o
       JOIN Customer c
         ON c.shopDomain = o.shopDomain AND c.shopifyCustomerId = o.shopifyCustomerId
@@ -1213,7 +1224,11 @@ export async function rebuildCustomerGenderDaily(shopDomain) {
     const gender = o.inferredGender;
     if (!gender) continue;
     const bucket = ensureDay(day);
-    const rev = (o.frozenTotalPrice || 0) - (o.totalRefunded || 0);
+    // Exchange-aware: prefer stored netPaid; fall back to gross−refund for
+    // legacy rows pre-backfill.
+    const rev = o.netPaid != null
+      ? Number(o.netPaid)
+      : (o.frozenTotalPrice || 0) - (o.totalRefunded || 0);
     bump(bucket.allCustomer, gender, "o", "r", rev);
   }
 
@@ -1266,7 +1281,7 @@ export async function rebuildCustomerRollups(shopDomain) {
       orderBy: { createdAt: "asc" },
       select: {
         shopifyOrderId: true, shopifyCustomerId: true, createdAt: true,
-        frozenTotalPrice: true, totalRefunded: true,
+        frozenTotalPrice: true, totalRefunded: true, netPaid: true,
         customerOrderCountAtPurchase: true,
         isOnlineStore: true,
       },
@@ -1312,6 +1327,10 @@ export async function rebuildCustomerRollups(shopDomain) {
     const isFirstPurchase = order.customerOrderCountAtPurchase === 1;
     const revenue = order.frozenTotalPrice || 0;
     const refunded = order.totalRefunded || 0;
+    // Exchange-aware net paid for the daily rollup. Pure-exchange orders
+    // (totalRefunded=0 but line items refunded) would otherwise count their
+    // full gross into segment revenue.
+    const netRev = netPaidOf(order);
 
     let orderSegment;
     if (!order.isOnlineStore) {
@@ -1331,11 +1350,15 @@ export async function rebuildCustomerRollups(shopDomain) {
 
     const b = ensure(dateStr, orderSegment);
     b.orders++;
-    b.revenue += revenue;
+    // Loaders (app.customers.tsx) read .revenue directly as net revenue, so
+    // bucket net (exchange-aware) here rather than gross. refundedAmount is
+    // kept for parity with the existing schema but is no longer read by any
+    // surface that matters for the matcher cascade.
+    b.revenue += netRev;
     b.refundedAmount += refunded;
 
     if (isFirstPurchase) {
-      b.firstOrderRevenue += revenue;
+      b.firstOrderRevenue += netRev;
       if (!countedNewCustomers.has(custId)) {
         b.newCustomers++;
         countedNewCustomers.add(custId);

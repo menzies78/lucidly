@@ -504,7 +504,8 @@ export async function runUtmLayer1Pass(shopDomain, dayStr, dayOrders, newConvers
   for (const order of utmOrders) {
     if (alreadyAttributed.has(order.shopifyOrderId)) continue;
 
-    const orderTotal = order.frozenTotalPrice || 0;
+    // Prefer Order.netPaid (exchange-aware) for value comparison.
+    const orderTotal = (order.netPaid != null ? order.netPaid : order.frozenTotalPrice) || 0;
     const orderMinute = dateToMinute(order.createdAt);
     // Effective ad ID: only trust an ID that resolves to a real ad in
     // MetaInsight. Falls through to utm_content (ad name) lookup, mirroring
@@ -714,7 +715,9 @@ async function matchSingleConversion(shopDomain, conv, todayOrders, revenueField
       if (allMatchedIds.has(order.shopifyOrderId)) continue;
       const orderMinute = dateToMinute(order.createdAt);
       if (minuteInRange(orderMinute, start, end) === false) continue;
-      const orderTotal = revenueField === "subtotal_price" ? order.frozenSubtotalPrice : order.frozenTotalPrice;
+      const orderTotal = revenueField === "subtotal_price"
+        ? order.frozenSubtotalPrice
+        : (order.netPaid != null ? order.netPaid : order.frozenTotalPrice);
       // Country rank:
       //   2 = order country appears in this ad's per-cycle country delta (deterministic)
       //   1 = order country is one this ad had day-level spend in (soft signal) - also when no data
@@ -1495,9 +1498,13 @@ export async function runIncrementalSync(shopDomain) {
     const r1OrderIds = existingR1Attrs.map(a => a.shopifyOrderId);
     const r1Orders = await db.order.findMany({
       where: { shopifyOrderId: { in: r1OrderIds } },
-      select: { shopifyOrderId: true, frozenTotalPrice: true },
+      select: { shopifyOrderId: true, frozenTotalPrice: true, netPaid: true },
     });
-    for (const o of r1Orders) orderMap.set(o.shopifyOrderId, o.frozenTotalPrice);
+    // Match the matcher's value (netPaid first, frozenTotalPrice fallback) so
+    // drift is computed against the same "what did the customer pay" figure.
+    for (const o of r1Orders) {
+      orderMap.set(o.shopifyOrderId, o.netPaid != null ? o.netPaid : o.frozenTotalPrice);
+    }
     const drifts = [];
     for (const a of existingR1Attrs) {
       const orderVal = orderMap.get(a.shopifyOrderId);

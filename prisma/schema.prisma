@@ -185,6 +185,12 @@ model Order {
   discountCodes                String   @default("")
   refundStatus                 String   @default("none")
   totalRefunded                Float    @default(0)
+  // Σ max(0, OrderLineItem.totalPrice − OrderLineItem.refundedAmount). Canonical
+  // "net amount customer actually paid" — correctly handles Shopify exchanges
+  // where totalRefunded == 0 but a line item was refunded and replaced.
+  // frozenTotalPrice − totalRefunded under-corrects exchanges. Refreshed at
+  // write time in orderSync.server.js + orderWebhook.server.js.
+  netPaid                      Float?
   refundLineItems              String   @default("")
   landingSite                  String   @default("")
   referringSite                String   @default("")
