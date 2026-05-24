@@ -380,7 +380,7 @@ async function warmShop(shopDomain) {
         db.order.findMany({
           where: { shopDomain, createdAt: { gte: windowStart, lte: windowEnd } },
           select: {
-            shopifyOrderId: true, createdAt: true, frozenTotalPrice: true, totalRefunded: true, netPaid: true,
+            shopifyOrderId: true, createdAt: true, frozenTotalPrice: true, totalRefunded: true,
             isNewCustomerOrder: true, isOnlineStore: true, shopifyCustomerId: true, utmConfirmedMeta: true,
             metaCampaignId: true, metaCampaignName: true,
             metaAdSetId: true, metaAdSetName: true,

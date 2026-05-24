@@ -3,7 +3,6 @@ import crypto from "crypto";
 import { isPaidMetaUtm } from "../utils/utmClassification.js";
 import { parseElevarVisitorInfo } from "../utils/parseElevarVisitorInfo.js";
 import { updateCustomerInferredGenderIfMissing } from "./nameGender.server.js";
-import { computeNetPaidFromLineItems } from "../utils/orderRevenue";
 
 /**
  * Processes a single Shopify order from a webhook payload (REST format).
@@ -193,15 +192,6 @@ export async function processOrderWebhook(shopDomain, payload, isCreate) {
     : totalRefunded >= totalPrice ? "full" : "partial";
   const refundLineItems = buildRefundLineItemsFromWebhook(payload.refunds);
 
-  // Build the OrderLineItem rows up front so we can derive Order.netPaid
-  // (canonical net-paid, exchange-aware) and include it in the Order upsert.
-  // The actual deleteMany + createMany of these rows still runs after the
-  // Order upsert so the parent FK exists when children are written.
-  const lineItemRows = buildLineItemRowsFromWebhook(
-    shopDomain, shopifyOrderId, payload.line_items, payload.refunds,
-  );
-  const netPaid = computeNetPaidFromLineItems(lineItemRows);
-
   // Customer
   const customer = payload.customer || {};
   const customerId = customer.id ? String(customer.id) : null;
@@ -247,7 +237,7 @@ export async function processOrderWebhook(shopDomain, payload, isCreate) {
       country, countryCode, city, regionCode,
       customerFirstName: finalFirstName, customerLastInitial: finalLastInitial,
       lineItems, productSkus, productCollections,
-      discountCodes, refundStatus, totalRefunded, netPaid, refundLineItems,
+      discountCodes, refundStatus, totalRefunded, refundLineItems,
       landingSite, referringSite,
       ...utmParams, utmConfirmedMeta,
     },
@@ -255,7 +245,7 @@ export async function processOrderWebhook(shopDomain, payload, isCreate) {
       totalPrice, subtotalPrice,
       financialStatus,
       // Do NOT update frozenTotalPrice/frozenSubtotalPrice - preserve original values
-      discountCodes, refundStatus, totalRefunded, netPaid, refundLineItems,
+      discountCodes, refundStatus, totalRefunded, refundLineItems,
       // Update address if it was previously empty
       ...(country ? { country, countryCode, city, regionCode } : {}),
       customerFirstName: finalFirstName, customerLastInitial: finalLastInitial,
@@ -275,8 +265,10 @@ export async function processOrderWebhook(shopDomain, payload, isCreate) {
 
   // Replace OrderLineItem rows. Same strategy as orderSync - delete + create
   // rather than diff, because Shopify can reassign line-item IDs after order
-  // edits and we always have the authoritative list in the payload. lineItemRows
-  // were built above so we could include Order.netPaid in the upsert.
+  // edits and we always have the authoritative list in the payload.
+  const lineItemRows = buildLineItemRowsFromWebhook(
+    shopDomain, shopifyOrderId, payload.line_items, payload.refunds,
+  );
   await db.orderLineItem.deleteMany({ where: { shopDomain, shopifyOrderId } });
   if (lineItemRows.length > 0) {
     await db.orderLineItem.createMany({ data: lineItemRows });

@@ -6,7 +6,6 @@ import ReportTabs from "../components/ReportTabs";
 import { authenticate } from "../shopify.server";
 import db from "../db.server";
 import { currencySymbolFromCode } from "../utils/currency";
-import { netPaidOf } from "../utils/orderRevenue";
 import { cached as queryCached, DEFAULT_TTL } from "../services/queryCache.server";
 import {
   shopDayBounds,
@@ -105,11 +104,11 @@ export const loader = async ({ request }) => {
   const [orders, prevOrders, insights, prevInsights, breakdowns, allAttrs] = await Promise.all([
     queryCached(cacheKey("orders"), DEFAULT_TTL, () => db.order.findMany({
       where: { shopDomain, isOnlineStore: true, createdAt: { gte: monday, lte: sunday } },
-      select: { shopifyOrderId: true, shopifyCustomerId: true, frozenTotalPrice: true, totalRefunded: true, netPaid: true, createdAt: true, country: true, countryCode: true, lineItems: true, utmConfirmedMeta: true, metaAdId: true, metaAdName: true, metaCampaignName: true, metaAdSetName: true, customerOrderCountAtPurchase: true },
+      select: { shopifyOrderId: true, shopifyCustomerId: true, frozenTotalPrice: true, createdAt: true, country: true, countryCode: true, lineItems: true, utmConfirmedMeta: true, metaAdId: true, metaAdName: true, metaCampaignName: true, metaAdSetName: true, customerOrderCountAtPurchase: true },
     })),
     queryCached(cacheKey("prevOrders"), DEFAULT_TTL, () => db.order.findMany({
       where: { shopDomain, isOnlineStore: true, createdAt: { gte: prevMonday, lte: prevSunday } },
-      select: { shopifyOrderId: true, shopifyCustomerId: true, frozenTotalPrice: true, totalRefunded: true, netPaid: true, createdAt: true, country: true, countryCode: true, lineItems: true, utmConfirmedMeta: true, metaAdId: true, metaAdName: true, metaCampaignName: true, metaAdSetName: true, customerOrderCountAtPurchase: true },
+      select: { shopifyOrderId: true, shopifyCustomerId: true, frozenTotalPrice: true, createdAt: true, country: true, countryCode: true, lineItems: true, utmConfirmedMeta: true, metaAdId: true, metaAdName: true, metaCampaignName: true, metaAdSetName: true, customerOrderCountAtPurchase: true },
     })),
     // DailyAdRollup is rebuilt at end of every incremental sync. Per-day
     // spend by ad is already pre-summed there, so we avoid scanning the raw
@@ -263,7 +262,7 @@ export const loader = async ({ request }) => {
     for (const order of orderList) {
       const idx = toIdx(new Date(order.createdAt));
       if (idx < 0 || idx > 6) continue;
-      const rev = netPaidOf(order);
+      const rev = order.frozenTotalPrice || 0;
       dayBuckets[idx].storeRevenue += rev;
 
       // Determine Meta attribution status: Layer-2 match takes priority,
@@ -352,7 +351,7 @@ export const loader = async ({ request }) => {
       const country = order.country || "Unknown";
       if (!agg[country]) agg[country] = { orders: 0, revenue: 0 };
       agg[country].orders++;
-      agg[country].revenue += netPaidOf(order);
+      agg[country].revenue += order.frozenTotalPrice || 0;
     }
     return agg;
   };
@@ -366,7 +365,7 @@ export const loader = async ({ request }) => {
       if (classifyOrder(order, attr || { isNewCustomer: null }) !== "new") continue;
       const items = (order.lineItems || "").split(", ").map((s: string) => s.trim()).filter(Boolean);
       if (items.length === 0) items.push("Unknown");
-      const revShare = netPaidOf(order) / items.length;
+      const revShare = (order.frozenTotalPrice || 0) / items.length;
       for (const item of items) {
         if (!agg[item]) agg[item] = { orders: 0, revenue: 0 };
         agg[item].orders++;

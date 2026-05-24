@@ -15,7 +15,6 @@ import { parseDateRange } from "../utils/dateRange.server";
 import { currencySymbolFromCode } from "../utils/currency";
 import { cached as queryCached } from "../services/queryCache.server";
 import { isInternalShop } from "../utils/access.server";
-import { netPaidOf } from "../utils/orderRevenue";
 
 export const loader = async ({ request }) => {
   const { admin, session } = await authenticate.admin(request);
@@ -76,7 +75,7 @@ export const loader = async ({ request }) => {
     db.dailyAdRollup.aggregate({ where: { shopDomain, date: dateFilter }, _sum: { spend: true } }),
     db.order.aggregate({
       where: { shopDomain, createdAt: dateFilter },
-      _sum: { netPaid: true },
+      _sum: { frozenTotalPrice: true, totalRefunded: true },
     }),
     db.order.findMany({
       where: { shopDomain, createdAt: dateFilter },
@@ -98,7 +97,7 @@ export const loader = async ({ request }) => {
     })(),
     db.order.findMany({
       where: { shopDomain, utmConfirmedMeta: true, isOnlineStore: true, createdAt: dateFilter },
-      select: { shopifyOrderId: true, frozenTotalPrice: true, totalRefunded: true, netPaid: true },
+      select: { shopifyOrderId: true, frozenTotalPrice: true, totalRefunded: true },
     }),
     // Match Accuracy chart - read from precomputed blob written by
     // dashboardRollups.server.js after each incremental sync. Blob holds
@@ -141,14 +140,8 @@ export const loader = async ({ request }) => {
   // Count distinct customers who placed orders in this date range
   const customerCount = ordersInRange.filter(o => o.shopifyCustomerId).length;
 
-  // Net revenue from ALL Shopify orders in period. Order.netPaid is
-  // exchange-aware (Σ max(0, line.totalPrice − line.refundedAmount)) and is
-  // populated for every order with line items (backfilled by migration
-  // 20260523130000_order_net_paid). Orders with no line items keep netPaid
-  // NULL and are excluded from this _sum — statistically negligible after
-  // backfill, and represents the "actually verified net" interpretation we
-  // want for the tile.
-  const netRevenue = revenueAgg._sum.netPaid || 0;
+  // Net revenue from ALL Shopify orders in period
+  const netRevenue = (revenueAgg._sum.frozenTotalPrice || 0) - (revenueAgg._sum.totalRefunded || 0);
 
   // Filter attributions to orders within date range
   const orderIdSet = new Set(orderIdsInRange.map(o => o.shopifyOrderId));
@@ -174,15 +167,17 @@ export const loader = async ({ request }) => {
   const matchedOrders = matchedOrderIds.length > 0
     ? await db.order.findMany({
         where: { shopDomain, isOnlineStore: true, shopifyOrderId: { in: matchedOrderIds } },
-        select: { frozenTotalPrice: true, totalRefunded: true, netPaid: true },
+        select: { frozenTotalPrice: true, totalRefunded: true },
       })
     : [];
-  const matchedMetaRevenue = matchedOrders.reduce((s, o) => s + netPaidOf(o), 0);
+  const matchedMetaRevenue = matchedOrders.reduce((s, o) =>
+    s + (o.frozenTotalPrice || 0) - (o.totalRefunded || 0), 0);
 
   const matchedOrderIdSet = new Set(matchedOrderIds);
   const utmOnlyNotMatched = utmOnlyOrders.filter(o => !matchedOrderIdSet.has(o.shopifyOrderId));
   const utmOnlyCount = utmOnlyNotMatched.length;
-  const utmOnlyRevenue = utmOnlyNotMatched.reduce((s, o) => s + netPaidOf(o), 0);
+  const utmOnlyRevenue = utmOnlyNotMatched.reduce((s, o) =>
+    s + (o.frozenTotalPrice || 0) - (o.totalRefunded || 0), 0);
   const utmAndLucidlyCount = utmOnlyOrders.length - utmOnlyCount;
   const netMetaRevenue = matchedMetaRevenue + utmOnlyRevenue;
   const currencySymbol = currencySymbolFromCode(shop?.shopifyCurrency);

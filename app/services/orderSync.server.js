@@ -6,7 +6,6 @@ import { parseElevarVisitorInfo } from "../utils/parseElevarVisitorInfo.js";
 import { withRetry } from "./retry.server.js";
 import { backfillShopInferredGender } from "./nameGender.server.js";
 import { unauthenticated } from "../shopify.server";
-import { computeNetPaidFromLineItems } from "../utils/orderRevenue";
 
 // Wraps admin.graphql with retry on transient errors AND re-auth on 401.
 //
@@ -797,15 +796,6 @@ export async function syncOrders(admin, shopDomain) {
         : totalRefunded >= totalPrice ? "full" : "partial";
       const refundLineItems = buildRefundLineItems(order.refunds);
 
-      // Build the OrderLineItem rows up front so we can derive Order.netPaid
-      // (canonical net-paid, exchange-aware) in the same upsert payload. The
-      // delete+createMany of the line item rows themselves still happens after
-      // the Order upsert so the parent row exists when child rows are written.
-      const lineItemRows = buildLineItemRowsFromGraphQL(
-        shopDomain, shopifyOrderId, order.lineItems, order.refunds,
-      );
-      const netPaid = computeNetPaidFromLineItems(lineItemRows);
-
       // Customer name fields are protected - preserve existing values if already
       // populated. When the DB row has no firstName yet (typical for orders that
       // came in via the GraphQL backfill before this branch was added), fall back
@@ -855,7 +845,7 @@ export async function syncOrders(admin, shopDomain) {
           // customerOrderCountAtPurchase intentionally omitted — populated by
           // computeOrderCounts() after the full detail walk completes.
           lineItems: lineItemTitles, productSkus, productCollections,
-          discountCodes, refundStatus, totalRefunded, netPaid, refundLineItems,
+          discountCodes, refundStatus, totalRefunded, refundLineItems,
           landingSite, referringSite,
           utmSource, utmMedium, utmCampaign, utmContent, utmTerm, utmId, utmConfirmedMeta,
           fbclid, metaAdIdFromUtm,
@@ -897,7 +887,7 @@ export async function syncOrders(admin, shopDomain) {
           // signal every time a webhook update or hourly sync touched the
           // row.)
           lineItems: lineItemTitles, productSkus, productCollections,
-          discountCodes, refundStatus, totalRefunded, netPaid, refundLineItems,
+          discountCodes, refundStatus, totalRefunded, refundLineItems,
           // Only overwrite landing/UTM fields when the current GraphQL response
           // actually carries them. An empty journey + no Elevar blob would
           // otherwise wipe UTM data captured by a prior sync (and clobber
@@ -911,8 +901,10 @@ export async function syncOrders(admin, shopDomain) {
 
       // Replace OrderLineItem rows for this order. delete+createMany is simpler
       // and safer than trying to diff when Shopify sometimes reassigns line
-      // item IDs after edits/refunds. lineItemRows were built above so we
-      // could include Order.netPaid in the upsert.
+      // item IDs after edits/refunds.
+      const lineItemRows = buildLineItemRowsFromGraphQL(
+        shopDomain, shopifyOrderId, order.lineItems, order.refunds,
+      );
       await db.orderLineItem.deleteMany({ where: { shopDomain, shopifyOrderId } });
       if (lineItemRows.length > 0) {
         await db.orderLineItem.createMany({ data: lineItemRows });

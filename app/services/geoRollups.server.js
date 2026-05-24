@@ -1,6 +1,5 @@
 import db from "../db.server.js";
 import { shopLocalDayKey } from "../utils/shopTime.server";
-import { netPaidOf } from "../utils/orderRevenue";
 
 /**
  * Rebuild DailyGeoRollup rows for a shop, plus the geo:topProducts
@@ -61,7 +60,7 @@ export async function rebuildGeoRollups(shopDomain) {
       select: {
         shopifyOrderId: true, shopifyCustomerId: true,
         createdAt: true, countryCode: true,
-        frozenTotalPrice: true, totalRefunded: true, netPaid: true,
+        frozenTotalPrice: true, totalRefunded: true,
         utmConfirmedMeta: true, isNewCustomerOrder: true,
         customerOrderCountAtPurchase: true,
         metaAdId: true, metaAdName: true,
@@ -204,8 +203,8 @@ export async function rebuildGeoRollups(shopDomain) {
     const o = orderMap.get(a.shopifyOrderId);
     if (!o) continue;
     const gross = o.frozenTotalPrice || 0;
-    if (gross === 0) continue; // £0 (replacement / staff comp) orders excluded
-    const rev = netPaidOf(o); // exchange-aware
+    if (gross === 0) continue; // £0 orders excluded
+    const rev = Math.max(0, gross - (o.totalRefunded || 0));
     const cc = o.countryCode || "XX";
     const day = shopLocalDayKey(tz, o.createdAt);
     const custId = o.shopifyCustomerId || null;
@@ -254,7 +253,7 @@ export async function rebuildGeoRollups(shopDomain) {
     if (matchedOrderIds.has(o.shopifyOrderId)) continue;
     const gross = o.frozenTotalPrice || 0;
     if (gross === 0) continue;
-    const rev = netPaidOf(o); // exchange-aware
+    const rev = Math.max(0, gross - (o.totalRefunded || 0));
     const cc = o.countryCode || "XX";
     const day = shopLocalDayKey(tz, o.createdAt);
     const custId = o.shopifyCustomerId || null;
@@ -345,7 +344,8 @@ export async function rebuildGeoRollups(shopDomain) {
     const cc = o.countryCode;
     if (!cc) continue;
     const day = shopLocalDayKey(tz, o.createdAt);
-    const rev = netPaidOf(o); // exchange-aware
+    const gross = o.frozenTotalPrice || 0;
+    const rev = Math.max(0, gross - (o.totalRefunded || 0));
     const b = makeBucket(day, "overall", "", cc, null);
     b.shopifyOrders += 1;
     b.shopifyRevenue += rev;

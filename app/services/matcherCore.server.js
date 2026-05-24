@@ -400,14 +400,8 @@ export function matchDay(ctx) {
     for (const order of dayOrders) {
       if (usedSet.has(order.id)) continue;
       const orderMinute = dateToMinute(order.createdAt);
-      // For total-price matching, prefer Order.netPaid (Σ line-item totalPrice
-      // minus refundedAmount). It's the only value that's correct for Shopify
-      // exchanges, where Order.frozenTotalPrice = A + B but the customer paid
-      // only the price of the kept item. Subtotal path stays on
-      // frozenSubtotalPrice — different code path, different scaling.
       const orderTotal = revenueField === "subtotal_price"
-        ? order.frozenSubtotalPrice
-        : (order.netPaid != null ? order.netPaid : order.frozenTotalPrice);
+        ? order.frozenSubtotalPrice : order.frozenTotalPrice;
 
       const matchingSlots = [];
       for (let idx = 0; idx < slots.length; idx++) {

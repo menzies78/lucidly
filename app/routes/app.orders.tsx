@@ -12,7 +12,6 @@ import { parseDateRange } from "../utils/dateRange.server";
 import { shopLocalDayKey } from "../utils/shopTime.server";
 import { currencySymbolFromCode } from "../utils/currency";
 import { cached as queryCached } from "../services/queryCache.server";
-import { netPaidOf } from "../utils/orderRevenue";
 
 export const loader = async ({ request }) => {
   const { session } = await authenticate.admin(request);
@@ -101,11 +100,7 @@ export const loader = async ({ request }) => {
     if (!order) continue;
     const orderDate = shopLocalDayKey(tz, order.createdAt);
     const key = `${attr.metaAdId}_${orderDate}`;
-    // Exchange-aware: the Meta-vs-Shopify difference tile should compare
-    // Meta's reported conversion value against what the customer *actually
-    // paid*, not the original gross. Pure-exchange orders (line item
-    // refunded + replaced) would otherwise inflate Shopify-side here.
-    shopifyValueByAdDay[key] = (shopifyValueByAdDay[key] || 0) + netPaidOf(order);
+    shopifyValueByAdDay[key] = (shopifyValueByAdDay[key] || 0) + (order.frozenTotalPrice || 0);
     attrGroupKeys[attr.shopifyOrderId] = key;
   }
   const differenceByGroup = {};
@@ -200,7 +195,7 @@ export const loader = async ({ request }) => {
       refundStatus: order.refundStatus || "none",
       totalRefunded: refunded,
       revenue: rev,
-      netRevenue: Math.round(netPaidOf(order) * 100) / 100,
+      netRevenue: Math.round((rev - refunded) * 100) / 100,
       difference, tag, confidence: attr.confidence, method: attr.matchMethod || "",
       attributionSource: order.utmConfirmedMeta ? "UTM & Lucidly" : "Lucidly",
       utm: buildUtmString(order),
@@ -282,7 +277,7 @@ export const loader = async ({ request }) => {
       refundStatus: order.refundStatus || "none",
       totalRefunded: refunded,
       revenue: rev,
-      netRevenue: Math.round(netPaidOf(order) * 100) / 100,
+      netRevenue: Math.round((rev - refunded) * 100) / 100,
       difference: null, tag, confidence: null, method: "utm",
       attributionSource: "UTM", utm: buildUtmString(order),
     });
@@ -330,7 +325,7 @@ export const loader = async ({ request }) => {
       refundStatus: order.refundStatus || "none",
       totalRefunded: refunded,
       revenue: rev,
-      netRevenue: Math.round(netPaidOf(order) * 100) / 100,
+      netRevenue: Math.round((rev - refunded) * 100) / 100,
       difference: null, tag,
       confidence: null, method: "",
       attributionSource: "Unattributed", utm: buildUtmString(order),
