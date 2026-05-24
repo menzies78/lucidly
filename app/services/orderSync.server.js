@@ -479,6 +479,7 @@ export async function syncOrdersForFitTest(admin, shopDomain) {
               id
               createdAt
               totalPriceSet { shopMoney { amount currencyCode } }
+              originalTotalPriceSet { shopMoney { amount } }
               subtotalPriceSet { shopMoney { amount } }
               channelInformation { channelDefinition { handle } }
             }
@@ -502,12 +503,16 @@ export async function syncOrdersForFitTest(admin, shopDomain) {
       const channelHandle = order.channelInformation?.channelDefinition?.handle || "unknown";
       const isOnlineStore = channelHandle === "online_store" || channelHandle === "web" || channelHandle === "unknown";
 
-      // Upsert minimal row. frozenTotalPrice = original price (Shopify's
-      // totalPriceSet IS the order-time total - it doesn't include later
-      // refunds; refunds live in a separate refunds[] payload we deliberately
-      // don't touch here). subtotalPrice + frozenSubtotalPrice are required
-      // Float fields on the schema, so we must set them on create even though
-      // the Fit Test scoring doesn't consume them.
+      // frozenTotalPrice = the price at order creation. Shopify's totalPriceSet
+      // drifts after exchanges (post-edit it returns Σ line items, so an
+      // exchange that adds a replacement line inflates it - this is what
+      // mis-valued #63261 as £760). originalTotalPriceSet is stable across
+      // exchanges and edits and matches what Meta's pixel captured. For brand-
+      // new orders the two fields are identical, so this is a strict
+      // improvement.
+      const originalTotalPrice = parseFloat(
+        order.originalTotalPriceSet?.shopMoney?.amount ?? order.totalPriceSet.shopMoney.amount
+      );
       await db.order.upsert({
         where: { shopDomain_shopifyOrderId: { shopDomain, shopifyOrderId } },
         create: {
@@ -515,7 +520,7 @@ export async function syncOrdersForFitTest(admin, shopDomain) {
           createdAt: new Date(order.createdAt),
           totalPrice, subtotalPrice, currency,
           channelName: channelHandle, isOnlineStore,
-          frozenTotalPrice: totalPrice,
+          frozenTotalPrice: originalTotalPrice,
           frozenSubtotalPrice: subtotalPrice,
         },
         // If the row somehow already exists (e.g. retry), only refresh the
@@ -641,6 +646,7 @@ export async function syncOrders(admin, shopDomain) {
               name
               createdAt
               totalPriceSet { shopMoney { amount currencyCode } }
+              originalTotalPriceSet { shopMoney { amount } }
               subtotalPriceSet { shopMoney { amount } }
               displayFinancialStatus
               channelInformation { channelDefinition { handle } }
@@ -740,6 +746,15 @@ export async function syncOrders(admin, shopDomain) {
       const channelHandle = order.channelInformation?.channelDefinition?.handle || "unknown";
       const isOnlineStore = channelHandle === "online_store" || channelHandle === "web" || channelHandle === "unknown";
 
+      // frozenTotalPrice = the price at order creation. totalPriceSet drifts
+      // after exchanges (post-edit it returns Σ line items - this is what
+      // mis-valued #63261 as £760). originalTotalPriceSet is stable across
+      // exchanges and edits and matches what Meta's pixel captured at pixel-
+      // fire time. For brand-new orders the two fields are identical.
+      const originalTotalPrice = parseFloat(
+        order.originalTotalPriceSet?.shopMoney?.amount ?? order.totalPriceSet.shopMoney.amount
+      );
+
       const shipping = order.shippingAddress;
       const billing = order.billingAddress;
       const country = billing?.country || shipping?.country || "";
@@ -838,7 +853,7 @@ export async function syncOrders(admin, shopDomain) {
           totalPrice, subtotalPrice, currency,
           financialStatus: order.displayFinancialStatus,
           channelName: channelHandle, isOnlineStore,
-          frozenTotalPrice: totalPrice, frozenSubtotalPrice: subtotalPrice,
+          frozenTotalPrice: originalTotalPrice, frozenSubtotalPrice: subtotalPrice,
           isNewCustomerOrder: isNewOnThisOrder,
           country, countryCode, city, regionCode,
           customerFirstName, customerLastInitial,
@@ -860,14 +875,18 @@ export async function syncOrders(admin, shopDomain) {
           shopifyCustomerId: order.customer?.id?.replace("gid://shopify/Customer/", "") || null,
           totalPrice, subtotalPrice, currency,
           // Frozen price = the original value captured at order creation.
-          // Webhooks set it correctly on orders/create. But skeleton-then-
-          // detail backfills left frozenTotalPrice=0 on every row because the
-          // skeleton wrote 0 and the update branch never overrode it. Fix:
-          // only set when the existing value is 0 (placeholder), so we
-          // backfill placeholders without clobbering real frozen values from
-          // a webhook capture.
+          // Webhooks set it correctly on orders/create from REST total_price.
+          // GraphQL backfill MUST use originalTotalPriceSet (not totalPriceSet)
+          // because totalPriceSet drifts after exchanges — for #63261 it
+          // returned £760 (sum of original + replacement line items) instead
+          // of the true £380 original. originalTotalPriceSet is stable.
+          //
+          // Placeholder-rescue: skeleton sweep writes frozenTotalPrice=0 then
+          // detail walk overrides. Only overwrite when stored value is 0 so
+          // we don't clobber a correct webhook-captured frozen value with a
+          // post-exchange GraphQL value.
           ...(((existingOrder?.frozenTotalPrice ?? 0) === 0)
-            ? { frozenTotalPrice: totalPrice }
+            ? { frozenTotalPrice: originalTotalPrice }
             : {}),
           ...(((existingOrder?.frozenSubtotalPrice ?? 0) === 0)
             ? { frozenSubtotalPrice: subtotalPrice }
