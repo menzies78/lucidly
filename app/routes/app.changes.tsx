@@ -506,13 +506,12 @@ export default function ChangeLog() {
           </Card>
 
           <div style={{ display: "grid", gridTemplateColumns: "repeat(6, 1fr)", gap: 12 }}>
-            <SummaryTile label="Changes in period" value={String(summary.total)} />
-            <SummaryTile label="Launches" value={String(summary.launched)} />
-            <SummaryTile label="Paused / killed" value={String(summary.killed)} />
-            <SummaryTile label="Resumed" value={String(summary.resumed)} />
-            <SummaryTile label="Budget changes" value={String(summary.budget)} />
-            <SummaryTile label="Creative swaps" value={String(summary.creative)} />
-            <SummaryTile label="Days with activity" value={String(summary.daysWithActivity)} />
+            <SummaryTile compact label="Changes in period" value={String(summary.total)} />
+            <SummaryTile compact label="Launches" value={String(summary.launched)} />
+            <SummaryTile compact label="Paused / killed" value={String(summary.killed)} />
+            <SummaryTile compact label="Resumed" value={String(summary.resumed)} />
+            <SummaryTile compact label="Budget changes" value={String(summary.budget)} />
+            <SummaryTile compact label="Creative swaps" value={String(summary.creative)} />
           </div>
 
           {totalEver === 0 ? (

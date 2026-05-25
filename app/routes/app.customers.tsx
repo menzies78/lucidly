@@ -14,7 +14,9 @@ import { shopLocalDayKey, shopRangeBounds } from "../utils/shopTime.server";
 import { currencySymbolFromCode } from "../utils/currency";
 import { getCachedInsights, computeDataHash, generateInsights } from "../services/aiAnalysis.server";
 import { setProgress, failProgress, completeProgress } from "../services/progress.server";
+import { buildOrderExplorerData } from "../services/orderExplorerData.server";
 import AiInsightsPanel from "../components/AiInsightsPanel";
+import OrderExplorerSection from "../components/OrderExplorerSection";
 import PageSummary from "../components/PageSummary";
 import type { SummaryBullet, SummaryTone } from "../components/PageSummary";
 import SummaryTile from "../components/SummaryTile";
@@ -1159,6 +1161,19 @@ export const loader = async ({ request }) => {
   const aiGeneratedAt = aiCached?.generatedAt?.toISOString() || null;
   const aiIsStale = aiCached ? aiCached.dataHash !== aiCurrentHash : false;
 
+  // Order Explorer (table now lives at the bottom of this tab — Order
+  // Explorer no longer has its own route). Filter state is read from URL
+  // search params and pushed back via useSubmit on change.
+  const url = new URL(request.url);
+  const orderTagFilter = url.searchParams.get("orderTag") || "meta";
+  const orderCampaignFilter = url.searchParams.get("orderCampaign") || "all";
+  const orderExplorer = await buildOrderExplorerData({
+    shopDomain, fromDate, toDate, fromKey, toKey, tz,
+    shopifyCurrency: shopForTz?.shopifyCurrency,
+    tagFilter: orderTagFilter,
+    campaignFilter: orderCampaignFilter,
+  });
+
   console.log(`[customers] loader DONE ${Date.now() - _t0}ms`);
   return json({
     aiCachedInsights, aiGeneratedAt, aiIsStale,
@@ -1227,6 +1242,7 @@ export const loader = async ({ request }) => {
     ltvBenchmark, ltvTile, ltvRecent, ltvMonthly, ltvCustomers,
     weeklyCohortSeries,
     fromKey, toKey, preset,
+    orderExplorer,
   });
 };
 
@@ -1953,7 +1969,7 @@ export default function Customers() {
     unmatchedConversionsWithValue, prevUnmatchedConversions, prevUnmatchedRevenue, prevUnmatchedConversionsWithValue,
   } = data;
   const cs = currencySymbol || currencySymbolFromCode(null);
-  const { aiCachedInsights, aiGeneratedAt, aiIsStale } = data;
+  const { aiCachedInsights, aiGeneratedAt, aiIsStale, orderExplorer } = data;
   const [searchParams, setSearchParams] = useSearchParams();
   const [acqMode, setAcqMode] = useState<"customers" | "revenue">("customers");
   const [donutHover, setDonutHover] = useState<number | null>(null);
@@ -3965,9 +3981,25 @@ export default function Customers() {
           )},
         ] as TileDef[]} />
 
-
-
-        {/* Customer table removed - not needed at this stage */}
+        {/* Order Explorer (moved here from /app/orders) — every Shopify
+            order in the selected period, tagged by Meta attribution. */}
+        <OrderExplorerSection
+          rows={orderExplorer.rows}
+          campaigns={orderExplorer.campaigns}
+          currencySymbol={orderExplorer.currencySymbol}
+          tagFilter={searchParams.get("orderTag") || "meta"}
+          campaignFilter={searchParams.get("orderCampaign") || "all"}
+          onTagChange={(v) => {
+            const next = new URLSearchParams(searchParams);
+            next.set("orderTag", v);
+            setSearchParams(next, { replace: true });
+          }}
+          onCampaignChange={(v) => {
+            const next = new URLSearchParams(searchParams);
+            next.set("orderCampaign", v);
+            setSearchParams(next, { replace: true });
+          }}
+        />
       </BlockStack>
       </ReportTabs>
     </Page>

@@ -359,7 +359,7 @@ export default function UtmManagement() {
           <BlockStack gap="300">
             <InlineStack gap="300" align="start">
               <Button variant="primary" onClick={handleAudit} loading={isLoading && !pushEditsResult} disabled={isLoading}>
-                {auditResult ? "Re-run Audit" : "Run Audit"}
+                {auditResult ? "Re-run UTM tag audit on all Meta ads" : "Run UTM tag audit on all Meta ads"}
               </Button>
               {auditResult && template && (
                 <Button onClick={handleFillMissing} disabled={isLoading}>

@@ -32,6 +32,9 @@ export interface SummaryTileProps {
   // Countries quick-stat tiles where the country flag is the star and the
   // metric reads as a poster, not a left-aligned label.
   centered?: boolean;
+  // When true, renders a shorter tile (~110px). For chartless count tiles
+  // (e.g. Change Log summary row) the default 180px feels oversized.
+  compact?: boolean;
 }
 
 function ProductThumb({ url, size = 44 }: { url: string; size?: number }) {
@@ -135,7 +138,7 @@ function DeltaBadge({ currentValue, previousValue, lowerIsBetter, onHoverChange 
 export default function SummaryTile({
   label, value, subtitle, tooltip, previousValue, currentValue, lowerIsBetter,
   chartData, prevChartData, chartKey, chartColor, chartFormat, imageUrl, isDpa,
-  valueVariant = "heading2xl", centered = false,
+  valueVariant = "heading2xl", centered = false, compact = false,
 }: SummaryTileProps) {
   const [showTip, setShowTip] = useState(false);
   const [showPrevOverlay, setShowPrevOverlay] = useState(false);
@@ -143,7 +146,7 @@ export default function SummaryTile({
 
   return (
     <Card>
-      <div style={{ minHeight: 180, height: "100%", display: "flex", flexDirection: "column" }}>
+      <div style={{ minHeight: compact ? 96 : 180, height: "100%", display: "flex", flexDirection: "column" }}>
         {/* Header: label + delta badge */}
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6, marginBottom: 4 }}>
           <div

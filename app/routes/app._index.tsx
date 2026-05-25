@@ -867,8 +867,16 @@ function MatchAccuracyChart({ data, accent, metric }: { data: ChartDay[]; accent
   for (let i = 0; i < points.length; i += labelStep) {
     xLabels.push({ i, label: points[i].date.slice(5) }); // MM-DD
   }
-  if (xLabels[xLabels.length - 1]?.i !== points.length - 1) {
-    xLabels.push({ i: points.length - 1, label: points[points.length - 1].date.slice(5) });
+  // Ensure the final day shows on the axis. If the last picked label is too
+  // close to the end (within half a labelStep), REPLACE it rather than appending
+  // — otherwise two labels overlap (e.g. "05-24" + "05-25" colliding).
+  const lastPicked = xLabels[xLabels.length - 1];
+  if (lastPicked && lastPicked.i !== points.length - 1) {
+    if (points.length - 1 - lastPicked.i < labelStep * 0.6) {
+      xLabels[xLabels.length - 1] = { i: points.length - 1, label: points[points.length - 1].date.slice(5) };
+    } else {
+      xLabels.push({ i: points.length - 1, label: points[points.length - 1].date.slice(5) });
+    }
   }
 
   return (
@@ -1269,7 +1277,7 @@ export default function Index() {
           <Layout.Section variant="oneHalf">
             <MatchTile
               title="Match Rate"
-              description="Orders linked to a Meta-reported conversion (Layer 1 UTM-confirmed + Layer 2 statistical matcher) / Meta-reported conversions. Both layers reconcile against Meta's reported conversion count."
+              description="How many Meta-reported sales we can confidently tie back to a real order in your Shopify store. Higher is better — 100% means every conversion Meta reported has been matched to one of your orders."
               accent="#5C6AC4"
               metric="rate"
               days={matchAccuracyDays}
@@ -1284,7 +1292,7 @@ export default function Index() {
           <Layout.Section variant="oneHalf">
             <MatchTile
               title="Match Confidence"
-              description="Average confidence across Layer 2 matched orders, weighted by match count. 100% = no rival candidates; lower means the matcher saw multiple compatible orders for the same Meta conversion."
+              description="How certain we are that each matched order is the right one. 100% means there was only one possible order for that sale; lower means multiple orders fit the same Meta conversion and we had to pick the best."
               accent="#0D9488"
               metric="confidence"
               days={matchAccuracyDays}
@@ -1364,10 +1372,6 @@ export default function Index() {
               </BlockStack>
             </Card>
           </Layout.Section>
-        </Layout>
-
-        {/* ═══ Campaign Alerts + Data Quality ═══ */}
-        <Layout>
           <Layout.Section variant="oneHalf">
             <Card>
               <BlockStack gap="300">
@@ -1427,53 +1431,6 @@ export default function Index() {
                 <Button onClick={() => navigate(`/app/campaigns${dateQuery()}`)}>
                   View All Campaigns
                 </Button>
-              </BlockStack>
-            </Card>
-          </Layout.Section>
-          <Layout.Section variant="oneHalf">
-            <Card>
-              <BlockStack gap="300">
-                <Text as="h2" variant="headingLg">Data Quality</Text>
-                <div style={{ display: "flex", gap: "12px", flexWrap: "wrap" }}>
-                  <div style={{ flex: 1, minWidth: "120px", padding: "12px 16px", borderRadius: "8px", background: "#F0F1FF", textAlign: "center" }}>
-                    <div style={{ fontSize: "22px", fontWeight: 700, color: "#4650A8" }}>
-                      {attribution.avgConfidence}%
-                    </div>
-                    <div style={{ fontSize: "12px", color: "#6B7280" }}>avg confidence</div>
-                  </div>
-                  <div style={{ flex: 1, minWidth: "120px", padding: "12px 16px", borderRadius: "8px", background: "#F0F1FF", textAlign: "center" }}>
-                    <div style={{ fontSize: "22px", fontWeight: 700, color: "#4650A8" }}>
-                      {attribution.matched.toLocaleString()}
-                    </div>
-                    <div style={{ fontSize: "12px", color: "#6B7280" }}>matched attributions</div>
-                  </div>
-                  <div style={{ flex: 1, minWidth: "120px", padding: "12px 16px", borderRadius: "8px", background: attribution.unmatched > 0 ? "#FFFBEB" : "#F9FAFB", textAlign: "center" }}>
-                    <div style={{ fontSize: "22px", fontWeight: 700, color: attribution.unmatched > 0 ? "#92400E" : "#374151" }}>
-                      {attribution.unmatched.toLocaleString()}
-                    </div>
-                    <div style={{ fontSize: "12px", color: "#6B7280" }}>unmatched</div>
-                  </div>
-                </div>
-
-                <div style={{ display: "flex", gap: "12px", flexWrap: "wrap" }}>
-                  <div style={{ flex: 1, minWidth: "140px", padding: "12px 16px", borderRadius: "8px", background: attribution.unmatchedRevenue > 0 ? "#FFFBEB" : "#F9FAFB", textAlign: "center" }}>
-                    <div style={{ fontSize: "18px", fontWeight: 700, color: attribution.unmatchedRevenue > 0 ? "#92400E" : "#374151" }}>
-                      {currencySymbol}{Math.round(attribution.unmatchedRevenue).toLocaleString()}
-                    </div>
-                    <div style={{ fontSize: "12px", color: "#6B7280" }}>unmatched revenue</div>
-                  </div>
-                  <div style={{ flex: 1, minWidth: "140px", padding: "12px 16px", borderRadius: "8px", background: "#ECFDF5", textAlign: "center" }}>
-                    <div style={{ fontSize: "18px", fontWeight: 700, color: "#065F46" }}>
-                      {matchedPct}%
-                    </div>
-                    <div style={{ fontSize: "12px", color: "#6B7280" }}>match rate (selected period)</div>
-                  </div>
-                </div>
-
-                <Text as="p" variant="bodySm" tone="subdued">
-                  Match rate and Data Quality use live attribution data - always in sync with Order Explorer.
-                  Unmatched = Meta conversions we couldn't verify against a Shopify order.
-                </Text>
               </BlockStack>
             </Card>
           </Layout.Section>

@@ -23,7 +23,6 @@ export const PAGE_TABS = [
   { label: "Ad Campaigns",   path: "/app/campaigns" },
   { label: "Countries",      path: "/app/geo" },
   { label: "Weekly Report",  path: "/app/weekly" },
-  { label: "Order Explorer", path: "/app/orders" },
   { label: "UTM Manager",    path: "/app/utm" },
   { label: "Change Log",     path: "/app/changes" },
 ] as const;

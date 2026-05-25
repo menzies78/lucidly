@@ -179,7 +179,6 @@ export default function App() {
         {showFullNav && <Link to="/app/products">Products</Link>}
         {showFullNav && <Link to="/app/campaigns">Ad Campaigns</Link>}
         {showFullNav && <Link to="/app/geo">Countries</Link>}
-        {showFullNav && <Link to="/app/orders">Order Explorer</Link>}
         {showFullNav && <Link to="/app/weekly">Weekly Report</Link>}
         {showFullNav && <Link to="/app/utm">UTM Manager</Link>}
       </NavMenu>

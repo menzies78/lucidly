@@ -4480,25 +4480,15 @@ export default function Campaigns() {
       } as ColumnDef<any, any>);
     }
     cols.push(
+      // ── Headline metrics ──
       num("spend", "Spend", (v) => `${cs}${v.toLocaleString()}`, { desc: "Total amount spent on Meta ads in the selected period" }),
-      num("impressions", "Impressions", undefined, { desc: "Total number of times your ads were shown on screen" }),
-      num("clicks", "Clicks", undefined, { desc: "Total clicks on your ads, including all click types (link clicks, likes, comments, shares)" }),
-      num("ctr", "CTR", (v) => `${v}%`, { desc: "Click-through rate - how often people clicked after seeing your ad", calc: "Clicks ÷ Impressions × 100" }),
-      num("avgFrequency", "Frequency", (v) => v > 0 ? `${v}x` : "-", { desc: "Average number of times each person saw your ad. Higher frequency can mean ad fatigue" }),
-      num("linkClicks", "Link Clicks", undefined, { desc: "Clicks that directed people to your website or app" }),
-      num("landingPageViews", "Landing Page Views", undefined, { desc: "Number of times your landing page fully loaded after someone clicked your ad" }),
-      num("viewContent", "View Content", undefined, { desc: "Number of times someone viewed a product page on your site after seeing your ad" }),
-      num("addToCart", "Add to Cart", undefined, { desc: "Number of times someone added a product to their cart after seeing your ad" }),
-      num("atcRate", "ATC Rate", (v, r) => r.viewContent > 0 ? `${v}%` : "-", { desc: "Add-to-cart rate - of people who viewed a product, how many added to cart", calc: "Add to Cart ÷ View Content × 100" }),
-      num("initiateCheckout", "Initiate Checkout", undefined, { desc: "Number of times someone started the checkout process after seeing your ad" }),
-      num("checkoutRate", "Checkout Rate", (v, r) => r.addToCart > 0 ? `${v}%` : "-", { desc: "Checkout rate - of people who added to cart, how many started checkout", calc: "Initiate Checkout ÷ Add to Cart × 100" }),
       num("metaConversions", "Purchases", undefined, { desc: "Total purchases reported by Meta, including both matched and unmatched orders" }),
-      num("purchaseRate", "Purchase Rate", (v, r) => r.initiateCheckout > 0 ? `${v}%` : "-", { desc: "Purchase rate - of people who started checkout, how many completed a purchase", calc: "Purchases ÷ Initiate Checkout × 100" }),
       num("attributedRevenue", "Matched Revenue", (v) => `${cs}${v.toLocaleString()}`, { desc: "Revenue from orders we've verified and matched to specific Meta ads at order level" }),
       num("unverifiedRevenue", "Unmatched Revenue", (v) => `${cs}${v.toLocaleString()}`, { desc: "The gap between what Meta reported and what we could verify. Typically caused by order edits, refunds, or currency differences after purchase" }),
       num("blendedROAS", "Confirmed ROAS", (v) => `${v}x`, { desc: "Return on ad spend from confirmed Meta-attributed revenue (matched + unmatched)", calc: "(Matched Revenue + Unmatched Revenue) ÷ Spend" }),
+      num("cpa", "CPA", (v, r) => r.attributedOrders > 0 ? `${cs}${v.toLocaleString()}` : "-", { desc: "Cost per acquisition - how much you spent to get each order", calc: "Spend ÷ Attributed Orders" }),
       num("attributedOrders", "Attributed Orders", undefined, { desc: "Number of Shopify orders matched to Meta ads via statistical attribution" }),
-      num("metaConversionValue", "Meta Revenue", (v) => `${cs}${v.toLocaleString()}`, { desc: "Total conversion value as reported by Meta. May differ from Shopify revenue due to order edits, refunds, and currency differences" }),
+      // ── New vs existing customer split ──
       {
         accessorKey: "newCustomerOrders",
         header: "New Customers",
@@ -4523,6 +4513,9 @@ export default function Campaigns() {
           return <>{cs}{v.toLocaleString()} <span style={{ color: "#999" }}>({pct}%)</span></>;
         },
       } as ColumnDef<any, any>,
+      num("newCustomerCPA", "New Customer CPA", (v) => v != null ? `${cs}${v.toLocaleString()}` : "-", { desc: "Cost to acquire each new customer", calc: "Spend ÷ New Customers" }),
+      num("newCustomerROAS", "New Customer ROAS", (v) => v != null ? `${v}x` : "-", { desc: "Return on ad spend from new customers only - excludes returning customer revenue", calc: "New Customer Revenue ÷ Spend" }),
+      num("revenuePerNewCustomer", "Rev per New Customer", (v) => v != null ? `${cs}${v.toLocaleString()}` : "-", { desc: "Average first-order revenue per new customer", calc: "New Customer Revenue ÷ New Customers" }),
       {
         accessorKey: "existingCustomerOrders",
         header: "Existing Customers",
@@ -4547,18 +4540,26 @@ export default function Campaigns() {
           return <>{cs}{v.toLocaleString()} <span style={{ color: "#999" }}>({pct}%)</span></>;
         },
       } as ColumnDef<any, any>,
-      num("cpa", "CPA", (v, r) => r.attributedOrders > 0 ? `${cs}${v.toLocaleString()}` : "-", { desc: "Cost per acquisition - how much you spent to get each order", calc: "Spend ÷ Attributed Orders" }),
-      num("newCustomerCPA", "New Customer CPA", (v) => v != null ? `${cs}${v.toLocaleString()}` : "-", { desc: "Cost to acquire each new customer", calc: "Spend ÷ New Customers" }),
-      num("revenuePerNewCustomer", "Rev per New Customer", (v) => v != null ? `${cs}${v.toLocaleString()}` : "-", { desc: "Average first-order revenue per new customer", calc: "New Customer Revenue ÷ New Customers" }),
+      // ── Funnel ──
+      num("impressions", "Impressions", undefined, { desc: "Total number of times your ads were shown on screen" }),
+      num("clicks", "Clicks", undefined, { desc: "Total clicks on your ads, including all click types (link clicks, likes, comments, shares)" }),
+      num("ctr", "CTR", (v) => `${v}%`, { desc: "Click-through rate - how often people clicked after seeing your ad", calc: "Clicks ÷ Impressions × 100" }),
+      num("linkClicks", "Link Clicks", undefined, { desc: "Clicks that directed people to your website or app" }),
+      num("landingPageViews", "Landing Page Views", undefined, { desc: "Number of times your landing page fully loaded after someone clicked your ad" }),
+      num("viewContent", "View Content", undefined, { desc: "Number of times someone viewed a product page on your site after seeing your ad" }),
+      num("addToCart", "Add to Cart", undefined, { desc: "Number of times someone added a product to their cart after seeing your ad" }),
+      num("atcRate", "ATC Rate", (v, r) => r.viewContent > 0 ? `${v}%` : "-", { desc: "Add-to-cart rate - of people who viewed a product, how many added to cart", calc: "Add to Cart ÷ View Content × 100" }),
+      num("initiateCheckout", "Initiate Checkout", undefined, { desc: "Number of times someone started the checkout process after seeing your ad" }),
+      num("checkoutRate", "Checkout Rate", (v, r) => r.addToCart > 0 ? `${v}%` : "-", { desc: "Checkout rate - of people who added to cart, how many started checkout", calc: "Initiate Checkout ÷ Add to Cart × 100" }),
+      num("purchaseRate", "Purchase Rate", (v, r) => r.initiateCheckout > 0 ? `${v}%` : "-", { desc: "Purchase rate - of people who started checkout, how many completed a purchase", calc: "Purchases ÷ Initiate Checkout × 100" }),
+      num("avgFrequency", "Frequency", (v) => v > 0 ? `${v}x` : "-", { desc: "Average number of times each person saw your ad. Higher frequency can mean ad fatigue" }),
+      // ── Daily rates ──
       num("spendPerDay", "Spend/Day", (v) => v != null ? `${cs}${v.toLocaleString()}` : "-", { desc: "Average daily spend, based on how long the ad has been active within the reporting period", calc: "Spend ÷ active days (shorter of ad age or reporting period)" }),
       num("newCustomersPerDay", "New Customers/Day", (v) => v != null ? `${v}` : "-", { desc: "Average new customers acquired per day", calc: "New Customers ÷ active days" }),
       num("newCustomerRevenuePerDay", "New Customer Rev/Day", (v) => v != null ? `${cs}${v.toLocaleString()}` : "-", { desc: "Average daily revenue from new customers", calc: "New Customer Revenue ÷ active days" }),
-      num("newCustomerROAS", "New Customer ROAS", (v) => v != null ? `${v}x` : "-", { desc: "Return on ad spend from new customers only - excludes returning customer revenue", calc: "New Customer Revenue ÷ Spend" }),
-      num("videoP25", "Video 25%", undefined, { desc: "Number of times your video was watched to 25% of its length" }),
-      num("videoP50", "Video 50%", undefined, { desc: "Number of times your video was watched to 50% of its length" }),
-      num("videoP75", "Video 75%", undefined, { desc: "Number of times your video was watched to 75% of its length" }),
-      num("videoP100", "Video 100%", undefined, { desc: "Number of times your video was watched all the way through" }),
-      // LTV columns (all-time, independent of reporting window)
+      // ── Reported by Meta ──
+      num("metaConversionValue", "Meta Revenue", (v) => `${cs}${v.toLocaleString()}`, { desc: "Total conversion value as reported by Meta. May differ from Shopify revenue due to order edits, refunds, and currency differences" }),
+      // ── Lifetime value (all-time, independent of reporting window) ──
       num("avgLtv30", "Avg LTV 30d", (v) => v != null ? `${cs}${v.toLocaleString()}` : "-", { desc: "Average revenue per acquired customer within 30 days of their first purchase. Unaffected by the reporting period - always uses all-time data", calc: "Total 30-day revenue ÷ acquired customers" }),
       num("avgLtv90", "Avg LTV 90d", (v) => v != null ? `${cs}${v.toLocaleString()}` : "-", { desc: "Average revenue per acquired customer within 90 days of their first purchase. Unaffected by the reporting period - always uses all-time data", calc: "Total 90-day revenue ÷ acquired customers" }),
       num("avgLtv365", "Avg LTV 1yr", (v) => v != null ? `${cs}${v.toLocaleString()}` : "-", { desc: "Average revenue per acquired customer within 1 year of their first purchase. Unaffected by the reporting period - always uses all-time data", calc: "Total 1-year revenue ÷ acquired customers" }),
@@ -4568,6 +4569,11 @@ export default function Campaigns() {
       num("repeatRate", "Repeat Rate", (v) => v != null ? `${v}%` : "-", { desc: "Percentage of acquired customers who came back and purchased again", calc: "Repeat buyers ÷ total acquired customers × 100" }),
       num("avgOrders", "Avg Orders", (v) => v != null ? `${v}` : "-", { desc: "Average number of orders placed by each acquired customer", calc: "Total orders ÷ acquired customers" }),
       num("ltvAcquiredCustomers", "LTV Customers", (v) => v > 0 ? v.toLocaleString() : "-", { desc: "Number of unique customers acquired via this ad that we have lifetime value data for" }),
+      // ── Video engagement (least used, at the end) ──
+      num("videoP25", "Video 25%", undefined, { desc: "Number of times your video was watched to 25% of its length" }),
+      num("videoP50", "Video 50%", undefined, { desc: "Number of times your video was watched to 50% of its length" }),
+      num("videoP75", "Video 75%", undefined, { desc: "Number of times your video was watched to 75% of its length" }),
+      num("videoP100", "Video 100%", undefined, { desc: "Number of times your video was watched all the way through" }),
     );
     return cols;
   }, [cs, showBreakdown, breakdown, level, nameHeader, currentSelectedIds, filteredRows, toggleSelectAll, toggleSelect, handleDrillDown, changeCountsByObjectId]);
