@@ -178,6 +178,10 @@ model Order {
   regionCode                   String   @default("")
   customerFirstName            String   @default("")
   customerLastInitial          String   @default("")
+  // Full last name (Order Explorer surfaces First + Last as separate columns).
+  // customerLastInitial is retained as a legacy field — webhook/sync now write
+  // the full last name here at capture time.
+  customerLastName             String   @default("")
   customerOrderCountAtPurchase Int?
   lineItems                    String   @default("")
   productSkus                  String   @default("")

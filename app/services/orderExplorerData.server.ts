@@ -135,8 +135,9 @@ export async function buildOrderExplorerData(args: OrderExplorerArgs) {
     if (tagFilter !== "all" && tagFilter !== "meta" && tag !== tagFilter) continue;
     if (campaignFilter !== "all" && attr.metaCampaignName !== campaignFilter) continue;
 
-    const customerName = order.customerFirstName
-      ? `${order.customerFirstName} ${order.customerLastInitial || ""}`.trim() : "";
+    const customerFirstName = order.customerFirstName || "";
+    const customerLastName = order.customerLastName
+      || (order.customerLastInitial ? order.customerLastInitial : "");
     const groupKey = attrGroupKeys[attr.shopifyOrderId];
     const difference = groupKey ? (differenceByGroup[groupKey] ?? null) : null;
     const rev = order.frozenTotalPrice || 0;
@@ -147,7 +148,8 @@ export async function buildOrderExplorerData(args: OrderExplorerArgs) {
       createdAtISO: order.createdAt.toISOString(),
       orderNumber: order.orderNumber || order.shopifyOrderId,
       country: order.country || "", city: order.city || "",
-      customerName, orderCount: order.customerOrderCountAtPurchase,
+      customerFirstName, customerLastName,
+      orderCount: order.customerOrderCountAtPurchase,
       campaign: attr.metaCampaignName || "", adSet: attr.metaAdSetName || "",
       adName: attr.metaAdName || "",
       lineItems: order.lineItems || "", productSkus: order.productSkus || "",
@@ -174,7 +176,7 @@ export async function buildOrderExplorerData(args: OrderExplorerArgs) {
     rows.push({
       date: extractedDate, createdAtISO: "",
       orderNumber: "", country: "", city: "",
-      customerName: "", orderCount: null,
+      customerFirstName: "", customerLastName: "", orderCount: null,
       campaign: attr.metaCampaignName || "", adSet: attr.metaAdSetName || "",
       adName: attr.metaAdName || "",
       lineItems: "", productSkus: "", productCollections: "",
@@ -216,8 +218,9 @@ export async function buildOrderExplorerData(args: OrderExplorerArgs) {
     }
     if (campaignFilter !== "all" && (order.metaCampaignName || "") !== campaignFilter) continue;
 
-    const customerName = order.customerFirstName
-      ? `${order.customerFirstName} ${order.customerLastInitial || ""}`.trim() : "";
+    const customerFirstName = order.customerFirstName || "";
+    const customerLastName = order.customerLastName
+      || (order.customerLastInitial ? order.customerLastInitial : "");
     const rev = order.frozenTotalPrice || 0;
     const refunded = order.totalRefunded || 0;
 
@@ -226,7 +229,8 @@ export async function buildOrderExplorerData(args: OrderExplorerArgs) {
       createdAtISO: order.createdAt.toISOString(),
       orderNumber: order.orderNumber || order.shopifyOrderId,
       country: order.country || "", city: order.city || "",
-      customerName, orderCount: order.customerOrderCountAtPurchase,
+      customerFirstName, customerLastName,
+      orderCount: order.customerOrderCountAtPurchase,
       campaign: order.metaCampaignName || order.utmCampaign || "",
       adSet: order.metaAdSetName || order.utmTerm || "",
       adName: order.metaAdName || order.utmContent || "",
@@ -263,8 +267,9 @@ export async function buildOrderExplorerData(args: OrderExplorerArgs) {
     if (campaignFilter !== "all" && (tag === "Non-Meta" || tag === "Non-Meta POS")) continue;
     if (campaignFilter !== "all" && tag === "Meta Repeat") continue;
 
-    const customerName = order.customerFirstName
-      ? `${order.customerFirstName} ${order.customerLastInitial || ""}`.trim() : "";
+    const customerFirstName = order.customerFirstName || "";
+    const customerLastName = order.customerLastName
+      || (order.customerLastInitial ? order.customerLastInitial : "");
     const rev = order.frozenTotalPrice || 0;
     const refunded = order.totalRefunded || 0;
 
@@ -273,7 +278,8 @@ export async function buildOrderExplorerData(args: OrderExplorerArgs) {
       createdAtISO: order.createdAt.toISOString(),
       orderNumber: order.orderNumber || order.shopifyOrderId,
       country: order.country || "", city: order.city || "",
-      customerName, orderCount: order.customerOrderCountAtPurchase,
+      customerFirstName, customerLastName,
+      orderCount: order.customerOrderCountAtPurchase,
       campaign: "", adSet: "",
       adName: tag === "Meta Repeat" && isPOS ? "(POS repeat)" : "",
       lineItems: order.lineItems || "", productSkus: order.productSkus || "",

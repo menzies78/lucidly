@@ -667,7 +667,7 @@ export async function syncOrders(admin, shopDomain) {
                   }
                 }
               }
-              billingAddress { country countryCode city provinceCode firstName }
+              billingAddress { country countryCode city provinceCode firstName lastName }
               shippingAddress { country countryCode city provinceCode }
               lineItems(first: 50) {
                 edges {
@@ -821,6 +821,7 @@ export async function syncOrders(admin, shopDomain) {
         select: {
           customerFirstName: true,
           customerLastInitial: true,
+          customerLastName: true,
           frozenTotalPrice: true,
           frozenSubtotalPrice: true,
           // Preserve existing first-order signals on UPDATE. Wiping these to
@@ -835,7 +836,13 @@ export async function syncOrders(admin, shopDomain) {
       const customerFirstName = existingOrder?.customerFirstName
         || (billing?.firstName || "").trim()
         || "";
-      const customerLastInitial = existingOrder?.customerLastInitial || "";
+      const customerLastName = existingOrder?.customerLastName
+        || (billing?.lastName || "").trim()
+        || "";
+      // Legacy field — preserve existing initial; otherwise derive from the
+      // freshly-captured last name so old reads keep working.
+      const customerLastInitial = existingOrder?.customerLastInitial
+        || (customerLastName ? customerLastName.charAt(0) : "");
 
       let isNewOnThisOrder = null;
       if (order.customer?.orders?.edges?.length > 0) {
@@ -856,7 +863,7 @@ export async function syncOrders(admin, shopDomain) {
           frozenTotalPrice: originalTotalPrice, frozenSubtotalPrice: subtotalPrice,
           isNewCustomerOrder: isNewOnThisOrder,
           country, countryCode, city, regionCode,
-          customerFirstName, customerLastInitial,
+          customerFirstName, customerLastInitial, customerLastName,
           // customerOrderCountAtPurchase intentionally omitted — populated by
           // computeOrderCounts() after the full detail walk completes.
           lineItems: lineItemTitles, productSkus, productCollections,
@@ -899,7 +906,7 @@ export async function syncOrders(admin, shopDomain) {
           // orders as repeat and corrupts Attribution.isNewCustomer.
           ...(isNewOnThisOrder !== null ? { isNewCustomerOrder: isNewOnThisOrder } : {}),
           country, countryCode, city, regionCode,
-          customerFirstName, customerLastInitial,
+          customerFirstName, customerLastInitial, customerLastName,
           // customerOrderCountAtPurchase intentionally omitted from UPDATE —
           // preserves the value from computeOrderCounts() across re-syncs.
           // (Used to be written as `null` here, which silently wiped the

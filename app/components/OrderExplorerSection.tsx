@@ -60,8 +60,11 @@ export default function OrderExplorerSection({
         return `${date} ${time}`;
       },
     },
-    { accessorKey: "customerName", header: "Customer",
-      meta: { maxWidth: "180px", filterType: "text", description: "Customer first name + last initial" },
+    { accessorKey: "customerFirstName", header: "First Name",
+      meta: { maxWidth: "140px", filterType: "text", description: "Customer first name (from Shopify billing address)" },
+      cell: ({ getValue }) => getValue() || "-" },
+    { accessorKey: "customerLastName", header: "Last Name",
+      meta: { maxWidth: "140px", filterType: "text", description: "Customer last name (from Shopify billing address)" },
       cell: ({ getValue }) => getValue() || "-" },
     { accessorKey: "orderCount", header: "Order #",
       meta: { align: "right", description: "Which order this was for the customer (1st, 2nd, 3rd, etc.) at the time of purchase" },
@@ -193,7 +196,8 @@ export default function OrderExplorerSection({
     return {
       orderNumber: `${rows.length} orders`,
       createdAtISO: "",
-      customerName: "",
+      customerFirstName: "",
+      customerLastName: "",
       orderCount: "",
       revenue: fmtPrice(revenue),
       netRevenue: fmtPrice(netRev),

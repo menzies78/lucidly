@@ -196,7 +196,9 @@ export async function processOrderWebhook(shopDomain, payload, isCreate) {
   const customer = payload.customer || {};
   const customerId = customer.id ? String(customer.id) : null;
   const customerFirstName = customer.first_name || "";
-  const customerLastInitial = customer.last_name ? customer.last_name.charAt(0) : "";
+  const customerLastName = customer.last_name || "";
+  // Legacy field — kept in sync for callers still reading it.
+  const customerLastInitial = customerLastName ? customerLastName.charAt(0) : "";
 
   // Financial status
   const financialStatus = payload.financial_status || null;
@@ -204,14 +206,15 @@ export async function processOrderWebhook(shopDomain, payload, isCreate) {
   // For create: freeze the original price. For update: preserve the frozen price.
   const existingOrder = await db.order.findUnique({
     where: { shopDomain_shopifyOrderId: { shopDomain, shopifyOrderId } },
-    select: { frozenTotalPrice: true, frozenSubtotalPrice: true, customerFirstName: true, customerLastInitial: true, productCollections: true },
+    select: { frozenTotalPrice: true, frozenSubtotalPrice: true, customerFirstName: true, customerLastInitial: true, customerLastName: true, productCollections: true },
   });
 
   const frozenTotalPrice = existingOrder?.frozenTotalPrice ?? totalPrice;
   const frozenSubtotalPrice = existingOrder?.frozenSubtotalPrice ?? subtotalPrice;
   // Preserve existing customer name if already populated (protected data workaround)
   const finalFirstName = customerFirstName || existingOrder?.customerFirstName || "";
-  const finalLastInitial = customerLastInitial || existingOrder?.customerLastInitial || "";
+  const finalLastName = customerLastName || existingOrder?.customerLastName || "";
+  const finalLastInitial = customerLastInitial || existingOrder?.customerLastInitial || (finalLastName ? finalLastName.charAt(0) : "");
   // Preserve collections from full sync (not available in webhooks)
   const productCollections = existingOrder?.productCollections || "";
 
@@ -235,7 +238,7 @@ export async function processOrderWebhook(shopDomain, payload, isCreate) {
       frozenTotalPrice: totalPrice, frozenSubtotalPrice: subtotalPrice,
       isNewCustomerOrder,
       country, countryCode, city, regionCode,
-      customerFirstName: finalFirstName, customerLastInitial: finalLastInitial,
+      customerFirstName: finalFirstName, customerLastInitial: finalLastInitial, customerLastName: finalLastName,
       lineItems, productSkus, productCollections,
       discountCodes, refundStatus, totalRefunded, refundLineItems,
       landingSite, referringSite,
@@ -248,7 +251,7 @@ export async function processOrderWebhook(shopDomain, payload, isCreate) {
       discountCodes, refundStatus, totalRefunded, refundLineItems,
       // Update address if it was previously empty
       ...(country ? { country, countryCode, city, regionCode } : {}),
-      customerFirstName: finalFirstName, customerLastInitial: finalLastInitial,
+      customerFirstName: finalFirstName, customerLastInitial: finalLastInitial, customerLastName: finalLastName,
       lineItems, productSkus,
       // Landing/UTM data: landingSite only overwrites when the update payload
       // actually carries one (avoids wiping a good value from create). UTM
