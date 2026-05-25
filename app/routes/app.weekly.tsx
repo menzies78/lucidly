@@ -126,8 +126,14 @@ export const loader = async ({ request }) => {
       where: { shopDomain, date: { gte: monday, lte: sunday }, breakdownType: "country" },
       select: { breakdownValue: true, spend: true, conversionValue: true, conversions: true },
     })),
-    queryCached(cacheKey("attrs"), DEFAULT_TTL, () => db.attribution.findMany({
-      where: { shopDomain, matchedAt: { gte: prevMonday, lte: sunday } },
+    // Fetch all attributions for this shop (no matchedAt filter): after a Full
+    // Re-match every Attribution.matchedAt collapses to ~now, so a matchedAt
+    // window silently drops historical conversions from older weeks. Matched
+    // rows are bounded by currentOrderIds / prevOrderIds below; unmatched
+    // (synthetic) rows carry the conversion date inside shopifyOrderId.
+    // Cache key is shop-only since the result no longer varies by week.
+    queryCached(`${shopDomain}:weekly:attrs`, DEFAULT_TTL, () => db.attribution.findMany({
+      where: { shopDomain },
       // Only the fields actually used downstream - Attribution has many large columns
       select: {
         shopifyOrderId: true,

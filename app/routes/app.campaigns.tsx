@@ -497,18 +497,16 @@ export const loader = async ({ request }) => {
   const allOrders = windowOrdersRaw;
   const windowOrderIds = allOrders.map(o => o.shopifyOrderId);
 
-  // Date-scope the confidence=0 placeholder attributions (was fetching all-time)
+  // Fetch all attributions for this shop (no matchedAt filter): after a Full
+  // Re-match every Attribution.matchedAt collapses to ~now, so a matchedAt
+  // window silently drops historical conversions. Matched rows are bounded by
+  // windowOrderIds; unmatched (synthetic) rows are filtered in-memory below
+  // via the date embedded in shopifyOrderId.
   const attributions = await queryCached(
-    `${shopDomain}:campAttrs:${fromKey}:${toKey}`,
+    `${shopDomain}:campAttrs`,
     DEFAULT_TTL,
     () => db.attribution.findMany({
-      where: {
-        shopDomain,
-        OR: [
-          { shopifyOrderId: { in: windowOrderIds } },
-          { confidence: 0, matchedAt: { gte: fromDate, lte: toDate } },
-        ],
-      },
+      where: { shopDomain },
       select: {
         shopifyOrderId: true, confidence: true, isNewCustomer: true,
         metaCampaignId: true, metaCampaignName: true,

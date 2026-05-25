@@ -81,20 +81,16 @@ export const loader = async ({ request }) => {
       where: { shopDomain, createdAt: dateFilter },
       select: { shopifyOrderId: true },
     }),
-    (async () => {
-      const bufferStart = new Date(fromDate.getTime() - 7 * 86400000);
-      const bufferEnd = new Date(toDate.getTime() + 7 * 86400000);
-      return db.attribution.findMany({
-        where: {
-          shopDomain,
-          OR: [
-            { confidence: { gt: 0 }, matchedAt: { gte: bufferStart, lte: bufferEnd } },
-            { confidence: 0, matchedAt: { gte: bufferStart, lte: bufferEnd } },
-          ],
-        },
-        select: { shopifyOrderId: true, confidence: true, metaConversionValue: true },
-      });
-    })(),
+    // Pivot on Order.createdAt instead of Attribution.matchedAt: after a Full
+    // Re-match, every attribution's matchedAt collapses to ~now, so a matchedAt
+    // window silently drops historical conversions. Matched rows are bounded by
+    // orderIdSet below (orders in window); unmatched (synthetic) rows carry the
+    // conversion date inside shopifyOrderId and are filtered in-memory at the
+    // attrsInRange step a few lines down.
+    db.attribution.findMany({
+      where: { shopDomain },
+      select: { shopifyOrderId: true, confidence: true, metaConversionValue: true },
+    }),
     db.order.findMany({
       where: { shopDomain, utmConfirmedMeta: true, isOnlineStore: true, createdAt: dateFilter },
       select: { shopifyOrderId: true, frozenTotalPrice: true, totalRefunded: true },
