@@ -20,6 +20,10 @@ interface PageSummaryProps {
   // the explicit date range. Empty string means the user picked custom
   // dates, in which case the fromKey/toKey range is shown verbatim.
   preset?: string;
+  // Tab-specific noun prepended to the title (e.g. "Customer" → "Customer
+  // Summary for Last 30 days"). Lets each tab identify itself without
+  // forcing the caller to build the full title string by hand.
+  scope?: string;
 }
 
 // Preset slug → human label. Must stay in sync with PRESETS in
@@ -71,11 +75,12 @@ const TONE_COLOR: Record<SummaryTone, string> = {
 // tied to the currently selected date range. Always single-column,
 // left-aligned.
 
-export default function PageSummary({ title, bullets, fromKey, toKey, preset }: PageSummaryProps) {
+export default function PageSummary({ title, bullets, fromKey, toKey, preset, scope }: PageSummaryProps) {
   const presetLabel = preset ? PRESET_LABELS[preset] : undefined;
+  const summaryWord = scope ? `${scope} Summary` : "Summary";
   const resolvedTitle = title
-    ?? (presetLabel ? `Summary for ${presetLabel}` :
-        (fromKey && toKey ? `Summary for ${rangeLabel(fromKey, toKey)}` : "Summary"));
+    ?? (presetLabel ? `${summaryWord} for ${presetLabel}` :
+        (fromKey && toKey ? `${summaryWord} for ${rangeLabel(fromKey, toKey)}` : summaryWord));
   return (
     <Card>
       <BlockStack gap="400">

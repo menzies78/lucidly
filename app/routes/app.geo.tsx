@@ -1650,7 +1650,7 @@ export default function GeoPerformance() {
               currencySymbol={cs}
             />
           )}
-          <PageSummary bullets={summaryBullets} fromKey={fromKey} toKey={toKey} preset={preset} />
+          <PageSummary scope="Country" bullets={summaryBullets} fromKey={fromKey} toKey={toKey} preset={preset} />
 
           {/* ═══ CUSTOMER MAP EXPLORER ═══ */}
           <CustomerMapExplorer blob={customerMapBlob} cs={cs} protomapsKey={protomapsKey} />
