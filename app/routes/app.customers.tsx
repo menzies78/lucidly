@@ -1476,10 +1476,15 @@ function HBarChart({ items, colorFn, formatValue, maxItems = 6, total, maxVisibl
   const maxVal = sharedMax ?? Math.max(...visible.map(i => i.value), 1);
   const sumTotal = total ?? visible.reduce((s, i) => s + i.value, 0);
   const cap = maxVisible ?? maxItems;
-  const rowHeight = 22;
+  // Outer row height is pinned so that long labels which wrap onto two lines
+  // (e.g. "United Arab Emirates") don't grow the row and break the consistent
+  // spacing between bars. Bar height stays at barHeight; the row slot has
+  // enough vertical room (rowSlotHeight) to fit a two-line label at lineHeight 1.1.
+  const barHeight = 22;
+  const rowSlotHeight = 30;
   const rowGap = 6;
   const needsScroll = visible.length > cap;
-  const scrollHeight = cap * rowHeight + (cap - 1) * rowGap;
+  const scrollHeight = cap * rowSlotHeight + (cap - 1) * rowGap;
 
   return (
     <div style={{
@@ -1489,11 +1494,11 @@ function HBarChart({ items, colorFn, formatValue, maxItems = 6, total, maxVisibl
       {visible.map((item, i) => {
         const pct = sumTotal > 0 ? Math.round((item.value / sumTotal) * 100) : 0;
         return (
-        <div key={item.label} style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-          <div style={{ width: "70px", fontSize: "12px", color: "#4B5563", fontWeight: 500, textAlign: "right", flexShrink: 0 }}>
+        <div key={item.label} style={{ display: "flex", alignItems: "center", gap: "8px", height: `${rowSlotHeight}px` }}>
+          <div style={{ width: "70px", fontSize: "12px", lineHeight: "1.1", color: "#4B5563", fontWeight: 500, textAlign: "right", flexShrink: 0 }}>
             {item.label}
           </div>
-          <div style={{ flex: 1, height: `${rowHeight}px`, background: "#F3F4F6", borderRadius: "4px", overflow: "hidden", position: "relative" }}>
+          <div style={{ flex: 1, height: `${barHeight}px`, background: "#F3F4F6", borderRadius: "4px", overflow: "hidden", position: "relative" }}>
             <div style={{
               height: "100%", width: `${Math.max((item.value / maxVal) * 100, 2)}%`,
               background: colorFn(i), borderRadius: "4px",
@@ -2345,8 +2350,11 @@ export default function Customers() {
   //                 Customer.inferredGender (name-based). Only this scope
   //                 surfaces organic customers + historical ranges where
   //                 Meta has no data.
+  // For "all" (All Customers) we have no age data for non-Meta customers, so
+  // fall back to the Meta-only age breakdown and surface a caveat next to the
+  // "AGE" header. Better to show what we have than render a blank chart.
   const activeAgeBreakdown = demoScope === "new" ? newAgeBreakdown
-    : demoScope === "all" ? [] // age has no name-based equivalent
+    : demoScope === "all" ? ageBreakdown
     : ageBreakdown;
   const activeGenderBreakdown = demoScope === "new" ? newGenderBreakdown
     : demoScope === "all" ? allCustomerGenderBreakdown
@@ -2730,7 +2738,7 @@ export default function Customers() {
                       ? "All New customer Meta-reported conversions by age & gender"
                       : demoScope === "allMeta"
                         ? "All Meta-reported conversions by age & gender"
-                        : "All customers (Meta + organic) by gender - name-based inference, age unavailable"}
+                        : "All customers (Meta + organic) - gender from name-based inference; age shown for the Meta subset only"}
                   </Text>
                 </div>
                 <div className="toggle-group">
@@ -2743,8 +2751,15 @@ export default function Customers() {
                 {/* Age distribution */}
                 <div>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px", minHeight: "28px", marginBottom: "8px" }}>
-                    <div style={{ fontSize: "12px", fontWeight: 600, color: "#6B7280", textTransform: "uppercase", letterSpacing: "0.5px" }}>
-                      Age
+                    <div style={{ display: "flex", alignItems: "baseline", gap: "8px" }}>
+                      <div style={{ fontSize: "12px", fontWeight: 600, color: "#6B7280", textTransform: "uppercase", letterSpacing: "0.5px" }}>
+                        Age
+                      </div>
+                      {demoScope === "all" && (
+                        <span style={{ fontSize: "11px", color: "#DC2626", fontWeight: 500 }}>
+                          (age data only available for Meta customers)
+                        </span>
+                      )}
                     </div>
                     {activeAgeBreakdown.length > 0 && (
                       <MetricSelector
@@ -2846,10 +2861,16 @@ export default function Customers() {
           </Card>
           )},
           { id: "geography", label: "Customer Geography", span: 2, render: () => {
-            // Shared x-axis scale so country bars and city bars are directly
-            // comparable, and so the two charts' bar widths line up visually.
-            const sharedGeoMax = Math.max(
+            // Independent scales: the country chart and city chart are
+            // separate visualisations of different magnitudes (country totals
+            // dwarf any individual city), so each one normalises against its
+            // own top entry. Sharing the scale made the #1 city look tiny
+            // because the top country drove the max.
+            const countriesMax = Math.max(
               ...activeGeoCountries.slice(0, 10).map((c: any) => c.customers),
+              1,
+            );
+            const citiesMax = Math.max(
               ...activeGeoCities.slice(0, 10).map((c: any) => c.customers),
               1,
             );
@@ -2888,7 +2909,7 @@ export default function Customers() {
                         subValue: geoSubValue(c),
                       }))}
                       total={activeGeoTotal}
-                      sharedMax={sharedGeoMax}
+                      sharedMax={countriesMax}
                       maxItems={10}
                       maxVisible={6}
                       colorFn={(i) => ["#10B981", "#34D399", "#6EE7B7", "#A7F3D0", "#D1FAE5", "#ECFDF5", "#10B981", "#34D399", "#6EE7B7", "#A7F3D0"][i] || "#D1FAE5"}
@@ -2923,7 +2944,7 @@ export default function Customers() {
                         subValue: geoMetric === "aov" && c.orders > 0 ? `${cs}${Math.round(c.revenue / c.orders)} AOV` : `${cs}${Math.round(c.revenue / 1000)}k`,
                       }))}
                       total={activeGeoTotal}
-                      sharedMax={sharedGeoMax}
+                      sharedMax={citiesMax}
                       maxItems={10}
                       maxVisible={6}
                       colorFn={(i) => ["#0EA5E9", "#38BDF8", "#7DD3FC", "#BAE6FD", "#E0F2FE", "#F0F9FF", "#0EA5E9", "#38BDF8", "#7DD3FC", "#BAE6FD"][i] || "#BAE6FD"}
