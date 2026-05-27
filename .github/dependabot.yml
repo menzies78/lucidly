@@ -23,6 +23,17 @@ updates:
       semver-minor-days: 14
       semver-patch-days: 14
 
+    # Block Prisma major upgrades until @shopify/shopify-app-session-storage-prisma
+    # ships a release that supports the new major. As of 2026-05-27, the latest
+    # session-storage package (v9.0.0) still pins prisma ^6.19.0 as a peer dep,
+    # so a Prisma 7 bump would break Shopify session storage at runtime.
+    # Revisit this ignore rule when Shopify ships Prisma 7 compatibility.
+    ignore:
+      - dependency-name: "prisma"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@prisma/client"
+        update-types: ["version-update:semver-major"]
+
     groups:
 
       # Group together PRs of dependant packages
