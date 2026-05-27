@@ -16,6 +16,15 @@
 const RESEND_ENDPOINT = "https://api.resend.com/emails";
 const FROM_DEFAULT = process.env.LUCIDLY_FROM_EMAIL || "Lucidly <hello@lucidly.app>";
 
+// Mask the local-part of an email address before logging it. GDPR-friendly:
+// we keep enough signal to debug ("which domain is bouncing?") without
+// dumping merchant PII into stdout / Fly log tail.
+function maskEmail(addr) {
+  if (!addr) return "(none)";
+  const s = Array.isArray(addr) ? addr[0] : String(addr);
+  return s.replace(/^(.).*?(@.+)$/, "$1***$2");
+}
+
 /**
  * Send an email. Returns { ok, skipped?, error? } - never throws. Callers
  * should fire-and-forget; failure to send must not bubble up into the
@@ -24,7 +33,7 @@ const FROM_DEFAULT = process.env.LUCIDLY_FROM_EMAIL || "Lucidly <hello@lucidly.a
 export async function sendEmail({ to, subject, html, text }) {
   const apiKey = process.env.RESEND_API_KEY;
   if (!apiKey) {
-    console.log(`[email] RESEND_API_KEY not set - skipping send to ${to}`);
+    console.log(`[email] RESEND_API_KEY not set - skipping send to ${maskEmail(to)}`);
     return { ok: false, skipped: true };
   }
   if (!to) {
@@ -52,7 +61,7 @@ export async function sendEmail({ to, subject, html, text }) {
       return { ok: false, error: `resend ${res.status}` };
     }
     const data = await res.json().catch(() => ({}));
-    console.log(`[email] sent to ${to} id=${data.id || "?"}`);
+    console.log(`[email] sent to ${maskEmail(to)} id=${data.id || "?"}`);
     return { ok: true, id: data.id };
   } catch (err) {
     console.warn(`[email] send failed: ${err?.message || err}`);

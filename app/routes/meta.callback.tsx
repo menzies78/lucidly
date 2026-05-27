@@ -3,6 +3,20 @@ import db from "../db.server";
 import { exchangeMetaCode, getMetaAdAccounts, getMetaAttributionWindow } from "../services/metaAuth.server";
 import { startOnboardingIngest } from "../services/ingestOrchestrator.server";
 
+// Escape every untrusted value before interpolating into the HTML strings
+// below. Meta-returned account names, error messages, and currency codes
+// could in principle contain HTML/script markup, and this callback renders
+// inside the merchant's browser at our origin.
+function esc(v) {
+  if (v == null) return "";
+  return String(v)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 function htmlResponse(body) {
   return new Response(`<html><head><meta charset="utf-8"><style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -33,7 +47,7 @@ function errorResponse(message) {
   return htmlResponse(`
     <div class="error">
       <h1>Connection Failed</h1>
-      <p style="margin-top:8px">${message}</p>
+      <p style="margin-top:8px">${esc(message)}</p>
       <p style="margin-top:12px;color:#6B7280;font-size:13px">You can close this window and try again.</p>
     </div>
   `);
@@ -43,10 +57,10 @@ function successResponse(adAccount, attributionWindow) {
   return htmlResponse(`
     <div class="success">
       <h1>Meta Ads Connected!</h1>
-      <div class="detail-row"><strong>Account:</strong> ${adAccount.name} (${adAccount.id})</div>
-      <div class="detail-row"><strong>Currency:</strong> ${adAccount.currency}</div>
-      <div class="detail-row"><strong>Timezone:</strong> ${adAccount.timezone_name}</div>
-      <div class="detail-row"><strong>Attribution:</strong> ${attributionWindow}</div>
+      <div class="detail-row"><strong>Account:</strong> ${esc(adAccount.name)} (${esc(adAccount.id)})</div>
+      <div class="detail-row"><strong>Currency:</strong> ${esc(adAccount.currency)}</div>
+      <div class="detail-row"><strong>Timezone:</strong> ${esc(adAccount.timezone_name)}</div>
+      <div class="detail-row"><strong>Attribution:</strong> ${esc(attributionWindow)}</div>
       <p style="margin-top:12px;color:#6B7280;font-size:13px">You can close this window and return to Shopify.</p>
     </div>
     <script>setTimeout(()=>window.close(),2000)</script>
@@ -62,10 +76,10 @@ function accountSelectorResponse(adAccounts, shopDomain) {
 
   const cards = adAccounts.map(a => `
     <a class="card" href="?select=${encodeURIComponent(a.id)}&shop=${encodeURIComponent(state)}">
-      <div class="card-name">${a.name} ${statusLabel(a.account_status)}<span class="card-currency">${a.currency}</span></div>
+      <div class="card-name">${esc(a.name)} ${statusLabel(a.account_status)}<span class="card-currency">${esc(a.currency)}</span></div>
       <div class="card-detail">
-        <span>ID: ${a.id}</span>
-        <span>Timezone: ${a.timezone_name || "UTC"}</span>
+        <span>ID: ${esc(a.id)}</span>
+        <span>Timezone: ${esc(a.timezone_name || "UTC")}</span>
       </div>
     </a>
   `).join("");

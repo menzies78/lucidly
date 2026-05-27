@@ -1,9 +1,10 @@
-import { json } from "@remix-run/node";
+import { json, redirect } from "@remix-run/node";
 import { useLoaderData } from "@remix-run/react";
 import { Page, Card, Text, BlockStack, InlineStack, Badge, Button } from "@shopify/polaris";
 import { authenticate } from "../shopify.server";
 import db from "../db.server";
 import { readIngestEvents } from "../services/ingestEventLog.server";
+import { isInternalShop } from "../utils/access.server";
 
 // Diagnostics page. Internal/dev-facing surface for reviewing what happened
 // during an onboarding ingest — full error messages + stack traces, retry
@@ -22,6 +23,14 @@ import { readIngestEvents } from "../services/ingestEventLog.server";
 export const loader = async ({ request }: { request: Request }) => {
   const { session } = await authenticate.admin(request);
   const shopDomain = session.shop;
+
+  // Internal-only surface: exposes raw ingest event logs (stack traces, phase
+  // names, governor warnings). Merchants don't need this; reviewers shouldn't
+  // see it. Gated behind LUCIDLY_INTERNAL_SHOPS so a non-internal merchant
+  // landing here by URL-guess gets bounced back to the dashboard.
+  if (!isInternalShop(shopDomain)) {
+    return redirect("/app");
+  }
 
   const [events, jobs] = await Promise.all([
     readIngestEvents({ shopDomain, limit: 500 }),
