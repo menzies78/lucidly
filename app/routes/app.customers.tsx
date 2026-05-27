@@ -3286,10 +3286,20 @@ export default function Customers() {
                               return total > 0 ? weighted / total : 0;
                             };
 
-                            // Anchor: ≥365 days since acquisition. Always
-                            // 0..12.
+                            // Anchor: rolling 12-24m slice (365 <= daysSince
+                            // < 730). Bounded above so a 3-year-old shop's
+                            // ancient customers don't dilute the late-stage
+                            // growth shape used to project recent cohorts.
+                            // BOOSTED with 10-11m customers whose missing m11/
+                            // m12 is projected from the core's late-stage
+                            // ratio - the smallest projection in the system
+                            // and the only one that closes the "new store has
+                            // no anchor" gap. Boost auto-retires as those
+                            // customers cross day 365.
                             let anchorSeries: Series = [];
                             let anchorN = 0;
+                            let anchorCoreN = 0;
+                            let anchorProjectedN = 0;
                             // Overlay: customers acquired within last
                             // (window) months. Plotted 0..window.
                             let overlaySeries: Series = [];
@@ -3323,7 +3333,74 @@ export default function Customers() {
                               const acqStart = new Date(y, mo - 1, 1).getTime();
                               return Math.floor((NOW_DAYS - acqStart) / DAY_MS_C);
                             };
-                            const anchorCusts = sourceCusts.filter((c) => daysSince(c) >= 365);
+                            // Core anchor: customers acquired 12-24m ago.
+                            // Bounded above to keep the growth shape fresh as
+                            // the app's installed lifetime grows.
+                            const coreAnchorCusts = sourceCusts.filter((c) => {
+                              const d = daysSince(c);
+                              return d >= 365 && d < 730;
+                            });
+                            const coreAnchorSeries = buildSeriesFromCusts(coreAnchorCusts, MAX_MONTHS);
+                            const coreAnchorByMonth: Record<number, number> = {};
+                            for (const p of coreAnchorSeries) {
+                              if (p.month >= 1) coreAnchorByMonth[p.month] = p.avgLtv;
+                            }
+
+                            // Near-mature: 10-12m observable behaviour
+                            // (daysSince in [300, 365)). Each one's missing
+                            // m_k+1..m12 is projected from the core's
+                            // observed_m_k -> m12 ratio. Boost only activates
+                            // when the core has enough seed (>=30) to derive
+                            // a stable ratio - otherwise the projection is
+                            // too noisy and we fall back to core-only.
+                            const CORE_ANCHOR_MIN_N = 30;
+                            const nearMatureCusts = sourceCusts.filter((c) => {
+                              const d = daysSince(c);
+                              return d >= 300 && d < 365;
+                            });
+
+                            type ProjCust = { acqMonth?: string | null; ltvByMonth: number[] };
+                            const projectedCusts: ProjCust[] = [];
+                            const boostActive = coreAnchorCusts.length >= CORE_ANCHOR_MIN_N
+                              && nearMatureCusts.length > 0;
+                            if (boostActive) {
+                              for (const c of nearMatureCusts) {
+                                const lm = c.ltvByMonth || [];
+                                // Largest observed month for this customer.
+                                let kObs = 0;
+                                for (let m = 1; m <= MAX_MONTHS; m++) {
+                                  if (lm[m - 1] != null) kObs = m;
+                                }
+                                if (kObs < 1) continue;
+                                const base = coreAnchorByMonth[kObs];
+                                if (!base || base <= 0) continue;
+                                const baseVal = lm[kObs - 1] as number;
+                                const proj: number[] = [];
+                                for (let m = 1; m <= MAX_MONTHS; m++) {
+                                  if (m <= kObs) {
+                                    const v = lm[m - 1];
+                                    if (v != null) proj[m - 1] = v as number;
+                                  } else {
+                                    const r = coreAnchorByMonth[m];
+                                    if (r == null) continue;
+                                    proj[m - 1] = baseVal * (r / base);
+                                  }
+                                }
+                                projectedCusts.push({ acqMonth: c.acqMonth, ltvByMonth: proj });
+                              }
+                            }
+
+                            // anchorCusts is the population used by cohortCAC
+                            // (combined core + projected acqMonths) and the
+                            // basis for anchorSeries. Projected customers'
+                            // ltvByMonth has actuals 1..k and projections
+                            // k+1..12 - buildSeriesFromCusts treats them
+                            // uniformly when computing month-by-month means.
+                            const anchorCusts = projectedCusts.length > 0
+                              ? ([...coreAnchorCusts, ...projectedCusts] as typeof sourceCusts)
+                              : coreAnchorCusts;
+                            anchorCoreN = coreAnchorCusts.length;
+                            anchorProjectedN = projectedCusts.length;
                             anchorN = anchorCusts.length;
                             anchorSeries = buildSeriesFromCusts(anchorCusts, MAX_MONTHS);
 
@@ -3333,11 +3410,17 @@ export default function Customers() {
                               // observed all targetM months (so every point
                               // 0..targetM is the same set of customers -
                               // no composition shift, no dip at the end).
-                              // Bounded above by the long-term group (365d)
-                              // so "recent" stays meaningful.
+                              // Bounded ABOVE by the NEXT-larger cohort's
+                              // floor so each cohort is a non-overlapping
+                              // slice: 1m=30-90d, 3m=90-180d, 6m=180-365d.
+                              // Previously bounded only by 365d, which
+                              // diluted the 1m cohort with 11-month-old
+                              // customers whose m1 LTV reflects stale
+                              // acquisition quality.
+                              const upper = targetM === 1 ? 90 : targetM === 3 ? 180 : 365;
                               overlayCusts = sourceCusts.filter((c) => {
                                 const d = daysSince(c);
-                                return d >= targetM * 30 && d < 365;
+                                return d >= targetM * 30 && d < upper;
                               });
                               overlayN = overlayCusts.length;
                               overlaySeries = buildSeriesFromCusts(overlayCusts, targetM);
@@ -3655,8 +3738,12 @@ export default function Customers() {
                                         <div style={{ fontSize: 11, color: "#9CA3AF", marginTop: 2 }}>
                                           {isMeta
                                             ? (targetM === 12
-                                                ? `${anchorN.toLocaleString()} long-term customer${anchorN === 1 ? "" : "s"}`
-                                                : `${overlayN.toLocaleString()} recent (last ${targetM}m) + ${anchorN.toLocaleString()}-cohort projection`)
+                                                ? (anchorProjectedN > 0
+                                                    ? `${anchorCoreN.toLocaleString()} matured + ${anchorProjectedN.toLocaleString()} projected (10-11m, m12 estimated)`
+                                                    : `${anchorN.toLocaleString()} long-term customer${anchorN === 1 ? "" : "s"}`)
+                                                : (anchorProjectedN > 0
+                                                    ? `${overlayN.toLocaleString()} recent (last ${targetM}m) + ${anchorCoreN.toLocaleString()} matured + ${anchorProjectedN.toLocaleString()} projected anchor`
+                                                    : `${overlayN.toLocaleString()} recent (last ${targetM}m) + ${anchorN.toLocaleString()}-cohort projection`))
                                             : `${allCohortN.toLocaleString()} mature cohort (>=${targetM}mo since acquisition)`}
                                         </div>
                                       </div>
