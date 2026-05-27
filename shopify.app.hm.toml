@@ -1,8 +1,8 @@
 # Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
 
-client_id = "7106aabefbc1d8756341e28b66264f43"
-name = "Lucidly"
-application_url = "https://lucidly.fly.dev"
+client_id = "ae0381a3a3068aca25a55ee30d764cce"
+name = "Lucidly HM"
+application_url = "https://lucidly-hm.fly.dev"
 embedded = true
 
 [build]
@@ -12,12 +12,12 @@ automatically_update_urls_on_dev = true
 api_version = "2026-04"
 
   [[webhooks.subscriptions]]
-  topics = [ "app/uninstalled" ]
-  uri = "/webhooks/app/uninstalled"
-
-  [[webhooks.subscriptions]]
   topics = [ "app/scopes_update" ]
   uri = "/webhooks/app/scopes_update"
+
+  [[webhooks.subscriptions]]
+  topics = [ "app/uninstalled" ]
+  uri = "/webhooks/app/uninstalled"
 
   [[webhooks.subscriptions]]
   topics = [ "orders/create" ]
@@ -42,10 +42,17 @@ api_version = "2026-04"
   uri = "/webhooks/shop/redact"
 
 [access_scopes]
+# Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
 scopes = "read_orders,read_all_orders,read_customers,read_products"
+optional_scopes = [ ]
+use_legacy_install_flow = false
 
 [auth]
-redirect_urls = [ "https://lucidly.fly.dev/auth/callback", "https://lucidly.fly.dev/auth/shopify/callback", "https://lucidly.fly.dev/api/auth/callback" ]
+redirect_urls = [
+  "https://lucidly-hm.fly.dev/auth/callback",
+  "https://lucidly-hm.fly.dev/auth/shopify/callback",
+  "https://lucidly-hm.fly.dev/api/auth/callback"
+]
 
 [access.customer_data]
 reason = "App provides order attribution and customer lifetime value analytics"
@@ -55,6 +62,3 @@ reason = "App provides order attribution and customer lifetime value analytics"
 
   [[access.customer_data.fields]]
   data_category = "email"
-
-  [[access.customer_data.fields]]
-  data_category = "orders"
