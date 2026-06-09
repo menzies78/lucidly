@@ -13,6 +13,7 @@ import {
   shopLocalToday,
   shopLocalWeekMonday,
 } from "../utils/shopTime.server";
+import { revenueByParentForOrders } from "../services/productRollups.server";
 
 const SHORT_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
@@ -361,6 +362,11 @@ export const loader = async ({ request }) => {
     }
     return agg;
   };
+  // Real per-product revenue from structured OrderLineItem rows for both the
+  // current and previous period in one batched lookup (no even-split).
+  const revByOrder = await revenueByParentForOrders(
+    db, shopDomain, [...orders, ...prevOrders].map((o: any) => o.shopifyOrderId),
+  );
   const buildProducts = (ords: any[], aMap: Map<string, any>) => {
     const agg: Record<string, { orders: number; revenue: number }> = {};
     for (const order of ords) {
@@ -369,13 +375,12 @@ export const loader = async ({ request }) => {
       const isMetaOrder = !!attr || order.utmConfirmedMeta;
       if (!isMetaOrder) continue;
       if (classifyOrder(order, attr || { isNewCustomer: null }) !== "new") continue;
-      const items = (order.lineItems || "").split(", ").map((s: string) => s.trim()).filter(Boolean);
-      if (items.length === 0) items.push("Unknown");
-      const revShare = (order.frozenTotalPrice || 0) / items.length;
-      for (const item of items) {
-        if (!agg[item]) agg[item] = { orders: 0, revenue: 0 };
-        agg[item].orders++;
-        agg[item].revenue += revShare;
+      const parentRev = revByOrder.get(order.shopifyOrderId);
+      if (!parentRev || parentRev.size === 0) continue;
+      for (const [product, revenue] of parentRev) {
+        if (!agg[product]) agg[product] = { orders: 0, revenue: 0 };
+        agg[product].orders++;
+        agg[product].revenue += revenue;
       }
     }
     return agg;

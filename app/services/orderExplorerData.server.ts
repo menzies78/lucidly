@@ -95,7 +95,7 @@ export async function buildOrderExplorerData(args: OrderExplorerArgs) {
   for (const key of Object.keys(shopifyValueByAdDay)) {
     const metaVal = metaValueByAdDay[key] || 0;
     const shopVal = shopifyValueByAdDay[key] || 0;
-    differenceByGroup[key] = metaVal > 0 ? Math.round(((shopVal - metaVal) / metaVal) * 100) : null;
+    differenceByGroup[key] = metaVal > 0 ? Math.round(((shopVal - metaVal) / metaVal) * 10000) / 100 : null;
   }
 
   const customerMap: Record<string, any> = {};

@@ -23,7 +23,7 @@ import PageSummary, { type SummaryBullet } from "../components/PageSummary";
 // previously the route's local copy didn't strip trailing periods, which
 // hid thumbnails for Vollebak-style listings (e.g. "Planet Earth Suit Jacket.",
 // "Indestructible T-shirt.") whose rollup keys are period-stripped.
-import { toParentProduct } from "../services/productRollups.server";
+import { toParentProduct, revenueByParentForOrders } from "../services/productRollups.server";
 
 // ── Loader ──
 
@@ -693,16 +693,16 @@ export const loader = async ({ request }) => {
         // fills the long tail. Age has no name-based equivalent, so we still
         // require metaAge to be present.
         const rows = await db.$queryRaw<Array<{
-          metaAge: string; metaGender: string; metaSegment: string;
-          country: string | null; lineItems: string | null; frozenTotalPrice: number;
+          shopifyOrderId: string; metaAge: string; metaGender: string; metaSegment: string;
+          country: string | null;
         }>>`
-          SELECT a.metaAge,
+          SELECT o.shopifyOrderId, a.metaAge,
                  CASE
                    WHEN c.inferredGenderConfidence >= 0.95 AND c.inferredGender IS NOT NULL THEN c.inferredGender
                    WHEN a.metaGender IS NOT NULL THEN a.metaGender
                    ELSE c.inferredGender
                  END AS metaGender,
-                 c.metaSegment, o.country, o.lineItems, o.frozenTotalPrice
+                 c.metaSegment, o.country
           FROM Attribution a
           JOIN "Order" o
             ON a.shopDomain = o.shopDomain AND a.shopifyOrderId = o.shopifyOrderId
@@ -721,21 +721,25 @@ export const loader = async ({ request }) => {
 
         if (rows.length === 0) return { records: [], countries: [] as string[] };
 
+        // Real per-product revenue from structured OrderLineItem rows (no
+        // even-split: a cheap giveaway bundled into an expensive order keeps
+        // its own line price, not a share of the order total).
+        const revByOrder = await revenueByParentForOrders(db, shopDomain, rows.map((o) => o.shopifyOrderId));
+
         // First pass: build flat record list + per-product volume tally
         type Rec = { product: string; age: string; gender: string; country: string; segment: string; revenue: number };
         const rawRecords: Rec[] = [];
         const countrySet = new Set<string>();
         const productVolume = new Map<string, number>();
         for (const o of rows) {
-          const items = (o.lineItems || "").split(", ").map((s) => toParentProduct(s.trim())).filter(Boolean);
-          if (items.length === 0) continue;
-          const perItem = (o.frozenTotalPrice || 0) / items.length;
+          const parentRev = revByOrder.get(o.shopifyOrderId);
+          if (!parentRev || parentRev.size === 0) continue;
           const country = (o.country || "Unknown").trim() || "Unknown";
           countrySet.add(country);
           const gender = o.metaGender === "male" ? "Male" : o.metaGender === "female" ? "Female" : "Unknown";
           const segment = o.metaSegment === "metaNew" ? "acquired" : "retargeted";
-          for (const product of items) {
-            rawRecords.push({ product, age: o.metaAge, gender, country, segment, revenue: perItem });
+          for (const [product, revenue] of parentRev) {
+            rawRecords.push({ product, age: o.metaAge, gender, country, segment, revenue });
             productVolume.set(product, (productVolume.get(product) || 0) + 1);
           }
         }
@@ -769,10 +773,9 @@ export const loader = async ({ request }) => {
     async () => {
       try {
         const rows = await db.$queryRaw<Array<{
-          inferredGender: string | null; country: string | null;
-          lineItems: string | null; frozenTotalPrice: number;
+          shopifyOrderId: string; inferredGender: string | null; country: string | null;
         }>>`
-          SELECT c.inferredGender, o.country, o.lineItems, o.frozenTotalPrice
+          SELECT o.shopifyOrderId, c.inferredGender, o.country
           FROM "Order" o
           JOIN Customer c
             ON c.shopDomain = o.shopDomain AND c.shopifyCustomerId = o.shopifyCustomerId
@@ -789,19 +792,20 @@ export const loader = async ({ request }) => {
 
         if (rows.length === 0) return { records: [], countries: [] as string[] };
 
+        const revByOrder = await revenueByParentForOrders(db, shopDomain, rows.map((o) => o.shopifyOrderId));
+
         type Rec = { product: string; age: string; gender: string; country: string; segment: string; revenue: number };
         const rawRecords: Rec[] = [];
         const countrySet = new Set<string>();
         const productVolume = new Map<string, number>();
         for (const o of rows) {
-          const items = (o.lineItems || "").split(", ").map((s) => toParentProduct(s.trim())).filter(Boolean);
-          if (items.length === 0) continue;
-          const perItem = (o.frozenTotalPrice || 0) / items.length;
+          const parentRev = revByOrder.get(o.shopifyOrderId);
+          if (!parentRev || parentRev.size === 0) continue;
           const country = (o.country || "Unknown").trim() || "Unknown";
           countrySet.add(country);
           const gender = o.inferredGender === "male" ? "Male" : o.inferredGender === "female" ? "Female" : "Unknown";
-          for (const product of items) {
-            rawRecords.push({ product, age: "Unknown", gender, country, segment: "nonMeta", revenue: perItem });
+          for (const [product, revenue] of parentRev) {
+            rawRecords.push({ product, age: "Unknown", gender, country, segment: "nonMeta", revenue });
             productVolume.set(product, (productVolume.get(product) || 0) + 1);
           }
         }
@@ -984,23 +988,18 @@ export const action = async ({ request }) => {
         const attrMap = {};
         for (const a of attributions) attrMap[a.shopifyOrderId] = a;
 
-        // Build product data. `order.lineItems` is stored as a comma-separated
-        // list of titles (see orderWebhook.server.js), NOT JSON. Revenue is
-        // split equally across items since per-item price isn't persisted -
-        // this matches what productRollups.server.js does and is imperfect
-        // but non-zero. Net of refunds.
+        // Build product data from the structured OrderLineItem rows: real
+        // per-line revenue summed per parent product (no even-split of the
+        // order total across items).
+        const revByOrder = await revenueByParentForOrders(db, shopDomain, orders.map((o) => o.shopifyOrderId));
         const productAgg = {};
         for (const o of orders) {
-          const gross = o.frozenTotalPrice || 0;
-          if (gross === 0) continue;
-          const titles = (o.lineItems || "").split(", ").map(s => s.trim()).filter(Boolean);
-          if (titles.length === 0) continue;
-          const net = gross - (o.totalRefunded || 0);
-          const rev = net / titles.length;
+          const parentRev = revByOrder.get(o.shopifyOrderId);
+          if (!parentRev || parentRev.size === 0) continue;
           const attr = attrMap[o.shopifyOrderId];
-          for (const title of titles) {
-            if (!productAgg[title]) productAgg[title] = { title, totalOrders: 0, metaOrders: 0, organicOrders: 0, totalRevenue: 0, metaRevenue: 0, organicRevenue: 0, metaNewOrders: 0, metaRepeatOrders: 0, firstPurchaseCount: 0, metaFirstPurchaseCount: 0 };
-            const p = productAgg[title];
+          for (const [parent, rev] of parentRev) {
+            if (!productAgg[parent]) productAgg[parent] = { title: parent, totalOrders: 0, metaOrders: 0, organicOrders: 0, totalRevenue: 0, metaRevenue: 0, organicRevenue: 0, metaNewOrders: 0, metaRepeatOrders: 0, firstPurchaseCount: 0, metaFirstPurchaseCount: 0 };
+            const p = productAgg[parent];
             p.totalOrders++;
             p.totalRevenue += rev;
             if (attr) {
