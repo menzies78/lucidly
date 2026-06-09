@@ -166,18 +166,40 @@ export default function DateRangeSelector() {
     }
   }, [location.pathname]);
 
+  // If an old session restored a URL that still carries a preset with stale
+  // from/to (e.g. a tab left open overnight), rewrite the URL to today's
+  // computed range so every component reading from/to stays in sync and the
+  // saved snapshot doesn't drift further. Server-side parseDateRange already
+  // recomputes presets, so this only re-aligns the client.
+  useEffect(() => {
+    if (isHidden || !preset) return;
+    const fresh = computePresetDates(preset);
+    if (fresh.from !== fromParam || fresh.to !== toParam) {
+      const params = new URLSearchParams(searchParams);
+      params.set("from", fresh.from);
+      params.set("to", fresh.to);
+      params.set("preset", preset);
+      if (compare !== "none") params.set("compare", compare);
+      setSearchParams(params, { replace: true });
+      saveDateParams({ from: fresh.from, to: fresh.to, preset, compare });
+    }
+  }, [location.pathname, preset]);
+
+  // A preset is a deterministic function of "today", so the from/to carried in
+  // the URL are only a cached snapshot. Always recompute the displayed range
+  // from the preset key, otherwise a stale session (e.g. a tab left open
+  // overnight) keeps showing yesterday's dates even though the data is fresh.
+  // Only custom ranges (no preset) use the literal from/to.
   let displayFrom = fromParam;
   let displayTo = toParam;
-  if (!displayFrom || !displayTo) {
-    if (preset) {
-      const p = computePresetDates(preset);
-      displayFrom = p.from;
-      displayTo = p.to;
-    } else {
-      const p = computePresetDates("last30");
-      displayFrom = p.from;
-      displayTo = p.to;
-    }
+  if (preset) {
+    const p = computePresetDates(preset);
+    displayFrom = p.from;
+    displayTo = p.to;
+  } else if (!displayFrom || !displayTo) {
+    const p = computePresetDates("last30");
+    displayFrom = p.from;
+    displayTo = p.to;
   }
 
   const [popoverActive, setPopoverActive] = useState(false);

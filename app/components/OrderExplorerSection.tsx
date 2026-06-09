@@ -133,9 +133,9 @@ export default function OrderExplorerSection({
     { accessorKey: "difference", header: "Difference",
       meta: { align: "right", description: "Gap between Shopify order values and Meta-reported conversion values for the same ad+day group. Positive = Shopify higher", calc: "(Shopify value − Meta value) ÷ Meta value × 100" },
       cell: ({ getValue }) => {
-        const v = getValue();
+        const v = getValue() as number | null | undefined;
         if (v === null || v === undefined) return "-";
-        return `${v > 0 ? "+" : ""}${v}%`;
+        return `${v > 0 ? "+" : ""}${v.toFixed(2)}%`;
       },
     },
     // ── Geography ──
