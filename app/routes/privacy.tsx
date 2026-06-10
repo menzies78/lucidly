@@ -38,7 +38,7 @@ export default function Privacy() {
       <p>
         Lucidly is operated by <strong>Andrew Menzies</strong>, an individual
         based in the United Kingdom. For data-protection questions or requests,
-        contact: <a href="mailto:menzies78@gmail.com">menzies78@gmail.com</a>.
+        contact: <a href="mailto:see.lucidly@gmail.com">see.lucidly@gmail.com</a>.
       </p>
       <p>
         When Lucidly processes a merchant's customer data, it acts as a{" "}
@@ -124,7 +124,7 @@ export default function Privacy() {
         controller); the merchant can fulfil them through Shopify, which relays
         the request to Lucidly. Merchants can exercise their own rights, or ask
         any question about this policy, by emailing{" "}
-        <a href="mailto:menzies78@gmail.com">menzies78@gmail.com</a>.
+        <a href="mailto:see.lucidly@gmail.com">see.lucidly@gmail.com</a>.
       </p>
 
       <h2>Changes to this policy</h2>

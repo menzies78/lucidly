@@ -35,7 +35,7 @@ export default function Terms() {
         Kingdom ("we", "us"). By installing or using the App, the merchant
         ("you") agrees to these terms, including the Data Processing Agreement in
         section&nbsp;5. Contact:{" "}
-        <a href="mailto:menzies78@gmail.com">menzies78@gmail.com</a>.
+        <a href="mailto:see.lucidly@gmail.com">see.lucidly@gmail.com</a>.
       </p>
 
       <h2>1. The service</h2>
