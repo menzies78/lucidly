@@ -184,6 +184,32 @@ export default function App() {
       </NavMenu>
       {showFullNav && <DateRangeSelector />}
       <Outlet />
+      {/* Merchant-facing data-processing disclosure. Required for the Shopify
+          protected-customer-data review: tells merchants what data the app
+          processes and why, and links to the full public privacy policy. */}
+      <footer
+        style={{
+          maxWidth: 998,
+          margin: "24px auto 40px",
+          padding: "0 16px",
+          fontSize: 12,
+          lineHeight: 1.5,
+          color: "#6b7280",
+          textAlign: "center",
+        }}
+      >
+        Lucidly processes your store's order and customer data (including
+        customer names and hashed email addresses) to provide advertising
+        attribution and customer analytics.{" "}
+        <a
+          href="/privacy"
+          target="_blank"
+          rel="noopener noreferrer"
+          style={{ color: "#7c3aed", textDecoration: "underline" }}
+        >
+          Privacy Policy
+        </a>
+      </footer>
     </AppProvider>
   );
 }
