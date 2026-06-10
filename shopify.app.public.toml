@@ -1,10 +1,11 @@
-# Public-distribution app (lucidly-1). Backend: lucidly.fly.dev.
-# Mirrors shopify.app.toml; only client_id differs (new public app).
+# Public-distribution app (lucidly-1). Backend: lucidly-app.fly.dev (Option A:
+# separate Fly backend, keeps Vollebak's lucidly.fly.dev untouched).
+# Mirrors shopify.app.toml; client_id + URLs differ (new public app).
 # Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
 
 client_id = "f80af9e2ef381f1bcc36e62ddb457265"
 name = "Lucidly"
-application_url = "https://lucidly.fly.dev"
+application_url = "https://lucidly-app.fly.dev"
 embedded = true
 
 [build]
@@ -47,7 +48,7 @@ api_version = "2026-04"
 scopes = "read_orders,read_all_orders,read_customers,read_products"
 
 [auth]
-redirect_urls = [ "https://lucidly.fly.dev/auth/callback", "https://lucidly.fly.dev/auth/shopify/callback", "https://lucidly.fly.dev/api/auth/callback" ]
+redirect_urls = [ "https://lucidly-app.fly.dev/auth/callback", "https://lucidly-app.fly.dev/auth/shopify/callback", "https://lucidly-app.fly.dev/api/auth/callback" ]
 
 [access.customer_data]
 reason = "App provides order attribution and customer lifetime value analytics"
