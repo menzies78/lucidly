@@ -200,7 +200,16 @@ export default function App() {
       >
         Lucidly processes your store's order and customer data (including
         customer names and hashed email addresses) to provide advertising
-        attribution and customer analytics.{" "}
+        attribution and customer analytics. By using Lucidly you agree to our{" "}
+        <a
+          href="/terms"
+          target="_blank"
+          rel="noopener noreferrer"
+          style={{ color: "#7c3aed", textDecoration: "underline" }}
+        >
+          Terms of Service
+        </a>{" "}
+        and{" "}
         <a
           href="/privacy"
           target="_blank"
@@ -209,6 +218,7 @@ export default function App() {
         >
           Privacy Policy
         </a>
+        .
       </footer>
     </AppProvider>
   );
