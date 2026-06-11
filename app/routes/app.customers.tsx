@@ -836,6 +836,11 @@ export const loader = async ({ request }) => {
           isOnlineStore: true,
           shopifyCustomerId: { in: allIds },
           customerOrderCountAtPurchase: { in: [1, 2, 3] },
+          // Exclude £0 orders (free-gift / giveaway redemptions). They aren't
+          // genuine repeat purchases — counting them both zeroes the AOV median
+          // and inflates the "came back" rate. Matches DailyCustomerRollup,
+          // which also skips £0 orders.
+          frozenTotalPrice: { gt: 0 },
         },
         select: {
           shopifyCustomerId: true,
@@ -1537,6 +1542,10 @@ function JourneyFlow({ firstAOV, gapDays, secondAOV, thirdAOV, gap2to3Days, cust
     );
   }
 
+  // Below this many orders, a median/avg AOV is noise (a single order would
+  // otherwise headline as the cohort figure). Show the count but suppress the
+  // £ number until the sample is meaningful.
+  const MIN_SAMPLE = 5;
   const aov2Change = firstAOV > 0 ? Math.round(((secondAOV - firstAOV) / firstAOV) * 100) : 0;
   const aov3Change = secondAOV > 0 ? Math.round(((thirdAOV - secondAOV) / secondAOV) * 100) : 0;
   const repeatRate = firstOrderCount > 0 ? Math.round((secondOrderCount / firstOrderCount) * 100) : 0;
@@ -1560,7 +1569,7 @@ function JourneyFlow({ firstAOV, gapDays, secondAOV, thirdAOV, gap2to3Days, cust
                 {" "}({aovChange > 0 ? "+" : ""}{aovChange}%)
               </span>
             )}</>
-          ) : "no data yet"}
+          ) : (count > 0 ? "too few to show" : "no data yet")}
         </div>
       </div>
       <div style={{ fontSize: "12px", color: "#6B7280", fontWeight: 500, marginTop: "8px" }}>
@@ -1614,10 +1623,10 @@ function JourneyFlow({ firstAOV, gapDays, secondAOV, thirdAOV, gap2to3Days, cust
           "linear-gradient(135deg, #7C3AED 0%, #6D28D9 100%)", "0 4px 12px rgba(124,58,237,0.3)", true)}
         {arrow(gapDays, repeatRate, "came back", "arrowGrad1", "#7C3AED", "#0891B2")}
         {orderBox("2nd Order", secondAOV, aov2Change, secondOrderCount, "repeated",
-          "linear-gradient(135deg, #0891B2 0%, #0E7490 100%)", "0 4px 12px rgba(8,145,178,0.3)", secondOrderCount > 0)}
+          "linear-gradient(135deg, #0891B2 0%, #0E7490 100%)", "0 4px 12px rgba(8,145,178,0.3)", secondOrderCount >= MIN_SAMPLE)}
         {arrow(gap2to3Days, thirdRate, "came back", "arrowGrad2", "#0891B2", "#2E7D32")}
         {orderBox("3rd Order", thirdAOV, aov3Change, thirdOrderCount, "repeated",
-          "linear-gradient(135deg, #2E7D32 0%, #1B5E20 100%)", "0 4px 12px rgba(46,125,50,0.3)", thirdOrderCount > 0)}
+          "linear-gradient(135deg, #2E7D32 0%, #1B5E20 100%)", "0 4px 12px rgba(46,125,50,0.3)", thirdOrderCount >= MIN_SAMPLE)}
       </div>
     </div>
   );
