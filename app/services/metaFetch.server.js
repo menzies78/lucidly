@@ -75,6 +75,19 @@ export async function fetchWithRetry(url, label = "MetaAPI", accountKey = null) 
   // genuinely transient; code=2 on the same query is almost always an
   // "expensive query" signal that will not self-resolve.
   const MAX_TRANSIENT_SERVICE_RETRIES = 5;
+  // Per-attempt connection timeout. A hung fetch (the signature of a Meta
+  // outage — the socket stalls and never resolves) would otherwise hold the
+  // account lock forever and wedge every other call for this account. Aborting
+  // turns it into a normal retryable network error instead.
+  const ATTEMPT_TIMEOUT_MS = 90 * 1000;
+  // Overall wall-clock budget for the two otherwise-UNBOUNDED loops
+  // (rate-limit code 4/17 and account-throttle subcode 1504022). These retry
+  // "indefinitely" so we never drop data during a brief throttle — but during
+  // a multi-hour Meta outage that "indefinitely" wedges the scheduler. Bailing
+  // after the budget is now safe: the scheduler's staleness catch-up repopulates
+  // every missed day (up to 7) on the next cycle once Meta answers again.
+  const MAX_TOTAL_MS = 12 * 60 * 1000;
+  const callStartedAt = Date.now();
   const acctKey = accountKey || accountKeyFromUrl(url);
 
   let realErrorCount = 0;
@@ -91,7 +104,14 @@ export async function fetchWithRetry(url, label = "MetaAPI", accountKey = null) 
       await paceBeforeRequest(acctKey);
 
       try {
-        const res = await fetch(url);
+        const ac = new AbortController();
+        const timer = setTimeout(() => ac.abort(), ATTEMPT_TIMEOUT_MS);
+        let res;
+        try {
+          res = await fetch(url, { signal: ac.signal });
+        } finally {
+          clearTimeout(timer);
+        }
         reportHeaders(res, acctKey);
 
         let data;
@@ -135,6 +155,9 @@ export async function fetchWithRetry(url, label = "MetaAPI", accountKey = null) 
           // bad estimate.
           const estimateSec = readBlockEstimateSec(acctKey);
           const cooldown = Math.min(30 * 60, Math.max(60, Math.round(estimateSec * 1.5)));
+          if (Date.now() - callStartedAt > MAX_TOTAL_MS) {
+            throw new Error(`${label}: account throttled (subcode 1504022) past ${Math.round(MAX_TOTAL_MS / 60000)}min budget on ${acctKey} — bailing so staleness catch-up can recover`);
+          }
           markBlocked(acctKey, cooldown);
           rateLimitRetries++;
           console.warn(`[${label}] Account throttled (subcode 1504022) on ${acctKey}, parked ${cooldown}s (est=${estimateSec}s)`);
@@ -154,6 +177,9 @@ export async function fetchWithRetry(url, label = "MetaAPI", accountKey = null) 
         }
 
         if (isRateLimit) {
+          if (Date.now() - callStartedAt > MAX_TOTAL_MS) {
+            throw new Error(`${label}: rate limited past ${Math.round(MAX_TOTAL_MS / 60000)}min budget on ${acctKey} — bailing so staleness catch-up can recover`);
+          }
           rateLimitRetries++;
           const wait = Math.min(3000 * Math.pow(2, rateLimitRetries - 1), 120000);
           console.warn(`[${label}] Rate limited (retry #${rateLimitRetries}) on ${acctKey}, util=${getEffectiveUtil(acctKey)}%, code=${errCode}, waiting ${Math.round(wait/1000)}s`);

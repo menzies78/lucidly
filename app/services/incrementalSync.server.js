@@ -33,7 +33,7 @@ const previousDayChecked = /** @type {Set<string>} */ (
  * @param {{ force: boolean }} opts
  * @returns {Promise<boolean>} true if a rebuild actually ran
  */
-async function rebuildAllRollups(shopDomain, { force }) {
+export async function rebuildAllRollups(shopDomain, { force }) {
   // Check in-memory timestamp first; if empty (fresh boot), check the DB.
   let last = lastRollupRebuildAt.get(shopDomain) || 0;
   if (last === 0) {
