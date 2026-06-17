@@ -372,11 +372,6 @@ export const loader = async ({ request }) => {
   const aiGeneratedAt = aiCached?.generatedAt?.toISOString() || null;
   const aiIsStale = aiCached ? aiCached.dataHash !== aiCurrentHash : false;
 
-  // Protomaps API key - public referrer-restricted key, safe to send to the
-  // browser. Falls back to null so the client uses the CARTO basemap in dev
-  // before the secret is set. App Store launch requires this to be present.
-  const protomapsKey = process.env.PROTOMAPS_API_KEY || null;
-
   return json({
     overallRows,
     campaignEntities,
@@ -386,7 +381,6 @@ export const loader = async ({ request }) => {
     customerMapBlob,
     topProductsByCountry,
     currencySymbol,
-    protomapsKey,
     hasData: overallRows.some(r => r.spend > 0 || r.attributedOrders > 0),
     aiCachedInsights,
     aiGeneratedAt,
@@ -1287,7 +1281,7 @@ function TopProductsByCountryTile({
 export default function GeoPerformance() {
   const {
     overallRows, campaignEntities, adsetEntities, adEntities,
-    shopifyByCountry, customerMapBlob, topProductsByCountry, currencySymbol, protomapsKey, hasData,
+    shopifyByCountry, customerMapBlob, topProductsByCountry, currencySymbol, hasData,
     aiCachedInsights, aiGeneratedAt, aiIsStale,
     fromKey, toKey, preset,
   } = useLoaderData<typeof loader>();
@@ -1653,7 +1647,7 @@ export default function GeoPerformance() {
           <PageSummary scope="Country" bullets={summaryBullets} fromKey={fromKey} toKey={toKey} preset={preset} />
 
           {/* ═══ CUSTOMER MAP EXPLORER ═══ */}
-          <CustomerMapExplorer blob={customerMapBlob} cs={cs} protomapsKey={protomapsKey} />
+          <CustomerMapExplorer blob={customerMapBlob} cs={cs} />
 
           {/* ═══ 0. QUICK-STAT TILES ═══ */}
           {/* Flag is the hero - rendered at 80px (poster-sized) on its own line
