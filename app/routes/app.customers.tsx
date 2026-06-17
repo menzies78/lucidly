@@ -804,7 +804,7 @@ export const loader = async ({ request }) => {
 
   // Date-scoped customer journey - customers whose FIRST order fell in the
   // selected period. Fetch their first three orders (online store only) and
-  // compute median AOV + gap stats per scope (meta-new vs all). Replaces the
+  // compute mean AOV + median gap stats per scope (meta-new vs all). Replaces the
   // all-time journeyBlob that previously fed this tile so the "New Customer
   // Journey" responds to the date picker.
   const journeyInRange = await queryCached(
@@ -837,7 +837,7 @@ export const loader = async ({ request }) => {
           shopifyCustomerId: { in: allIds },
           customerOrderCountAtPurchase: { in: [1, 2, 3] },
           // Exclude £0 orders (free-gift / giveaway redemptions). They aren't
-          // genuine repeat purchases — counting them both zeroes the AOV median
+          // genuine repeat purchases — counting them both drags down the AOV
           // and inflates the "came back" rate. Matches DailyCustomerRollup,
           // which also skips £0 orders.
           frozenTotalPrice: { gt: 0 },
@@ -865,11 +865,14 @@ export const loader = async ({ request }) => {
         else if (o.customerOrderCountAtPurchase === 3) t.third = slot;
       }
 
-      const median = (arr: number[]): number => {
+      // AOV per cohort uses the MEAN, not the median: large orders are part of
+      // the merchant's order DNA (e.g. high-ticket items) and must be counted
+      // in full. Median understated first-order value badly for skewed
+      // catalogues. This also makes the Journey "1st Order" box agree with the
+      // mean-based "New Meta Customer AOV" tile.
+      const mean = (arr: number[]): number => {
         if (arr.length === 0) return 0;
-        const s = [...arr].sort((a, b) => a - b);
-        const m = Math.floor(s.length / 2);
-        return r2(s.length % 2 === 0 ? (s[m - 1] + s[m]) / 2 : s[m]);
+        return r2(arr.reduce((s, v) => s + v, 0) / arr.length);
       };
       const medianDays = (arr: number[]): number | null => {
         if (arr.length === 0) return null;
@@ -896,9 +899,9 @@ export const loader = async ({ request }) => {
           }
         }
         return {
-          firstAOV: median(firsts),
-          secondAOV: median(seconds),
-          thirdAOV: median(thirds),
+          firstAOV: mean(firsts),
+          secondAOV: mean(seconds),
+          thirdAOV: mean(thirds),
           gap1to2Days: medianDays(g12),
           gap2to3Days: medianDays(g23),
           firstOrderCount: fc,
