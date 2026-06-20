@@ -57,10 +57,13 @@ function ProgressBar({ pct }: { pct: number }) {
   );
 }
 
-function FeatureBullet({ children }: { children: React.ReactNode }) {
+function FeatureBullet({ children, tone = "good" }: { children: React.ReactNode; tone?: "good" | "challenge" }) {
+  const isGood = tone === "good";
   return (
     <InlineStack gap="200" blockAlign="start" wrap={false}>
-      <span style={{ color: PURPLE, fontSize: 14, fontWeight: 700, lineHeight: "20px" }}>{"\u2713"}</span>
+      <span style={{
+        color: isGood ? PURPLE : "#B45309", fontSize: 14, fontWeight: 700, lineHeight: "20px",
+      }}>{isGood ? "\u2713" : "\u0021"}</span>
       <Text as="span" variant="bodyMd">{children}</Text>
     </InlineStack>
   );
@@ -120,29 +123,70 @@ export default function FitDemo() {
                 </Text>
 
                 <Box padding="400" background="bg-surface-secondary" borderRadius="300" borderColor="border" borderWidth="025">
-                  <BlockStack gap="300">
-                    <Text as="h3" variant="headingMd">Who it&apos;s a great fit for</Text>
-                    <FeatureBullet>
-                      Brands with a spread of order values and order times - most
-                      fashion, homeware, and considered-purchase stores. Lucidly
-                      will cleanly attribute the large majority of your Meta-driven sales.
-                    </FeatureBullet>
-                    <Text as="h3" variant="headingMd">Where it&apos;s more challenging</Text>
-                    <FeatureBullet>
-                      Stores where lots of orders share the <strong>same price</strong> in
-                      the <strong>same hour</strong>. Because Lucidly matches on time and
-                      value, even a few same-priced orders in one hourly window become hard
-                      to tell apart - each rival roughly halves the confidence on that order.
-                      High-volume stores with a narrow price range feel this most. Our
-                      cookie-based Layer 1 (coming) closes that gap.
-                    </FeatureBullet>
+                  <BlockStack gap="400">
+                    <BlockStack gap="300">
+                      <Text as="h3" variant="headingMd">Who it&apos;s a great fit for</Text>
+                      <FeatureBullet>
+                        <strong>Varied order values</strong> - fashion, homeware, and
+                        considered-purchase brands. A spread of prices makes each order
+                        easy to tell apart.
+                      </FeatureBullet>
+                      <FeatureBullet>
+                        <strong>Mid-range to higher AOV</strong> - fewer orders landing on
+                        the exact same price point in the same moment.
+                      </FeatureBullet>
+                      <FeatureBullet>
+                        <strong>A broad catalogue</strong> - different products at different
+                        prices naturally separate your orders.
+                      </FeatureBullet>
+                      <FeatureBullet>
+                        <strong>Steady, spread-out order flow</strong> - orders arriving
+                        across the day rather than all in the same few minutes.
+                      </FeatureBullet>
+                      <FeatureBullet>
+                        <strong>Normal day-to-day trading</strong> - outside of a major
+                        sale, the Fit Test reflects your real, ongoing match rate.
+                      </FeatureBullet>
+                    </BlockStack>
+
+                    <BlockStack gap="300">
+                      <Text as="h3" variant="headingMd">Where it&apos;s more challenging</Text>
+                      <FeatureBullet tone="challenge">
+                        <strong>Narrow price range at high volume</strong> - lots of orders
+                        at the <strong>same price</strong> in the <strong>same hour</strong> are
+                        hard to distinguish. Because Lucidly matches on time and value, even a
+                        few same-priced orders in one hourly window become rivals - and each
+                        rival roughly halves the confidence on that order.
+                      </FeatureBullet>
+                      <FeatureBullet tone="challenge">
+                        <strong>Single-product or one-price promos</strong> - when most
+                        orders share the exact same value, there&apos;s little to tell them
+                        apart, so matching is very difficult.
+                      </FeatureBullet>
+                      <FeatureBullet tone="challenge">
+                        <strong>Sale periods and spikes</strong> - when order volume surges,
+                        more orders pile into each hourly slot, so match rate can dip. Run
+                        the Fit Test mid-sale and the projected rate may understate your
+                        normal trading.
+                      </FeatureBullet>
+                      <FeatureBullet tone="challenge">
+                        <strong>Flash drops and launches</strong> - a burst of near-identical
+                        orders in minutes is the hardest case for purely-statistical matching.
+                      </FeatureBullet>
+                      <Text as="p" variant="bodySm" tone="subdued">
+                        Our cookie-based Layer 1 (coming) closes these gaps by attributing
+                        orders directly, regardless of their timing or value.
+                      </Text>
+                    </BlockStack>
                   </BlockStack>
                 </Box>
 
                 <Text as="p" variant="bodyMd" tone="subdued">
                   The Fit Test checks your <strong>real</strong> last-90-days order history
                   and tells you honestly, up front - before you import anything or connect
-                  Meta. No surprises, no commitment.
+                  Meta. If that window included a big sale, your score may read lower than
+                  normal trading - re-run it any time for a fresh snapshot. No surprises,
+                  no commitment.
                 </Text>
 
                 <Button variant="primary" size="large" fullWidth onClick={() => setStep("importing")}>
