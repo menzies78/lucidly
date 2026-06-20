@@ -69,23 +69,35 @@ function FeatureBullet({ children, tone = "good" }: { children: React.ReactNode;
   );
 }
 
-// Quick, client-side proxy for the real matcher. The matcher's confidence is
-// 100/(1+rivals), where rivals are orders sharing an hourly slot at a near-
-// identical value. We estimate rivals from self-reported volume + price spread,
-// then map to the SAME four verdict bands the real Fit Report uses - so the
-// instant read and the real result speak the same language and rarely disagree.
-function quickVerdict({ ordersPerDay, products, priceVariety, saleNow }: {
-  ordersPerDay: number; products: number; priceVariety: number; saleNow: boolean;
+// The four value-variety options (slider index 0..3) and the per-option base
+// probability that two orders in the same hour land within ±1% of each other.
+const VARIETY_LABELS = ["All the same", "Very similar", "Some variety", "Very mixed"];
+const VARIETY_BASE = [0.90, 0.45, 0.12, 0.04];
+
+// Quick, client-side proxy for the real matcher, calibrated against real stores.
+// The matcher's confidence is 100/(1+rivals), where rivals are orders sharing an
+// hourly slot at a near-identical (±1%) value. We estimate:
+//   peers   = orders competing in the same hour  ≈ ordersPerDay × 0.092
+//             (anchored on Vollebak: 20.9 orders/day → 1.92 same-hour peers)
+//   collide = chance a peer is within ±1% of value (driven by price variety,
+//             diluted by a broad catalogue)
+//   rivals  = peers × collide  →  confidence = 100/(1+rivals)
+// Validated: HM (18.6/day, varied) → ~95, Vollebak (20.9/day, very mixed) → ~93,
+// both matching their real Fit Test score of 95. Maps to the SAME four verdict
+// bands the real Fit Report uses, so the instant read rarely disagrees.
+const PEERS_PER_OPD = 0.092;
+
+function quickVerdict({ ordersPerDay, products, variety, saleNow }: {
+  ordersPerDay: number; products: number; variety: number; saleNow: boolean;
 }): { verdict: string; confidence: number; reasons: Array<{ tone: "good" | "challenge"; text: React.ReactNode }> } {
-  const avgPerHour = ordersPerDay / 10;            // spread across ~10 active hours
-  const peakPerHour = avgPerHour * 1.8;            // peak hour runs hotter than average
-  let collision = 1 - priceVariety / 100;          // narrow values => more collisions
-  const productFactor = Math.max(0.4, 1 - Math.log10(Math.max(1, products)) / 4);
-  collision = Math.max(0.02, Math.min(1, collision * productFactor));
-  const expectedRivals = peakPerHour * collision;
-  let confidence = 100 / (1 + expectedRivals);
-  if (saleNow) confidence *= 0.7;                  // spikes crowd every slot
-  confidence = Math.round(Math.max(5, Math.min(99, confidence)));
+  const base = VARIETY_BASE[variety] ?? 0.12;
+  // More products spread prices across more price points → fewer ±1% collisions.
+  const productFactor = Math.min(1.8, Math.max(0.5, 1.6 - 0.35 * Math.log10(Math.max(1, products))));
+  const collide = Math.min(0.98, Math.max(0.01, base * productFactor));
+  let peers = ordersPerDay * PEERS_PER_OPD;
+  if (saleNow) peers *= 1.7;                        // a spike crowds every hour
+  const expectedRivals = peers * collide;
+  const confidence = Math.round(Math.max(5, Math.min(99, 100 / (1 + expectedRivals))));
 
   let verdict: string;
   if (confidence >= 80) verdict = "excellent";
@@ -93,15 +105,14 @@ function quickVerdict({ ordersPerDay, products, priceVariety, saleNow }: {
   else if (confidence >= 40) verdict = "marginal";
   else verdict = "challenging";
 
-  // Personalised reasons - the welcome-page bullet content, but only the ones
-  // that actually apply to what they told us.
+  // Personalised reasons - only the ones that actually apply to their answers.
   const reasons: Array<{ tone: "good" | "challenge"; text: React.ReactNode }> = [];
-  if (priceVariety >= 65) reasons.push({ tone: "good", text: <><strong>Varied order values.</strong> A wide spread of prices makes each order easy to tell apart.</> });
-  if (priceVariety < 35) reasons.push({ tone: "challenge", text: <><strong>Narrow price range.</strong> When orders share a similar value, each one in the same hour roughly halves the confidence on its match.</> });
-  if (products <= 2) reasons.push({ tone: "challenge", text: <><strong>Very few products.</strong> One-price or single-product stores produce near-identical orders that are hard to separate.</> });
-  else if (products >= 100 && priceVariety >= 50) reasons.push({ tone: "good", text: <><strong>A broad catalogue.</strong> Different products at different prices naturally separate your orders.</> });
-  if (ordersPerDay >= 100) reasons.push({ tone: "challenge", text: <><strong>High order volume.</strong> More orders land in each hour, so more compete to match the same Meta conversion.</> });
-  else if (ordersPerDay <= 30 && priceVariety >= 50) reasons.push({ tone: "good", text: <><strong>Steady, spread-out flow.</strong> Orders arrive across the day rather than all at once.</> });
+  if (variety >= 3) reasons.push({ tone: "good", text: <><strong>Varied order values.</strong> A wide spread of prices makes each order easy to tell apart.</> });
+  else if (variety <= 1) reasons.push({ tone: "challenge", text: <><strong>Similar order values.</strong> When orders share a near-identical value, each one in the same hour roughly halves the confidence on its match.</> });
+  if (products <= 3) reasons.push({ tone: "challenge", text: <><strong>Very few products.</strong> One-price or single-product stores produce near-identical orders that are hard to separate.</> });
+  else if (products >= 100 && variety >= 2) reasons.push({ tone: "good", text: <><strong>A broad catalogue.</strong> Different products at different prices naturally separate your orders.</> });
+  if (ordersPerDay >= 80 && variety <= 1) reasons.push({ tone: "challenge", text: <><strong>High volume, narrow prices.</strong> Lots of similarly-priced orders land in each hour, so they compete to match the same Meta conversion.</> });
+  else if (ordersPerDay <= 30 && variety >= 2) reasons.push({ tone: "good", text: <><strong>Steady, spread-out flow.</strong> Orders arrive across the day rather than all at once.</> });
   if (saleNow) reasons.push({ tone: "challenge", text: <><strong>You&apos;re mid-sale.</strong> Spikes crowd every hour - today&apos;s score may read lower than normal trading. Re-run after the sale.</> });
 
   if (reasons.length === 0) {
@@ -111,9 +122,37 @@ function quickVerdict({ ordersPerDay, products, priceVariety, saleNow }: {
   return { verdict, confidence, reasons: reasons.slice(0, 3) };
 }
 
-function SliderTile({ label, helper, value, min, max, step = 1, onChange, display }: {
+// Small tick-scale row rendered under a slider. Evenly-spaced labels map to
+// evenly-spaced values, so flex space-between aligns them with the track.
+function Ticks({ items }: { items: string[] }) {
+  return (
+    <div style={{ display: "flex", justifyContent: "space-between", marginTop: 2 }}>
+      {items.map((t, i) => (
+        <span key={i} style={{ fontSize: 11, color: "#8C9196" }}>{t}</span>
+      ))}
+    </div>
+  );
+}
+
+// Variety scale: the four labels under the slider, active one highlighted.
+function VarietyTicks({ active }: { active: number }) {
+  return (
+    <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4 }}>
+      {VARIETY_LABELS.map((t, i) => (
+        <span key={i} style={{
+          flex: 1, fontSize: 11,
+          textAlign: i === 0 ? "left" : i === VARIETY_LABELS.length - 1 ? "right" : "center",
+          fontWeight: i === active ? 700 : 400,
+          color: i === active ? PURPLE : "#8C9196",
+        }}>{t}</span>
+      ))}
+    </div>
+  );
+}
+
+function SliderTile({ label, helper, value, min, max, step = 1, onChange, display, scale }: {
   label: string; helper: string; value: number; min: number; max: number;
-  step?: number; onChange: (v: number) => void; display: React.ReactNode;
+  step?: number; onChange: (v: number) => void; display: React.ReactNode; scale?: React.ReactNode;
 }) {
   return (
     <Box padding="400" background="bg-surface-secondary" borderRadius="300" borderColor="border" borderWidth="025">
@@ -129,6 +168,7 @@ function SliderTile({ label, helper, value, min, max, step = 1, onChange, displa
             onChange={(v: number | [number, number]) => onChange(Array.isArray(v) ? v[0] : v)}
           />
         </Box>
+        {scale}
       </BlockStack>
     </Box>
   );
@@ -161,7 +201,7 @@ export default function FitDemo() {
   // Quick Q&A state (primes expectations - never gates).
   const [ordersPerDay, setOrdersPerDay] = useState(20);
   const [products, setProducts] = useState(50);
-  const [priceVariety, setPriceVariety] = useState(55);
+  const [variety, setVariety] = useState(2); // 0..3 index into VARIETY_LABELS
   const [saleNow, setSaleNow] = useState(false);
   const [showVerdict, setShowVerdict] = useState(false);
 
@@ -193,8 +233,7 @@ export default function FitDemo() {
 
   // ─── Quick Q&A (primes expectations before the real test) ─────────────
   if (step === "quiz") {
-    const verdict = quickVerdict({ ordersPerDay, products, priceVariety, saleNow });
-    const varietyLabel = priceVariety < 34 ? "Very similar" : priceVariety < 67 ? "Some variety" : "Very varied";
+    const verdict = quickVerdict({ ordersPerDay, products, variety, saleNow });
     return (
       <Page>
         <Box paddingBlockEnd="600">
@@ -215,21 +254,24 @@ export default function FitDemo() {
                 <BlockStack gap="300">
                   <SliderTile
                     label="Orders per day" helper="Roughly how many orders do you take on a normal day?"
-                    value={ordersPerDay} min={1} max={500}
+                    value={ordersPerDay} min={0} max={100} step={5}
                     onChange={(v) => { setOrdersPerDay(v); setShowVerdict(false); }}
-                    display={`${ordersPerDay}${ordersPerDay >= 500 ? "+" : ""}`}
+                    display={ordersPerDay >= 100 ? "100+" : ordersPerDay}
+                    scale={<Ticks items={["0", "10", "20", "30", "40", "50", "60", "70", "80", "90", "100+"]} />}
                   />
                   <SliderTile
-                    label="Number of products" helper="How many distinct products do you sell?"
-                    value={products} min={1} max={500}
+                    label="Number of products" helper="How many distinct products do you sell (parent products, not variants)?"
+                    value={products} min={0} max={500} step={10}
                     onChange={(v) => { setProducts(v); setShowVerdict(false); }}
-                    display={`${products}${products >= 500 ? "+" : ""}`}
+                    display={products >= 500 ? "500+" : products}
+                    scale={<Ticks items={["0", "100", "200", "300", "400", "500+"]} />}
                   />
                   <SliderTile
-                    label="How much do order values vary?" helper="Are most orders a similar total, or all over the place?"
-                    value={priceVariety} min={0} max={100}
-                    onChange={(v) => { setPriceVariety(v); setShowVerdict(false); }}
-                    display={varietyLabel}
+                    label="How much do order values vary?" helper="Do most of your orders have a similar value, or different values?"
+                    value={variety} min={0} max={3} step={1}
+                    onChange={(v) => { setVariety(v); setShowVerdict(false); }}
+                    display={VARIETY_LABELS[variety]}
+                    scale={<VarietyTicks active={variety} />}
                   />
 
                   <Box padding="400" background="bg-surface-secondary" borderRadius="300" borderColor="border" borderWidth="025">
