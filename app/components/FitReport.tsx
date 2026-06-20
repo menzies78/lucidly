@@ -3,7 +3,7 @@
 // route AND the onboarding demo/flow render identical markup (single source of
 // truth). Presentational only: pass in a computed fit-data object.
 
-import { Card, Text, BlockStack, InlineStack, Button } from "@shopify/polaris";
+import { Card, Text, BlockStack, InlineStack, Button, Banner } from "@shopify/polaris";
 import { Link } from "@remix-run/react";
 
 export type FitReportData = {
@@ -26,7 +26,7 @@ function formatHour(h: number) {
   return h < 12 ? `${h}am` : `${h - 12}pm`;
 }
 
-function VerdictBadge({ verdict, score }: { verdict: string; score: number }) {
+export function VerdictBadge({ verdict, score }: { verdict: string; score: number }) {
   const palette: Record<string, { bg: string; fg: string; label: string; icon: string }> = {
     excellent: { bg: "#D1FAE5", fg: "#065F46", label: "Excellent fit", icon: "[OK]" },
     good:      { bg: "#DBEAFE", fg: "#1E40AF", label: "Good fit",      icon: "[+]" },
@@ -111,6 +111,21 @@ export default function FitReport({ d, showConnectCta = false }: {
 }) {
   return (
     <BlockStack gap="500">
+      {/* Strong, honest warning for hard-to-match stores. We never block the
+          merchant - they can still proceed - but we're upfront that a chunk of
+          Meta revenue will read as 'unverified' on a challenging order pattern. */}
+      {d.verdict === "challenging" && (
+        <Banner tone="warning" title="Your orders will be hard to attribute accurately">
+          <p>
+            Lots of your orders share a similar value within the same hour, so our
+            statistical matcher will struggle to tell them apart. Expect a meaningful
+            share of your Meta revenue to show as &quot;unverified&quot; rather than matched to
+            a specific order. You can still use Lucidly - but go in with eyes open. Our
+            cookie-based Layer 1 (coming) will close this gap by attributing orders directly.
+          </p>
+        </Banner>
+      )}
+
       {/* Headline */}
       <Card>
         <BlockStack gap="400">

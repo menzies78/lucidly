@@ -1,7 +1,7 @@
 // UNLINKED demo of the full onboarding Fit Test flow, playable on a live store
-// for screen-recording / iteration. Starts from the very first install screen
-// (intro / expectation-setting) → importing → calculating → the live Fit
-// Report computed from the store's REAL order history.
+// for screen-recording / iteration. Starts from the very first install screen:
+// a quick 3-slider Q&A that gives an INSTANT primed verdict (never gates), then
+// importing → calculating → the live Fit Report computed from REAL order history.
 //
 // Non-destructive: the loader reads the cached fit snapshot (getFitTest) and
 // only computes if one doesn't exist yet. It never alters onboarding state,
@@ -15,11 +15,11 @@ import { useEffect, useState } from "react";
 import { json } from "@remix-run/node";
 import { useLoaderData } from "@remix-run/react";
 import {
-  Page, Card, Box, BlockStack, InlineStack, Text, Button, Spinner, Banner,
+  Page, Card, Box, BlockStack, InlineStack, Text, Button, Spinner, Banner, RangeSlider,
 } from "@shopify/polaris";
 import { authenticate } from "../shopify.server";
 import { runFitTest, getFitTest } from "../services/fitTest.server.js";
-import FitReport from "../components/FitReport";
+import FitReport, { VerdictBadge } from "../components/FitReport";
 
 export const loader = async ({ request }) => {
   const { session } = await authenticate.admin(request);
@@ -69,12 +69,101 @@ function FeatureBullet({ children, tone = "good" }: { children: React.ReactNode;
   );
 }
 
-type Step = "intro" | "importing" | "running" | "result";
+// Quick, client-side proxy for the real matcher. The matcher's confidence is
+// 100/(1+rivals), where rivals are orders sharing an hourly slot at a near-
+// identical value. We estimate rivals from self-reported volume + price spread,
+// then map to the SAME four verdict bands the real Fit Report uses - so the
+// instant read and the real result speak the same language and rarely disagree.
+function quickVerdict({ ordersPerDay, products, priceVariety, saleNow }: {
+  ordersPerDay: number; products: number; priceVariety: number; saleNow: boolean;
+}): { verdict: string; confidence: number; reasons: Array<{ tone: "good" | "challenge"; text: React.ReactNode }> } {
+  const avgPerHour = ordersPerDay / 10;            // spread across ~10 active hours
+  const peakPerHour = avgPerHour * 1.8;            // peak hour runs hotter than average
+  let collision = 1 - priceVariety / 100;          // narrow values => more collisions
+  const productFactor = Math.max(0.4, 1 - Math.log10(Math.max(1, products)) / 4);
+  collision = Math.max(0.02, Math.min(1, collision * productFactor));
+  const expectedRivals = peakPerHour * collision;
+  let confidence = 100 / (1 + expectedRivals);
+  if (saleNow) confidence *= 0.7;                  // spikes crowd every slot
+  confidence = Math.round(Math.max(5, Math.min(99, confidence)));
+
+  let verdict: string;
+  if (confidence >= 80) verdict = "excellent";
+  else if (confidence >= 60) verdict = "good";
+  else if (confidence >= 40) verdict = "marginal";
+  else verdict = "challenging";
+
+  // Personalised reasons - the welcome-page bullet content, but only the ones
+  // that actually apply to what they told us.
+  const reasons: Array<{ tone: "good" | "challenge"; text: React.ReactNode }> = [];
+  if (priceVariety >= 65) reasons.push({ tone: "good", text: <><strong>Varied order values.</strong> A wide spread of prices makes each order easy to tell apart.</> });
+  if (priceVariety < 35) reasons.push({ tone: "challenge", text: <><strong>Narrow price range.</strong> When orders share a similar value, each one in the same hour roughly halves the confidence on its match.</> });
+  if (products <= 2) reasons.push({ tone: "challenge", text: <><strong>Very few products.</strong> One-price or single-product stores produce near-identical orders that are hard to separate.</> });
+  else if (products >= 100 && priceVariety >= 50) reasons.push({ tone: "good", text: <><strong>A broad catalogue.</strong> Different products at different prices naturally separate your orders.</> });
+  if (ordersPerDay >= 100) reasons.push({ tone: "challenge", text: <><strong>High order volume.</strong> More orders land in each hour, so more compete to match the same Meta conversion.</> });
+  else if (ordersPerDay <= 30 && priceVariety >= 50) reasons.push({ tone: "good", text: <><strong>Steady, spread-out flow.</strong> Orders arrive across the day rather than all at once.</> });
+  if (saleNow) reasons.push({ tone: "challenge", text: <><strong>You&apos;re mid-sale.</strong> Spikes crowd every hour - today&apos;s score may read lower than normal trading. Re-run after the sale.</> });
+
+  if (reasons.length === 0) {
+    reasons.push({ tone: confidence >= 60 ? "good" : "challenge",
+      text: <>This is roughly how distinguishable your orders look to our matcher, based on your volume and price spread.</> });
+  }
+  return { verdict, confidence, reasons: reasons.slice(0, 3) };
+}
+
+function SliderTile({ label, helper, value, min, max, step = 1, onChange, display }: {
+  label: string; helper: string; value: number; min: number; max: number;
+  step?: number; onChange: (v: number) => void; display: React.ReactNode;
+}) {
+  return (
+    <Box padding="400" background="bg-surface-secondary" borderRadius="300" borderColor="border" borderWidth="025">
+      <BlockStack gap="100">
+        <InlineStack align="space-between" blockAlign="center">
+          <Text as="span" variant="headingSm">{label}</Text>
+          <span style={{ color: PURPLE, fontWeight: 700, fontSize: 16 }}>{display}</span>
+        </InlineStack>
+        <Text as="p" variant="bodySm" tone="subdued">{helper}</Text>
+        <Box paddingBlockStart="200">
+          <RangeSlider
+            label={label} labelHidden value={value} min={min} max={max} step={step}
+            onChange={(v: number | [number, number]) => onChange(Array.isArray(v) ? v[0] : v)}
+          />
+        </Box>
+      </BlockStack>
+    </Box>
+  );
+}
+
+function SegToggle({ value, onChange }: { value: boolean; onChange: (v: boolean) => void }) {
+  const opt = (active: boolean, label: string, v: boolean) => (
+    <button type="button" onClick={() => onChange(v)} style={{
+      flex: 1, padding: "10px 0", border: "none", cursor: "pointer",
+      background: active ? `linear-gradient(90deg, ${PURPLE}, ${PURPLE_LIGHT})` : "transparent",
+      color: active ? "#fff" : "#6B7280", fontWeight: 600, fontSize: 14,
+      transition: "all 0.2s ease",
+    }}>{label}</button>
+  );
+  return (
+    <div style={{ display: "flex", border: "1px solid #E3E3E3", borderRadius: 8, overflow: "hidden" }}>
+      {opt(!value, "No", false)}
+      {opt(value, "Yes", true)}
+    </div>
+  );
+}
+
+type Step = "quiz" | "importing" | "running" | "result";
 
 export default function FitDemo() {
   const { data } = useLoaderData<typeof loader>() as any;
-  const [step, setStep] = useState<Step>("intro");
+  const [step, setStep] = useState<Step>("quiz");
   const [imported, setImported] = useState(0);
+
+  // Quick Q&A state (primes expectations - never gates).
+  const [ordersPerDay, setOrdersPerDay] = useState(20);
+  const [products, setProducts] = useState(50);
+  const [priceVariety, setPriceVariety] = useState(55);
+  const [saleNow, setSaleNow] = useState(false);
+  const [showVerdict, setShowVerdict] = useState(false);
 
   const totalOrders: number = data?.ordersAnalysed || 0;
 
@@ -102,8 +191,10 @@ export default function FitDemo() {
     return () => clearTimeout(id);
   }, [step]);
 
-  // ─── Intro / expectation-setting (the very first install screen) ──────
-  if (step === "intro") {
+  // ─── Quick Q&A (primes expectations before the real test) ─────────────
+  if (step === "quiz") {
+    const verdict = quickVerdict({ ordersPerDay, products, priceVariety, saleNow });
+    const varietyLabel = priceVariety < 34 ? "Very similar" : priceVariety < 67 ? "Some variety" : "Very varied";
     return (
       <Page>
         <Box paddingBlockEnd="600">
@@ -113,85 +204,77 @@ export default function FitDemo() {
                 <BlockStack gap="200">
                   <GradientPill>Welcome to Lucidly</GradientPill>
                   <Text as="h1" variant="heading2xl">Will Lucidly work for your store?</Text>
+                  <Text as="p" variant="bodyLg" tone="subdued">
+                    Lucidly reveals which customers came from Meta ads by matching conversions
+                    to your orders on <strong>time</strong> and <strong>value</strong>. Answer
+                    three quick questions for an instant read - then we&apos;ll check your{" "}
+                    <strong>real</strong> order history to confirm.
+                  </Text>
                 </BlockStack>
 
-                <Text as="p" variant="bodyLg" tone="subdued">
-                  Lucidly matches your Meta conversions to your Shopify orders
-                  statistically - by <strong>when</strong> an order happened and{" "}
-                  <strong>how much</strong> it was for. So it works best when your
-                  orders are distinguishable from one another.
-                </Text>
+                <BlockStack gap="300">
+                  <SliderTile
+                    label="Orders per day" helper="Roughly how many orders do you take on a normal day?"
+                    value={ordersPerDay} min={1} max={500}
+                    onChange={(v) => { setOrdersPerDay(v); setShowVerdict(false); }}
+                    display={`${ordersPerDay}${ordersPerDay >= 500 ? "+" : ""}`}
+                  />
+                  <SliderTile
+                    label="Number of products" helper="How many distinct products do you sell?"
+                    value={products} min={1} max={500}
+                    onChange={(v) => { setProducts(v); setShowVerdict(false); }}
+                    display={`${products}${products >= 500 ? "+" : ""}`}
+                  />
+                  <SliderTile
+                    label="How much do order values vary?" helper="Are most orders a similar total, or all over the place?"
+                    value={priceVariety} min={0} max={100}
+                    onChange={(v) => { setPriceVariety(v); setShowVerdict(false); }}
+                    display={varietyLabel}
+                  />
 
-                <Box padding="400" background="bg-surface-secondary" borderRadius="300" borderColor="border" borderWidth="025">
-                  <BlockStack gap="400">
-                    <BlockStack gap="300">
-                      <Text as="h3" variant="headingMd">Who it&apos;s a great fit for</Text>
-                      <FeatureBullet>
-                        <strong>Varied order values</strong> - fashion, homeware, and
-                        considered-purchase brands. A spread of prices makes each order
-                        easy to tell apart.
-                      </FeatureBullet>
-                      <FeatureBullet>
-                        <strong>Mid-range to higher AOV</strong> - fewer orders landing on
-                        the exact same price point in the same moment.
-                      </FeatureBullet>
-                      <FeatureBullet>
-                        <strong>A broad catalogue</strong> - different products at different
-                        prices naturally separate your orders.
-                      </FeatureBullet>
-                      <FeatureBullet>
-                        <strong>Steady, spread-out order flow</strong> - orders arriving
-                        across the day rather than all in the same few minutes.
-                      </FeatureBullet>
-                      <FeatureBullet>
-                        <strong>Normal day-to-day trading</strong> - outside of a major
-                        sale, the Fit Test reflects your real, ongoing match rate.
-                      </FeatureBullet>
+                  <Box padding="400" background="bg-surface-secondary" borderRadius="300" borderColor="border" borderWidth="025">
+                    <BlockStack gap="200">
+                      <Text as="span" variant="headingSm">Running a big sale or single-product promo right now?</Text>
+                      <Text as="p" variant="bodySm" tone="subdued">Spikes crowd every hour and can lower today&apos;s score.</Text>
+                      <Box paddingBlockStart="100">
+                        <SegToggle value={saleNow} onChange={(v) => { setSaleNow(v); setShowVerdict(false); }} />
+                      </Box>
                     </BlockStack>
+                  </Box>
+                </BlockStack>
 
-                    <BlockStack gap="300">
-                      <Text as="h3" variant="headingMd">Where it&apos;s more challenging</Text>
-                      <FeatureBullet tone="challenge">
-                        <strong>Narrow price range at high volume</strong> - lots of orders
-                        at the <strong>same price</strong> in the <strong>same hour</strong> are
-                        hard to distinguish. Because Lucidly matches on time and value, even a
-                        few same-priced orders in one hourly window become rivals - and each
-                        rival roughly halves the confidence on that order.
-                      </FeatureBullet>
-                      <FeatureBullet tone="challenge">
-                        <strong>Single-product or one-price promos</strong> - when most
-                        orders share the exact same value, there&apos;s little to tell them
-                        apart, so matching is very difficult.
-                      </FeatureBullet>
-                      <FeatureBullet tone="challenge">
-                        <strong>Sale periods and spikes</strong> - when order volume surges,
-                        more orders pile into each hourly slot, so match rate can dip. Run
-                        the Fit Test mid-sale and the projected rate may understate your
-                        normal trading.
-                      </FeatureBullet>
-                      <FeatureBullet tone="challenge">
-                        <strong>Flash drops and launches</strong> - a burst of near-identical
-                        orders in minutes is the hardest case for purely-statistical matching.
-                      </FeatureBullet>
+                {!showVerdict && (
+                  <Button variant="primary" size="large" fullWidth onClick={() => setShowVerdict(true)}>
+                    See my instant verdict
+                  </Button>
+                )}
+
+                {showVerdict && (
+                  <div style={{
+                    padding: 22, borderRadius: 14,
+                    background: "linear-gradient(135deg, rgba(124,58,237,0.06), rgba(167,139,250,0.12))",
+                    border: "1px solid rgba(124,58,237,0.20)",
+                  }}>
+                    <BlockStack gap="400">
+                      <BlockStack gap="200" inlineAlign="start">
+                        <Text as="span" variant="bodySm" tone="subdued">Your instant read</Text>
+                        <VerdictBadge verdict={verdict.verdict} score={verdict.confidence} />
+                      </BlockStack>
+                      <BlockStack gap="200">
+                        {verdict.reasons.map((r, i) => (
+                          <FeatureBullet key={i} tone={r.tone}>{r.text}</FeatureBullet>
+                        ))}
+                      </BlockStack>
                       <Text as="p" variant="bodySm" tone="subdued">
-                        Our cookie-based Layer 1 (coming) closes these gaps by attributing
-                        orders directly, regardless of their timing or value.
+                        This is a rough read from what you told us. The real Fit Test checks your{" "}
+                        <strong>actual</strong> last-90-days orders - no guessing, no commitment.
                       </Text>
+                      <Button variant="primary" size="large" fullWidth onClick={() => setStep("importing")}>
+                        Run the Fit Test on my real orders
+                      </Button>
                     </BlockStack>
-                  </BlockStack>
-                </Box>
-
-                <Text as="p" variant="bodyMd" tone="subdued">
-                  The Fit Test checks your <strong>real</strong> last-90-days order history
-                  and tells you honestly, up front - before you import anything or connect
-                  Meta. If that window included a big sale, your score may read lower than
-                  normal trading - re-run it any time for a fresh snapshot. No surprises,
-                  no commitment.
-                </Text>
-
-                <Button variant="primary" size="large" fullWidth onClick={() => setStep("importing")}>
-                  Begin Fit Test
-                </Button>
+                  </div>
+                )}
               </BlockStack>
             </Box>
           </Card>
