@@ -33,7 +33,9 @@ export const loader = async ({ request }) => {
   const stale = !shop.fitTestComputedAt
     || (Date.now() - shop.fitTestComputedAt.getTime() > 7 * 24 * 3600 * 1000);
   let data = await getFitTest(shopDomain);
-  if (!data || stale) {
+  // Also recompute if the snapshot predates the per-hour distribution.
+  const missingHourly = data && data.score !== null && !data.hourly;
+  if (!data || stale || missingHourly) {
     data = await runFitTest(shopDomain);
   }
 

@@ -16,14 +16,18 @@ export type FitReportData = {
   histogramPct: Record<string, number>;
   aov: { mean: number; cv: number; spread: "narrow" | "moderate" | "wide"; currency?: string };
   worstHours?: Array<{ dow: number; hour: number; avgRivals: number; orderCount: number }>;
+  hourly?: Array<{ hour: number; avgRivals: number; orderCount: number }>;
 };
-
-const DOW_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
 function formatHour(h: number) {
   if (h === 0) return "12am";
   if (h === 12) return "12pm";
   return h < 12 ? `${h}am` : `${h - 12}pm`;
+}
+
+function currencySymbol(code?: string) {
+  const map: Record<string, string> = { GBP: "£", USD: "$", EUR: "€", AUD: "A$", CAD: "C$", NZD: "NZ$" };
+  return map[code || "GBP"] || (code ? `${code} ` : "£");
 }
 
 export function VerdictBadge({ verdict, score, size = "default" }: { verdict: string; score: number; size?: "default" | "large" }) {
@@ -63,16 +67,16 @@ function Histogram({ pct }: { pct: Record<string, number> }) {
     { key: "4+", label: "4+ rivals",  color: "#EF4444", desc: "<20% confidence" },
   ];
   return (
-    <BlockStack gap="200">
+    <BlockStack gap="300">
       {buckets.map(b => (
         <div key={b.key}>
-          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 4 }}>
-            <span style={{ fontWeight: 600, color: "#1F2937" }}>{b.label}</span>
+          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 5 }}>
+            <span style={{ fontWeight: 700, color: "#1F2937" }}>{b.label}</span>
             <span style={{ color: "#6B7280" }}>
-              <strong>{pct[b.key] ?? 0}%</strong> of orders <span style={{ marginLeft: 8 }}>· {b.desc}</span>
+              <strong style={{ color: "#111827" }}>{pct[b.key] ?? 0}%</strong> of orders <span style={{ marginLeft: 8 }}>· {b.desc}</span>
             </span>
           </div>
-          <div style={{ background: "#F3F4F6", borderRadius: 4, overflow: "hidden", height: 14 }}>
+          <div style={{ background: "#F3F4F6", borderRadius: 5, overflow: "hidden", height: 18 }}>
             <div style={{
               width: `${pct[b.key] ?? 0}%`, height: "100%",
               background: b.color, transition: "width 0.4s ease",
@@ -84,30 +88,62 @@ function Histogram({ pct }: { pct: Record<string, number> }) {
   );
 }
 
-function WorstHours({ hours }: { hours: FitReportData["worstHours"] }) {
-  if (!hours || hours.length === 0) {
-    return (
-      <Text as="p" variant="bodySm" tone="subdued">
-        No crowded hours - your order pattern is well-spread across the week.
-      </Text>
-    );
-  }
+// App-style stat tile: small subdued label up top, a BIG centred value, optional
+// supporting line. Mirrors SummaryTile's typography (headingSm / heading2xl).
+function StatTile({ label, value, sub }: { label: string; value: React.ReactNode; sub?: React.ReactNode }) {
   return (
-    <BlockStack gap="150">
-      {hours.map((h, i) => (
-        <div key={i} style={{
-          display: "flex", justifyContent: "space-between", alignItems: "center",
-          padding: "8px 12px", background: "#FEF3C7", borderRadius: 6, fontSize: 13,
-        }}>
-          <span style={{ fontWeight: 600, color: "#92400E" }}>
-            {DOW_LABELS[h.dow]} {formatHour(h.hour)}
-          </span>
-          <span style={{ color: "#78350F", fontSize: 12 }}>
-            avg <strong>{h.avgRivals.toFixed(1)}</strong> rivals · {h.orderCount} orders
-          </span>
-        </div>
-      ))}
-    </BlockStack>
+    <Card>
+      <div style={{
+        minHeight: 150, height: "100%", display: "flex", flexDirection: "column",
+        alignItems: "center", justifyContent: "center", textAlign: "center", gap: 8, padding: "10px 6px",
+      }}>
+        <Text as="p" variant="headingSm" tone="subdued">{label}</Text>
+        <Text as="p" variant="heading2xl">{value}</Text>
+        {sub && (
+          <div style={{ maxWidth: 240 }}>
+            <Text as="p" variant="bodySm" tone="subdued">{sub}</Text>
+          </div>
+        )}
+      </div>
+    </Card>
+  );
+}
+
+function rivalColor(v: number) {
+  if (v < 0.5) return "#10B981";
+  if (v < 1) return "#34D399";
+  if (v < 2) return "#FBBF24";
+  if (v < 3) return "#F59E0B";
+  return "#EF4444";
+}
+
+// 24-hour bar chart of the average rival count per hour-of-day, combined across
+// the whole lookback window. Taller/redder bars = hours that are harder to match.
+function RivalHourChart({ hourly }: { hourly: NonNullable<FitReportData["hourly"]> }) {
+  const max = Math.max(0.1, ...hourly.map(h => h.avgRivals));
+  return (
+    <div style={{ display: "flex", alignItems: "flex-end", gap: 4, height: 156 }}>
+      {hourly.map(h => {
+        const pct = (h.avgRivals / max) * 100;
+        return (
+          <div key={h.hour} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 6 }}>
+            <div
+              style={{ width: "100%", height: 124, display: "flex", alignItems: "flex-end" }}
+              title={`${formatHour(h.hour)} - avg ${h.avgRivals.toFixed(1)} rivals across ${h.orderCount} orders`}
+            >
+              <div style={{
+                width: "100%", height: `${Math.max(2, pct)}%`,
+                background: rivalColor(h.avgRivals), borderRadius: "4px 4px 0 0",
+                transition: "height 0.4s ease",
+              }} />
+            </div>
+            <span style={{ fontSize: 10, color: "#8C9196", height: 12, lineHeight: "12px" }}>
+              {h.hour % 6 === 0 ? formatHour(h.hour) : ""}
+            </span>
+          </div>
+        );
+      })}
+    </div>
   );
 }
 
@@ -115,6 +151,14 @@ export default function FitReport({ d, showConnectCta = false }: {
   d: FitReportData;
   showConnectCta?: boolean;
 }) {
+  const sym = currencySymbol(d.aov.currency);
+  const cvPct = Math.round((d.aov.cv ?? 0) * 100);
+  const spreadWord = d.aov.spread.charAt(0).toUpperCase() + d.aov.spread.slice(1);
+  const spreadGuidance =
+    d.aov.spread === "wide" ? "Varied prices help unique matching."
+    : d.aov.spread === "moderate" ? "Some value clustering, manageable."
+    : "Narrow prices create many look-alikes.";
+
   return (
     <BlockStack gap="500">
       {/* Strong, honest warning for hard-to-match stores. We never block the
@@ -135,82 +179,72 @@ export default function FitReport({ d, showConnectCta = false }: {
       {/* Headline */}
       <Card>
         <BlockStack gap="400">
-          <BlockStack gap="100">
-            <Text as="p" variant="bodySm" tone="subdued">
+          <BlockStack gap="200">
+            <Text as="p" variant="bodyMd" tone="subdued">
               Predicted Meta attribution accuracy for {d.ordersAnalysed.toLocaleString()} orders over the last {d.lookbackDays} days
             </Text>
-            <div style={{ marginTop: 8 }}>
-              <VerdictBadge verdict={d.verdict} score={d.score} />
+            <div style={{ marginTop: 6 }}>
+              <VerdictBadge verdict={d.verdict} score={d.score} size="large" />
             </div>
           </BlockStack>
-          <Text as="p" variant="bodyMd">{d.verdictReason}</Text>
+          <Text as="p" variant="bodyLg">{d.verdictReason}</Text>
           <div style={{
-            padding: 14, background: "#F9FAFB", borderRadius: 8,
-            border: "1px solid #E5E7EB", fontSize: 13, color: "#374151",
+            padding: 16, background: "#F9FAFB", borderRadius: 8,
+            border: "1px solid #E5E7EB", fontSize: 14, lineHeight: 1.55, color: "#374151",
           }}>
-            <strong>How we calculate this.</strong> Lucidly&apos;s matcher correlates each Meta-reported conversion to a Shopify order by timestamp (±30 min) and order value (±2%). The more orders share the same hour at similar values, the harder unique attribution becomes. We measure that &quot;rival density&quot; across your real order history - no assumptions, just the math the matcher actually uses.
+            <strong>How we calculate this.</strong> Lucidly&apos;s matcher correlates each Meta-reported conversion to a Shopify order by timestamp and order value. The more similar value orders placed during the same hour, the trickier attribution becomes. We measure that &quot;rival density&quot; across your real order history - no assumptions, just the signals the matcher actually uses.
           </div>
         </BlockStack>
       </Card>
 
-      {/* Histogram + AOV stats side by side */}
-      <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 16 }}>
-        <Card>
-          <BlockStack gap="300">
-            <Text as="h2" variant="headingMd">Order uniqueness distribution</Text>
-            <Text as="p" variant="bodySm" tone="subdued">
-              For each order, how many other orders sit within ±30 min and ±2% of its value
-            </Text>
-            <Histogram pct={d.histogramPct} />
-          </BlockStack>
-        </Card>
-        <Card>
-          <BlockStack gap="300">
-            <Text as="h2" variant="headingMd">Order pattern</Text>
-            <BlockStack gap="200">
-              <div>
-                <Text as="p" variant="bodySm" tone="subdued">Volume</Text>
-                <Text as="p" variant="headingMd">{d.ordersPerDay} <span style={{ fontSize: 13, fontWeight: 400 }}>orders/day</span></Text>
-              </div>
-              <div>
-                <Text as="p" variant="bodySm" tone="subdued">Average order value</Text>
-                <Text as="p" variant="headingMd">£{d.aov.mean.toLocaleString()}</Text>
-              </div>
-              <div>
-                <Text as="p" variant="bodySm" tone="subdued">AOV spread</Text>
-                <Text as="p" variant="bodyMd">
-                  <strong>{d.aov.spread}</strong> (CV {d.aov.cv})
-                </Text>
-                <Text as="p" variant="bodySm" tone="subdued">
-                  {d.aov.spread === "wide"
-                    ? "Varied prices help unique matching."
-                    : d.aov.spread === "moderate"
-                    ? "Some value clustering, manageable."
-                    : "Narrow AOV creates many rivals - expect more attribution gaps."}
-                </Text>
-              </div>
-            </BlockStack>
-          </BlockStack>
-        </Card>
-      </div>
-
-      {/* Worst hours */}
+      {/* Order uniqueness distribution */}
       <Card>
         <BlockStack gap="300">
-          <Text as="h2" variant="headingMd">Most crowded hours</Text>
-          <Text as="p" variant="bodySm" tone="subdued">
-            These slots have the highest average rival count - orders here are statistically harder to attribute.
+          <Text as="h2" variant="headingLg">Order uniqueness distribution</Text>
+          <Text as="p" variant="bodyMd" tone="subdued">
+            For each order, how many other orders sit in the same hour at a near-identical value
           </Text>
-          <WorstHours hours={d.worstHours || []} />
+          <Histogram pct={d.histogramPct} />
         </BlockStack>
       </Card>
+
+      {/* Order pattern - three app-style stat tiles */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 16 }}>
+        <StatTile
+          label="Orders per day"
+          value={d.ordersPerDay}
+          sub="online-store orders, averaged over 90 days"
+        />
+        <StatTile
+          label="Average order value"
+          value={`${sym}${d.aov.mean.toLocaleString()}`}
+        />
+        <StatTile
+          label="Order value spread"
+          value={spreadWord}
+          sub={<>Order values vary roughly <strong>{cvPct}%</strong> around your average. {spreadGuidance}</>}
+        />
+      </div>
+
+      {/* 24-hour rival distribution */}
+      {d.hourly && d.hourly.length === 24 && (
+        <Card>
+          <BlockStack gap="300">
+            <Text as="h2" variant="headingLg">Average rival orders per hour</Text>
+            <Text as="p" variant="bodyMd" tone="subdued">
+              Across a typical day, how many similar-value orders share each hour. Taller, redder bars are the hours hardest to attribute uniquely.
+            </Text>
+            <RivalHourChart hourly={d.hourly} />
+          </BlockStack>
+        </Card>
+      )}
 
       {/* CTA - only shown when explicitly requested (e.g. the real pre-Meta
           onboarding step). Hidden on the standalone/orphan view and the demo. */}
       {showConnectCta && (
         <Card>
           <BlockStack gap="300">
-            <Text as="h2" variant="headingMd">Ready to connect Meta?</Text>
+            <Text as="h2" variant="headingLg">Ready to connect Meta?</Text>
             <Text as="p" variant="bodyMd">
               {d.score >= 60
                 ? "Your data shape works well with our matcher. Connect Meta and we'll start pulling your full ad history - this runs in the background and takes a few hours to complete."

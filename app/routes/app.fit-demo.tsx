@@ -24,9 +24,10 @@ import FitReport from "../components/FitReport";
 export const loader = async ({ request }) => {
   const { session } = await authenticate.admin(request);
   const shopDomain = session.shop;
-  // Non-destructive: prefer the cached snapshot; only compute if missing.
+  // Non-destructive: prefer the cached snapshot; recompute if missing or if it
+  // predates the per-hour distribution (older snapshots have no `hourly`).
   let data = await getFitTest(shopDomain);
-  if (!data) data = await runFitTest(shopDomain);
+  if (!data || (data.score !== null && !data.hourly)) data = await runFitTest(shopDomain);
   return json({ data, shopDomain });
 };
 

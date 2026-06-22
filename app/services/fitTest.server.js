@@ -194,6 +194,20 @@ export async function runFitTest(shopDomain) {
     .sort((a, b) => b.avgRivals - a.avgRivals)
     .slice(0, 5);
 
+  // Average rival orders per hour-of-day (0-23), combined across all days.
+  // Drives the 24h distribution bar chart on the Fit Report.
+  const hourAgg = Array.from({ length: 24 }, () => ({ count: 0, totalRivals: 0 }));
+  for (let i = 0; i < orders.length; i++) {
+    const h = orders[i].createdAt.getUTCHours();
+    hourAgg[h].count++;
+    hourAgg[h].totalRivals += rivalCounts[i];
+  }
+  const hourly = hourAgg.map((b, hour) => ({
+    hour,
+    avgRivals: b.count ? Math.round((b.totalRivals / b.count) * 100) / 100 : 0,
+    orderCount: b.count,
+  }));
+
   // AOV spread: standard deviation as % of mean. Wide spread = good for
   // matching, narrow spread = bad (everyone buying the same thing at
   // similar prices means many rivals).
@@ -245,6 +259,7 @@ export async function runFitTest(shopDomain) {
       "4+": Math.round((histogram["4+"] / orders.length) * 100),
     },
     worstHours,
+    hourly,
     aov: {
       mean: Math.round(meanAov * 100) / 100,
       stdDev: Math.round(stdDev * 100) / 100,
