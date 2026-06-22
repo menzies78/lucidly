@@ -1,7 +1,7 @@
-// UNLINKED demo of the full onboarding Fit Test flow, playable on a live store
-// for screen-recording / iteration. Starts from the very first install screen:
-// a quick 3-slider Q&A that gives an INSTANT primed verdict (never gates), then
-// importing → calculating → the live Fit Report computed from REAL order history.
+// UNLINKED demo of the onboarding Fit Test flow, playable on a live store for
+// screen-recording / iteration. Starts on a graphical intro (how Lucidly works +
+// who it suits), then a single CTA kicks off importing → calculating → the live
+// Fit Report computed from REAL order history.
 //
 // Non-destructive: the loader reads the cached fit snapshot (getFitTest) and
 // only computes if one doesn't exist yet. It never alters onboarding state,
@@ -15,11 +15,11 @@ import { useEffect, useState } from "react";
 import { json } from "@remix-run/node";
 import { useLoaderData } from "@remix-run/react";
 import {
-  Page, Card, Box, BlockStack, InlineStack, Text, Button, Spinner, Banner, RangeSlider,
+  Page, Card, Box, BlockStack, InlineStack, Text, Spinner, Banner,
 } from "@shopify/polaris";
 import { authenticate } from "../shopify.server";
 import { runFitTest, getFitTest } from "../services/fitTest.server.js";
-import FitReport, { VerdictBadge } from "../components/FitReport";
+import FitReport from "../components/FitReport";
 
 export const loader = async ({ request }) => {
   const { session } = await authenticate.admin(request);
@@ -57,175 +57,38 @@ function ProgressBar({ pct }: { pct: number }) {
   );
 }
 
-function FeatureBullet({ children, tone = "good" }: { children: React.ReactNode; tone?: "good" | "challenge" }) {
-  const isGood = tone === "good";
+// "Who is Lucidly for?" answer: a large primary line + smaller supporting copy,
+// led by an oversized purple tick.
+function WhoBullet({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <InlineStack gap="200" blockAlign="start" wrap={false}>
-      <span style={{
-        color: isGood ? PURPLE : "#B45309", fontSize: 14, fontWeight: 700, lineHeight: "20px",
-      }}>{isGood ? "\u2713" : "\u0021"}</span>
-      <Text as="span" variant="bodyMd">{children}</Text>
+    <InlineStack gap="300" blockAlign="start" wrap={false}>
+      <span style={{ color: PURPLE, fontSize: 24, fontWeight: 800, lineHeight: "30px" }}>{"\u2713"}</span>
+      <BlockStack gap="050">
+        <Text as="span" variant="headingMd">{title}</Text>
+        <Text as="span" variant="bodyMd" tone="subdued">{children}</Text>
+      </BlockStack>
     </InlineStack>
   );
 }
 
-// The four value-variety options (slider index 0..3) and the per-option base
-// probability that two orders in the same hour land within ±1% of each other.
-// Re-anchored on real live match rates: Vollebak (~30/day, ~200 products, very
-// mixed) runs ~100% live, and HM holds a 92% rolling-30d rate even at ~45/day
-// THROUGH a sale (which compresses value variety). So "very mixed" must stay
-// near-perfect across normal volumes; the lower options carry the volume drop-off.
-const VARIETY_LABELS = ["All the same", "Very similar", "Some variety", "Very mixed"];
-const VARIETY_BASE = [0.80, 0.35, 0.07, 0.008];
-
-// One honest, plain-English summary per verdict band, reflecting what each score
-// actually means for how much Meta revenue will read as matched vs unverified.
-const VERDICT_SUMMARY: Record<string, string> = {
-  excellent: "Your orders look highly distinguishable. Lucidly should match the large majority of your Meta conversions straight to the order that produced them.",
-  good: "Your orders are mostly easy to tell apart. Lucidly should match most of your Meta conversions, with only a small share reading as unverified.",
-  passable: "Lucidly will match a solid share of your Meta conversions. Some of your orders are similar enough that a portion of revenue will read as unverified rather than tied to a specific order.",
-  below: "Your orders are fairly similar to one another, so a meaningful share of your Meta revenue will read as unverified rather than matched to a specific order. You can still use Lucidly - just go in with eyes open.",
-  poor: "Your orders are hard to tell apart on value and time, so statistical matching will leave a large share unverified. Our cookie-based Layer 1 (coming) is designed to close this gap.",
-};
-
-// Quick, client-side proxy for the real matcher, calibrated against real stores.
-// The matcher's confidence is 100/(1+rivals), where rivals are orders sharing an
-// hourly slot at a near-identical (±1%) value. We estimate:
-//   peers   = orders competing in the same hour  ≈ ordersPerDay × 0.092
-//             (anchored on Vollebak: 20.9 orders/day → 1.92 same-hour peers)
-//   collide = chance a peer is within ±1% of value (driven by price variety,
-//             diluted by a broad catalogue)
-//   rivals  = peers × collide  →  confidence = 100/(1+rivals)
-// Validated against live match rates: Vollebak (~30/day, ~200 products, very
-// mixed) → ~98 (runs ~100% live); HM very-mixed at normal volume → ~98, and
-// drops toward Good only when a sale both lifts volume and compresses variety.
-// Maps to the SAME four verdict bands the real Fit Report uses, so the instant
-// read rarely disagrees.
-const PEERS_PER_OPD = 0.092;
-
-function quickVerdict({ ordersPerDay, products, variety, saleNow }: {
-  ordersPerDay: number; products: number; variety: number; saleNow: boolean;
-}): { verdict: string; confidence: number; reasons: Array<{ tone: "good" | "challenge"; text: React.ReactNode }> } {
-  const base = VARIETY_BASE[variety] ?? 0.12;
-  // More products spread prices across more price points → fewer ±1% collisions.
-  const productFactor = Math.min(1.8, Math.max(0.5, 1.6 - 0.35 * Math.log10(Math.max(1, products))));
-  const collide = Math.min(0.98, Math.max(0.01, base * productFactor));
-  // The sale flag is informational only - it never moves the score. The estimate
-  // reflects normal trading; the sale note just primes expectations.
-  const peers = ordersPerDay * PEERS_PER_OPD;
-  const expectedRivals = peers * collide;
-  const confidence = Math.round(Math.max(5, Math.min(99, 100 / (1 + expectedRivals))));
-
-  // Five-band scale: 90+ excellent, 75+ good, 65+ passable, 50+ below average, <50 not a good fit.
-  let verdict: string;
-  if (confidence >= 90) verdict = "excellent";
-  else if (confidence >= 75) verdict = "good";
-  else if (confidence >= 65) verdict = "passable";
-  else if (confidence >= 50) verdict = "below";
-  else verdict = "poor";
-
-  // Personalised reasons - only the ones that actually apply to their answers.
-  const reasons: Array<{ tone: "good" | "challenge"; text: React.ReactNode }> = [];
-  if (variety >= 3) reasons.push({ tone: "good", text: <><strong>Varied order values.</strong> A wide spread of prices makes each order easy to tell apart.</> });
-  else if (variety === 2) reasons.push({ tone: "good", text: <><strong>Some variety in your order values.</strong> A reasonable spread of prices helps tell most of your orders apart.</> });
-  else if (variety <= 1) reasons.push({ tone: "challenge", text: <><strong>Similar order values.</strong> When orders share a near-identical value, each one in the same hour roughly halves the confidence on its match.</> });
-  if (products <= 3) reasons.push({ tone: "challenge", text: <><strong>Very few products.</strong> One-price or single-product stores produce near-identical orders that are hard to separate.</> });
-  else if (products >= 100 && variety >= 2) reasons.push({ tone: "good", text: <><strong>A broad catalogue.</strong> Different products at different prices naturally separate your orders.</> });
-  if (ordersPerDay >= 80 && variety <= 1) reasons.push({ tone: "challenge", text: <><strong>High volume, narrow prices.</strong> Lots of similarly-priced orders land in each hour, so they compete to match the same Meta conversion.</> });
-  else if (ordersPerDay <= 30 && variety >= 2) reasons.push({ tone: "good", text: <><strong>Steady, spread-out flow.</strong> Orders arrive across the day rather than all at once.</> });
-  if (saleNow) reasons.push({ tone: "challenge", text: <><strong>You&apos;re mid-sale.</strong> The fit score indicates the estimated suitability outside of the sale period.</> });
-
-  if (reasons.length === 0) {
-    reasons.push({ tone: confidence >= 60 ? "good" : "challenge",
-      text: <>This is roughly how distinguishable your orders look to our matcher, based on your volume and price spread.</> });
-  }
-  return { verdict, confidence, reasons: reasons.slice(0, 3) };
-}
-
-// Tick-scale row aligned to the slider thumb. A Polaris thumb is 16px, so its
-// centre travels from 8px to (width - 8px) - i.e. within the track inset, not
-// the full container width. We position each tick at the real thumb-centre with
-// calc(f * (100% - 16px) + 8px), centring labels on their dot (edge ticks anchor
-// inward so they don't clip). activeIndex highlights one tick (variety scale).
-const THUMB_PX = 16;
-function ScaleTicks({ ticks, min, max, activeIndex }: {
-  ticks: Array<{ v: number; label: string }>; min: number; max: number; activeIndex?: number;
-}) {
+function PurpleButton({ children, onClick }: { children: React.ReactNode; onClick: () => void }) {
   return (
-    <div style={{ position: "relative", height: 14, marginTop: 6 }}>
-      {ticks.map((t, i) => {
-        const f = (t.v - min) / (max - min);
-        const tx = i === 0 ? "0" : i === ticks.length - 1 ? "-100%" : "-50%";
-        const active = activeIndex === i;
-        return (
-          <span key={i} style={{
-            position: "absolute",
-            left: `calc(${f} * (100% - ${THUMB_PX}px) + ${THUMB_PX / 2}px)`,
-            transform: `translateX(${tx})`,
-            fontSize: 11, whiteSpace: "nowrap",
-            fontWeight: active ? 700 : 400,
-            color: active ? PURPLE : "#8C9196",
-          }}>{t.label}</span>
-        );
-      })}
-    </div>
+    <button type="button" onClick={onClick} style={{
+      display: "inline-flex", alignItems: "center", justifyContent: "center",
+      width: "100%", padding: "16px 24px", border: "none", borderRadius: 10,
+      cursor: "pointer", color: "#fff", fontWeight: 700, fontSize: 16, letterSpacing: 0.5,
+      background: `linear-gradient(90deg, ${PURPLE}, ${PURPLE_LIGHT})`,
+      boxShadow: "0 4px 14px rgba(124,58,237,0.35)",
+    }}>{children}</button>
   );
 }
 
-function SliderTile({ label, helper, value, min, max, step = 1, onChange, display, scale }: {
-  label: string; helper: string; value: number; min: number; max: number;
-  step?: number; onChange: (v: number) => void; display: React.ReactNode; scale?: React.ReactNode;
-}) {
-  return (
-    <Box padding="400" background="bg-surface-secondary" borderRadius="300" borderColor="border" borderWidth="025">
-      <BlockStack gap="100">
-        <InlineStack align="space-between" blockAlign="center">
-          <Text as="span" variant="headingSm">{label}</Text>
-          <span style={{ color: PURPLE, fontWeight: 700, fontSize: 16 }}>{display}</span>
-        </InlineStack>
-        <Text as="p" variant="bodySm" tone="subdued">{helper}</Text>
-        <Box paddingBlockStart="200">
-          <RangeSlider
-            label={label} labelHidden value={value} min={min} max={max} step={step}
-            onChange={(v: number | [number, number]) => onChange(Array.isArray(v) ? v[0] : v)}
-          />
-        </Box>
-        {scale}
-      </BlockStack>
-    </Box>
-  );
-}
-
-function SegToggle({ value, onChange }: { value: boolean; onChange: (v: boolean) => void }) {
-  const opt = (active: boolean, label: string, v: boolean) => (
-    <button type="button" onClick={() => onChange(v)} style={{
-      flex: 1, padding: "10px 0", border: "none", cursor: "pointer",
-      background: active ? `linear-gradient(90deg, ${PURPLE}, ${PURPLE_LIGHT})` : "transparent",
-      color: active ? "#fff" : "#6B7280", fontWeight: 600, fontSize: 14,
-      transition: "all 0.2s ease",
-    }}>{label}</button>
-  );
-  return (
-    <div style={{ display: "flex", border: "1px solid #E3E3E3", borderRadius: 8, overflow: "hidden" }}>
-      {opt(!value, "No", false)}
-      {opt(value, "Yes", true)}
-    </div>
-  );
-}
-
-type Step = "quiz" | "importing" | "running" | "result";
+type Step = "intro" | "importing" | "running" | "result";
 
 export default function FitDemo() {
   const { data } = useLoaderData<typeof loader>() as any;
-  const [step, setStep] = useState<Step>("quiz");
+  const [step, setStep] = useState<Step>("intro");
   const [imported, setImported] = useState(0);
-
-  // Quick Q&A state (primes expectations - never gates).
-  const [ordersPerDay, setOrdersPerDay] = useState(20);
-  const [products, setProducts] = useState(50);
-  const [variety, setVariety] = useState(2); // 0..3 index into VARIETY_LABELS
-  const [saleNow, setSaleNow] = useState(false);
-  const [showVerdict, setShowVerdict] = useState(false);
 
   const totalOrders: number = data?.ordersAnalysed || 0;
 
@@ -253,14 +116,13 @@ export default function FitDemo() {
     return () => clearTimeout(id);
   }, [step]);
 
-  // ─── Quick Q&A (primes expectations before the real test) ─────────────
-  if (step === "quiz") {
-    const verdict = quickVerdict({ ordersPerDay, products, variety, saleNow });
+  // ─── Intro: how Lucidly works + who it's for + CTA ────────────────────
+  if (step === "intro") {
     return (
       <Page>
         <Box paddingBlockEnd="600">
           <BlockStack gap="400">
-            {/* ─── Graphical intro: how it works + who it suits ─────────── */}
+            {/* Graphical intro: how it works + who it suits */}
             <Card>
               <Box padding="600">
                 <BlockStack gap="500">
@@ -275,113 +137,44 @@ export default function FitDemo() {
                     </Text>
                   </BlockStack>
                   <div style={{ borderTop: "1px solid #E3E3E3" }} />
-                  <BlockStack gap="300">
-                    <Text as="h2" variant="headingLg">Who it&apos;s a great fit for</Text>
-                    <BlockStack gap="200">
-                      <FeatureBullet><strong>Varied order values</strong> - fashion, homeware, and considered-purchase brands. A spread of prices makes each order easy to tell apart.</FeatureBullet>
-                      <FeatureBullet><strong>Mid-range to higher AOV</strong> - fewer orders landing on the exact same price point in the same moment.</FeatureBullet>
-                      <FeatureBullet><strong>A broad catalogue</strong> - different products at different prices naturally separate your orders.</FeatureBullet>
-                      <FeatureBullet><strong>Steady, spread-out order flow</strong> - orders arriving across the day rather than all in the same few minutes.</FeatureBullet>
-                      <FeatureBullet><strong>Normal day-to-day trading</strong> - outside of a major sale, the Fit Test reflects your real, ongoing match rate.</FeatureBullet>
+                  <BlockStack gap="400">
+                    <Text as="h2" variant="heading2xl">Who is Lucidly for?</Text>
+                    <BlockStack gap="400">
+                      <WhoBullet title="Stores with varied order values">
+                        Fashion, homeware, and considered-purchase brands. A spread of prices makes each order easy to tell apart.
+                      </WhoBullet>
+                      <WhoBullet title="Mid-range to higher AOV">
+                        Fewer orders landing on the exact same price point in the same moment.
+                      </WhoBullet>
+                      <WhoBullet title="A broad catalogue">
+                        Different products at different prices naturally separate your orders.
+                      </WhoBullet>
+                      <WhoBullet title="Steady, spread-out order flow">
+                        Orders arriving across the day rather than all in the same few minutes.
+                      </WhoBullet>
+                      <WhoBullet title="Normal day-to-day trading">
+                        Outside of a major sale, the Fit Test reflects your real, ongoing match rate.
+                      </WhoBullet>
                     </BlockStack>
                   </BlockStack>
                 </BlockStack>
               </Box>
             </Card>
 
-            {/* ─── The instant-read test ────────────────────────────────── */}
+            {/* The Fit Test CTA */}
             <Card>
               <Box padding="600">
-                <BlockStack gap="500">
+                <BlockStack gap="400">
                   <BlockStack gap="200">
                     <Text as="h2" variant="heading2xl">Will Lucidly work for your store?</Text>
                     <Text as="p" variant="bodyLg" tone="subdued">
-                      Select the three values below which best describe your average trading day
-                      to get an instant verdict on how suitable Lucidly might be for your store.
+                      The Fit Test reads your last 90 days of real orders and predicts exactly how
+                      accurately Lucidly will match your Meta conversions - no guessing, no commitment.
                     </Text>
                   </BlockStack>
-
-                  <BlockStack gap="300">
-                  <SliderTile
-                    label="Orders per day" helper="Roughly how many orders do you take on a normal day?"
-                    value={ordersPerDay} min={0} max={100} step={5}
-                    onChange={(v) => { setOrdersPerDay(v); setShowVerdict(false); }}
-                    display={ordersPerDay >= 100 ? "100+" : ordersPerDay}
-                    scale={<ScaleTicks min={0} max={100} ticks={[
-                      { v: 0, label: "0" }, { v: 10, label: "10" }, { v: 20, label: "20" },
-                      { v: 30, label: "30" }, { v: 40, label: "40" }, { v: 50, label: "50" },
-                      { v: 60, label: "60" }, { v: 70, label: "70" }, { v: 80, label: "80" },
-                      { v: 90, label: "90" }, { v: 100, label: "100+" },
-                    ]} />}
-                  />
-                  <SliderTile
-                    label="Number of products" helper="How many distinct products do you sell (parent products, not variants)?"
-                    value={products} min={0} max={500} step={10}
-                    onChange={(v) => { setProducts(v); setShowVerdict(false); }}
-                    display={products >= 500 ? "500+" : products}
-                    scale={<ScaleTicks min={0} max={500} ticks={[
-                      { v: 0, label: "0" }, { v: 100, label: "100" }, { v: 200, label: "200" },
-                      { v: 300, label: "300" }, { v: 400, label: "400" }, { v: 500, label: "500+" },
-                    ]} />}
-                  />
-                  <SliderTile
-                    label="How much do order values vary?" helper="Do most of your orders have a similar value, or different values?"
-                    value={variety} min={0} max={3} step={1}
-                    onChange={(v) => { setVariety(v); setShowVerdict(false); }}
-                    display={VARIETY_LABELS[variety]}
-                    scale={<ScaleTicks min={0} max={3} activeIndex={variety}
-                      ticks={VARIETY_LABELS.map((label, i) => ({ v: i, label }))} />}
-                  />
-
-                  <Box padding="400" background="bg-surface-secondary" borderRadius="300" borderColor="border" borderWidth="025">
-                    <BlockStack gap="200">
-                      <Text as="span" variant="headingSm">Running a big sale or single-product promo right now?</Text>
-                      <Box paddingBlockStart="100">
-                        <SegToggle value={saleNow} onChange={(v) => { setSaleNow(v); setShowVerdict(false); }} />
-                      </Box>
-                      {saleNow && (
-                        <Text as="p" variant="bodySm" tone="subdued">
-                          Sales generally increase the volume of similar order values, which can
-                          temporarily affect the accuracy of Lucidly&apos;s matching system.
-                        </Text>
-                      )}
-                    </BlockStack>
-                  </Box>
-                </BlockStack>
-
-                {!showVerdict && (
-                  <Button variant="primary" size="large" fullWidth onClick={() => setShowVerdict(true)}>
-                    See my instant verdict
-                  </Button>
-                )}
-
-                {showVerdict && (
-                  <div style={{
-                    padding: 22, borderRadius: 14,
-                    background: "linear-gradient(135deg, rgba(124,58,237,0.06), rgba(167,139,250,0.12))",
-                    border: "1px solid rgba(124,58,237,0.20)",
-                  }}>
-                    <BlockStack gap="400">
-                      <BlockStack gap="300" inlineAlign="center">
-                        <Text as="span" variant="bodyMd" tone="subdued">Your estimated fit score</Text>
-                        <VerdictBadge verdict={verdict.verdict} score={verdict.confidence} size="large" />
-                      </BlockStack>
-                      <BlockStack gap="200">
-                        {verdict.reasons.map((r, i) => (
-                          <FeatureBullet key={i} tone={r.tone}>{r.text}</FeatureBullet>
-                        ))}
-                      </BlockStack>
-                      <Text as="p" variant="bodyMd">{VERDICT_SUMMARY[verdict.verdict]}</Text>
-                      <Text as="p" variant="bodySm" tone="subdued">
-                        This is an estimate from three answers. The real Fit Test below checks your{" "}
-                        <strong>actual</strong> last-90-days orders - no guessing, no commitment.
-                      </Text>
-                      <Button variant="primary" size="large" fullWidth onClick={() => setStep("importing")}>
-                        Run the Fit Test on my real orders
-                      </Button>
-                    </BlockStack>
-                  </div>
-                )}
+                  <PurpleButton onClick={() => setStep("importing")}>
+                    RUN THE FIT TEST
+                  </PurpleButton>
                 </BlockStack>
               </Box>
             </Card>
