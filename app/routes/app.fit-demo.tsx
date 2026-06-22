@@ -122,30 +122,32 @@ function quickVerdict({ ordersPerDay, products, variety, saleNow }: {
   return { verdict, confidence, reasons: reasons.slice(0, 3) };
 }
 
-// Small tick-scale row rendered under a slider. Evenly-spaced labels map to
-// evenly-spaced values, so flex space-between aligns them with the track.
-function Ticks({ items }: { items: string[] }) {
+// Tick-scale row aligned to the slider thumb. A Polaris thumb is 16px, so its
+// centre travels from 8px to (width - 8px) - i.e. within the track inset, not
+// the full container width. We position each tick at the real thumb-centre with
+// calc(f * (100% - 16px) + 8px), centring labels on their dot (edge ticks anchor
+// inward so they don't clip). activeIndex highlights one tick (variety scale).
+const THUMB_PX = 16;
+function ScaleTicks({ ticks, min, max, activeIndex }: {
+  ticks: Array<{ v: number; label: string }>; min: number; max: number; activeIndex?: number;
+}) {
   return (
-    <div style={{ display: "flex", justifyContent: "space-between", marginTop: 2 }}>
-      {items.map((t, i) => (
-        <span key={i} style={{ fontSize: 11, color: "#8C9196" }}>{t}</span>
-      ))}
-    </div>
-  );
-}
-
-// Variety scale: the four labels under the slider, active one highlighted.
-function VarietyTicks({ active }: { active: number }) {
-  return (
-    <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4 }}>
-      {VARIETY_LABELS.map((t, i) => (
-        <span key={i} style={{
-          flex: 1, fontSize: 11,
-          textAlign: i === 0 ? "left" : i === VARIETY_LABELS.length - 1 ? "right" : "center",
-          fontWeight: i === active ? 700 : 400,
-          color: i === active ? PURPLE : "#8C9196",
-        }}>{t}</span>
-      ))}
+    <div style={{ position: "relative", height: 14, marginTop: 6 }}>
+      {ticks.map((t, i) => {
+        const f = (t.v - min) / (max - min);
+        const tx = i === 0 ? "0" : i === ticks.length - 1 ? "-100%" : "-50%";
+        const active = activeIndex === i;
+        return (
+          <span key={i} style={{
+            position: "absolute",
+            left: `calc(${f} * (100% - ${THUMB_PX}px) + ${THUMB_PX / 2}px)`,
+            transform: `translateX(${tx})`,
+            fontSize: 11, whiteSpace: "nowrap",
+            fontWeight: active ? 700 : 400,
+            color: active ? PURPLE : "#8C9196",
+          }}>{t.label}</span>
+        );
+      })}
     </div>
   );
 }
@@ -257,21 +259,30 @@ export default function FitDemo() {
                     value={ordersPerDay} min={0} max={100} step={5}
                     onChange={(v) => { setOrdersPerDay(v); setShowVerdict(false); }}
                     display={ordersPerDay >= 100 ? "100+" : ordersPerDay}
-                    scale={<Ticks items={["0", "10", "20", "30", "40", "50", "60", "70", "80", "90", "100+"]} />}
+                    scale={<ScaleTicks min={0} max={100} ticks={[
+                      { v: 0, label: "0" }, { v: 10, label: "10" }, { v: 20, label: "20" },
+                      { v: 30, label: "30" }, { v: 40, label: "40" }, { v: 50, label: "50" },
+                      { v: 60, label: "60" }, { v: 70, label: "70" }, { v: 80, label: "80" },
+                      { v: 90, label: "90" }, { v: 100, label: "100+" },
+                    ]} />}
                   />
                   <SliderTile
                     label="Number of products" helper="How many distinct products do you sell (parent products, not variants)?"
                     value={products} min={0} max={500} step={10}
                     onChange={(v) => { setProducts(v); setShowVerdict(false); }}
                     display={products >= 500 ? "500+" : products}
-                    scale={<Ticks items={["0", "100", "200", "300", "400", "500+"]} />}
+                    scale={<ScaleTicks min={0} max={500} ticks={[
+                      { v: 0, label: "0" }, { v: 100, label: "100" }, { v: 200, label: "200" },
+                      { v: 300, label: "300" }, { v: 400, label: "400" }, { v: 500, label: "500+" },
+                    ]} />}
                   />
                   <SliderTile
                     label="How much do order values vary?" helper="Do most of your orders have a similar value, or different values?"
                     value={variety} min={0} max={3} step={1}
                     onChange={(v) => { setVariety(v); setShowVerdict(false); }}
                     display={VARIETY_LABELS[variety]}
-                    scale={<VarietyTicks active={variety} />}
+                    scale={<ScaleTicks min={0} max={3} activeIndex={variety}
+                      ticks={VARIETY_LABELS.map((label, i) => ({ v: i, label }))} />}
                   />
 
                   <Box padding="400" background="bg-surface-secondary" borderRadius="300" borderColor="border" borderWidth="025">
