@@ -173,7 +173,7 @@ export default function FitDemo() {
                     </Text>
                   </BlockStack>
                   <PurpleButton onClick={() => setStep("importing")}>
-                    RUN THE FIT TEST
+                    RUN THE 30 SECOND FIT TEST
                   </PurpleButton>
                 </BlockStack>
               </Box>
