@@ -26,24 +26,30 @@ function formatHour(h: number) {
   return h < 12 ? `${h}am` : `${h - 12}pm`;
 }
 
-export function VerdictBadge({ verdict, score }: { verdict: string; score: number }) {
+export function VerdictBadge({ verdict, score, size = "default" }: { verdict: string; score: number; size?: "default" | "large" }) {
   const palette: Record<string, { bg: string; fg: string; label: string; icon: string }> = {
-    excellent: { bg: "#D1FAE5", fg: "#065F46", label: "Excellent fit", icon: "[OK]" },
-    good:      { bg: "#DBEAFE", fg: "#1E40AF", label: "Good fit",      icon: "[+]" },
-    marginal:  { bg: "#FEF3C7", fg: "#92400E", label: "Marginal fit",  icon: "[!]" },
+    // Five-band scale used by the quick Q&A instant read (90+/75+/65+/50+/<50).
+    excellent: { bg: "#D1FAE5", fg: "#065F46", label: "Excellent fit",  icon: "[OK]" },
+    good:      { bg: "#DBEAFE", fg: "#1E40AF", label: "Good fit",       icon: "[+]" },
+    passable:  { bg: "#FEF9C3", fg: "#854D0E", label: "Passable fit",   icon: "[~]" },
+    below:     { bg: "#FFEDD5", fg: "#9A3412", label: "Below average",  icon: "[!]" },
+    poor:      { bg: "#FEE2E2", fg: "#991B1B", label: "Not a good fit", icon: "[X]" },
+    // Legacy bands still emitted by the real fitTest.server.js algorithm.
+    marginal:  { bg: "#FEF3C7", fg: "#92400E", label: "Marginal fit",   icon: "[!]" },
     challenging: { bg: "#FEE2E2", fg: "#991B1B", label: "Challenging fit", icon: "[X]" },
   };
   const p = palette[verdict] || palette.marginal;
+  const lg = size === "large";
   return (
     <div style={{
-      display: "inline-flex", alignItems: "center", gap: 12,
-      padding: "10px 18px", borderRadius: 999,
+      display: "inline-flex", alignItems: "center", gap: lg ? 16 : 12,
+      padding: lg ? "16px 30px" : "10px 18px", borderRadius: 999,
       background: p.bg, color: p.fg,
-      fontSize: 15, fontWeight: 700,
+      fontSize: lg ? 22 : 15, fontWeight: 700,
     }}>
-      <span style={{ fontFamily: "monospace", fontSize: 13 }}>{p.icon}</span>
+      <span style={{ fontFamily: "monospace", fontSize: lg ? 17 : 13 }}>{p.icon}</span>
       <span>{p.label}</span>
-      <span style={{ fontSize: 22, fontWeight: 800, marginLeft: 8 }}>{score}<span style={{ fontSize: 13, opacity: 0.7 }}>/100</span></span>
+      <span style={{ fontSize: lg ? 34 : 22, fontWeight: 800, marginLeft: lg ? 12 : 8 }}>{score}<span style={{ fontSize: lg ? 17 : 13, opacity: 0.7 }}>/100</span></span>
     </div>
   );
 }

@@ -78,6 +78,16 @@ function FeatureBullet({ children, tone = "good" }: { children: React.ReactNode;
 const VARIETY_LABELS = ["All the same", "Very similar", "Some variety", "Very mixed"];
 const VARIETY_BASE = [0.80, 0.35, 0.07, 0.008];
 
+// One honest, plain-English summary per verdict band, reflecting what each score
+// actually means for how much Meta revenue will read as matched vs unverified.
+const VERDICT_SUMMARY: Record<string, string> = {
+  excellent: "Your orders look highly distinguishable. Lucidly should match the large majority of your Meta conversions straight to the order that produced them.",
+  good: "Your orders are mostly easy to tell apart. Lucidly should match most of your Meta conversions, with only a small share reading as unverified.",
+  passable: "Lucidly will match a solid share of your Meta conversions. Some of your orders are similar enough that a portion of revenue will read as unverified rather than tied to a specific order.",
+  below: "Your orders are fairly similar to one another, so a meaningful share of your Meta revenue will read as unverified rather than matched to a specific order. You can still use Lucidly - just go in with eyes open.",
+  poor: "Your orders are hard to tell apart on value and time, so statistical matching will leave a large share unverified. Our cookie-based Layer 1 (coming) is designed to close this gap.",
+};
+
 // Quick, client-side proxy for the real matcher, calibrated against real stores.
 // The matcher's confidence is 100/(1+rivals), where rivals are orders sharing an
 // hourly slot at a near-identical (±1%) value. We estimate:
@@ -105,15 +115,18 @@ function quickVerdict({ ordersPerDay, products, variety, saleNow }: {
   const expectedRivals = peers * collide;
   const confidence = Math.round(Math.max(5, Math.min(99, 100 / (1 + expectedRivals))));
 
+  // Five-band scale: 90+ excellent, 75+ good, 65+ passable, 50+ below average, <50 not a good fit.
   let verdict: string;
-  if (confidence >= 80) verdict = "excellent";
-  else if (confidence >= 60) verdict = "good";
-  else if (confidence >= 40) verdict = "marginal";
-  else verdict = "challenging";
+  if (confidence >= 90) verdict = "excellent";
+  else if (confidence >= 75) verdict = "good";
+  else if (confidence >= 65) verdict = "passable";
+  else if (confidence >= 50) verdict = "below";
+  else verdict = "poor";
 
   // Personalised reasons - only the ones that actually apply to their answers.
   const reasons: Array<{ tone: "good" | "challenge"; text: React.ReactNode }> = [];
   if (variety >= 3) reasons.push({ tone: "good", text: <><strong>Varied order values.</strong> A wide spread of prices makes each order easy to tell apart.</> });
+  else if (variety === 2) reasons.push({ tone: "good", text: <><strong>Some variety in your order values.</strong> A reasonable spread of prices helps tell most of your orders apart.</> });
   else if (variety <= 1) reasons.push({ tone: "challenge", text: <><strong>Similar order values.</strong> When orders share a near-identical value, each one in the same hour roughly halves the confidence on its match.</> });
   if (products <= 3) reasons.push({ tone: "challenge", text: <><strong>Very few products.</strong> One-price or single-product stores produce near-identical orders that are hard to separate.</> });
   else if (products >= 100 && variety >= 2) reasons.push({ tone: "good", text: <><strong>A broad catalogue.</strong> Different products at different prices naturally separate your orders.</> });
@@ -245,21 +258,49 @@ export default function FitDemo() {
     return (
       <Page>
         <Box paddingBlockEnd="600">
-          <Card>
-            <Box padding="600">
-              <BlockStack gap="500">
-                <BlockStack gap="200">
+          <BlockStack gap="400">
+            {/* ─── Graphical intro: how it works + who it suits ─────────── */}
+            <Card>
+              <Box padding="600">
+                <BlockStack gap="500">
                   <GradientPill>Welcome to Lucidly</GradientPill>
-                  <Text as="h1" variant="heading2xl">Will Lucidly work for your store?</Text>
-                  <Text as="p" variant="bodyLg" tone="subdued">
-                    Lucidly reveals which customers came from Meta ads by matching conversions
-                    to your orders on <strong>time</strong> and <strong>value</strong>. Answer
-                    three quick questions for an instant read - then we&apos;ll check your{" "}
-                    <strong>real</strong> order history to confirm.
-                  </Text>
+                  <BlockStack gap="300">
+                    <Text as="h1" variant="heading2xl">How does Lucidly work?</Text>
+                    <Text as="p" variant="bodyLg" tone="subdued">
+                      Lucidly matches your Meta conversions to your Shopify orders statistically -
+                      comparing the Meta-reported transaction amount and time slot with Shopify
+                      orders of the same amount and time slot. So it works best when your orders
+                      are distinguishable from one another.
+                    </Text>
+                  </BlockStack>
+                  <div style={{ borderTop: "1px solid #E3E3E3" }} />
+                  <BlockStack gap="300">
+                    <Text as="h2" variant="headingLg">Who it&apos;s a great fit for</Text>
+                    <BlockStack gap="200">
+                      <FeatureBullet><strong>Varied order values</strong> - fashion, homeware, and considered-purchase brands. A spread of prices makes each order easy to tell apart.</FeatureBullet>
+                      <FeatureBullet><strong>Mid-range to higher AOV</strong> - fewer orders landing on the exact same price point in the same moment.</FeatureBullet>
+                      <FeatureBullet><strong>A broad catalogue</strong> - different products at different prices naturally separate your orders.</FeatureBullet>
+                      <FeatureBullet><strong>Steady, spread-out order flow</strong> - orders arriving across the day rather than all in the same few minutes.</FeatureBullet>
+                      <FeatureBullet><strong>Normal day-to-day trading</strong> - outside of a major sale, the Fit Test reflects your real, ongoing match rate.</FeatureBullet>
+                    </BlockStack>
+                  </BlockStack>
                 </BlockStack>
+              </Box>
+            </Card>
 
-                <BlockStack gap="300">
+            {/* ─── The instant-read test ────────────────────────────────── */}
+            <Card>
+              <Box padding="600">
+                <BlockStack gap="500">
+                  <BlockStack gap="200">
+                    <Text as="h2" variant="heading2xl">Will Lucidly work for your store?</Text>
+                    <Text as="p" variant="bodyLg" tone="subdued">
+                      Select the three values below which best describe your average trading day
+                      to get an instant verdict on how suitable Lucidly might be for your store.
+                    </Text>
+                  </BlockStack>
+
+                  <BlockStack gap="300">
                   <SliderTile
                     label="Orders per day" helper="Roughly how many orders do you take on a normal day?"
                     value={ordersPerDay} min={0} max={100} step={5}
@@ -315,17 +356,18 @@ export default function FitDemo() {
                     border: "1px solid rgba(124,58,237,0.20)",
                   }}>
                     <BlockStack gap="400">
-                      <BlockStack gap="200" inlineAlign="start">
-                        <Text as="span" variant="bodySm" tone="subdued">Your instant read</Text>
-                        <VerdictBadge verdict={verdict.verdict} score={verdict.confidence} />
+                      <BlockStack gap="300" inlineAlign="center">
+                        <Text as="span" variant="bodyMd" tone="subdued">Your estimated fit score</Text>
+                        <VerdictBadge verdict={verdict.verdict} score={verdict.confidence} size="large" />
                       </BlockStack>
                       <BlockStack gap="200">
                         {verdict.reasons.map((r, i) => (
                           <FeatureBullet key={i} tone={r.tone}>{r.text}</FeatureBullet>
                         ))}
                       </BlockStack>
+                      <Text as="p" variant="bodyMd">{VERDICT_SUMMARY[verdict.verdict]}</Text>
                       <Text as="p" variant="bodySm" tone="subdued">
-                        This is a rough read from what you told us. The real Fit Test checks your{" "}
+                        This is an estimate from three answers. The real Fit Test below checks your{" "}
                         <strong>actual</strong> last-90-days orders - no guessing, no commitment.
                       </Text>
                       <Button variant="primary" size="large" fullWidth onClick={() => setStep("importing")}>
@@ -334,9 +376,10 @@ export default function FitDemo() {
                     </BlockStack>
                   </div>
                 )}
-              </BlockStack>
-            </Box>
-          </Card>
+                </BlockStack>
+              </Box>
+            </Card>
+          </BlockStack>
         </Box>
       </Page>
     );
