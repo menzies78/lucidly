@@ -27,7 +27,7 @@ export const loader = async ({ request }) => {
   // Non-destructive: prefer the cached snapshot; recompute if missing or if it
   // predates the per-hour distribution (older snapshots have no `hourly`).
   let data = await getFitTest(shopDomain);
-  if (!data || (data.score !== null && !data.hourly)) data = await runFitTest(shopDomain);
+  if (!data || (data.score !== null && !data.daily)) data = await runFitTest(shopDomain);
   return json({ data, shopDomain });
 };
 
@@ -174,7 +174,7 @@ export default function FitDemo() {
                     </Text>
                   </BlockStack>
                   <PurpleButton onClick={() => setStep("importing")}>
-                    RUN THE 30 SECOND FIT TEST
+                    RUN THE 10 SECOND FIT TEST
                   </PurpleButton>
                 </BlockStack>
               </Box>
@@ -254,7 +254,7 @@ export default function FitDemo() {
   }
 
   return (
-    <Page title="Lucidly Fit Report">
+    <Page>
       <FitReport d={data} />
     </Page>
   );

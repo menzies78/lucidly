@@ -1545,10 +1545,10 @@ function JourneyFlow({ firstAOV, gapDays, secondAOV, thirdAOV, gap2to3Days, cust
     );
   }
 
-  // Below this many orders, a median/avg AOV is noise (a single order would
-  // otherwise headline as the cohort figure). Show the count but suppress the
-  // £ number until the sample is meaningful.
-  const MIN_SAMPLE = 5;
+  // Show the avg AOV as soon as there's at least one order in the cohort -
+  // Andy wants the data surfaced even for a 1-2 customer sample rather than a
+  // "too few to show" placeholder.
+  const MIN_SAMPLE = 1;
   const aov2Change = firstAOV > 0 ? Math.round(((secondAOV - firstAOV) / firstAOV) * 100) : 0;
   const aov3Change = secondAOV > 0 ? Math.round(((thirdAOV - secondAOV) / secondAOV) * 100) : 0;
   const repeatRate = firstOrderCount > 0 ? Math.round((secondOrderCount / firstOrderCount) * 100) : 0;

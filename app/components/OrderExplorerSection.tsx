@@ -66,12 +66,12 @@ export default function OrderExplorerSection({
     { accessorKey: "customerLastName", header: "Last Name",
       meta: { maxWidth: "140px", filterType: "text", description: "Customer last name (from Shopify billing address)" },
       cell: ({ getValue }) => getValue() || "-" },
-    { accessorKey: "orderCount", header: "Order #",
-      meta: { align: "right", description: "Which order this was for the customer (1st, 2nd, 3rd, etc.) at the time of purchase" },
+    { accessorKey: "orderCount", header: "Orders Placed",
+      meta: { align: "right", description: "How many orders this customer had placed at the time of this purchase" },
       cell: ({ getValue }) => {
         const v = getValue();
         if (v == null) return "-";
-        return v === 1 ? "1st" : v === 2 ? "2nd" : v === 3 ? "3rd" : `${v}th`;
+        return `${v}`;
       } },
     // ── Money ──
     { accessorKey: "revenue", header: "Revenue",
@@ -95,28 +95,6 @@ export default function OrderExplorerSection({
     { accessorKey: "tag", header: "Type",
       meta: { filterType: "multi-select", description: "How this order relates to Meta ads. Meta New = first-time customer via Meta. Meta Repeat = returning Meta-acquired customer. Meta Retargeted = existing customer converted by Meta. Meta Unmatched New/Repeat/Retargeted = UTM confirms Meta click but no statistical match. Non-Meta = online order with no Meta attribution. Non-Meta POS = in-store/POS order" },
       filterFn: "multiSelect" as any },
-    { id: "confidence", header: "Confidence",
-      meta: { filterType: "multi-select", description: "How confident the attribution match is. 100% = only possible match. Lower % = multiple candidate orders could have matched" },
-      filterFn: "multiSelect" as any,
-      accessorFn: (row) => {
-        if (row.confidence === null || row.confidence === undefined) return "";
-        if (row.confidence === 0) return "Unmatched";
-        return `${row.confidence}%`;
-      },
-    },
-    { accessorKey: "attributionSource", header: "Source",
-      meta: { filterType: "multi-select", description: "How this order was attributed. UTM & Lucidly = both UTM and statistical matcher agree. UTM = UTM confirms Meta ad but no statistical match. Lucidly = statistical match only. Unattributed = neither" },
-      filterFn: "multiSelect" as any,
-      cell: ({ getValue }) => {
-        const v = getValue();
-        if (!v || v === "Unattributed") return "-";
-        return v;
-      },
-    },
-    { accessorKey: "method", header: "Method",
-      meta: { filterType: "multi-select", description: "Attribution method used. Primary = exhaustive backtracking matcher. FAST = greedy fallback. UTM = attributed via UTM parameters" },
-      filterFn: "multiSelect" as any,
-      cell: ({ getValue }) => getValue() || "-" },
     // ── Campaign details ──
     { accessorKey: "campaign", header: "Campaign",
       meta: { maxWidth: "200px", filterType: "multi-select", description: "Meta campaign that drove this order" },
@@ -170,6 +148,29 @@ export default function OrderExplorerSection({
         return <span style={{ fontFamily: "monospace", fontSize: "11px" }}>{v}</span>;
       },
     },
+    // ── Attribution detail (moved to the very end - rarely the first thing consulted) ──
+    { id: "confidence", header: "Confidence",
+      meta: { filterType: "multi-select", description: "How confident the attribution match is. 100% = only possible match. Lower % = multiple candidate orders could have matched" },
+      filterFn: "multiSelect" as any,
+      accessorFn: (row) => {
+        if (row.confidence === null || row.confidence === undefined) return "";
+        if (row.confidence === 0) return "Unmatched";
+        return `${row.confidence}%`;
+      },
+    },
+    { accessorKey: "attributionSource", header: "Source",
+      meta: { filterType: "multi-select", description: "How this order was attributed. UTM & Lucidly = both UTM and statistical matcher agree. UTM = UTM confirms Meta ad but no statistical match. Lucidly = statistical match only. Unattributed = neither" },
+      filterFn: "multiSelect" as any,
+      cell: ({ getValue }) => {
+        const v = getValue();
+        if (!v || v === "Unattributed") return "-";
+        return v;
+      },
+    },
+    { accessorKey: "method", header: "Method",
+      meta: { filterType: "multi-select", description: "Attribution method used. Primary = exhaustive backtracking matcher. FAST = greedy fallback. UTM = attributed via UTM parameters" },
+      filterFn: "multiSelect" as any,
+      cell: ({ getValue }) => getValue() || "-" },
   ], [cs]);
 
   // Show ALL columns by default — the table is fit-content + horizontal

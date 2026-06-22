@@ -605,7 +605,13 @@ function DayTile({ title, subtitle, data, prevData, currency, highlight }: {
   title: string; subtitle: string; data: DayData; prevData: DayData; currency: string; highlight?: boolean;
 }) {
   const aov = data.adOrders > 0 ? data.adRevenue / data.adOrders : 0;
-  const blendedRevenue = data.adRevenue + data.unmatchedRevenue;
+  // "All Meta Customers" spans every Meta-related segment: Meta New / Repeat /
+  // Retargeted (incl. their UTM-unmatched variants, all rolled into adOrders),
+  // the unmatched Meta conversions (no Shopify order), AND Meta-acquired
+  // customers returning organically (metaOrganicReturn). Only Unattributed
+  // orders are excluded.
+  const allMetaOrders = data.adOrders + data.unmatchedConversions + data.metaOrganicReturnOrders;
+  const blendedRevenue = data.adRevenue + data.unmatchedRevenue + data.metaOrganicReturnRevenue;
   const blendedRoas = data.adSpend > 0 ? blendedRevenue / data.adSpend : 0;
   const newAov = data.newOrders > 0 ? data.newRevenue / data.newOrders : 0;
   const newRoas = data.adSpend > 0 ? data.newRevenue / data.adSpend : 0;
@@ -613,8 +619,8 @@ function DayTile({ title, subtitle, data, prevData, currency, highlight }: {
   // Only show WoW comparison badges on the Weekly Total tile (highlight=true),
   // not on individual day tiles.
   const showCompare = !!highlight;
-  const prevBlendedRevenue = prevData.adRevenue + prevData.unmatchedRevenue;
-  const prevTotalOrders = prevData.adOrders + prevData.unmatchedConversions;
+  const prevBlendedRevenue = prevData.adRevenue + prevData.unmatchedRevenue + prevData.metaOrganicReturnRevenue;
+  const prevTotalOrders = prevData.adOrders + prevData.unmatchedConversions + prevData.metaOrganicReturnOrders;
   const prevBlendedRoas = showCompare && prevData.adSpend > 0 ? prevBlendedRevenue / prevData.adSpend : undefined;
   const prevAov = showCompare && prevTotalOrders > 0 ? prevBlendedRevenue / prevTotalOrders : undefined;
   const prevNewAov = showCompare && prevData.newOrders > 0 ? prevData.newRevenue / prevData.newOrders : undefined;
@@ -639,9 +645,9 @@ function DayTile({ title, subtitle, data, prevData, currency, highlight }: {
 
       <div style={{ height: "8px" }} />
       <div style={{ fontSize: "11px", fontWeight: 600, color: "#e67e22", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "4px" }}>All Meta Customers</div>
-      <MetricRow label="Orders" value={String(data.adOrders + data.unmatchedConversions)} current={data.adOrders + data.unmatchedConversions} prev={showCompare ? prevData.adOrders + prevData.unmatchedConversions : undefined} />
-      <MetricRow label="Revenue" value={fmtCurrency(blendedRevenue, currency)} current={blendedRevenue} prev={showCompare ? prevData.adRevenue + prevData.unmatchedRevenue : undefined} />
-      <MetricRow label="AOV" value={(data.adOrders + data.unmatchedConversions) > 0 ? fmtCurrency(blendedRevenue / (data.adOrders + data.unmatchedConversions), currency) : "-"} current={(data.adOrders + data.unmatchedConversions) > 0 ? blendedRevenue / (data.adOrders + data.unmatchedConversions) : 0} prev={prevAov} />
+      <MetricRow label="Orders" value={String(allMetaOrders)} current={allMetaOrders} prev={showCompare ? prevTotalOrders : undefined} />
+      <MetricRow label="Revenue" value={fmtCurrency(blendedRevenue, currency)} current={blendedRevenue} prev={showCompare ? prevBlendedRevenue : undefined} />
+      <MetricRow label="AOV" value={allMetaOrders > 0 ? fmtCurrency(blendedRevenue / allMetaOrders, currency) : "-"} current={allMetaOrders > 0 ? blendedRevenue / allMetaOrders : 0} prev={prevAov} />
       <MetricRow label="ROAS" value={data.adSpend > 0 ? fmtRoas(blendedRoas) : "-"} current={blendedRoas} prev={prevBlendedRoas} />
 
       <div style={{ height: "8px" }} />

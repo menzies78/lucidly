@@ -208,6 +208,45 @@ export async function runFitTest(shopDomain) {
     orderCount: b.count,
   }));
 
+  // Daily order counts across the full lookback window (continuous series,
+  // gaps filled with 0). Drives the orders-per-day volume chart and the promo
+  // spike detector below.
+  const dayCounts = new Map(); // 'YYYY-MM-DD' -> count
+  for (const o of orders) {
+    const key = o.createdAt.toISOString().slice(0, 10);
+    dayCounts.set(key, (dayCounts.get(key) || 0) + 1);
+  }
+  const daily = [];
+  const nowMs = Date.now();
+  for (let back = LOOKBACK_DAYS - 1; back >= 0; back--) {
+    const dt = new Date(nowMs - back * 24 * 3600 * 1000);
+    const key = dt.toISOString().slice(0, 10);
+    daily.push({ date: key, count: dayCounts.get(key) || 0 });
+  }
+
+  // Promo spike detection: a contiguous run of days whose volume sits well above
+  // the merchant's baseline. Sales compress order-value variety and crowd hours,
+  // which the matcher finds harder - worth flagging on the report.
+  const dCounts = daily.map(d => d.count);
+  const dSorted = [...dCounts].sort((a, b) => a - b);
+  const dMedian = dSorted[Math.floor(dSorted.length / 2)] || 0;
+  const spikeThreshold = Math.max(dMedian * 2, dMedian + 5);
+  let promo = null;
+  if (dMedian >= 1) {
+    let runStart = -1;
+    let best = null;
+    for (let i = 0; i <= daily.length; i++) {
+      const isSpike = i < daily.length && daily[i].count >= spikeThreshold;
+      if (isSpike && runStart < 0) runStart = i;
+      if (!isSpike && runStart >= 0) {
+        const len = i - runStart;
+        if (len >= 3 && (!best || len > best.len)) best = { start: runStart, end: i - 1, len };
+        runStart = -1;
+      }
+    }
+    if (best) promo = { start: daily[best.start].date, end: daily[best.end].date, days: best.len };
+  }
+
   // AOV spread: standard deviation as % of mean. Wide spread = good for
   // matching, narrow spread = bad (everyone buying the same thing at
   // similar prices means many rivals).
@@ -260,6 +299,8 @@ export async function runFitTest(shopDomain) {
     },
     worstHours,
     hourly,
+    daily,
+    promo,
     aov: {
       mean: Math.round(meanAov * 100) / 100,
       stdDev: Math.round(stdDev * 100) / 100,

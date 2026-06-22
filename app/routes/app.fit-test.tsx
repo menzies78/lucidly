@@ -33,8 +33,8 @@ export const loader = async ({ request }) => {
   const stale = !shop.fitTestComputedAt
     || (Date.now() - shop.fitTestComputedAt.getTime() > 7 * 24 * 3600 * 1000);
   let data = await getFitTest(shopDomain);
-  // Also recompute if the snapshot predates the per-hour distribution.
-  const missingHourly = data && data.score !== null && !data.hourly;
+  // Also recompute if the snapshot predates the per-day/per-hour distributions.
+  const missingHourly = data && data.score !== null && !data.daily;
   if (!data || stale || missingHourly) {
     data = await runFitTest(shopDomain);
   }
@@ -72,7 +72,7 @@ export default function FitTest() {
   }
 
   return (
-    <Page title="Lucidly Fit Report">
+    <Page>
       <FitReport d={d} />
     </Page>
   );
