@@ -110,8 +110,9 @@ function quickVerdict({ ordersPerDay, products, variety, saleNow }: {
   // More products spread prices across more price points → fewer ±1% collisions.
   const productFactor = Math.min(1.8, Math.max(0.5, 1.6 - 0.35 * Math.log10(Math.max(1, products))));
   const collide = Math.min(0.98, Math.max(0.01, base * productFactor));
-  let peers = ordersPerDay * PEERS_PER_OPD;
-  if (saleNow) peers *= 1.7;                        // a spike crowds every hour
+  // The sale flag is informational only - it never moves the score. The estimate
+  // reflects normal trading; the sale note just primes expectations.
+  const peers = ordersPerDay * PEERS_PER_OPD;
   const expectedRivals = peers * collide;
   const confidence = Math.round(Math.max(5, Math.min(99, 100 / (1 + expectedRivals))));
 
@@ -132,7 +133,7 @@ function quickVerdict({ ordersPerDay, products, variety, saleNow }: {
   else if (products >= 100 && variety >= 2) reasons.push({ tone: "good", text: <><strong>A broad catalogue.</strong> Different products at different prices naturally separate your orders.</> });
   if (ordersPerDay >= 80 && variety <= 1) reasons.push({ tone: "challenge", text: <><strong>High volume, narrow prices.</strong> Lots of similarly-priced orders land in each hour, so they compete to match the same Meta conversion.</> });
   else if (ordersPerDay <= 30 && variety >= 2) reasons.push({ tone: "good", text: <><strong>Steady, spread-out flow.</strong> Orders arrive across the day rather than all at once.</> });
-  if (saleNow) reasons.push({ tone: "challenge", text: <><strong>You&apos;re mid-sale.</strong> Spikes crowd every hour - today&apos;s score may read lower than normal trading. Re-run after the sale.</> });
+  if (saleNow) reasons.push({ tone: "challenge", text: <><strong>You&apos;re mid-sale.</strong> The fit score indicates the estimated suitability outside of the sale period.</> });
 
   if (reasons.length === 0) {
     reasons.push({ tone: confidence >= 60 ? "good" : "challenge",
@@ -335,10 +336,15 @@ export default function FitDemo() {
                   <Box padding="400" background="bg-surface-secondary" borderRadius="300" borderColor="border" borderWidth="025">
                     <BlockStack gap="200">
                       <Text as="span" variant="headingSm">Running a big sale or single-product promo right now?</Text>
-                      <Text as="p" variant="bodySm" tone="subdued">Spikes crowd every hour and can lower today&apos;s score.</Text>
                       <Box paddingBlockStart="100">
                         <SegToggle value={saleNow} onChange={(v) => { setSaleNow(v); setShowVerdict(false); }} />
                       </Box>
+                      {saleNow && (
+                        <Text as="p" variant="bodySm" tone="subdued">
+                          Sales generally increase the volume of similar order values, which can
+                          temporarily affect the accuracy of Lucidly&apos;s matching system.
+                        </Text>
+                      )}
                     </BlockStack>
                   </Box>
                 </BlockStack>
