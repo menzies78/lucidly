@@ -71,8 +71,12 @@ function FeatureBullet({ children, tone = "good" }: { children: React.ReactNode;
 
 // The four value-variety options (slider index 0..3) and the per-option base
 // probability that two orders in the same hour land within ±1% of each other.
+// Re-anchored on real live match rates: Vollebak (~30/day, ~200 products, very
+// mixed) runs ~100% live, and HM holds a 92% rolling-30d rate even at ~45/day
+// THROUGH a sale (which compresses value variety). So "very mixed" must stay
+// near-perfect across normal volumes; the lower options carry the volume drop-off.
 const VARIETY_LABELS = ["All the same", "Very similar", "Some variety", "Very mixed"];
-const VARIETY_BASE = [0.90, 0.45, 0.12, 0.04];
+const VARIETY_BASE = [0.80, 0.35, 0.07, 0.008];
 
 // Quick, client-side proxy for the real matcher, calibrated against real stores.
 // The matcher's confidence is 100/(1+rivals), where rivals are orders sharing an
@@ -82,9 +86,11 @@ const VARIETY_BASE = [0.90, 0.45, 0.12, 0.04];
 //   collide = chance a peer is within ±1% of value (driven by price variety,
 //             diluted by a broad catalogue)
 //   rivals  = peers × collide  →  confidence = 100/(1+rivals)
-// Validated: HM (18.6/day, varied) → ~95, Vollebak (20.9/day, very mixed) → ~93,
-// both matching their real Fit Test score of 95. Maps to the SAME four verdict
-// bands the real Fit Report uses, so the instant read rarely disagrees.
+// Validated against live match rates: Vollebak (~30/day, ~200 products, very
+// mixed) → ~98 (runs ~100% live); HM very-mixed at normal volume → ~98, and
+// drops toward Good only when a sale both lifts volume and compresses variety.
+// Maps to the SAME four verdict bands the real Fit Report uses, so the instant
+// read rarely disagrees.
 const PEERS_PER_OPD = 0.092;
 
 function quickVerdict({ ordersPerDay, products, variety, saleNow }: {
