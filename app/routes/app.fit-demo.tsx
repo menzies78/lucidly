@@ -255,7 +255,7 @@ export default function FitDemo() {
 
   return (
     <Page>
-      <FitReport d={data} />
+      <FitReport d={data} showConnectCta />
     </Page>
   );
 }

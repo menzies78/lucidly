@@ -187,12 +187,16 @@ function InteractiveBars({ bars, height = 170, yFmt }: {
   );
 }
 
+// Rival-per-hour colour: purple is the calm baseline, ramping to red as the
+// average climbs (more rivals per hour = harder to attribute). Purple holds
+// until ~1 rival, then interpolates purple -> red, fully red by ~3.
 function rivalColor(v: number) {
-  if (v < 0.5) return "#10B981";
-  if (v < 1) return "#34D399";
-  if (v < 2) return "#FBBF24";
-  if (v < 3) return "#F59E0B";
-  return "#EF4444";
+  const PURPLE_RGB: [number, number, number] = [124, 58, 237];
+  const RED_RGB: [number, number, number] = [239, 68, 68];
+  const lo = 1, hi = 3;
+  const t = Math.max(0, Math.min(1, (v - lo) / (hi - lo)));
+  const c = PURPLE_RGB.map((p, k) => Math.round(p + (RED_RGB[k] - p) * t));
+  return `rgb(${c.join(",")})`;
 }
 
 // Orders-per-day colour ramp: green up to ~30/day, through orange ~65, red at
@@ -215,33 +219,16 @@ function volumeColor(count: number) {
   return `rgb(${stops[0].c.join(",")})`;
 }
 
-function Histogram({ pct }: { pct: Record<string, number> }) {
-  const buckets = [
-    { key: "0",  label: "Zero rivals", color: "#10B981", desc: "matches uniquely" },
-    { key: "1",  label: "1 rival",     color: "#34D399", desc: "50% confidence" },
-    { key: "2",  label: "2 rivals",    color: "#FBBF24", desc: "33% confidence" },
-    { key: "3",  label: "3 rivals",    color: "#F59E0B", desc: "25% confidence" },
-    { key: "4+", label: "4+ rivals",   color: "#EF4444", desc: "<20% confidence" },
-  ];
+// Purple tick + primary/secondary copy, used by the "Next step" checklist.
+function TickBullet({ title, children }: { title: string; children?: React.ReactNode }) {
   return (
-    <BlockStack gap="300">
-      {buckets.map(b => (
-        <div key={b.key}>
-          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 5 }}>
-            <span style={{ fontWeight: 700, color: "#1F2937" }}>{b.label}</span>
-            <span style={{ color: "#6B7280" }}>
-              <strong style={{ color: "#111827" }}>{pct[b.key] ?? 0}%</strong> of orders <span style={{ marginLeft: 8 }}>· {b.desc}</span>
-            </span>
-          </div>
-          <div style={{ background: "#F3F4F6", borderRadius: 5, overflow: "hidden", height: 18 }}>
-            <div style={{
-              width: `${pct[b.key] ?? 0}%`, height: "100%",
-              background: b.color, transition: "width 0.4s ease",
-            }} />
-          </div>
-        </div>
-      ))}
-    </BlockStack>
+    <InlineStack gap="300" blockAlign="start" wrap={false}>
+      <span style={{ color: PURPLE, fontSize: 20, fontWeight: 800, lineHeight: "24px" }}>{"\u2713"}</span>
+      <BlockStack gap="050">
+        <Text as="span" variant="bodyMd" fontWeight="semibold">{title}</Text>
+        {children && <Text as="span" variant="bodySm" tone="subdued">{children}</Text>}
+      </BlockStack>
+    </InlineStack>
   );
 }
 
@@ -331,7 +318,7 @@ export default function FitReport({ d, showConnectCta = false }: {
           <Box padding="600">
             <BlockStack gap="400">
               <BlockStack gap="100">
-                <Text as="h2" variant="headingLg">Average rival orders per hour</Text>
+                <Text as="h2" variant="heading2xl">Average rival orders per hour</Text>
                 <Text as="p" variant="bodyMd" tone="subdued">
                   Across a typical day, how many similar-value orders share each hour. Hover a bar for the detail - taller, redder bars are the hours hardest to attribute.
                 </Text>
@@ -348,7 +335,7 @@ export default function FitReport({ d, showConnectCta = false }: {
           <Box padding="600">
             <BlockStack gap="400">
               <BlockStack gap="100">
-                <Text as="h2" variant="headingLg">Orders per day, last 90 days</Text>
+                <Text as="h2" variant="heading2xl">Orders per day, last 90 days</Text>
                 <Text as="p" variant="bodyMd" tone="subdued">
                   Daily order volume. Bars shift from green to red as volume climbs - high-volume days crowd each hour and make matching harder.
                 </Text>
@@ -368,32 +355,35 @@ export default function FitReport({ d, showConnectCta = false }: {
         </Card>
       )}
 
-      {/* Order uniqueness distribution - moved to the bottom */}
-      <Card>
-        <Box padding="600">
-          <BlockStack gap="400">
-            <BlockStack gap="100">
-              <Text as="h2" variant="headingLg">Order uniqueness distribution</Text>
-              <Text as="p" variant="bodyMd" tone="subdued">
-                For each order, how many other orders sit in the same hour at a near-identical value
-              </Text>
-            </BlockStack>
-            <Histogram pct={d.histogramPct} />
-          </BlockStack>
-        </Box>
-      </Card>
-
-      {/* CTA - only on the real pre-Meta onboarding step. */}
+      {/* Next step - connect Meta. Shown on the onboarding fit report so the
+          page reads as the start of setup, not a standalone report. */}
       {showConnectCta && (
         <Card>
           <Box padding="600">
-            <BlockStack gap="300">
-              <Text as="h2" variant="headingLg">Ready to connect Meta?</Text>
-              <Text as="p" variant="bodyMd">
-                {d.score >= 60
-                  ? "Your data shape works well with our matcher. Connect Meta and we'll start pulling your full ad history - this runs in the background and takes a few hours to complete."
-                  : "Your order pattern is challenging for purely-statistical matching. We'll still pull your Meta history and surface what we can, but you'll see a meaningful 'unverified revenue' figure on the dashboard. Layer 1 (cookie-based) attribution will close that gap when it ships."}
-              </Text>
+            <BlockStack gap="400">
+              <GradientPill>Next step</GradientPill>
+              <BlockStack gap="100">
+                <Text as="h2" variant="heading2xl">Connect your Meta account</Text>
+                <Text as="p" variant="bodyMd" tone="subdued">
+                  {d.score >= 60
+                    ? "Your data shape works well with our matcher. Connect Meta to start your full setup - everything below runs automatically in the background."
+                    : "Your order pattern is harder for purely-statistical matching, but Lucidly still surfaces what it can. Connect Meta to begin - everything below runs automatically in the background."}
+                </Text>
+              </BlockStack>
+              <BlockStack gap="300">
+                <TickBullet title="Import your Meta ad history">
+                  Spend, campaigns, ad sets and conversions are pulled straight from your ad account.
+                </TickBullet>
+                <TickBullet title="Import your Shopify order history">
+                  The last 12 months of orders - timestamps, values and customers - sync in the background.
+                </TickBullet>
+                <TickBullet title="Match conversions to orders">
+                  Lucidly statistically links each Meta conversion to the Shopify order behind it, with a confidence score.
+                </TickBullet>
+                <TickBullet title="Build your benchmarks">
+                  Your baseline acquisition, LTV and repeat metrics are established for future performance to be measured against.
+                </TickBullet>
+              </BlockStack>
               <InlineStack gap="200">
                 <Link to="/app/meta-connect">
                   <Button variant="primary">Connect Meta Ads</Button>
