@@ -5,7 +5,7 @@
 // heading2xl titles, app-style stat tiles).
 
 import { useState } from "react";
-import { Card, Text, BlockStack, InlineStack, Button, Banner, Box } from "@shopify/polaris";
+import { Card, Text, BlockStack, InlineStack, Banner, Box } from "@shopify/polaris";
 import { Link } from "@remix-run/react";
 
 const PURPLE = "#7C3AED";
@@ -249,7 +249,7 @@ export default function FitReport({ d, showConnectCta = false }: {
     color: rivalColor(h.avgRivals),
     xLabel: h.hour % 6 === 0 ? formatHour(h.hour) : "",
     tipTitle: formatHour(h.hour),
-    tipSub: `avg ${h.avgRivals.toFixed(1)} rivals · ${h.orderCount} orders`,
+    tipSub: `avg ${h.avgRivals.toFixed(1)} similar · ${h.orderCount} orders`,
   }));
 
   const dailyBars: Bar[] = (d.daily || []).map((day, i, arr) => ({
@@ -318,7 +318,7 @@ export default function FitReport({ d, showConnectCta = false }: {
           <Box padding="600">
             <BlockStack gap="400">
               <BlockStack gap="100">
-                <Text as="h2" variant="heading2xl">Average rival orders per hour</Text>
+                <Text as="h2" variant="heading2xl">Average similar orders per hour</Text>
                 <Text as="p" variant="bodyMd" tone="subdued">
                   Across a typical day, how many similar-value orders share each hour. Hover a bar for the detail - taller, redder bars are the hours hardest to attribute.
                 </Text>
@@ -384,14 +384,14 @@ export default function FitReport({ d, showConnectCta = false }: {
                   Your baseline acquisition, LTV and repeat metrics are established for future performance to be measured against.
                 </TickBullet>
               </BlockStack>
-              <InlineStack gap="200">
-                <Link to="/app/meta-connect">
-                  <Button variant="primary">Connect Meta Ads</Button>
-                </Link>
-                <Link to="/app">
-                  <Button>Skip for now</Button>
-                </Link>
-              </InlineStack>
+              <Link to="/app/meta-connect" style={{
+                display: "flex", alignItems: "center", justifyContent: "center",
+                width: "100%", padding: "16px 24px", borderRadius: 10,
+                color: "#fff", fontWeight: 700, fontSize: 16, letterSpacing: 0.5,
+                textDecoration: "none",
+                background: `linear-gradient(90deg, ${PURPLE}, ${PURPLE_LIGHT})`,
+                boxShadow: "0 4px 14px rgba(124,58,237,0.35)",
+              }}>CONNECT META ADS</Link>
             </BlockStack>
           </Box>
         </Card>

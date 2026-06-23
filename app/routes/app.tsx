@@ -190,8 +190,8 @@ export default function App() {
       <footer
         style={{
           maxWidth: 998,
-          margin: "24px auto 40px",
-          padding: "0 16px",
+          margin: "24px auto 72px",
+          padding: "0 16px 24px",
           fontSize: 12,
           lineHeight: 1.5,
           color: "#6b7280",
