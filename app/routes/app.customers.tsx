@@ -20,6 +20,7 @@ import OrderExplorerSection from "../components/OrderExplorerSection";
 import PageSummary from "../components/PageSummary";
 import type { SummaryBullet, SummaryTone } from "../components/PageSummary";
 import SummaryTile from "../components/SummaryTile";
+import StackedBarChart from "../components/StackedBarChart";
 import { TipButton } from "../components/TipButton";
 import { SEGMENT_TIPS } from "../components/segmentTips";
 import type { ColumnDef } from "@tanstack/react-table";
@@ -371,7 +372,12 @@ export const loader = async ({ request }) => {
   {
     let key = fromKey;
     while (key <= toKey) {
-      dailyMap[key] = { date: key, metaCustomers: 0, organicCustomers: 0, metaRevenue: 0, organicRevenue: 0, spend: 0, newMetaCustomers: 0, newMetaRevenue: 0, metaRepeatCustomers: 0 };
+      dailyMap[key] = { date: key, metaCustomers: 0, organicCustomers: 0, metaRevenue: 0, organicRevenue: 0, spend: 0, newMetaCustomers: 0, newMetaRevenue: 0, metaRepeatCustomers: 0,
+        // Per-cohort daily series for the "Meta Customer Breakdown by Day"
+        // stacked bar chart. Sourced straight from DailyCustomerRollup
+        // segments so the tile reads from the rollup (fast), mirroring the
+        // three cohorts in the Summary donut: New / Repeat / Retargeted.
+        mnCust: 0, mrCust: 0, mrtCust: 0, mnRev: 0, mrRev: 0, mrtRev: 0 };
       key = addDaysKey(key, 1);
     }
   }
@@ -383,13 +389,19 @@ export const loader = async ({ request }) => {
       dailyMap[key].newMetaRevenue += r.firstOrderRevenue;
       dailyMap[key].metaCustomers += r.newCustomers + r.repeatCustomers;
       dailyMap[key].metaRevenue += r.revenue;
+      dailyMap[key].mnCust += r.newCustomers + r.repeatCustomers;
+      dailyMap[key].mnRev += r.revenue;
     } else if (r.segment === "metaRepeat") {
       dailyMap[key].metaRepeatCustomers += r.repeatCustomers;
       dailyMap[key].metaCustomers += r.repeatCustomers;
       dailyMap[key].metaRevenue += r.revenue;
+      dailyMap[key].mrCust += r.newCustomers + r.repeatCustomers;
+      dailyMap[key].mrRev += r.revenue;
     } else if (r.segment === "metaRetargeted") {
       dailyMap[key].metaCustomers += r.newCustomers + r.repeatCustomers;
       dailyMap[key].metaRevenue += r.revenue;
+      dailyMap[key].mrtCust += r.newCustomers + r.repeatCustomers;
+      dailyMap[key].mrtRev += r.revenue;
     } else {
       dailyMap[key].organicCustomers += r.newCustomers + r.repeatCustomers;
       dailyMap[key].organicRevenue += r.revenue;
@@ -1995,6 +2007,8 @@ export default function Customers() {
   const { aiCachedInsights, aiGeneratedAt, aiIsStale, orderExplorer } = data;
   const [searchParams, setSearchParams] = useSearchParams();
   const [acqMode, setAcqMode] = useState<"customers" | "revenue">("customers");
+  // Independent toggle for the "Meta Customer Breakdown by Day" stacked chart.
+  const [dayMode, setDayMode] = useState<"customers" | "revenue">("customers");
   const [donutHover, setDonutHover] = useState<number | null>(null);
   const [demoScope, setDemoScope] = useState<"new" | "allMeta" | "all">("new");
   const [demoMetric, setDemoMetric] = useState<"cpa" | "roas" | "aov">("cpa");
@@ -2676,12 +2690,12 @@ export default function Customers() {
 
         {/* ═══ ALL TILES (drag/drop, show/hide) ═══ */}
         <TileGrid pageId="customers-v8" columns={4} tiles={[
-          { id: "customerBreakdown", label: "Customer Breakdown", span: 2, render: () => (
+          { id: "customerBreakdown", label: "Meta Customer Breakdown Summary", span: 2, render: () => (
           <Card>
             <BlockStack gap="300">
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
                 <div style={{ flex: 1, textAlign: "center" }}>
-                  <Text as="h2" variant="headingLg">Customer Breakdown</Text>
+                  <Text as="h2" variant="headingLg">Meta Customer Breakdown Summary</Text>
                   <Text as="p" variant="bodySm" tone="subdued">
                     New, repeat, and retargeted Meta customers for the selected period
                   </Text>
@@ -3007,6 +3021,55 @@ export default function Customers() {
             </BlockStack>
           </Card>
           )},
+          { id: "metaBreakdownByDay", label: "Meta Customer Breakdown by Day", span: 4, render: () => {
+            const dayColors = { mn: "#7C3AED", mr: "#0891B2", mrt: "#B45309" };
+            const daySeries = dayMode === "customers"
+              ? [
+                  { key: "mnCust", label: "Meta New", color: dayColors.mn },
+                  { key: "mrCust", label: "Meta Repeat", color: dayColors.mr },
+                  { key: "mrtCust", label: "Meta Retargeted", color: dayColors.mrt },
+                ]
+              : [
+                  { key: "mnRev", label: "Meta New", color: dayColors.mn },
+                  { key: "mrRev", label: "Meta Repeat", color: dayColors.mr },
+                  { key: "mrtRev", label: "Meta Retargeted", color: dayColors.mrt },
+                ];
+            return (
+            <Card>
+              <BlockStack gap="300">
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                  <div style={{ flex: 1, textAlign: "center" }}>
+                    <Text as="h2" variant="headingLg">Meta Customer Breakdown by Day</Text>
+                    <Text as="p" variant="bodySm" tone="subdued">
+                      New, repeat, and retargeted Meta customers per day for the selected period
+                    </Text>
+                  </div>
+                  <div className="toggle-group">
+                    <button className={`toggle-btn ${dayMode === "customers" ? "active" : ""}`} onClick={() => setDayMode("customers")}>Customers</button>
+                    <button className={`toggle-btn ${dayMode === "revenue" ? "active" : ""}`} onClick={() => setDayMode("revenue")}>Revenue</button>
+                  </div>
+                </div>
+                <StackedBarChart
+                  data={dailyData}
+                  series={daySeries}
+                  formatValue={dayMode === "revenue" ? (v) => `${cs}${Math.round(v).toLocaleString()}` : (v) => Math.round(v).toLocaleString()}
+                />
+                <div style={{ display: "flex", justifyContent: "center", gap: "20px", flexWrap: "wrap" }}>
+                  {[
+                    { label: "Meta New", color: dayColors.mn },
+                    { label: "Meta Repeat", color: dayColors.mr },
+                    { label: "Meta Retargeted", color: dayColors.mrt },
+                  ].map((l) => (
+                    <div key={l.label} style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                      <span style={{ width: "12px", height: "12px", borderRadius: "3px", background: l.color, flexShrink: 0 }} />
+                      <span style={{ fontSize: "12px", color: "#4B5563" }}>{l.label}</span>
+                    </div>
+                  ))}
+                </div>
+              </BlockStack>
+            </Card>
+            );
+          }},
           { id: "totalMetaCustomers", label: "Total Meta Orders", render: () => {
             // Total Meta Orders = matched Shopify orders attributed to Meta
             // (rollup .orders already excludes £0) + unmatched Meta conversions
