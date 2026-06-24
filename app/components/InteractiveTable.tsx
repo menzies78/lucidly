@@ -1004,15 +1004,23 @@ export default function InteractiveTable({
       </table>
       </div>
       {initialRowLimit != null && totalRows > initialRowLimit && (
-        <div style={{ display: "flex", justifyContent: "center", padding: "14px 0 4px" }}>
+        <div style={{ display: "flex", justifyContent: "center", padding: "16px 0 6px" }}>
           <button
             onClick={handleToggleRows}
-            style={{
-              display: "inline-flex", alignItems: "center", gap: 8,
-              padding: "10px 20px", borderRadius: 8, cursor: "pointer",
-              border: "1px solid var(--l-accent-20)",
-              background: "var(--l-accent-light)",
-              color: "var(--l-accent)", fontSize: 14, fontWeight: 600,
+            onMouseEnter={e => { if (!rowsExpanded) e.currentTarget.style.background = "#6D28D9"; }}
+            onMouseLeave={e => { if (!rowsExpanded) e.currentTarget.style.background = "#7C3AED"; }}
+            style={rowsExpanded ? {
+              display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 8,
+              padding: "11px 28px", borderRadius: 8, cursor: "pointer",
+              border: "1px solid #D1D5DB", background: "#fff",
+              color: "#4B5563", fontSize: 14, fontWeight: 600,
+            } : {
+              display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 10,
+              minWidth: 340, padding: "14px 36px", borderRadius: 10, cursor: "pointer",
+              border: "none", background: "#7C3AED", color: "#fff",
+              fontSize: 15, fontWeight: 700, letterSpacing: "0.2px",
+              boxShadow: "0 2px 10px rgba(124,58,237,0.35)",
+              transition: "background 0.15s",
             }}
           >
             {rowsExpanded
