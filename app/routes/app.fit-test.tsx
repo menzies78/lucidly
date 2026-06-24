@@ -33,9 +33,11 @@ export const loader = async ({ request }) => {
   const stale = !shop.fitTestComputedAt
     || (Date.now() - shop.fitTestComputedAt.getTime() > 7 * 24 * 3600 * 1000);
   let data = await getFitTest(shopDomain);
-  // Also recompute if the snapshot predates the per-day/per-hour distributions.
+  // Also recompute if the snapshot predates the per-day/per-hour distributions,
+  // or still carries the retired "Layer 1" wording (no unshipped-feature refs).
   const missingHourly = data && data.score !== null && !data.daily;
-  if (!data || stale || missingHourly) {
+  const staleReason = !!(data && typeof data.verdictReason === "string" && data.verdictReason.includes("Layer 1"));
+  if (!data || stale || missingHourly || staleReason) {
     data = await runFitTest(shopDomain);
   }
 

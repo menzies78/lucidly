@@ -27,7 +27,10 @@ export const loader = async ({ request }) => {
   // Non-destructive: prefer the cached snapshot; recompute if missing or if it
   // predates the per-hour distribution (older snapshots have no `hourly`).
   let data = await getFitTest(shopDomain);
-  if (!data || (data.score !== null && !data.daily)) data = await runFitTest(shopDomain);
+  // Recompute if the snapshot predates the per-day distribution OR still carries
+  // the retired "Layer 1" wording (we no longer reference unshipped features).
+  const staleReason = !!(data && typeof data.verdictReason === "string" && data.verdictReason.includes("Layer 1"));
+  if (!data || (data.score !== null && !data.daily) || staleReason) data = await runFitTest(shopDomain);
   return json({ data, shopDomain });
 };
 

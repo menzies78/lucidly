@@ -252,6 +252,22 @@ export default function FitReport({ d, showConnectCta = false }: {
     tipSub: `avg ${h.avgRivals.toFixed(1)} similar · ${h.orderCount} orders`,
   }));
 
+  // Next-step copy aligned to the four server verdict bands (excellent 80+,
+  // good 60+, marginal 40+, challenging <40) so it sets the right expectation
+  // against the badge shown at the top. Honest about blended/unverified
+  // revenue rather than over-promising.
+  const NEXT_STEP_COPY: Record<string, string> = {
+    excellent:
+      "Your orders are highly distinguishable, so Lucidly will tie the vast majority of your Meta-driven sales to a specific order. Connect Meta to start your full setup - everything below runs automatically in the background.",
+    good:
+      "Most of your orders match cleanly to a single order. A few crowded hours will show as blended rather than order-level attribution, but your verified coverage will be strong. Connect Meta to start your full setup - everything below runs automatically in the background.",
+    marginal:
+      "Roughly half your orders are distinguishable; the rest cluster too tightly to pin to one order, so expect a meaningful share of blended (unverified) revenue alongside your matched sales. You'll still get full spend, campaign, customer and LTV reporting. Connect Meta to start your setup.",
+    challenging:
+      "Your store is high-volume with closely-priced orders, so the matcher will tie only a minority of sales to a specific order - expect significant attribution gaps reported as blended ROAS. You'll still get full spend, campaign, customer and LTV reporting. Connect Meta to start your setup.",
+  };
+  const nextStepCopy = NEXT_STEP_COPY[d.verdict] || NEXT_STEP_COPY.marginal;
+
   const dailyBars: Bar[] = (d.daily || []).map((day, i, arr) => ({
     value: day.count,
     color: volumeColor(day.count),
@@ -270,8 +286,7 @@ export default function FitReport({ d, showConnectCta = false }: {
             Lots of your orders share a similar value within the same hour, so our
             statistical matcher will struggle to tell them apart. Expect a meaningful
             share of your Meta revenue to show as &quot;unverified&quot; rather than matched to
-            a specific order. You can still use Lucidly - but go in with eyes open. Our
-            cookie-based Layer 1 (coming) will close this gap by attributing orders directly.
+            a specific order. You can still use Lucidly - but go in with eyes open.
           </p>
         </Banner>
       )}
@@ -364,11 +379,7 @@ export default function FitReport({ d, showConnectCta = false }: {
               <GradientPill>Next step</GradientPill>
               <BlockStack gap="100">
                 <Text as="h2" variant="heading2xl">Connect your Meta account</Text>
-                <Text as="p" variant="bodyMd" tone="subdued">
-                  {d.score >= 60
-                    ? "Your data shape works well with our matcher. Connect Meta to start your full setup - everything below runs automatically in the background."
-                    : "Your order pattern is harder for purely-statistical matching, but Lucidly still surfaces what it can. Connect Meta to begin - everything below runs automatically in the background."}
-                </Text>
+                <Text as="p" variant="bodyMd" tone="subdued">{nextStepCopy}</Text>
               </BlockStack>
               <BlockStack gap="300">
                 <TickBullet title="Import your Meta ad history">

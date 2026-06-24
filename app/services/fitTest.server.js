@@ -273,11 +273,11 @@ export async function runFitTest(shopDomain) {
   } else if (score >= 40) {
     verdict = "marginal";
     verdictReason =
-      "Mixed fit. About half your orders sit alone in their time slot, the rest cluster too tightly to attribute uniquely. Layer 1 (cookie/UTM) attribution will help once it ships.";
+      "Mixed fit. About half your orders sit alone in their time slot; the rest cluster too tightly to attribute uniquely, so expect a mix of order-level matches and blended (unverified) revenue.";
   } else {
     verdict = "challenging";
     verdictReason =
-      "High-volume narrow-AOV merchant. The statistical matcher will struggle with most orders - expect attribution gaps. Strongly recommend waiting for Layer 1.";
+      "High-volume narrow-AOV merchant. The statistical matcher will struggle with most orders - expect significant attribution gaps, with much of your Meta revenue shown as blended rather than matched to a specific order.";
   }
 
   const data = {
