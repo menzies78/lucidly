@@ -233,10 +233,6 @@ export default function OrderExplorerSection({
           {" "}<strong>Non-Meta</strong> (online order with no Meta attribution),
           or <strong>Non-Meta POS</strong> (in-store/POS order).
         </Text>
-        <InlineStack gap="400">
-          <Select label="Customer Type" options={tagOptions} value={tagFilter} onChange={onTagChange} />
-          <Select label="Campaign" options={campaignOptions} value={campaignFilter} onChange={onCampaignChange} />
-        </InlineStack>
         <InteractiveTable
           columns={columns}
           data={rows}
@@ -245,7 +241,17 @@ export default function OrderExplorerSection({
           footerRow={footerRow}
           fitContentColumns
           enableDownload
+          downloadAtEnd
           downloadFilename="order-explorer"
+          hideColumnPicker
+          searchPlaceholder="Search all data"
+          searchWidth={340}
+          toolbarLeading={
+            <InlineStack gap="300" blockAlign="center">
+              <Select labelInline label="Customer Type" options={tagOptions} value={tagFilter} onChange={onTagChange} />
+              <Select labelInline label="Campaign" options={campaignOptions} value={campaignFilter} onChange={onCampaignChange} />
+            </InlineStack>
+          }
           initialSorting={[{ id: "createdAtISO", desc: true }]}
           initialRowLimit={20}
         />

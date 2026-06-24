@@ -14,8 +14,9 @@ import {
 } from "@tanstack/react-table";
 import {
   Popover, Button, Checkbox, BlockStack, InlineStack,
-  TextField, Text, Box,
+  TextField, Text, Box, Icon,
 } from "@shopify/polaris";
+import { SearchIcon } from "@shopify/polaris-icons";
 import { usePageTheme } from "./PageTheme";
 
 // Column meta: { align?: "right", maxWidth?: string, filterType?: "multi-select", description?: string }
@@ -109,6 +110,19 @@ interface InteractiveTableProps {
   defaultColumnWidths?: Record<string, number>;
   tableId?: string;
   toolbarExtra?: React.ReactNode;
+  // Rendered at the very start of the toolbar, before the search box - lets a
+  // page drop its own filter controls inline with search (e.g. Order Explorer
+  // puts Customer Type + Campaign here).
+  toolbarLeading?: React.ReactNode;
+  // Search box overrides (per-table, defaults preserve existing behaviour).
+  searchPlaceholder?: string;
+  searchWidth?: number;
+  // When true, the "Columns (n/m)" picker is hidden - for tables where every
+  // column is always shown so the toggle is redundant.
+  hideColumnPicker?: boolean;
+  // When true, the Download button renders at the far right *after* the row
+  // count instead of inline near search.
+  downloadAtEnd?: boolean;
   footerRow?: Record<string, React.ReactNode>;
   stickyTopOffset?: number; // px offset for sticky elements (e.g. if external sticky header above)
   rowBackgroundFn?: (original: any, index: number) => string; // custom row background color
@@ -235,6 +249,11 @@ export default function InteractiveTable({
   defaultColumnWidths,
   tableId,
   toolbarExtra,
+  toolbarLeading,
+  searchPlaceholder = "Search...",
+  searchWidth = 250,
+  hideColumnPicker,
+  downloadAtEnd,
   footerRow,
   stickyTopOffset = 0,
   rowBackgroundFn,
@@ -493,6 +512,33 @@ export default function InteractiveTable({
     </Button>
   );
 
+  // Download control - rendered either inline near search or at the far right
+  // after the row count, depending on the downloadAtEnd prop.
+  const downloadControl = enableDownload ? (
+    <Popover
+      active={downloadOpen}
+      activator={
+        <Button size="slim" onClick={() => setDownloadOpen(v => !v)}>
+          Download
+        </Button>
+      }
+      onClose={() => setDownloadOpen(false)}
+      preferredAlignment="right"
+    >
+      <Popover.Pane>
+        <Box padding="300" minWidth="200px">
+          <BlockStack gap="100">
+            <Text as="p" variant="bodySm" tone="subdued">
+              {`Exports ${allRows.length} row${allRows.length !== 1 ? "s" : ""} (visible columns, filtered + sorted)`}
+            </Text>
+            <Button size="slim" onClick={() => handleDownload("csv")}>CSV (Excel)</Button>
+            <Button size="slim" onClick={() => handleDownload("tsv")}>TSV (Sheets)</Button>
+          </BlockStack>
+        </Box>
+      </Popover.Pane>
+    </Popover>
+  ) : null;
+
   const activeFilterCount = columnFilters.length;
 
   // Measure toolbar height for sticky thead offset
@@ -560,19 +606,22 @@ export default function InteractiveTable({
         }}
       >
         <InlineStack gap="300" align="start" blockAlign="center" wrap>
-          <div style={{ maxWidth: 250 }}>
+          {toolbarLeading}
+          <div style={{ width: "100%", maxWidth: searchWidth, flex: `1 1 ${searchWidth}px` }}>
             <TextField
               label=""
               labelHidden
-              placeholder="Search..."
+              placeholder={searchPlaceholder}
               value={globalFilter}
               onChange={(v) => setGlobalFilter(v)}
+              prefix={<Icon source={SearchIcon} tone="subdued" />}
               clearButton
               onClearButtonClick={() => setGlobalFilter("")}
               autoComplete="off"
             />
           </div>
           {toolbarExtra}
+          {!hideColumnPicker && (
           <Popover
             active={colPickerOpen}
             activator={colPickerActivator}
@@ -623,30 +672,8 @@ export default function InteractiveTable({
               </Box>
             </Popover.Pane>
           </Popover>
-          {enableDownload && (
-            <Popover
-              active={downloadOpen}
-              activator={
-                <Button size="slim" onClick={() => setDownloadOpen(v => !v)}>
-                  Download
-                </Button>
-              }
-              onClose={() => setDownloadOpen(false)}
-              preferredAlignment="right"
-            >
-              <Popover.Pane>
-                <Box padding="300" minWidth="200px">
-                  <BlockStack gap="100">
-                    <Text as="p" variant="bodySm" tone="subdued">
-                      {`Exports ${allRows.length} row${allRows.length !== 1 ? "s" : ""} (visible columns, filtered + sorted)`}
-                    </Text>
-                    <Button size="slim" onClick={() => handleDownload("csv")}>CSV (Excel)</Button>
-                    <Button size="slim" onClick={() => handleDownload("tsv")}>TSV (Sheets)</Button>
-                  </BlockStack>
-                </Box>
-              </Popover.Pane>
-            </Popover>
           )}
+          {!downloadAtEnd && downloadControl}
           {columnProfiles && columnProfiles.length > 0 && (
             <div style={{ display: "flex", gap: "4px", flexWrap: "wrap" }}>
               {columnProfiles.map(profile => {
@@ -772,6 +799,7 @@ export default function InteractiveTable({
               {activeFilterCount > 0 ? ` (filtered)` : ""}
             </Text>
           </div>
+          {downloadAtEnd && downloadControl}
         </InlineStack>
       </div>
 
