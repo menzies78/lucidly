@@ -177,7 +177,7 @@ export default function App() {
         <Link to="/app" rel="home">Health</Link>
         {showFullNav && <Link to="/app/customers">Customers</Link>}
         {showFullNav && <Link to="/app/products">Products</Link>}
-        {showFullNav && <Link to="/app/campaigns">Ad Campaigns</Link>}
+        {showFullNav && <Link to="/app/campaigns">Ads</Link>}
         {showFullNav && <Link to="/app/geo">Countries</Link>}
         {showFullNav && <Link to="/app/weekly">Weekly Report</Link>}
         {showFullNav && <Link to="/app/utm">UTM Manager</Link>}

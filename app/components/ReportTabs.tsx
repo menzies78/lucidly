@@ -42,7 +42,7 @@ export default function ReportTabs({ children }: { children?: ReactNode }) {
                 style={{
                   padding: "13px 16px",
                   fontSize: "var(--l-font-base)",
-                  minWidth: ["Customers", "Products", "Ad Campaigns", "Countries"].includes(tab.label) ? "130px" : undefined,
+                  minWidth: ["Customers", "Products", "Ads", "Countries"].includes(tab.label) ? "130px" : undefined,
                   fontWeight: active ? 700 : 500,
                   color: active ? "var(--l-accent-dark)" : "var(--l-text-secondary)",
                   // Selected tab: white (matches content bg), flows seamlessly

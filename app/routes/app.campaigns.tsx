@@ -4822,7 +4822,7 @@ export default function Campaigns() {
   }, [campaignRows, cs]);
 
   return (
-    <Page title="Ad Campaigns" fullWidth>
+    <Page title="Ads" fullWidth>
       <style dangerouslySetInnerHTML={{ __html: tileGridStyles }} />
       <ReportTabs>
       <BlockStack gap="500">

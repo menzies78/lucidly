@@ -20,7 +20,7 @@ export const PAGE_TABS = [
   { label: "Health",          path: "/app" },
   { label: "Customers",      path: "/app/customers" },
   { label: "Products",       path: "/app/products" },
-  { label: "Ad Campaigns",   path: "/app/campaigns" },
+  { label: "Ads",            path: "/app/campaigns" },
   { label: "Countries",      path: "/app/geo" },
   { label: "Weekly Report",  path: "/app/weekly" },
   { label: "UTM Manager",    path: "/app/utm" },
