@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, type ReactNode } from "react";
+import { useState, useRef, useEffect, type ReactNode, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
 
 // Toggle/pill button with an explanatory hover tooltip. The tooltip visual
@@ -13,11 +13,17 @@ export function TipButton({
   className,
   onClick,
   children,
+  style,
+  onMouseEnter,
+  onMouseLeave,
 }: {
   tip: string;
   className?: string;
   onClick?: () => void;
   children: ReactNode;
+  style?: CSSProperties;
+  onMouseEnter?: () => void;
+  onMouseLeave?: () => void;
 }) {
   const [show, setShow] = useState(false);
   const ref = useRef<HTMLButtonElement>(null);
@@ -35,9 +41,10 @@ export function TipButton({
       <button
         ref={ref}
         className={className}
+        style={style}
         onClick={onClick}
-        onMouseEnter={() => setShow(true)}
-        onMouseLeave={() => setShow(false)}
+        onMouseEnter={() => { setShow(true); onMouseEnter?.(); }}
+        onMouseLeave={() => { setShow(false); onMouseLeave?.(); }}
       >
         {children}
       </button>

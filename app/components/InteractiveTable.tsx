@@ -126,6 +126,10 @@ interface InteractiveTableProps {
   // so spreadsheets get numbers instead of currency strings.
   enableDownload?: boolean;
   downloadFilename?: string;
+  // When set, only this many rows are rendered until the user expands the
+  // table. Sorting/filtering/footer still operate on the full dataset; this is
+  // purely a render cap so long result sets don't scroll forever.
+  initialRowLimit?: number;
 }
 
 function MultiSelectFilter({
@@ -240,6 +244,7 @@ export default function InteractiveTable({
   fitContentColumns,
   enableDownload,
   downloadFilename,
+  initialRowLimit,
 }: InteractiveTableProps) {
   const pageTheme = usePageTheme();
   const [sorting, setSorting] = useState<SortingState>(initialSorting || []);
@@ -342,6 +347,10 @@ export default function InteractiveTable({
 
   const allRows = table.getRowModel().rows;
   const totalRows = allRows.length;
+
+  const [rowsExpanded, setRowsExpanded] = useState(false);
+  const isRowCapped = initialRowLimit != null && !rowsExpanded && totalRows > initialRowLimit;
+  const visibleRows = isRowCapped ? allRows.slice(0, initialRowLimit) : allRows;
 
   const hasFilterRow = table.getVisibleLeafColumns().some(
     col => (col.columnDef.meta as any)?.filterType === "multi-select"
@@ -905,11 +914,11 @@ export default function InteractiveTable({
           ))}
         </thead>
         <tbody>
-          {allRows.map((row, rowIdx) => {
+          {visibleRows.map((row, rowIdx) => {
             const isBdRow = row.original._isBreakdownRow;
             const isParentRow = row.original._isParent;
             // Check if next row is a breakdown row (for parent row bottom border)
-            const nextRow = allRows[rowIdx + 1];
+            const nextRow = visibleRows[rowIdx + 1];
             const nextIsBd = nextRow?.original?._isBreakdownRow;
             // Check if this is the last breakdown row before a parent or end
             const isLastBd = isBdRow && (!nextRow || !nextRow.original._isBreakdownRow);
@@ -980,6 +989,25 @@ export default function InteractiveTable({
         )}
       </table>
       </div>
+      {initialRowLimit != null && totalRows > initialRowLimit && (
+        <div style={{ display: "flex", justifyContent: "center", padding: "14px 0 4px" }}>
+          <button
+            onClick={() => setRowsExpanded(v => !v)}
+            style={{
+              display: "inline-flex", alignItems: "center", gap: 8,
+              padding: "10px 20px", borderRadius: 8, cursor: "pointer",
+              border: "1px solid var(--l-accent-20)",
+              background: "var(--l-accent-light)",
+              color: "var(--l-accent)", fontSize: 14, fontWeight: 600,
+            }}
+          >
+            {rowsExpanded
+              ? `Collapse — show first ${initialRowLimit}`
+              : `Show all ${totalRows.toLocaleString()} orders`}
+            <span style={{ fontSize: 12 }}>{rowsExpanded ? "▲" : "▼"}</span>
+          </button>
+        </div>
+      )}
       <FixedTooltip tip={tooltip} />
     </div>
   );

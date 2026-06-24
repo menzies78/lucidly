@@ -377,7 +377,10 @@ export const loader = async ({ request }) => {
         // stacked bar chart. Sourced straight from DailyCustomerRollup
         // segments so the tile reads from the rollup (fast), mirroring the
         // three cohorts in the Summary donut: New / Repeat / Retargeted.
-        mnCust: 0, mrCust: 0, mrtCust: 0, mnRev: 0, mrRev: 0, mrtRev: 0 };
+        mnCust: 0, mrCust: 0, mrtCust: 0, mnRev: 0, mrRev: 0, mrtRev: 0,
+        // Meta Unidentified = matched-as-Meta-conversion but unmatched to a
+        // specific Shopify order. Sourced from unmatchedByDay below.
+        muCust: 0, muRev: 0 };
       key = addDaysKey(key, 1);
     }
   }
@@ -416,6 +419,8 @@ export const loader = async ({ request }) => {
     if (!dailyMap[d]) continue;
     dailyMap[d].metaCustomers += v.count;
     dailyMap[d].metaRevenue += v.revenue;
+    dailyMap[d].muCust += v.count;
+    dailyMap[d].muRev += v.revenue;
   }
   const dailyData = Object.values(dailyMap).sort((a: any, b: any) => a.date.localeCompare(b.date));
 
@@ -1573,14 +1578,14 @@ function JourneyFlow({ firstAOV, gapDays, secondAOV, thirdAOV, gap2to3Days, cust
   const thirdRate = secondOrderCount > 0 ? Math.round((thirdOrderCount / secondOrderCount) * 100) : 0;
 
   const orderBox = (label: string, aov: number, aovChange: number, count: number, countLabel: string, gradient: string, shadow: string, hasData: boolean) => (
-    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", flex: "0 0 auto" }}>
+    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", flex: "1 1 0", minWidth: 0 }}>
       <div style={{
         background: hasData ? gradient : "#D1D5DB",
-        borderRadius: "13px", padding: "20px 28px", color: "#fff", textAlign: "center",
-        minWidth: "130px", boxShadow: hasData ? shadow : "none",
+        borderRadius: "13px", padding: "18px clamp(10px, 2vw, 28px)", color: "#fff", textAlign: "center",
+        width: "100%", minWidth: 0, boxShadow: hasData ? shadow : "none",
       }}>
         <div style={{ fontSize: "11px", fontWeight: 500, opacity: 0.8, textTransform: "uppercase", letterSpacing: "0.5px" }}>{label}</div>
-        <div style={{ fontSize: "28px", fontWeight: 800, marginTop: "5px" }}>
+        <div style={{ fontSize: "clamp(20px, 3.4vw, 28px)", fontWeight: 800, marginTop: "5px" }}>
           {hasData ? `${cs}${Math.round(aov)}` : "-"}
         </div>
         <div style={{ fontSize: "11px", opacity: 0.7, marginTop: "2px" }}>
@@ -1600,9 +1605,9 @@ function JourneyFlow({ firstAOV, gapDays, secondAOV, thirdAOV, gap2to3Days, cust
   );
 
   const arrow = (days: number | null, rate: number, rateLabel: string, gradId: string, colorFrom: string, colorTo: string) => (
-    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "0 8px", minWidth: "110px", flex: "0 0 auto" }}>
-      <div style={{ display: "flex", flexDirection: "column", alignItems: "center" }}>
-        <svg width="110" height="32" viewBox="0 0 110 32">
+    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "0 4px", minWidth: 0, flex: "1 1 0" }}>
+      <div style={{ display: "flex", flexDirection: "column", alignItems: "center", width: "100%" }}>
+        <svg width="100%" height="32" viewBox="0 0 110 32" preserveAspectRatio="xMidYMid meet">
           <defs>
             <linearGradient id={gradId} x1="0" y1="0" x2="1" y2="0">
               <stop offset="0%" stopColor={colorFrom} />
@@ -1636,8 +1641,8 @@ function JourneyFlow({ firstAOV, gapDays, secondAOV, thirdAOV, gap2to3Days, cust
         alignItems: "center",
         justifyContent: "center",
         gap: "0",
-        padding: "22px 12px",
-        minWidth: "fit-content",
+        padding: "22px 8px",
+        minWidth: 0,
         margin: "0 auto",
       }}>
         {orderBox("1st Order", firstAOV, 0, firstOrderCount, "acquired",
@@ -2690,7 +2695,30 @@ export default function Customers() {
 
         {/* ═══ ALL TILES (drag/drop, show/hide) ═══ */}
         <TileGrid pageId="customers-v8" columns={4} tiles={[
-          { id: "customerBreakdown", label: "Meta Customer Breakdown Summary", span: 2, render: () => (
+          { id: "customerBreakdown", label: "Meta Customer Breakdown Summary", span: 2, render: () => {
+            // Plain-language read of the actual split (no invented benchmarks).
+            const newV = acqMode === "customers" ? donutMetaNewCustomers : donutMetaNewRevenue;
+            const repeatV = acqMode === "customers" ? donutMetaRepeatCustomers : donutMetaRepeatRevenue;
+            const retargetedV = acqMode === "customers" ? donutMetaRetargetedCustomers : donutMetaRetargetedRevenue;
+            const existingV = repeatV + retargetedV;
+            const totalV = newV + existingV;
+            const noun = acqMode === "customers" ? "customers" : "revenue";
+            const newPct = totalV > 0 ? Math.round((newV / totalV) * 100) : 0;
+            const existingPct = totalV > 0 ? 100 - newPct : 0;
+            let analysis = "";
+            if (totalV === 0) {
+              analysis = "No Meta customer activity in the selected period.";
+            } else {
+              const lead = acqMode === "customers"
+                ? `${newPct}% of your Meta customers are new, ${existingPct}% are existing.`
+                : `${newPct}% of your Meta revenue comes from new customers, ${existingPct}% from existing ones.`;
+              let take = "";
+              if (newPct >= 60) take = "Your Meta spend is doing the acquisition job well.";
+              else if (newPct <= 30) take = "Much of your Meta spend is reaching people who already buy from you — worth checking whether more could go toward acquiring new customers.";
+              else take = "A fairly even split between winning new customers and re-engaging existing ones.";
+              analysis = `${lead} ${take}`;
+            }
+            return (
           <Card>
             <BlockStack gap="300">
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
@@ -2756,9 +2784,13 @@ export default function Customers() {
                   })}
                 </div>
               </div>
+              <div style={{ borderTop: "1px solid #F3F4F6", paddingTop: "12px", fontSize: "13px", color: "#4B5563", lineHeight: 1.5 }}>
+                {analysis}
+              </div>
             </BlockStack>
           </Card>
-          )},
+            );
+          }},
           { id: "demographics", label: "Customer Demographics", span: 2, render: () => (
           <Card>
             <BlockStack gap="400">
@@ -3022,26 +3054,34 @@ export default function Customers() {
           </Card>
           )},
           { id: "metaBreakdownByDay", label: "Meta Customer Breakdown by Day", span: 4, render: () => {
-            const dayColors = { mn: "#7C3AED", mr: "#0891B2", mrt: "#B45309" };
+            const dayColors = { mn: "#7C3AED", mr: "#0891B2", mrt: "#B45309", mu: "#6B7280" };
+            const dayTips = {
+              mn: "Meta New — customers whose first-ever order was attributed to a Meta ad (matched, or confirmed via UTM).",
+              mr: "Meta Repeat — later orders placed by customers we originally acquired through Meta, on any channel.",
+              mrt: "Meta Retargeted — existing customers re-engaged by a Meta ad before ordering again.",
+              mu: "Meta Unidentified — Meta-reported conversions we couldn't tie to a specific Shopify order (e.g. the order value shifted after purchase). Counted in your Meta totals but not matched to one order.",
+            };
             const daySeries = dayMode === "customers"
               ? [
-                  { key: "mnCust", label: "Meta New", color: dayColors.mn },
-                  { key: "mrCust", label: "Meta Repeat", color: dayColors.mr },
-                  { key: "mrtCust", label: "Meta Retargeted", color: dayColors.mrt },
+                  { key: "mnCust", label: "Meta New", color: dayColors.mn, tip: dayTips.mn },
+                  { key: "mrCust", label: "Meta Repeat", color: dayColors.mr, tip: dayTips.mr },
+                  { key: "mrtCust", label: "Meta Retargeted", color: dayColors.mrt, tip: dayTips.mrt },
+                  { key: "muCust", label: "Meta Unidentified", color: dayColors.mu, tip: dayTips.mu },
                 ]
               : [
-                  { key: "mnRev", label: "Meta New", color: dayColors.mn },
-                  { key: "mrRev", label: "Meta Repeat", color: dayColors.mr },
-                  { key: "mrtRev", label: "Meta Retargeted", color: dayColors.mrt },
+                  { key: "mnRev", label: "Meta New", color: dayColors.mn, tip: dayTips.mn },
+                  { key: "mrRev", label: "Meta Repeat", color: dayColors.mr, tip: dayTips.mr },
+                  { key: "mrtRev", label: "Meta Retargeted", color: dayColors.mrt, tip: dayTips.mrt },
+                  { key: "muRev", label: "Meta Unidentified", color: dayColors.mu, tip: dayTips.mu },
                 ];
             return (
             <Card>
               <BlockStack gap="300">
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-                  <div style={{ flex: 1, textAlign: "center" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8, flexWrap: "wrap" }}>
+                  <div>
                     <Text as="h2" variant="headingLg">Meta Customer Breakdown by Day</Text>
                     <Text as="p" variant="bodySm" tone="subdued">
-                      New, repeat, and retargeted Meta customers per day for the selected period
+                      New, repeat, retargeted, and unidentified Meta customers per day for the selected period
                     </Text>
                   </div>
                   <div className="toggle-group">
@@ -3054,18 +3094,6 @@ export default function Customers() {
                   series={daySeries}
                   formatValue={dayMode === "revenue" ? (v) => `${cs}${Math.round(v).toLocaleString()}` : (v) => Math.round(v).toLocaleString()}
                 />
-                <div style={{ display: "flex", justifyContent: "center", gap: "20px", flexWrap: "wrap" }}>
-                  {[
-                    { label: "Meta New", color: dayColors.mn },
-                    { label: "Meta Repeat", color: dayColors.mr },
-                    { label: "Meta Retargeted", color: dayColors.mrt },
-                  ].map((l) => (
-                    <div key={l.label} style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-                      <span style={{ width: "12px", height: "12px", borderRadius: "3px", background: l.color, flexShrink: 0 }} />
-                      <span style={{ fontSize: "12px", color: "#4B5563" }}>{l.label}</span>
-                    </div>
-                  ))}
-                </div>
               </BlockStack>
             </Card>
             );

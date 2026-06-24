@@ -247,6 +247,7 @@ export default function OrderExplorerSection({
           enableDownload
           downloadFilename="order-explorer"
           initialSorting={[{ id: "createdAtISO", desc: true }]}
+          initialRowLimit={20}
         />
       </BlockStack>
     </Card>
