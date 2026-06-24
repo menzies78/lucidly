@@ -12,6 +12,11 @@ import { authenticate } from "../shopify.server";
 import { ensureWebhooks } from "../services/ensureWebhooks.server.js";
 import db from "../db.server";
 import { isInternalShop } from "../utils/access.server";
+import {
+  isBillingEnforced,
+  hasActiveSubscription,
+  pricingPageUrl,
+} from "../utils/subscription.server";
 
 export const links = () => [{ rel: "stylesheet", href: polarisStyles }];
 
@@ -24,7 +29,7 @@ const ONBOARDING_ALLOWED = (pathname: string) =>
   pathname === "/app" || pathname === "/app/" || pathname.startsWith("/app/api/");
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const { session } = await authenticate.admin(request);
+  const { session, admin, redirect: shopifyRedirect } = await authenticate.admin(request);
   // Self-heal: register required webhooks if missing. Cached per-process, idempotent.
   ensureWebhooks(session.shop, session.accessToken!).catch(err =>
     console.error("[app loader] ensureWebhooks failed:", err)
@@ -43,6 +48,28 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const url = new URL(request.url);
   if (!onboardingCompleted && !isInternal && !ONBOARDING_ALLOWED(url.pathname)) {
     throw redirect("/app");
+  }
+
+  // Paywall gate (Managed Pricing): once onboarding is done, a merchant must
+  // hold an ACTIVE subscription (the free trial counts) to use the app. If
+  // theirs has lapsed, break out of the iframe to Shopify's pricing page so
+  // they can re-subscribe. Behind an env kill-switch so it stays dark until
+  // Managed Pricing is live; skipped for internal shops and the polling APIs.
+  if (
+    isBillingEnforced() &&
+    onboardingCompleted &&
+    !isInternal &&
+    !url.pathname.startsWith("/app/api/")
+  ) {
+    const active = await hasActiveSubscription(admin).catch(err => {
+      // Fail open: a transient Admin API error must not lock a paying
+      // merchant out of their own dashboard.
+      console.error("[app loader] subscription check failed:", err);
+      return true;
+    });
+    if (!active) {
+      return shopifyRedirect(pricingPageUrl(session.shop), { target: "_top" });
+    }
   }
 
   return { apiKey: process.env.SHOPIFY_API_KEY || "", onboardingCompleted, isInternal };
