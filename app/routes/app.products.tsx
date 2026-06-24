@@ -18,6 +18,8 @@ import { getCachedInsights, computeDataHash, generateInsights } from "../service
 import { setProgress, failProgress, completeProgress } from "../services/progress.server";
 import AiInsightsPanel from "../components/AiInsightsPanel";
 import PageSummary, { type SummaryBullet } from "../components/PageSummary";
+import { TipButton } from "../components/TipButton";
+import { SEGMENT_TIPS } from "../components/segmentTips";
 // Single source of truth for parent-product name canonicalisation. Imported
 // (rather than duplicated) so rollup keys and image-map keys stay aligned -
 // previously the route's local copy didn't strip trailing periods, which
@@ -1558,10 +1560,10 @@ function ProductDemographicsExplorer({ records, countries, gems, nonMetaRecords,
             </Text>
           </BlockStack>
           <div className="segment-toggle" style={{ flexShrink: 0 }}>
-            <button className={segment === "acquired" ? "active" : ""} onClick={() => setSegment("acquired")}>Meta Acquired</button>
-            <button className={segment === "retargeted" ? "active" : ""} onClick={() => setSegment("retargeted")}>Meta Retargeted</button>
-            <button className={segment === "all" ? "active" : ""} onClick={() => setSegment("all")}>All Meta</button>
-            <button className={segment === "nonMeta" ? "active" : ""} onClick={() => setSegment("nonMeta")}>Non Meta</button>
+            <TipButton tip={SEGMENT_TIPS.acquired} className={segment === "acquired" ? "active" : ""} onClick={() => setSegment("acquired")}>Meta-Acquired</TipButton>
+            <TipButton tip={SEGMENT_TIPS.retargeted} className={segment === "retargeted" ? "active" : ""} onClick={() => setSegment("retargeted")}>Meta Retargeted</TipButton>
+            <TipButton tip={SEGMENT_TIPS.allMeta} className={segment === "all" ? "active" : ""} onClick={() => setSegment("all")}>All Meta</TipButton>
+            <TipButton tip={SEGMENT_TIPS.nonMeta} className={segment === "nonMeta" ? "active" : ""} onClick={() => setSegment("nonMeta")}>Non-Meta</TipButton>
           </div>
         </div>
 
@@ -2149,8 +2151,8 @@ export default function Products() {
                     <Text as="p" variant="bodySm" tone="subdued">Products with 3+ orders, ranked by refund rate</Text>
                   </BlockStack>
                   <div className="segment-toggle">
-                    <button className={refundMode === "all" ? "active" : ""} onClick={() => setRefundMode("all")}>All Customers</button>
-                    <button className={refundMode === "meta" ? "active" : ""} onClick={() => setRefundMode("meta")}>Meta Customers</button>
+                    <TipButton tip={SEGMENT_TIPS.allCustomers} className={refundMode === "all" ? "active" : ""} onClick={() => setRefundMode("all")}>All Customers</TipButton>
+                    <TipButton tip={SEGMENT_TIPS.metaCustomers} className={refundMode === "meta" ? "active" : ""} onClick={() => setRefundMode("meta")}>Meta Customers</TipButton>
                   </div>
                 </div>
                 <div className="scrollable-list" style={{ flex: 1, overflow: "auto" }}>
@@ -2201,8 +2203,8 @@ export default function Products() {
                     <Text as="p" variant="bodySm" tone="subdued">What customers buy on their very first order - your gateway products</Text>
                   </BlockStack>
                   <div className="segment-toggle">
-                    <button className={firstPurchaseMode === "meta" ? "active" : ""} onClick={() => setFirstPurchaseMode("meta")}>Meta Customers</button>
-                    <button className={firstPurchaseMode === "other" ? "active" : ""} onClick={() => setFirstPurchaseMode("other")}>All Other</button>
+                    <TipButton tip={SEGMENT_TIPS.metaCustomers} className={firstPurchaseMode === "meta" ? "active" : ""} onClick={() => setFirstPurchaseMode("meta")}>Meta Customers</TipButton>
+                    <TipButton tip={SEGMENT_TIPS.nonMeta} className={firstPurchaseMode === "other" ? "active" : ""} onClick={() => setFirstPurchaseMode("other")}>Non-Meta</TipButton>
                   </div>
                 </div>
                 <div className="product-list-header">
@@ -2255,8 +2257,8 @@ export default function Products() {
                     <Text as="p" variant="bodySm" tone="subdued">Products most frequently purchased together - why not create bundles / packs to increase sales further?</Text>
                   </BlockStack>
                   <div className="segment-toggle">
-                    <button className={basketMode === "meta" ? "active" : ""} onClick={() => setBasketMode("meta")}>Meta Customers</button>
-                    <button className={basketMode === "other" ? "active" : ""} onClick={() => setBasketMode("other")}>All Other</button>
+                    <TipButton tip={SEGMENT_TIPS.metaCustomers} className={basketMode === "meta" ? "active" : ""} onClick={() => setBasketMode("meta")}>Meta Customers</TipButton>
+                    <TipButton tip={SEGMENT_TIPS.nonMeta} className={basketMode === "other" ? "active" : ""} onClick={() => setBasketMode("other")}>Non-Meta</TipButton>
                   </div>
                 </div>
                 {activeCombos.length === 0 ? (
@@ -2309,8 +2311,8 @@ export default function Products() {
                     <Text as="p" variant="bodySm" tone="subdued">Products most frequently purchased alongside other items. Consider promoting these products throughout your website.</Text>
                   </BlockStack>
                   <div className="segment-toggle">
-                    <button className={addonMode === "meta" ? "active" : ""} onClick={() => setAddonMode("meta")}>Meta Customers</button>
-                    <button className={addonMode === "all" ? "active" : ""} onClick={() => setAddonMode("all")}>All Customers</button>
+                    <TipButton tip={SEGMENT_TIPS.metaCustomers} className={addonMode === "meta" ? "active" : ""} onClick={() => setAddonMode("meta")}>Meta Customers</TipButton>
+                    <TipButton tip={SEGMENT_TIPS.allCustomers} className={addonMode === "all" ? "active" : ""} onClick={() => setAddonMode("all")}>All Customers</TipButton>
                   </div>
                 </div>
                 {activeAddons.length === 0 ? (
@@ -2439,8 +2441,8 @@ export default function Products() {
                   </BlockStack>
                   <div style={{ display: "flex", flexDirection: "column", gap: 6, alignItems: "flex-end", flexShrink: 0 }}>
                     <div className="segment-toggle">
-                      <button className={journeyMode === "meta" ? "active" : ""} onClick={() => setJourneyMode("meta")}>Meta Customers</button>
-                      <button className={journeyMode === "all" ? "active" : ""} onClick={() => setJourneyMode("all")}>All Customers</button>
+                      <TipButton tip={SEGMENT_TIPS.metaCustomers} className={journeyMode === "meta" ? "active" : ""} onClick={() => setJourneyMode("meta")}>Meta Customers</TipButton>
+                      <TipButton tip={SEGMENT_TIPS.allCustomers} className={journeyMode === "all" ? "active" : ""} onClick={() => setJourneyMode("all")}>All Customers</TipButton>
                     </div>
                     <div className="segment-toggle">
                       <button className={journeyWin === "3m" ? "active" : ""} onClick={() => setTileWindow("journeyWin", "3m")}>3m</button>

@@ -18,6 +18,8 @@
  */
 import React, { useEffect, useMemo, useState } from "react";
 import { Card, BlockStack, Text } from "@shopify/polaris";
+import { TipButton } from "./TipButton";
+import { SEGMENT_TIPS } from "./segmentTips";
 
 const AGE_BRACKETS = ["13-17", "18-24", "25-34", "35-44", "45-54", "55-64", "65+"];
 
@@ -351,9 +353,9 @@ export default function CustomerMapExplorer({ blob, cs }: Props) {
             ))}
           </div>
           <div style={{ display: "inline-flex", gap: "4px" }}>
-            <button className={`l-pill${scope === "metaAcquired" ? " l-pill--active" : ""}`} onClick={() => setScope("metaAcquired")}>Meta Acquired</button>
-            <button className={`l-pill${scope === "allMeta" ? " l-pill--active" : ""}`} onClick={() => setScope("allMeta")}>All Meta</button>
-            <button className={`l-pill${scope === "all" ? " l-pill--active" : ""}`} onClick={() => setScope("all")}>All Customers</button>
+            <TipButton tip={SEGMENT_TIPS.acquired} className={`l-pill${scope === "metaAcquired" ? " l-pill--active" : ""}`} onClick={() => setScope("metaAcquired")}>Meta-Acquired</TipButton>
+            <TipButton tip={SEGMENT_TIPS.allMeta} className={`l-pill${scope === "allMeta" ? " l-pill--active" : ""}`} onClick={() => setScope("allMeta")}>All Meta</TipButton>
+            <TipButton tip={SEGMENT_TIPS.allCustomers} className={`l-pill${scope === "all" ? " l-pill--active" : ""}`} onClick={() => setScope("all")}>All Customers</TipButton>
           </div>
         </div>
 

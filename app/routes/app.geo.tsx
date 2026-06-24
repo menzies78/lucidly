@@ -17,6 +17,8 @@ import { getCachedInsights, computeDataHash, generateInsights } from "../service
 import { setProgress, failProgress, completeProgress } from "../services/progress.server";
 import AiInsightsPanel from "../components/AiInsightsPanel";
 import PageSummary, { type SummaryBullet } from "../components/PageSummary";
+import { TipButton } from "../components/TipButton";
+import { SEGMENT_TIPS } from "../components/segmentTips";
 
 // ═══════════════════════════════════════════════════════════════
 // LOADER
@@ -622,10 +624,10 @@ type CountryAgg = {
 
 type VipScope = "metaAcquired" | "allMeta" | "all";
 
-const VIP_SCOPES: { value: VipScope; label: string }[] = [
-  { value: "metaAcquired", label: "Meta Acquired" },
-  { value: "allMeta", label: "All Meta" },
-  { value: "all", label: "All Customers" },
+const VIP_SCOPES: { value: VipScope; label: string; tip: string }[] = [
+  { value: "metaAcquired", label: "Meta-Acquired", tip: SEGMENT_TIPS.acquired },
+  { value: "allMeta", label: "All Meta", tip: SEGMENT_TIPS.allMeta },
+  { value: "all", label: "All Customers", tip: SEGMENT_TIPS.allCustomers },
 ];
 
 // The three headline tiles double as bar-chart selectors. Each "view"
@@ -875,9 +877,9 @@ function VipsByCountryTile({ blob, cs }: { blob: MapBlob | null; cs: string }) {
           <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
             <span style={{ fontSize: 11, color: "#6B7280", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.4 }}>Customers</span>
             {VIP_SCOPES.map(s => (
-              <button key={s.value} onClick={() => setScope(s.value)} className={`l-pill${scope === s.value ? " l-pill--active" : ""}`}>
+              <TipButton key={s.value} tip={s.tip} onClick={() => setScope(s.value)} className={`l-pill${scope === s.value ? " l-pill--active" : ""}`}>
                 {s.label}
-              </button>
+              </TipButton>
             ))}
           </div>
           <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
@@ -1131,9 +1133,9 @@ type ProductCell = {
 type CountryProducts = { cc: string; products: ProductCell[]; totalCountryUnits: number };
 
 const SEGMENT_PILLS = [
-  { value: "metaNew", label: "Meta New" },
-  { value: "metaRet", label: "Meta Returning" },
-  { value: "all",     label: "All Customers" },
+  { value: "metaNew", label: "Meta-Acquired",  tip: SEGMENT_TIPS.acquired },
+  { value: "metaRet", label: "Meta Retargeted", tip: SEGMENT_TIPS.retargeted },
+  { value: "all",     label: "All Customers",   tip: SEGMENT_TIPS.allCustomers },
 ] as const;
 
 const GENDER_PILLS = [
@@ -1210,7 +1212,7 @@ function TopProductsByCountryTile({
           <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
             <span style={{ fontSize: 11, color: "#6B7280", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.4 }}>Customers</span>
             {SEGMENT_PILLS.map(p => (
-              <button key={p.value} onClick={() => setSeg(p.value)} className={geoPillClassName(seg === p.value)}>{p.label}</button>
+              <TipButton key={p.value} tip={p.tip} onClick={() => setSeg(p.value)} className={geoPillClassName(seg === p.value)}>{p.label}</TipButton>
             ))}
           </div>
           <div style={{ display: "flex", gap: 6, alignItems: "center" }}>

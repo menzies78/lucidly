@@ -20,6 +20,8 @@ import OrderExplorerSection from "../components/OrderExplorerSection";
 import PageSummary from "../components/PageSummary";
 import type { SummaryBullet, SummaryTone } from "../components/PageSummary";
 import SummaryTile from "../components/SummaryTile";
+import { TipButton } from "../components/TipButton";
+import { SEGMENT_TIPS } from "../components/segmentTips";
 import type { ColumnDef } from "@tanstack/react-table";
 
 // ═══════════════════════════════════════════════════════════════
@@ -1695,8 +1697,8 @@ function WeeklyCohortRevenue({ weekly, cs }: { weekly: { all: WeeklyCohortPoint[
         <Text as="h2" variant="headingLg">Revenue by Weekly Cohort</Text>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           <div className="toggle-group">
-            <button className={`toggle-btn ${segment === "meta" ? "active" : ""}`} onClick={() => setSegment("meta")}>Meta Customers</button>
-            <button className={`toggle-btn ${segment === "all" ? "active" : ""}`} onClick={() => setSegment("all")}>All Customers</button>
+            <TipButton tip={SEGMENT_TIPS.metaCustomers} className={`toggle-btn ${segment === "meta" ? "active" : ""}`} onClick={() => setSegment("meta")}>Meta Customers</TipButton>
+            <TipButton tip={SEGMENT_TIPS.allCustomers} className={`toggle-btn ${segment === "all" ? "active" : ""}`} onClick={() => setSegment("all")}>All Customers</TipButton>
           </div>
           <div className="toggle-group">
             <button className={`toggle-btn ${scope === "365" ? "active" : ""}`} onClick={() => setScope("365")}>Previous 365 days</button>
@@ -2758,9 +2760,9 @@ export default function Customers() {
                   </Text>
                 </div>
                 <div className="toggle-group">
-                  <button className={`toggle-btn ${demoScope === "new" ? "active" : ""}`} onClick={() => setDemoScope("new")}>New Meta</button>
-                  <button className={`toggle-btn ${demoScope === "allMeta" ? "active" : ""}`} onClick={() => setDemoScope("allMeta")}>All Meta</button>
-                  <button className={`toggle-btn ${demoScope === "all" ? "active" : ""}`} onClick={() => setDemoScope("all")}>All Customers</button>
+                  <TipButton tip={SEGMENT_TIPS.newMetaConversions} className={`toggle-btn ${demoScope === "new" ? "active" : ""}`} onClick={() => setDemoScope("new")}>New from Meta</TipButton>
+                  <TipButton tip={SEGMENT_TIPS.allMetaConversions} className={`toggle-btn ${demoScope === "allMeta" ? "active" : ""}`} onClick={() => setDemoScope("allMeta")}>All Meta</TipButton>
+                  <TipButton tip={SEGMENT_TIPS.allCustomers} className={`toggle-btn ${demoScope === "all" ? "active" : ""}`} onClick={() => setDemoScope("all")}>All Customers</TipButton>
                 </div>
               </div>
               <div className="demo-grid">
@@ -2900,14 +2902,14 @@ export default function Customers() {
                     {geoScope === "new"
                       ? "Billing address of new customers acquired via Meta ads"
                       : geoScope === "allMeta"
-                        ? "Billing address of all Meta-attributed customers (new + retargeted)"
-                        : "Billing address of all new customers acquired in this period"}
+                        ? "Billing address of all Meta-attributed customers (acquired + retargeted)"
+                        : "Billing address of all customers in this period (Meta + organic)"}
                   </Text>
                 </div>
                 <div className="toggle-group">
-                  <button className={`toggle-btn ${geoScope === "new" ? "active" : ""}`} onClick={() => setGeoScope("new")}>New Meta</button>
-                  <button className={`toggle-btn ${geoScope === "allMeta" ? "active" : ""}`} onClick={() => setGeoScope("allMeta")}>All Meta</button>
-                  <button className={`toggle-btn ${geoScope === "all" ? "active" : ""}`} onClick={() => { setGeoScope("all"); if (geoMetric === "cpa" || geoMetric === "roas") setGeoMetric("rev"); }}>All Customers</button>
+                  <TipButton tip={SEGMENT_TIPS.newFromMeta} className={`toggle-btn ${geoScope === "new" ? "active" : ""}`} onClick={() => setGeoScope("new")}>New from Meta</TipButton>
+                  <TipButton tip={SEGMENT_TIPS.allMeta} className={`toggle-btn ${geoScope === "allMeta" ? "active" : ""}`} onClick={() => setGeoScope("allMeta")}>All Meta</TipButton>
+                  <TipButton tip={SEGMENT_TIPS.allCustomers} className={`toggle-btn ${geoScope === "all" ? "active" : ""}`} onClick={() => { setGeoScope("all"); if (geoMetric === "cpa" || geoMetric === "roas") setGeoMetric("rev"); }}>All Customers</TipButton>
                 </div>
               </div>
               <div className="demo-grid">
@@ -2981,8 +2983,8 @@ export default function Customers() {
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                 <Text as="h2" variant="headingLg">New Customer Journey</Text>
                 <div className="toggle-group">
-                  <button className={`toggle-btn ${journeyScope === "meta" ? "active" : ""}`} onClick={() => setJourneyScope("meta")}>Meta Customers</button>
-                  <button className={`toggle-btn ${journeyScope === "all" ? "active" : ""}`} onClick={() => setJourneyScope("all")}>All Customers</button>
+                  <TipButton tip={SEGMENT_TIPS.metaCustomers} className={`toggle-btn ${journeyScope === "meta" ? "active" : ""}`} onClick={() => setJourneyScope("meta")}>Meta Customers</TipButton>
+                  <TipButton tip={SEGMENT_TIPS.allCustomers} className={`toggle-btn ${journeyScope === "all" ? "active" : ""}`} onClick={() => setJourneyScope("all")}>All Customers</TipButton>
                 </div>
               </div>
               <Text as="p" variant="bodySm" tone="subdued">
@@ -3111,8 +3113,8 @@ export default function Customers() {
                 </div>
                 <div style={{ flex: 1, display: "flex", justifyContent: "flex-end" }}>
                   <div className="toggle-group">
-                    <button className={`toggle-btn ${ltvTab === "meta" ? "active" : ""}`} onClick={() => setLtvTab("meta")}>Meta Customers</button>
-                    <button className={`toggle-btn ${ltvTab === "all" ? "active" : ""}`} onClick={() => setLtvTab("all")}>All Customers</button>
+                    <TipButton tip={SEGMENT_TIPS.metaCustomers} className={`toggle-btn ${ltvTab === "meta" ? "active" : ""}`} onClick={() => setLtvTab("meta")}>Meta Customers</TipButton>
+                    <TipButton tip={SEGMENT_TIPS.allCustomers} className={`toggle-btn ${ltvTab === "all" ? "active" : ""}`} onClick={() => setLtvTab("all")}>All Customers</TipButton>
                   </div>
                 </div>
               </div>
