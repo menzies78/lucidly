@@ -1,55 +1,49 @@
 import type { LoaderFunctionArgs } from "@remix-run/node";
 import { redirect } from "@remix-run/node";
-import { Form, useLoaderData } from "@remix-run/react";
-
-import { login } from "../../shopify.server";
 
 import styles from "./styles.module.css";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const url = new URL(request.url);
 
+  // When Shopify opens the app with a shop context, hand straight off to the
+  // embedded app (OAuth/token-exchange happens there). This public page never
+  // asks the merchant to type a shop domain — installation is initiated from
+  // the Shopify App Store, per App Store requirement 2.3.1.
   if (url.searchParams.get("shop")) {
     throw redirect(`/app?${url.searchParams.toString()}`);
   }
 
-  return { showForm: Boolean(login) };
+  return null;
 };
 
 export default function App() {
-  const { showForm } = useLoaderData<typeof loader>();
-
   return (
     <div className={styles.index}>
       <div className={styles.content}>
-        <h1 className={styles.heading}>A short heading about [your app]</h1>
+        <h1 className={styles.heading}>
+          Lucidly — Meta Ads attribution &amp; customer LTV for Shopify
+        </h1>
         <p className={styles.text}>
-          A tagline about [your app] that describes your value proposition.
+          See which customers your Meta ads actually acquire, the true lifetime
+          value behind them, and where your ad spend is working — or wasted.
         </p>
-        {showForm && (
-          <Form className={styles.form} method="post" action="/auth/login">
-            <label className={styles.label}>
-              <span>Shop domain</span>
-              <input className={styles.input} type="text" name="shop" />
-              <span>e.g: my-shop-domain.myshopify.com</span>
-            </label>
-            <button className={styles.button} type="submit">
-              Log in
-            </button>
-          </Form>
-        )}
+        <p className={styles.text}>
+          Lucidly is a Shopify embedded app. Install it from the Shopify App
+          Store and open it from your Shopify admin to get started.
+        </p>
         <ul className={styles.list}>
           <li>
-            <strong>Product feature</strong>. Some detail about your feature and
-            its benefit to your customer.
+            <strong>True ROAS &amp; customer LTV</strong>. Revenue verified
+            against real Shopify orders, not just Meta&rsquo;s reported numbers.
           </li>
           <li>
-            <strong>Product feature</strong>. Some detail about your feature and
-            its benefit to your customer.
+            <strong>New vs returning breakdown</strong>. Know who&rsquo;s a
+            first-time Meta-acquired customer and who came back on their own.
           </li>
           <li>
-            <strong>Product feature</strong>. Some detail about your feature and
-            its benefit to your customer.
+            <strong>Wasted-spend insights</strong>. Spot fatigued audiences and
+            ad spend going to customers you already had.
           </li>
         </ul>
       </div>
