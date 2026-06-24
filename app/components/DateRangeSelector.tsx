@@ -293,11 +293,7 @@ export default function DateRangeSelector() {
         boxShadow: "0 1px 3px rgba(0,0,0,0.04)",
         display: "flex",
         alignItems: "center",
-        gap: 16,
       }}>
-      {/* Left: Lucidly logo */}
-      <img src="/lucidly-logo-brand.svg" alt="Lucidly" height={26} style={{ height: 26, width: "auto", flexShrink: 0 }} />
-
       {/* Date control, labelled */}
       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
         <span style={{ fontSize: 13, fontWeight: 600, color: "#42474C", whiteSpace: "nowrap" }}>Select date</span>
