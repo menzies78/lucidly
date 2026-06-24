@@ -349,8 +349,22 @@ export default function InteractiveTable({
   const totalRows = allRows.length;
 
   const [rowsExpanded, setRowsExpanded] = useState(false);
+  const [rowsExpanding, setRowsExpanding] = useState(false);
   const isRowCapped = initialRowLimit != null && !rowsExpanded && totalRows > initialRowLimit;
-  const visibleRows = isRowCapped ? allRows.slice(0, initialRowLimit) : allRows;
+  const visibleRows = isRowCapped ? allRows.slice(0, initialRowLimit!) : allRows;
+
+  // Expanding a large table renders thousands of rows in one synchronous pass,
+  // which briefly freezes the tab. Defer that render one tick so the purple
+  // loading indicator (same look as date/tab navigation) paints first, giving
+  // the merchant feedback instead of an unexplained freeze.
+  const handleToggleRows = useCallback(() => {
+    if (rowsExpanded) { setRowsExpanded(false); return; }
+    setRowsExpanding(true);
+    setTimeout(() => {
+      setRowsExpanded(true);
+      setRowsExpanding(false);
+    }, 60);
+  }, [rowsExpanded]);
 
   const hasFilterRow = table.getVisibleLeafColumns().some(
     col => (col.columnDef.meta as any)?.filterType === "multi-select"
@@ -992,7 +1006,7 @@ export default function InteractiveTable({
       {initialRowLimit != null && totalRows > initialRowLimit && (
         <div style={{ display: "flex", justifyContent: "center", padding: "14px 0 4px" }}>
           <button
-            onClick={() => setRowsExpanded(v => !v)}
+            onClick={handleToggleRows}
             style={{
               display: "inline-flex", alignItems: "center", gap: 8,
               padding: "10px 20px", borderRadius: 8, cursor: "pointer",
@@ -1007,6 +1021,32 @@ export default function InteractiveTable({
             <span style={{ fontSize: 12 }}>{rowsExpanded ? "▲" : "▼"}</span>
           </button>
         </div>
+      )}
+      {rowsExpanding && (
+        <>
+          {/* Same purple shimmer bar + pill as date/tab navigation (keyframes
+              are defined globally in app.tsx's LoadingIndicator). */}
+          <div style={{
+            position: "fixed", top: 0, left: 0, right: 0, height: "3px", zIndex: 99999,
+            background: "linear-gradient(90deg, transparent, #7c3aed, #a78bfa, #7c3aed, transparent)",
+            backgroundSize: "200% 100%",
+            animation: "lucidly-shimmer 1.5s ease-in-out infinite",
+          }} />
+          <div style={{
+            position: "fixed", top: "8px", left: 0, right: 0,
+            display: "flex", justifyContent: "center", zIndex: 99999, pointerEvents: "none",
+          }}>
+            <div style={{
+              background: "rgba(124, 58, 237, 0.95)", color: "#fff",
+              padding: "6px 20px", borderRadius: "20px",
+              fontSize: "12px", fontWeight: 600, letterSpacing: "0.3px",
+              boxShadow: "0 2px 12px rgba(124, 58, 237, 0.3)",
+              animation: "lucidly-fade-in 0.3s ease-out, lucidly-pulse 2s ease-in-out infinite",
+            }}>
+              Loading all rows...
+            </div>
+          </div>
+        </>
       )}
       <FixedTooltip tip={tooltip} />
     </div>

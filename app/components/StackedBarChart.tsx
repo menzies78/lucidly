@@ -26,7 +26,30 @@ export interface StackedSeries {
 interface StackedBarChartProps {
   data: Array<Record<string, any>>; // each row: { date: "YYYY-MM-DD", ...seriesKeys }
   series: StackedSeries[];          // drawn base→top in array order
-  formatValue?: (v: number) => string;
+  formatValue?: (v: number) => string;   // used in the hover tooltip (exact)
+  formatAxis?: (v: number) => string;    // used for Y-axis labels (compact)
+}
+
+// "Nice number" rounding (Graphics Gems). Rounds to 1/2/5 × 10^n.
+function niceNum(range: number, round: boolean): number {
+  if (range <= 0) return 1;
+  const exp = Math.floor(Math.log10(range));
+  const frac = range / Math.pow(10, exp);
+  let nice: number;
+  if (round) nice = frac < 1.5 ? 1 : frac < 3 ? 2 : frac < 7 ? 5 : 10;
+  else nice = frac <= 1 ? 1 : frac <= 2 ? 2 : frac <= 5 ? 5 : 10;
+  return nice * Math.pow(10, exp);
+}
+
+// Produce an axis max + step that yields ~maxTicks evenly-spaced, round
+// gridlines (e.g. 0/20/40/60 rather than 0/26420/52840). Keeps the top of the
+// axis a clean number while staying reasonably close to the data max.
+function niceScale(max: number, maxTicks = 5): { niceMax: number; step: number } {
+  if (max <= 0) return { niceMax: 1, step: 1 };
+  const range = niceNum(max, false);
+  const step = niceNum(range / (maxTicks - 1), true);
+  const niceMax = Math.ceil(max / step) * step;
+  return { niceMax, step };
 }
 
 function fmtDayLabel(key: string): string {
@@ -35,7 +58,7 @@ function fmtDayLabel(key: string): string {
   return new Date(Date.UTC(y, m - 1, d)).toLocaleDateString("en-GB", { day: "numeric", month: "short" });
 }
 
-export default function StackedBarChart({ data, series, formatValue }: StackedBarChartProps) {
+export default function StackedBarChart({ data, series, formatValue, formatAxis }: StackedBarChartProps) {
   const [hover, setHover] = useState<number | null>(null);
   // Labels currently shown. Keyed by label (not key) so the selection survives
   // a Customers↔Revenue toggle, where the data keys change but labels don't.
@@ -44,6 +67,7 @@ export default function StackedBarChart({ data, series, formatValue }: StackedBa
   const [legendHover, setLegendHover] = useState<string | null>(null);
 
   const fmt = formatValue || ((v: number) => Math.round(v).toLocaleString());
+  const fmtAxis = formatAxis || fmt;
 
   // Only series the user has left selected are stacked / scaled / totalled.
   const activeSeries = series.filter(s => selected.has(s.label));
@@ -66,8 +90,9 @@ export default function StackedBarChart({ data, series, formatValue }: StackedBa
   const n = data.length;
   const totals = data.map(d => activeSeries.reduce((s, ser) => s + (Number(d[ser.key]) || 0), 0));
   const maxTotal = Math.max(0, ...totals);
-  // Crop the axis just above the tallest bar (no nice-number overshoot).
-  const yMax = maxTotal > 0 ? maxTotal : 1;
+  // Round the axis up to clean, evenly-spaced gridlines (e.g. 0/20/40/60)
+  // rather than cropping flush to an awkward data max like 52,840.
+  const { niceMax: yMax, step: yStep } = niceScale(maxTotal, 5);
 
   const legend = (
     <div style={{ display: "flex", justifyContent: "center", gap: "10px", flexWrap: "wrap", marginTop: 4 }}>
@@ -119,9 +144,9 @@ export default function StackedBarChart({ data, series, formatValue }: StackedBa
   const barGap = (slot - barW) / 2;
   const yOf = (v: number) => padT + innerH * (1 - v / yMax);
 
-  // Y gridlines (max, half, 0) - mirrors WeeklyCohortRevenue for a clean,
-  // cropped axis without ugly fractional ticks.
-  const gridLines = [0, yMax / 2, yMax];
+  // Evenly-spaced, round gridlines from 0 up to the nice axis max.
+  const gridLines: number[] = [];
+  for (let v = 0; v <= yMax + yStep / 2; v += yStep) gridLines.push(v);
 
   // X labels: aim for ~8 evenly spaced ticks, always include first + last.
   const tickEvery = Math.max(1, Math.ceil(n / 8));
@@ -137,7 +162,7 @@ export default function StackedBarChart({ data, series, formatValue }: StackedBa
           <g key={i}>
             <line x1={padL} y1={yOf(g)} x2={W - padR} y2={yOf(g)} stroke="#EEF0F3" strokeWidth={1} />
             <text x={padL - 8} y={yOf(g) + 3} textAnchor="end" fontSize={10} fill="#9CA3AF">
-              {fmt(g)}
+              {fmtAxis(g)}
             </text>
           </g>
         ))}

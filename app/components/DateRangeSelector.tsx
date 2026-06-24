@@ -228,7 +228,7 @@ export default function DateRangeSelector() {
     params.set("from", fmt(selectedDates.start));
     params.set("to", fmt(selectedDates.end));
     params.delete("preset");
-    setSearchParams(params);
+    setSearchParams(params, { preventScrollReset: true });
     setPopoverActive(false);
     saveDateParams({ from: fmt(selectedDates.start), to: fmt(selectedDates.end), compare });
   }, [selectedDates, searchParams, setSearchParams, compare]);
@@ -240,7 +240,7 @@ export default function DateRangeSelector() {
     params.set("to", dates.to);
     params.set("preset", presetValue);
     if (compare !== "none") params.set("compare", compare);
-    setSearchParams(params);
+    setSearchParams(params, { preventScrollReset: true });
     setPopoverActive(false);
     saveDateParams({ from: dates.from, to: dates.to, preset: presetValue, compare });
 
@@ -256,7 +256,7 @@ export default function DateRangeSelector() {
     } else {
       params.set("compare", value);
     }
-    setSearchParams(params);
+    setSearchParams(params, { preventScrollReset: true });
     saveDateParams({ from: fromParam || displayFrom, to: toParam || displayTo, preset, compare: value });
   }, [searchParams, setSearchParams, fromParam, toParam, displayFrom, displayTo, preset]);
 
@@ -291,7 +291,28 @@ export default function DateRangeSelector() {
         padding: "10px 16px",
         borderBottom: "1px solid #E4E5E7",
         boxShadow: "0 1px 3px rgba(0,0,0,0.04)",
+        display: "flex",
+        alignItems: "center",
       }}>
+      {/* Centred Lucidly wordmark - absolutely positioned so it stays dead
+          centre in the bar regardless of the date control's width. */}
+      <div style={{
+        position: "absolute", left: "50%", top: "50%",
+        transform: "translate(-50%, -50%)", pointerEvents: "none",
+        display: "flex", alignItems: "center", gap: 8,
+      }}>
+        <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true">
+          <circle cx="12" cy="12" r="10" fill="#7C3AED" />
+          <circle cx="12" cy="12" r="4.2" fill="#fff" />
+        </svg>
+        <span style={{ fontSize: 18, fontWeight: 800, letterSpacing: "-0.02em", color: "#1F2937" }}>
+          Lucid<span style={{ color: "#7C3AED" }}>ly</span>
+        </span>
+      </div>
+
+      {/* Left: date control, labelled */}
+      <div style={{ display: "flex", alignItems: "center", gap: 10, position: "relative", zIndex: 1 }}>
+        <span style={{ fontSize: 13, fontWeight: 600, color: "#42474C", whiteSpace: "nowrap" }}>Select date</span>
       <Popover
         active={popoverActive}
         activator={activator}
@@ -349,6 +370,7 @@ export default function DateRangeSelector() {
           </div>
         </div>
       </Popover>
+      </div>
       </div>
     </>
   );

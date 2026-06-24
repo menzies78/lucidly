@@ -2697,26 +2697,43 @@ export default function Customers() {
         <TileGrid pageId="customers-v8" columns={4} tiles={[
           { id: "customerBreakdown", label: "Meta Customer Breakdown Summary", span: 2, render: () => {
             // Plain-language read of the actual split (no invented benchmarks).
-            const newV = acqMode === "customers" ? donutMetaNewCustomers : donutMetaNewRevenue;
-            const repeatV = acqMode === "customers" ? donutMetaRepeatCustomers : donutMetaRepeatRevenue;
-            const retargetedV = acqMode === "customers" ? donutMetaRetargetedCustomers : donutMetaRetargetedRevenue;
-            const existingV = repeatV + retargetedV;
-            const totalV = newV + existingV;
-            const noun = acqMode === "customers" ? "customers" : "revenue";
-            const newPct = totalV > 0 ? Math.round((newV / totalV) * 100) : 0;
-            const existingPct = totalV > 0 ? 100 - newPct : 0;
+            // "Existing" = repeat (returning Meta-acquired) + retargeted.
+            const newCust = donutMetaNewCustomers;
+            const existingCust = donutMetaRepeatCustomers + donutMetaRetargetedCustomers;
+            const newRev = donutMetaNewRevenue;
+            const existingRev = donutMetaRepeatRevenue + donutMetaRetargetedRevenue;
+            const totalCust = newCust + existingCust;
+            const totalRev = newRev + existingRev;
+            const avgNew = newCust > 0 ? newRev / newCust : 0;
+            const avgExisting = existingCust > 0 ? existingRev / existingCust : 0;
+            const money = (v: number) => `${cs}${Math.round(v).toLocaleString()}`;
             let analysis = "";
-            if (totalV === 0) {
+            if (totalCust === 0) {
               analysis = "No Meta customer activity in the selected period.";
-            } else {
-              const lead = acqMode === "customers"
-                ? `${newPct}% of your Meta customers are new, ${existingPct}% are existing.`
-                : `${newPct}% of your Meta revenue comes from new customers, ${existingPct}% from existing ones.`;
+            } else if (acqMode === "customers") {
+              // Customers mode: describe the head-count split.
+              const newPct = Math.round((newCust / totalCust) * 100);
+              const existingPct = 100 - newPct;
+              const lead = `${newPct}% of your Meta customers are new, ${existingPct}% are existing.`;
               let take = "";
-              if (newPct >= 60) take = "Your Meta spend is doing the acquisition job well.";
-              else if (newPct <= 30) take = "Much of your Meta spend is reaching people who already buy from you — worth checking whether more could go toward acquiring new customers.";
+              if (newPct >= 60) take = "Most of your Meta customers are first-time buyers — your spend is doing the acquisition job.";
+              else if (newPct <= 35) take = "Most are existing customers being re-engaged — worth checking whether more spend could go toward winning new ones.";
               else take = "A fairly even split between winning new customers and re-engaging existing ones.";
               analysis = `${lead} ${take}`;
+            } else {
+              // Revenue mode: describe the revenue split AND explain it via AOV,
+              // so a customer/revenue skew (e.g. 56% of buyers but 66% of revenue)
+              // is surfaced rather than mislabelled as "even".
+              const newPctRev = totalRev > 0 ? Math.round((newRev / totalRev) * 100) : 0;
+              const existingPctRev = 100 - newPctRev;
+              const lead = `${newPctRev}% of your Meta revenue comes from new customers, ${existingPctRev}% from existing ones.`;
+              let take = "";
+              if (avgNew > 0 && avgExisting > 0) {
+                if (avgExisting >= avgNew * 1.15) take = `Your existing Meta customers spend more per head (${money(avgExisting)} vs ${money(avgNew)}), so returning buyers carry more of the revenue than their numbers suggest.`;
+                else if (avgNew >= avgExisting * 1.15) take = `Your new Meta customers spend more per head (${money(avgNew)} vs ${money(avgExisting)}) — strong first-order value.`;
+                else take = `New and existing Meta customers spend a similar amount per head (about ${money(avgNew)}).`;
+              }
+              analysis = `${lead} ${take}`.trim();
             }
             return (
           <Card>
@@ -3093,6 +3110,9 @@ export default function Customers() {
                   data={dailyData}
                   series={daySeries}
                   formatValue={dayMode === "revenue" ? (v) => `${cs}${Math.round(v).toLocaleString()}` : (v) => Math.round(v).toLocaleString()}
+                  formatAxis={dayMode === "revenue"
+                    ? (v) => v >= 1000 ? `${cs}${(v / 1000).toFixed(v % 1000 === 0 ? 0 : 1)}k` : `${cs}${Math.round(v)}`
+                    : (v) => Math.round(v).toLocaleString()}
                 />
               </BlockStack>
             </Card>
