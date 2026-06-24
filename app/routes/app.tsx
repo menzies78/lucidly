@@ -14,6 +14,7 @@ import db from "../db.server";
 import { isInternalShop } from "../utils/access.server";
 import {
   isBillingEnforced,
+  isBillingExempt,
   hasActiveSubscription,
   pricingPageUrl,
 } from "../utils/subscription.server";
@@ -59,6 +60,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     isBillingEnforced() &&
     onboardingCompleted &&
     !isInternal &&
+    !isBillingExempt(session.shop) &&
     !url.pathname.startsWith("/app/api/")
   ) {
     const active = await hasActiveSubscription(admin).catch(err => {

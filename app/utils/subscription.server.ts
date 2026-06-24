@@ -21,6 +21,18 @@ export function isBillingEnforced(): boolean {
   return (process.env.LUCIDLY_BILLING_ENFORCED || "").trim().toLowerCase() === "true";
 }
 
+// Shops that skip the paywall even when enforcement is on - demo/review/test
+// stores that must show the normal merchant UI (so NOT marked internal, which
+// would expose dev tooling) but should never be bounced to the pricing page.
+// Comma-separated shop domains in LUCIDLY_BILLING_EXEMPT_SHOPS.
+export function isBillingExempt(shopDomain: string | null | undefined): boolean {
+  if (!shopDomain) return false;
+  const raw = process.env.LUCIDLY_BILLING_EXEMPT_SHOPS || "";
+  if (!raw.trim()) return false;
+  const allow = raw.split(",").map(s => s.trim().toLowerCase()).filter(Boolean);
+  return allow.includes(shopDomain.toLowerCase());
+}
+
 // True when the shop has at least one ACTIVE app subscription. A merchant on
 // the free trial counts as ACTIVE (Managed Pricing creates the subscription up
 // front), so this correctly lets trialling merchants through and only bounces
