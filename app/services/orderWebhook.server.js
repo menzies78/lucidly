@@ -280,16 +280,17 @@ export async function processOrderWebhook(shopDomain, payload, isCreate) {
   // Upsert customer
   if (customerId) {
     const emailHash = hashEmail(customer.email);
+    const customerEmail = customer.email || null;
     const orderDate = new Date(payload.created_at);
 
     await db.customer.upsert({
       where: { shopDomain_shopifyCustomerId: { shopDomain, shopifyCustomerId: customerId } },
       create: {
-        shopDomain, shopifyCustomerId: customerId, emailHash,
+        shopDomain, shopifyCustomerId: customerId, emailHash, customerEmail,
         firstOrderDate: orderDate, isNewCustomer: true,
       },
       update: {
-        emailHash,
+        emailHash, customerEmail,
         // Only update firstOrderDate if this order is earlier
         ...(isNewCustomerOrder ? { firstOrderDate: orderDate } : {}),
       },

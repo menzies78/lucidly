@@ -10,7 +10,7 @@ export const meta: MetaFunction = () => [
 // Article 28 (Lucidly as processor, merchant as controller). Linked from the
 // in-app footer alongside the Privacy Policy; acceptance occurs on install/use.
 export default function Terms() {
-  const updated = "10 June 2026";
+  const updated = "24 June 2026";
   return (
     <main
       style={{
@@ -82,10 +82,11 @@ export default function Terms() {
         documented instructions (which include your use of the App's features).
       </p>
       <p>
-        <strong>5.2 Scope.</strong> We process customer name, hashed email
-        address, order history, and approximate location, solely to provide
-        attribution and analytics. We do not process this data for any other
-        purpose and do not sell it.
+        <strong>5.2 Scope.</strong> We process customer name, email address,
+        order history, and approximate location, solely to provide attribution
+        and analytics, including letting you view and export your own customer
+        list. We do not process this data for any other purpose and do not sell
+        it.
       </p>
       <p>
         <strong>5.3 Confidentiality.</strong> Access is limited to the operator
@@ -94,14 +95,13 @@ export default function Terms() {
       <p>
         <strong>5.4 Security.</strong> We apply appropriate technical and
         organisational measures, including encryption in transit (TLS) and at
-        rest, access controls, and storage of email addresses only as one-way
-        hashes.
+        rest and access controls. Email addresses are stored encrypted at rest
+        and access is limited to the operator.
       </p>
       <p>
-        <strong>5.5 Sub-processors.</strong> We use Fly.io (hosting/storage),
-        Meta Platforms (advertising data source), and Anthropic (insight
-        generation on aggregated, non-identifying metrics). We will give notice
-        of any new sub-processor that handles personal data.
+        <strong>5.5 Sub-processors.</strong> We use Fly.io (hosting/storage) and
+        Meta Platforms (advertising data source). We will give notice of any new
+        sub-processor that handles personal data.
       </p>
       <p>
         <strong>5.6 Data subject requests &amp; deletion.</strong> We assist you

@@ -108,6 +108,7 @@ model Customer {
   shopDomain          String
   shopifyCustomerId   String
   emailHash           String?
+  customerEmail       String?
   firstOrderDate      DateTime?
   lastOrderDate       DateTime?
   secondOrderDate     DateTime?

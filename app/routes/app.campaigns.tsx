@@ -1410,6 +1410,10 @@ export const action = async ({ request }) => {
   const actionType = formData.get("actionType");
 
   if (actionType === "generateInsights") {
+    // AI Insights are hidden for V1 — the panel is gated behind `false` in the
+    // render, and this server path is disabled too so the shipped build has no
+    // route to Anthropic. Re-enable alongside the V2 UI.
+    return new Response("AI insights are not available.", { status: 404 });
     const pageKey = String(formData.get("pageKey"));
     const taskId = `ai:${pageKey}:${shopDomain}`;
     const customSystem = formData.get("customSystemPrompt");

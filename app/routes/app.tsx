@@ -199,7 +199,7 @@ export default function App() {
         }}
       >
         Lucidly processes your store's order and customer data (including
-        customer names and hashed email addresses) to provide advertising
+        customer names and email addresses) to provide advertising
         attribution and customer analytics. By using Lucidly you agree to our{" "}
         <a
           href="/terms"

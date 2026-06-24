@@ -46,7 +46,7 @@ export async function buildOrderExplorerData(args: OrderExplorerArgs) {
     queryCached(`${shopDomain}:ordersCustomers`, DEFAULT_TTL, () =>
       db.customer.findMany({
         where: { shopDomain },
-        select: { shopifyCustomerId: true, firstOrderDate: true, metaSegment: true },
+        select: { shopifyCustomerId: true, firstOrderDate: true, metaSegment: true, customerEmail: true },
       }),
     ),
   ]);
@@ -149,6 +149,7 @@ export async function buildOrderExplorerData(args: OrderExplorerArgs) {
       orderNumber: order.orderNumber || order.shopifyOrderId,
       country: order.country || "", city: order.city || "",
       customerFirstName, customerLastName,
+      customerEmail: customer?.customerEmail || "",
       orderCount: order.customerOrderCountAtPurchase,
       campaign: attr.metaCampaignName || "", adSet: attr.metaAdSetName || "",
       adName: attr.metaAdName || "",
@@ -176,7 +177,7 @@ export async function buildOrderExplorerData(args: OrderExplorerArgs) {
     rows.push({
       date: extractedDate, createdAtISO: "",
       orderNumber: "", country: "", city: "",
-      customerFirstName: "", customerLastName: "", orderCount: null,
+      customerFirstName: "", customerLastName: "", customerEmail: "", orderCount: null,
       campaign: attr.metaCampaignName || "", adSet: attr.metaAdSetName || "",
       adName: attr.metaAdName || "",
       lineItems: "", productSkus: "", productCollections: "",
@@ -230,6 +231,7 @@ export async function buildOrderExplorerData(args: OrderExplorerArgs) {
       orderNumber: order.orderNumber || order.shopifyOrderId,
       country: order.country || "", city: order.city || "",
       customerFirstName, customerLastName,
+      customerEmail: customer?.customerEmail || "",
       orderCount: order.customerOrderCountAtPurchase,
       campaign: order.metaCampaignName || order.utmCampaign || "",
       adSet: order.metaAdSetName || order.utmTerm || "",
@@ -279,6 +281,7 @@ export async function buildOrderExplorerData(args: OrderExplorerArgs) {
       orderNumber: order.orderNumber || order.shopifyOrderId,
       country: order.country || "", city: order.city || "",
       customerFirstName, customerLastName,
+      customerEmail: customer?.customerEmail || "",
       orderCount: order.customerOrderCountAtPurchase,
       campaign: "", adSet: "",
       adName: tag === "Meta Repeat" && isPOS ? "(POS repeat)" : "",

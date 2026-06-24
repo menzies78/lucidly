@@ -10,7 +10,7 @@ export const meta: MetaFunction = () => [
 // Shopify App Store listing. Plain HTML — no Polaris / App Bridge, since this
 // renders outside the embedded admin context.
 export default function Privacy() {
-  const updated = "10 June 2026";
+  const updated = "24 June 2026";
   return (
     <main
       style={{
@@ -57,9 +57,10 @@ export default function Privacy() {
         </li>
         <li>
           <strong>Customer data</strong> — customer first and last name,
-          email address (stored only as a one-way hash, never in plain text),
-          order history, and approximate location (country / city) derived from
-          the order.
+          email address, order history, and approximate location (country /
+          city) derived from the order. Email addresses are stored so the
+          merchant can view and export their own customer list for reporting and
+          segmentation, and are encrypted at rest.
         </li>
         <li>
           <strong>Product data</strong> — product titles, SKUs, and collections.
@@ -98,11 +99,6 @@ export default function Privacy() {
           <strong>Meta Platforms</strong> — Lucidly reads advertising metrics
           from the merchant's own connected ad account. Customer personal data
           is not sent to Meta.
-        </li>
-        <li>
-          <strong>Anthropic</strong> — used to generate written insight
-          summaries. Only aggregated, non-identifying metrics are sent; customer
-          names and email hashes are not.
         </li>
       </ul>
 

@@ -66,6 +66,9 @@ export default function OrderExplorerSection({
     { accessorKey: "customerLastName", header: "Last Name",
       meta: { maxWidth: "140px", filterType: "text", description: "Customer last name (from Shopify billing address)" },
       cell: ({ getValue }) => getValue() || "-" },
+    { accessorKey: "customerEmail", header: "Email",
+      meta: { maxWidth: "240px", filterType: "text", description: "Customer email address. Use the download to export for manual segmentation" },
+      cell: ({ getValue }) => getValue() || "-" },
     { accessorKey: "orderCount", header: "Orders Placed",
       meta: { align: "right", description: "How many orders this customer had placed at the time of this purchase" },
       cell: ({ getValue }) => {
@@ -199,6 +202,7 @@ export default function OrderExplorerSection({
       createdAtISO: "",
       customerFirstName: "",
       customerLastName: "",
+      customerEmail: "",
       orderCount: "",
       revenue: fmtPrice(revenue),
       netRevenue: fmtPrice(netRev),

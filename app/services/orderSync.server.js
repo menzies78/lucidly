@@ -951,6 +951,7 @@ export async function syncOrders(admin, shopDomain) {
         const customerId = order.customer.id.replace("gid://shopify/Customer/", "");
         touchedCustomerIds.add(customerId);
         const emailHash = hashEmail(order.customer.email);
+        const customerEmail = order.customer.email || null;
         const firstOrderId = order.customer.orders?.edges?.[0]?.node?.id;
         const isFirstOrder = firstOrderId === order.id;
 
@@ -960,12 +961,12 @@ export async function syncOrders(admin, shopDomain) {
         await db.customer.upsert({
           where: { shopDomain_shopifyCustomerId: { shopDomain, shopifyCustomerId: customerId } },
           create: {
-            shopDomain, shopifyCustomerId: customerId, emailHash,
+            shopDomain, shopifyCustomerId: customerId, emailHash, customerEmail,
             firstOrderDate: new Date(order.createdAt), isNewCustomer: true,
             totalOrders: numberOfOrders,
           },
           update: {
-            emailHash, totalOrders: numberOfOrders,
+            emailHash, customerEmail, totalOrders: numberOfOrders,
             ...(isFirstOrder ? { firstOrderDate: new Date(order.createdAt) } : {}),
           },
         });

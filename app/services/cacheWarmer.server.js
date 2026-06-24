@@ -279,7 +279,7 @@ async function warmShop(shopDomain) {
   tasks.push(() => queryCached(`${shopDomain}:ordersCustomers`, TTL, () =>
     db.customer.findMany({
       where: { shopDomain },
-      select: { shopifyCustomerId: true, firstOrderDate: true, metaSegment: true },
+      select: { shopifyCustomerId: true, firstOrderDate: true, metaSegment: true, customerEmail: true },
     }),
   ));
 
