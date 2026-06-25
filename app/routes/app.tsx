@@ -10,6 +10,7 @@ import { useState, useEffect } from "react";
 
 import { authenticate } from "../shopify.server";
 import { ensureWebhooks } from "../services/ensureWebhooks.server.js";
+import { ensurePixel } from "../services/ensurePixel.server.js";
 import db from "../db.server";
 import { isInternalShop } from "../utils/access.server";
 import {
@@ -34,6 +35,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   // Self-heal: register required webhooks if missing. Cached per-process, idempotent.
   ensureWebhooks(session.shop, session.accessToken!).catch(err =>
     console.error("[app loader] ensureWebhooks failed:", err)
+  );
+  // Self-heal: register + configure the Lucidly Journey web pixel. Same pattern.
+  ensurePixel(session.shop, session.accessToken!).catch(err =>
+    console.error("[app loader] ensurePixel failed:", err)
   );
 
   const shop = await db.shop.findUnique({

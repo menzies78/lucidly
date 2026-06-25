@@ -42,7 +42,7 @@ api_version = "2026-04"
   uri = "/webhooks/shop/redact"
 
 [access_scopes]
-scopes = "read_orders,read_all_orders,read_customers,read_products"
+scopes = "read_orders,read_all_orders,read_customers,read_products,write_pixels,read_customer_events"
 
 [auth]
 redirect_urls = [ "https://lucidly.fly.dev/auth/callback", "https://lucidly.fly.dev/auth/shopify/callback", "https://lucidly.fly.dev/api/auth/callback" ]

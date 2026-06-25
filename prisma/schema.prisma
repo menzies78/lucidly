@@ -674,3 +674,53 @@ model DailyCustomerRollup {
   @@unique([shopDomain, date, segment])
   @@index([shopDomain, date])
 }
+
+// ─── Layer 1: cookie/pixel click-journey capture ──────────────────────────
+// A single ad-referred storefront landing recorded by the Lucidly web pixel.
+// One row per Meta-tagged page view (URL carried a Meta UTM or an fbclid) -
+// non-ad pageviews are filtered out client-side so this table only ever holds
+// the touches that matter. Keyed by Shopify's stable visitor token (clientId),
+// which survives the storefront → checkout domain hop where a cookie would not.
+// Stitched to orders via JourneyOrderLink; the derived first/last journey is
+// written back onto Order.pixelJourney once a matching order arrives.
+model JourneyTouch {
+  id          String   @id @default(uuid())
+  shopDomain  String
+  clientId    String   // Shopify visitor token (event.clientId)
+  occurredAt  DateTime // touch time, from the pixel event timestamp
+  source      String   @default("")
+  medium      String   @default("")
+  campaign    String   @default("")
+  content     String   @default("")
+  term        String   @default("")
+  fbclid      String   @default("")
+  landingPath String   @default("")
+  // Precomputed at ingest via isPaidMetaUtm(source, medium) || fbclid present.
+  // Lets the stitch step find "any paid-Meta touch" without re-classifying.
+  isPaidMeta  Boolean  @default(false)
+  rawUrl      String   @default("")
+  receivedAt  DateTime @default(now())
+
+  @@index([shopDomain, clientId])
+  @@index([shopDomain, occurredAt])
+}
+
+// Links a Shopify visitor (clientId) to an order at checkout_completed time.
+// Recorded by the pixel; the order row itself may not exist yet (the
+// orders/create webhook can race), so the link lives in its own table and the
+// stitch step joins clientId → touches → Order.pixelJourney when both are
+// present. `stitched` flips true once the journey JSON has been written back.
+model JourneyOrderLink {
+  id             String   @id @default(uuid())
+  shopDomain     String
+  clientId       String
+  shopifyOrderId String?  // numeric Shopify order id from the checkout event
+  checkoutToken  String   @default("")
+  occurredAt     DateTime
+  stitched       Boolean  @default(false)
+  receivedAt     DateTime @default(now())
+
+  @@index([shopDomain, clientId])
+  @@index([shopDomain, shopifyOrderId])
+  @@index([shopDomain, stitched])
+}

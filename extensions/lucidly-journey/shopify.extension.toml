@@ -1,0 +1,32 @@
+# Lucidly web pixel - Layer 1 click-journey capture.
+#
+# Runs in the storefront sandbox ("strict" runtime context: no DOM/cookie
+# access, but event context + fetch are available, which is all we need).
+# Records Meta-tagged landings and the checkout link, POSTing them to the
+# app's /api/journey ingest route. Settings (shop / ingestUrl / token) are
+# injected per-shop at registration time via the webPixelCreate mutation.
+api_version = "2026-04"
+
+[[extensions]]
+name = "Lucidly Journey"
+handle = "lucidly-journey"
+type = "web_pixel_extension"
+runtime_context = "strict"
+
+  [extensions.settings]
+  type = "object"
+
+    [extensions.settings.fields.shop]
+    name = "shop"
+    description = "Shop domain this pixel reports for"
+    type = "single_line_text_field"
+
+    [extensions.settings.fields.ingestUrl]
+    name = "ingestUrl"
+    description = "Lucidly journey ingest endpoint"
+    type = "single_line_text_field"
+
+    [extensions.settings.fields.token]
+    name = "token"
+    description = "Per-shop ingest token"
+    type = "single_line_text_field"

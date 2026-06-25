@@ -1,0 +1,9 @@
+{
+  "name": "lucidly-journey",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Lucidly Layer 1 click-journey web pixel",
+  "dependencies": {
+    "@shopify/web-pixels-extension": "^2.18.0"
+  }
+}
