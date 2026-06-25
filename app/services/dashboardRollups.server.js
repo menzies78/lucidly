@@ -105,51 +105,28 @@ export async function rebuildMatchAccuracy(shopDomain) {
     }
   }
 
-  // ── UTM-only attribution over the last 90 days (like-for-like) ──
-  // How many Meta conversions could UTM tags ALONE claim? This is the
-  // numerator for the Health page's "UTM tags alone" ring, made directly
-  // comparable to the statistical matcher (same Meta-conversion baseline).
-  //
-  // Standalone from the matcher: each utmConfirmedMeta order is resolved to a
-  // Meta ad using ONLY clean UTM signals - metaAdIdFromUtm (the ad id Elevar
-  // writes into the UTM) or utmContent matched to an ad name. We never read
-  // Order.metaAdId, which the matcher also populates (that would make the
-  // comparison circular). A resolved order only counts if its ad actually
-  // reported conversions, and claims are bounded by per-ad conversion capacity
-  // so UTM can never attribute more than Meta itself recorded.
+  // ── UTM-only attribution over the last 90 days ──
+  // Numerator for the Health page's "UTM tags alone" ring. A Meta UTM landing
+  // on a real order IS the match: the UTM carries the Meta source/medium (and
+  // usually the ad id), so the order self-certifies as Meta-driven - exactly
+  // how every standard UTM-based system (GA4, Triple Whale last-click,
+  // Shopify's own UTM attribution) attributes. No separate ad-level match is
+  // needed. We simply count utmConfirmedMeta online orders in the window and
+  // clamp to Meta's reported conversion total so the ring can't read above
+  // 100%. This is deliberately generous to UTM - the conservative direction,
+  // since it never inflates Lucidly's lead by deflating the comparison.
   const ninetyStart = new Date(now.getTime() - 90 * DAY_MS);
-  const [insights90, utmOrders90] = await Promise.all([
-    db.metaInsight.findMany({
+  const [convAgg, utmOrderCount] = await Promise.all([
+    db.metaInsight.aggregate({
       where: { shopDomain, date: { gte: ninetyStart } },
-      select: { adId: true, adName: true, conversions: true },
+      _sum: { conversions: true },
     }),
-    db.order.findMany({
+    db.order.count({
       where: { shopDomain, isOnlineStore: true, utmConfirmedMeta: true, createdAt: { gte: ninetyStart } },
-      select: { metaAdIdFromUtm: true, utmContent: true },
     }),
   ]);
-  const convCapByAd = new Map(); // adId -> total conversions in window
-  const adNameToId = new Map();  // adName -> adId (first seen)
-  let metaConv90 = 0;
-  for (const r of insights90) {
-    metaConv90 += r.conversions || 0;
-    if (!r.adId) continue;
-    convCapByAd.set(r.adId, (convCapByAd.get(r.adId) || 0) + (r.conversions || 0));
-    if (r.adName && !adNameToId.has(r.adName)) adNameToId.set(r.adName, r.adId);
-  }
-  const claimedByAd = new Map(); // adId -> claimed so far
-  let utmMatched90 = 0;
-  for (const o of utmOrders90) {
-    let adId = (o.metaAdIdFromUtm && o.metaAdIdFromUtm.trim()) || null;
-    if (!adId && o.utmContent && adNameToId.has(o.utmContent)) adId = adNameToId.get(o.utmContent);
-    if (!adId) continue;                        // UTM didn't resolve to a real Meta ad
-    const cap = convCapByAd.get(adId) || 0;     // ad must have actually converted
-    const used = claimedByAd.get(adId) || 0;
-    if (used >= cap) continue;                  // no conversion capacity left for this ad
-    claimedByAd.set(adId, used + 1);
-    utmMatched90++;
-  }
-  utmMatched90 = Math.min(utmMatched90, Math.round(metaConv90)); // never exceed Meta's count
+  const metaConv90 = convAgg._sum.conversions || 0;
+  const utmMatched90 = Math.min(utmOrderCount, Math.round(metaConv90)); // never exceed Meta's count
 
   // ── Bucket by day ──
   const metaConvByDay = new Map();
