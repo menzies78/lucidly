@@ -994,6 +994,70 @@ function StatusPill({ label, ok, warning, detail }: { label: string; ok: boolean
 }
 
 // ═══════════════════════════════════════════════════════════════
+// UTM-vs-Lucidly attribution rings
+// ═══════════════════════════════════════════════════════════════
+// Two donut rings contrasting how many Meta-driven orders tag-based
+// attribution can see (orders carrying a usable Meta UTM) against how
+// many Lucidly actually attributes (statistical matcher ∪ UTM). The
+// gap is Lucidly's incremental coverage - orders that arrive with no
+// usable tag and would otherwise be invisible. Built as inline SVG so
+// the tile screenshots cleanly with no chart dependency.
+
+function DonutRing({ value, frac, label, accent, track }: {
+  value: number; frac: number; label: string; accent: string; track: string;
+}) {
+  const size = 140, stroke = 15, r = (size - stroke) / 2;
+  const C = 2 * Math.PI * r;
+  const dash = Math.max(0, Math.min(1, frac)) * C;
+  return (
+    <div style={{ textAlign: "center", flex: 1, minWidth: 150 }}>
+      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
+        <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke={track} strokeWidth={stroke} />
+        <circle
+          cx={size / 2} cy={size / 2} r={r} fill="none" stroke={accent} strokeWidth={stroke}
+          strokeLinecap="round" strokeDasharray={`${dash} ${C - dash}`}
+          transform={`rotate(-90 ${size / 2} ${size / 2})`}
+        />
+        <text x="50%" y="47%" textAnchor="middle" dominantBaseline="middle" fontSize="32" fontWeight="800" fill={accent}>
+          {value.toLocaleString()}
+        </text>
+        <text x="50%" y="64%" textAnchor="middle" fontSize="11" fill="#6B7280">orders</text>
+      </svg>
+      <div style={{ fontSize: 13, fontWeight: 700, color: "#374151", marginTop: 2 }}>{label}</div>
+    </div>
+  );
+}
+
+function AttributionRings({ utmTotal, lucidlyTotal }: { utmTotal: number; lucidlyTotal: number }) {
+  const max = Math.max(utmTotal, lucidlyTotal, 1);
+  const extra = Math.max(0, lucidlyTotal - utmTotal);
+  const mult = utmTotal > 0 ? lucidlyTotal / utmTotal : null;
+  return (
+    <BlockStack gap="300">
+      <Text as="h2" variant="headingLg">Meta order attribution: UTM tags vs Lucidly</Text>
+      <Text as="p" variant="bodySm" tone="subdued">
+        UTM tags only attribute orders that arrive carrying a usable Meta tag.
+        Lucidly also matches the orders that don&apos;t - the same buyers, just
+        without a clean tag on the way in.
+      </Text>
+      <div style={{ display: "flex", gap: 24, alignItems: "center", flexWrap: "wrap", padding: "8px 0" }}>
+        <DonutRing value={utmTotal} frac={utmTotal / max} label="UTM tags alone" accent="#9CA3AF" track="#F3F4F6" />
+        <DonutRing value={lucidlyTotal} frac={lucidlyTotal / max} label="Lucidly" accent="#7C3AED" track="#EDE9FE" />
+      </div>
+      {extra > 0 && (
+        <div style={{
+          padding: "12px 16px", borderRadius: 10, background: "#F5F3FF",
+          border: "1px solid #DDD6FE", fontSize: 14, color: "#5B21B6", fontWeight: 600,
+        }}>
+          Lucidly attributes {extra.toLocaleString()} more Meta-driven order{extra === 1 ? "" : "s"} this period
+          {mult ? ` - ${mult >= 10 ? Math.round(mult) : mult.toFixed(1)}\u00D7 what UTM tags alone can see` : ""}.
+        </div>
+      )}
+    </BlockStack>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
 // Format minutes to human-readable string
 // ═══════════════════════════════════════════════════════════════
 
@@ -1303,6 +1367,18 @@ export default function Index() {
               detailLabel="matches"
               detailTotalLabel="orders"
             />
+          </Layout.Section>
+        </Layout>
+
+        {/* ═══ UTM vs Lucidly attribution rings ═══ */}
+        <Layout>
+          <Layout.Section>
+            <Card>
+              <AttributionRings
+                utmTotal={utmAndLucidlyCount + utmOnlyCount}
+                lucidlyTotal={attribution.matched + utmOnlyCount}
+              />
+            </Card>
           </Layout.Section>
         </Layout>
 
