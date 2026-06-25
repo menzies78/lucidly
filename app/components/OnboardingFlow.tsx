@@ -18,6 +18,7 @@ import {
   Card, BlockStack, Text, Button, Spinner, InlineStack, Banner, Box,
 } from "@shopify/polaris";
 import { useFetcher, useRevalidator } from "@remix-run/react";
+import FitReport, { type FitReportData } from "./FitReport";
 
 type Phase = {
   key: string;
@@ -40,19 +41,6 @@ type Phase = {
   };
 };
 
-type FitTestData = {
-  historicScore: number;
-  projectedOngoingScore: number;
-  gapRecoveryFactor: number;
-  verdict: string;
-  verdictReason: string;
-  ordersAnalysed: number;
-  lookbackDays: number;
-  ordersPerDay: number;
-  histogramPct: { "0": number; "1": number; "2": number; "3": number; "4+": number };
-  aov: { mean: number; cv: number; spread: "narrow" | "moderate" | "wide"; currency: string };
-} | null;
-
 type MetaGovernorSummary = {
   appUtilPct: number;
   acctUtilPct: number;
@@ -66,7 +54,7 @@ type Status = {
   onboardingCompleted: boolean;
   fitTestScore?: number | null;
   fitTestComputedAt?: string | null;
-  fitTestData?: FitTestData;
+  fitTestData?: FitReportData | null;
   phases: Phase[];
   liveMessage: string | null;
   livePhaseKey?: string | null;
@@ -342,25 +330,10 @@ export default function OnboardingFlow({ shopDomain }: { shopDomain: string }) {
   const fitScore = status.fitTestScore;
   const fitDone = fitScore !== null && fitScore !== undefined;
 
-  // ─── State 1: Welcome ──────────────────────────────────────────────
-  if (phase === "shopify" || phase === "welcome") {
-    return <WelcomeCard fetcher={fetcher} />;
-  }
-
-  // ─── State 2: Fit-importing (90d Shopify minimal sync) ────────────
-  if (phase === "fit-importing") {
-    return <FitImportingCard live={status.fitImportLive} />;
-  }
-
-  // ─── State 3: Fit-running (Fit Test calculation) ──────────────────
-  if (phase === "fit-running") {
-    return <FitRunningCard />;
-  }
-
-  // ─── State 4: Fit-ready (score + Connect Meta CTA) ────────────────
-  if (phase === "fit-ready" || (phase === "fit" && fitDone)) {
-    return <FitReadyCard score={fitScore!} data={status.fitTestData ?? null} metaAuthUrl={status.metaAuthUrl ?? null} />;
-  }
+  // Pick the card for the current phase, then wrap every state with the
+  // centred Lucidly logo so the brand sits at the top of every onboarding
+  // screen (welcome → importing → fit → ingesting → finalising).
+  let content: React.ReactNode;
 
   // ─── State 5: Ingesting (parallel Shopify + Meta) ─────────────────
   if (phase === "ingesting") {
@@ -372,22 +345,48 @@ export default function OnboardingFlow({ shopDomain }: { shopDomain: string }) {
     const allPhasesDone =
       status.phases.length > 0 &&
       status.phases.every(p => p.status === "completed");
-    if (allPhasesDone) {
-      return <FinalisingCard />;
-    }
-    return <IngestingCard status={status} />;
+    content = allPhasesDone ? <FinalisingCard /> : <IngestingCard status={status} />;
+  } else if (phase === "fit-importing") {
+    // ─── State 2: Fit-importing (90d Shopify minimal sync) ──────────
+    content = <FitImportingCard live={status.fitImportLive} />;
+  } else if (phase === "fit-running") {
+    // ─── State 3: Fit-running (Fit Test calculation) ───────────────
+    content = <FitRunningCard />;
+  } else if (phase === "fit-ready" || (phase === "fit" && fitDone)) {
+    // ─── State 4: Fit-ready (score + Connect Meta CTA) ─────────────
+    content = <FitReadyCard data={status.fitTestData ?? null} metaAuthUrl={status.metaAuthUrl ?? null} />;
+  } else if (phase === "complete") {
+    // Phase is "complete" but the parent loader hasn't picked up the flag
+    // yet (race between this poll and revalidate completing). Show the
+    // finalising card so the merchant sees a friendly transition rather
+    // than the fallback Welcome screen.
+    content = <FinalisingCard />;
+  } else {
+    // ─── State 1: Welcome (also the fallback for unknown phases) ────
+    content = <WelcomeCard fetcher={fetcher} />;
   }
 
-  // Phase is "complete" but the parent loader hasn't picked up the flag
-  // yet (race between this poll and revalidate completing). Show the
-  // finalising card so the merchant sees a friendly transition rather
-  // than the fallback Welcome screen.
-  if (phase === "complete") {
-    return <FinalisingCard />;
-  }
+  return (
+    <>
+      <OnboardingLogo />
+      {content}
+    </>
+  );
+}
 
-  // Fallback: unknown phase, show welcome to recover.
-  return <WelcomeCard fetcher={fetcher} />;
+// Centred Lucidly wordmark shown at the top of every onboarding screen.
+// Medium size (~50px tall) - the wordmark SVG is ~3.37:1, so this reads as
+// a clear brand header without dominating the card beneath it.
+function OnboardingLogo() {
+  return (
+    <div style={{ display: "flex", justifyContent: "center", paddingTop: 8, paddingBottom: 24 }}>
+      <img
+        src="/lucidly-logo-brand.svg"
+        alt="Lucidly"
+        style={{ height: 50, width: "auto", display: "block" }}
+      />
+    </div>
+  );
 }
 
 // ─── Finalising ──────────────────────────────────────────────────────
@@ -428,77 +427,118 @@ function WelcomeCard({ fetcher }: { fetcher: ReturnType<typeof useFetcher> }) {
   // Without #2 the button reverts to its idle (black) look the instant the
   // action returns, even though the next screen is still loading - the user
   // can't tell their click registered.
+  // Two states drive button loading - see the long-form note that previously
+  // lived here: #1 fetcher.state (POST in flight), #2 hasSubmitted (latched on
+  // first click so the button keeps its loading style through the 0-3s gap
+  // before /app/api/ingest-status reports phase="fit-importing" and unmounts
+  // this card). Without #2 the button reverts to idle the instant the action
+  // returns, so the merchant can't tell their click registered.
   const [hasSubmitted, setHasSubmitted] = useState(false);
   const isSubmitting = fetcher.state !== "idle" || hasSubmitted;
   return (
     <Box paddingBlockEnd="600">
-      <Card>
-        <Box padding="600">
-          <BlockStack gap="500">
-            <BlockStack gap="200">
-              <GradientPill>Welcome to Lucidly</GradientPill>
-              <Text as="h1" variant="heading2xl">Start with the Fit Test</Text>
-            </BlockStack>
-
-            <Text as="p" variant="bodyLg" tone="subdued">
-              Lucidly works by matching your Meta Ads conversions to your Shopify
-              orders with statistical certainty, so you know - with confidence -
-              which ads drove which sales.
+      <BlockStack gap="400">
+        {/* Floating intro pill - the top-line hook before the explainer */}
+        <div style={{
+          background: "linear-gradient(135deg, #F5F3FF 0%, #FFFFFF 55%)",
+          borderRadius: 28,
+          border: `1px solid ${PURPLE_BORDER}`,
+          boxShadow: "0 10px 34px rgba(124,58,237,0.14)",
+          padding: "40px 36px",
+        }}>
+          <BlockStack gap="300">
+            <Text as="h1" variant="heading3xl" alignment="center">Welcome to Lucidly</Text>
+            <Text as="p" variant="bodyLg" alignment="center" tone="subdued">
+              See which Meta ads bring you real, paying customers - and what
+              those customers are worth over time. Clear attribution and lifetime
+              value, matched straight to your Shopify orders.
             </Text>
+          </BlockStack>
+        </div>
 
-            <Box
-              padding="400"
-              background="bg-surface-secondary"
-              borderRadius="300"
-              borderColor="border"
-              borderWidth="025"
-            >
+        {/* Graphical intro: how it works + who it suits */}
+        <Card>
+          <Box padding="600">
+            <BlockStack gap="500">
+              <GradientPill>How it works</GradientPill>
               <BlockStack gap="300">
-                <Text as="h3" variant="headingMd">What is the Fit Test?</Text>
-                <Text as="p" variant="bodyMd" tone="subdued">
-                  Before we import months of data, we run a quick check against
-                  your last 90 days of Shopify orders and run them through our
-                  system to assess how good a match Lucidly will be for you.
+                <Text as="h1" variant="heading2xl">How does Lucidly work?</Text>
+                <Text as="p" variant="bodyLg" tone="subdued">
+                  Lucidly matches your Meta conversions to your Shopify orders
+                  statistically - comparing the Meta-reported transaction amount
+                  and time slot with Shopify orders of the same amount and time
+                  slot. So it works best when your orders are distinguishable
+                  from one another.
                 </Text>
-                <Text as="p" variant="bodyMd" tone="subdued">
-                  We&apos;ll calculate a projected matching accuracy score so you
-                  know how confidently Lucidly will be able to attribute your
-                  Meta results against Shopify orders, before committing to a
-                  full import.
-                </Text>
-                <BlockStack gap="100">
-                  <FeatureBullet>Imports just the order timestamps &amp; values - nothing else</FeatureBullet>
-                  <FeatureBullet>Takes about 30 seconds for most stores</FeatureBullet>
-                  <FeatureBullet>No commitment - see your score before going further</FeatureBullet>
+              </BlockStack>
+              <div style={{ borderTop: "1px solid #E3E3E3" }} />
+              <BlockStack gap="400">
+                <Text as="h2" variant="heading2xl">Who is Lucidly for?</Text>
+                <BlockStack gap="400">
+                  <WhoBullet title="Stores with varied order values">
+                    Fashion, homeware, and considered-purchase brands. A spread of prices makes each order easy to tell apart.
+                  </WhoBullet>
+                  <WhoBullet title="Mid-range to higher AOV">
+                    Fewer orders landing on the exact same price point in the same moment.
+                  </WhoBullet>
+                  <WhoBullet title="A broad catalogue">
+                    Different products at different prices naturally separate your orders.
+                  </WhoBullet>
+                  <WhoBullet title="Steady, spread-out order flow">
+                    Orders arriving across the day rather than all in the same few minutes.
+                  </WhoBullet>
+                  <WhoBullet title="Normal day-to-day trading">
+                    Outside of a major sale, the Fit Test reflects your real, ongoing match rate.
+                  </WhoBullet>
                 </BlockStack>
               </BlockStack>
-            </Box>
+            </BlockStack>
+          </Box>
+        </Card>
 
-            <fetcher.Form method="post" onSubmit={() => setHasSubmitted(true)}>
-              <input type="hidden" name="action" value="begin-fit-test" />
-              <Button
-                variant="primary"
-                size="large"
-                submit
-                loading={isSubmitting}
-                disabled={hasSubmitted}
-                fullWidth
-              >
-                Begin Fit Test
-              </Button>
-            </fetcher.Form>
-          </BlockStack>
-        </Box>
-      </Card>
+        {/* The Fit Test CTA - fires the real begin-fit-test action */}
+        <Card>
+          <Box padding="600">
+            <BlockStack gap="400">
+              <BlockStack gap="200">
+                <Text as="h2" variant="heading2xl">Will Lucidly work for your store?</Text>
+                <Text as="p" variant="bodyLg" tone="subdued">
+                  The Fit Test reads your last 90 days of real orders and predicts
+                  exactly how accurately Lucidly will match your Meta conversions -
+                  no guessing, no commitment.
+                </Text>
+              </BlockStack>
+              <fetcher.Form method="post" onSubmit={() => setHasSubmitted(true)}>
+                <input type="hidden" name="action" value="begin-fit-test" />
+                <Button
+                  variant="primary"
+                  size="large"
+                  submit
+                  loading={isSubmitting}
+                  disabled={hasSubmitted}
+                  fullWidth
+                >
+                  Run the 10-second Fit Test
+                </Button>
+              </fetcher.Form>
+            </BlockStack>
+          </Box>
+        </Card>
+      </BlockStack>
     </Box>
   );
 }
 
-function FeatureBullet({ children }: { children: React.ReactNode }) {
+// "Who is Lucidly for?" answer: a large primary line + smaller supporting copy,
+// led by an oversized purple tick.
+function WhoBullet({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <InlineStack gap="200" blockAlign="start" wrap={false}>
-      <span style={{ color: PURPLE, fontSize: 14, fontWeight: 700, lineHeight: "20px" }}>{"\u2713"}</span>
-      <Text as="span" variant="bodyMd">{children}</Text>
+    <InlineStack gap="300" blockAlign="start" wrap={false}>
+      <span style={{ color: PURPLE, fontSize: 24, fontWeight: 800, lineHeight: "30px" }}>{"\u2713"}</span>
+      <BlockStack gap="050">
+        <Text as="span" variant="headingMd">{title}</Text>
+        <Text as="span" variant="bodyMd" tone="subdued">{children}</Text>
+      </BlockStack>
     </InlineStack>
   );
 }
@@ -557,76 +597,32 @@ function FitRunningCard() {
 }
 
 // ─── Fit-ready ───────────────────────────────────────────────────────
-function ScoreTile({ value, label, sub, color }: {
-  value: number; label: string; sub: string; color: string;
+// Renders the shared rich Fit Report (same component the standalone demo
+// uses) followed by the onboarding-specific Meta-connect step. We can't use
+// FitReport's built-in showConnectCta here because that links to
+// /app/meta-connect, which the app.tsx onboarding gate bounces back to /app
+// while onboarding is incomplete. So we keep the proven popup OAuth flow.
+function FitReadyCard({ data, metaAuthUrl }: {
+  data: FitReportData | null; metaAuthUrl: string | null;
 }) {
-  return (
-    <div style={{
-      flex: 1,
-      background: "#fff",
-      border: `1px solid ${PURPLE_BORDER}`,
-      borderRadius: 12,
-      padding: 20,
-      textAlign: "center",
-      boxShadow: "0 1px 2px rgba(0,0,0,0.04)",
-    }}>
-      <div style={{ fontSize: 12, fontWeight: 600, color: TEXT_DIM, textTransform: "uppercase", letterSpacing: 0.5 }}>
-        {label}
-      </div>
-      <div style={{ fontSize: 44, fontWeight: 700, color, lineHeight: 1.1, margin: "8px 0 2px" }}>
-        {value}<span style={{ fontSize: 28, color, fontWeight: 600 }}>%</span>
-      </div>
-      <div style={{ fontSize: 12, color: TEXT_DIM, lineHeight: 1.4 }}>{sub}</div>
-    </div>
-  );
-}
-
-function FitReadyCard({ score, data, metaAuthUrl }: {
-  score: number; data: FitTestData; metaAuthUrl: string | null;
-}) {
-  const verdict =
-    score >= 85 ? { label: "Excellent", color: GREEN } :
-    score >= 70 ? { label: "Good", color: GREEN } :
-    score >= 50 ? { label: "Workable", color: "#D97706" } :
-                  { label: "Challenging", color: RED };
-
-  const historic = data?.historicScore ?? score;
-  const projected = data?.projectedOngoingScore ?? null;
+  // fitTestData is read from the same Shop row that flips the phase to
+  // fit-ready, so it's normally present - but guard against an early poll
+  // racing ahead of the JSON write.
+  if (!data) {
+    return <FitRunningCard />;
+  }
 
   return (
     <Box paddingBlockEnd="600">
-      <Card>
-        <Box padding="600">
-          <BlockStack gap="500">
-            <BlockStack gap="200">
-              <GradientPill>Step 1 complete</GradientPill>
-              <Text as="h1" variant="heading2xl">Your Lucidly Fit Score</Text>
-              <Text as="p" variant="bodyLg" tone="subdued">
-                Verdict: <strong style={{ color: verdict.color }}>{verdict.label}</strong>{" "}
-                {data?.verdictReason ? `- ${data.verdictReason}` : null}
-              </Text>
-            </BlockStack>
+      <BlockStack gap="500">
+        <FitReport d={data} />
 
-            <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
-              <ScoreTile
-                value={historic}
-                label="Historic batch accuracy"
-                sub="All Meta results up until today will be matched to their corresponding Shopify orders with this level of accuracy"
-                color={verdict.color}
-              />
-              {projected !== null && (
-                <ScoreTile
-                  value={projected}
-                  label="Projected ongoing accuracy"
-                  sub="All Meta results going forwards from now will be matched with close to this accuracy"
-                  color={PURPLE}
-                />
-              )}
-            </div>
-
-            <Box padding="400" background="bg-surface-secondary" borderRadius="300">
-              <BlockStack gap="300">
-                <Text as="h3" variant="headingMd">What&apos;s next</Text>
+        <Card>
+          <Box padding="600">
+            <BlockStack gap="400">
+              <GradientPill>Next step</GradientPill>
+              <BlockStack gap="200">
+                <Text as="h2" variant="heading2xl">Connect your Meta account</Text>
                 <Text as="p" variant="bodyMd" tone="subdued">
                   Click the button below to connect your Meta Ads account to
                   Lucidly, and we&apos;ll begin importing up to 2 years of
@@ -643,22 +639,22 @@ function FitReadyCard({ score, data, metaAuthUrl }: {
                   is complete.
                 </Text>
               </BlockStack>
-            </Box>
 
-            <Button
-              variant="primary"
-              size="large"
-              onClick={() => {
-                if (metaAuthUrl) window.open(metaAuthUrl, "meta_oauth", "width=600,height=700");
-              }}
-              disabled={!metaAuthUrl}
-              fullWidth
-            >
-              Connect Meta Ads
-            </Button>
-          </BlockStack>
-        </Box>
-      </Card>
+              <Button
+                variant="primary"
+                size="large"
+                onClick={() => {
+                  if (metaAuthUrl) window.open(metaAuthUrl, "meta_oauth", "width=600,height=700");
+                }}
+                disabled={!metaAuthUrl}
+                fullWidth
+              >
+                Connect Meta Ads
+              </Button>
+            </BlockStack>
+          </Box>
+        </Card>
+      </BlockStack>
     </Box>
   );
 }

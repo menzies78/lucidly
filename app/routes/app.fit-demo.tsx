@@ -75,6 +75,19 @@ function WhoBullet({ title, children }: { title: string; children: React.ReactNo
   );
 }
 
+// Centred Lucidly wordmark shown at the top of every onboarding screen.
+function OnboardingLogo() {
+  return (
+    <div style={{ display: "flex", justifyContent: "center", paddingTop: 8, paddingBottom: 24 }}>
+      <img
+        src="/lucidly-logo-brand.svg"
+        alt="Lucidly"
+        style={{ height: 50, width: "auto", display: "block" }}
+      />
+    </div>
+  );
+}
+
 function PurpleButton({ children, onClick }: { children: React.ReactNode; onClick: () => void }) {
   return (
     <button type="button" onClick={onClick} style={{
@@ -124,13 +137,32 @@ export default function FitDemo() {
   if (step === "intro") {
     return (
       <Page>
+        <OnboardingLogo />
         <Box paddingBlockEnd="600">
           <BlockStack gap="400">
+            {/* Floating intro pill - the top-line hook before the explainer */}
+            <div style={{
+              background: "linear-gradient(135deg, #F5F3FF 0%, #FFFFFF 55%)",
+              borderRadius: 28,
+              border: "1px solid #DDD6FE",
+              boxShadow: "0 10px 34px rgba(124,58,237,0.14)",
+              padding: "40px 36px",
+            }}>
+              <BlockStack gap="300">
+                <Text as="h1" variant="heading3xl" alignment="center">Welcome to Lucidly</Text>
+                <Text as="p" variant="bodyLg" alignment="center" tone="subdued">
+                  See which Meta ads bring you real, paying customers - and what
+                  those customers are worth over time. Clear attribution and lifetime
+                  value, matched straight to your Shopify orders.
+                </Text>
+              </BlockStack>
+            </div>
+
             {/* Graphical intro: how it works + who it suits */}
             <Card>
               <Box padding="600">
                 <BlockStack gap="500">
-                  <GradientPill>Welcome to Lucidly</GradientPill>
+                  <GradientPill>How it works</GradientPill>
                   <BlockStack gap="300">
                     <Text as="h1" variant="heading2xl">How does Lucidly work?</Text>
                     <Text as="p" variant="bodyLg" tone="subdued">
@@ -194,6 +226,7 @@ export default function FitDemo() {
     const pct = Math.min(80, 8 + (imported / target) * 72);
     return (
       <Page>
+        <OnboardingLogo />
         <Box paddingBlockEnd="600">
           <Card>
             <Box padding="600">
@@ -224,6 +257,7 @@ export default function FitDemo() {
   if (step === "running") {
     return (
       <Page>
+        <OnboardingLogo />
         <Box paddingBlockEnd="600">
           <Card>
             <Box padding="600">
