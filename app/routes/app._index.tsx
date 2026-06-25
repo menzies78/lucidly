@@ -47,6 +47,11 @@ export const loader = async ({ request }) => {
   // 7 days ago for "recently stopped campaigns" health alert.
   const now = new Date();
   const sevenDaysAgo = new Date(now.getTime() - 7 * 86400000);
+  // 90-day window for the UTM-vs-Lucidly rings tile. Deliberately a FIXED
+  // window (not the global date selector) so the marketing screenshot is
+  // consistent and the comparison against Meta conversions stays apples-to-
+  // apples with the precomputed match-accuracy blob.
+  const ninetyDaysAgo = new Date(now.getTime() - 90 * 86400000);
 
   // Parallel batch 1: all independent DB queries
   const [
@@ -63,6 +68,7 @@ export const loader = async ({ request }) => {
     matchAccuracyBlob,
     recentlyStoppedCampaigns,
     activeCampaignCount,
+    utmConfirmed90,
   ] = await Promise.all([
     db.order.count({ where: { shopDomain, createdAt: dateFilter } }),
     db.order.findMany({
@@ -130,6 +136,12 @@ export const loader = async ({ request }) => {
     // Active campaign count
     db.metaEntity.count({
       where: { shopDomain, entityType: "campaign", currentStatus: "ACTIVE" },
+    }),
+    // UTM-confirmed online orders in the fixed 90-day window — the numerator
+    // for the "UTM tags alone" ring. Orders that self-identify as paid Meta
+    // via their last-click UTM tags (Order.utmConfirmedMeta), set at sync time.
+    db.order.count({
+      where: { shopDomain, isOnlineStore: true, utmConfirmedMeta: true, createdAt: { gte: ninetyDaysAgo } },
     }),
   ]);
 
@@ -246,6 +258,22 @@ export const loader = async ({ request }) => {
     }
   }
 
+  // UTM-vs-Lucidly rings: both numerators measured against the same baseline of
+  // Meta-reported conversions over the fixed 90-day window. matched/total come
+  // straight from the precomputed blob (total = SUM Meta conversions, matched =
+  // count of confidence>0 attributions), so no extra heavy query for the
+  // matcher side. utmConfirmed90 is the parallel UTM-tag count.
+  const last90 = matchAccuracyDays.slice(-90);
+  const metaConv90 = last90.reduce((s, d) => s + d.total, 0);
+  const matcherMatched90 = last90.reduce((s, d) => s + d.matched, 0);
+  const ringsData = {
+    metaConversions: metaConv90,
+    matcherMatched: matcherMatched90,
+    utmMatched: utmConfirmed90,
+    matcherPct: metaConv90 > 0 ? Math.min(100, Math.round((matcherMatched90 / metaConv90) * 100)) : 0,
+    utmPct: metaConv90 > 0 ? Math.min(100, Math.round((utmConfirmed90 / metaConv90) * 100)) : 0,
+  };
+
   // UTM health from shop record. Tile is cached — only the nightly audit
   // refreshes these counters, so the dashboard never blocks on a live Meta API
   // call. Consistency = how many ads use the dominant template vs how many
@@ -314,7 +342,7 @@ export const loader = async ({ request }) => {
     metaConnected: !!shop?.metaAccessToken, metaAdAccountId: shop?.metaAdAccountId || null,
     attribution: { total: attributionCount, matched: matched.length, avgConfidence, unmatched, unmatchedRevenue },
     currencySymbol, isNewInstall, activeTaskFromServer,
-    utmOnlyCount, utmOnlyRevenue, utmAndLucidlyCount,
+    utmOnlyCount, utmOnlyRevenue, utmAndLucidlyCount, ringsData,
     onboardingCompleted: shop?.onboardingCompleted || false,
     onboardingPhase: shop?.onboardingPhase || "welcome",
     onboardingStartedAt: shop?.onboardingStartedAt || null,
@@ -996,21 +1024,32 @@ function StatusPill({ label, ok, warning, detail }: { label: string; ok: boolean
 // ═══════════════════════════════════════════════════════════════
 // UTM-vs-Lucidly attribution rings
 // ═══════════════════════════════════════════════════════════════
-// Two donut rings contrasting how many Meta-driven orders tag-based
-// attribution can see (orders carrying a usable Meta UTM) against how
-// many Lucidly actually attributes (statistical matcher ∪ UTM). The
-// gap is Lucidly's incremental coverage - orders that arrive with no
-// usable tag and would otherwise be invisible. Built as inline SVG so
-// the tile screenshots cleanly with no chart dependency.
+// Two donut rings, each showing the share of Meta-reported conversions
+// that the method successfully attributes to a Shopify order over a
+// fixed 90-day window. "UTM tags alone" = orders self-identifying as
+// Meta via last-click tags; "Lucidly" = the statistical matcher, which
+// finds matches programmatically without relying on UTMs. Neither hits
+// 100% - the gap between them is Lucidly's incremental coverage. Ring
+// colour ramps grey→purple by relative size, so the smaller (UTM) ring
+// reads as a lighter purple and Lucidly as full brand purple. Built as
+// inline SVG so the tile screenshots cleanly with no chart dependency.
 
-function DonutRing({ value, frac, label, accent, track }: {
-  value: number; frac: number; label: string; accent: string; track: string;
+// Lerp grey (#9CA3AF) → Lucidly purple (#7C3AED) by t∈[0,1].
+function rampGreyPurple(t: number): string {
+  const a = [156, 163, 175], b = [124, 58, 237];
+  const c = Math.max(0, Math.min(1, t));
+  const ch = a.map((v, i) => Math.round(v + (b[i] - v) * c));
+  return `rgb(${ch[0]}, ${ch[1]}, ${ch[2]})`;
+}
+
+function DonutRing({ pct, count, label, accent, track }: {
+  pct: number; count: number; label: string; accent: string; track: string;
 }) {
-  const size = 140, stroke = 15, r = (size - stroke) / 2;
+  const size = 196, stroke = 20, r = (size - stroke) / 2;
   const C = 2 * Math.PI * r;
-  const dash = Math.max(0, Math.min(1, frac)) * C;
+  const dash = Math.max(0, Math.min(1, pct / 100)) * C;
   return (
-    <div style={{ textAlign: "center", flex: 1, minWidth: 150 }}>
+    <div style={{ textAlign: "center" }}>
       <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
         <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke={track} strokeWidth={stroke} />
         <circle
@@ -1018,41 +1057,56 @@ function DonutRing({ value, frac, label, accent, track }: {
           strokeLinecap="round" strokeDasharray={`${dash} ${C - dash}`}
           transform={`rotate(-90 ${size / 2} ${size / 2})`}
         />
-        <text x="50%" y="47%" textAnchor="middle" dominantBaseline="middle" fontSize="32" fontWeight="800" fill={accent}>
-          {value.toLocaleString()}
+        <text x="50%" y="45%" textAnchor="middle" dominantBaseline="middle" fontSize="44" fontWeight="800" fill={accent}>
+          {pct}%
         </text>
-        <text x="50%" y="64%" textAnchor="middle" fontSize="11" fill="#6B7280">orders</text>
+        <text x="50%" y="61%" textAnchor="middle" fontSize="13" fontWeight="600" fill="#6B7280">
+          {count.toLocaleString()} matched
+        </text>
       </svg>
-      <div style={{ fontSize: 13, fontWeight: 700, color: "#374151", marginTop: 2 }}>{label}</div>
+      <div style={{ fontSize: 15, fontWeight: 700, color: "#374151", marginTop: 2 }}>{label}</div>
     </div>
   );
 }
 
-function AttributionRings({ utmTotal, lucidlyTotal }: { utmTotal: number; lucidlyTotal: number }) {
-  const max = Math.max(utmTotal, lucidlyTotal, 1);
-  const extra = Math.max(0, lucidlyTotal - utmTotal);
-  const mult = utmTotal > 0 ? lucidlyTotal / utmTotal : null;
+function AttributionRings({ data }: {
+  data: { metaConversions: number; matcherMatched: number; utmMatched: number; matcherPct: number; utmPct: number };
+}) {
+  const maxCount = Math.max(data.matcherMatched, data.utmMatched, 1);
+  const utmAccent = rampGreyPurple(data.utmMatched / maxCount);
+  const lucidlyAccent = rampGreyPurple(data.matcherMatched / maxCount);
+  const extra = Math.max(0, data.matcherMatched - data.utmMatched);
+  const mult = data.utmMatched > 0 ? data.matcherMatched / data.utmMatched : null;
   return (
     <BlockStack gap="300">
-      <Text as="h2" variant="headingLg">Meta order attribution: UTM tags vs Lucidly</Text>
-      <Text as="p" variant="bodySm" tone="subdued">
-        UTM tags only attribute orders that arrive carrying a usable Meta tag.
-        Lucidly also matches the orders that don&apos;t - the same buyers, just
-        without a clean tag on the way in.
-      </Text>
-      <div style={{ display: "flex", gap: 24, alignItems: "center", flexWrap: "wrap", padding: "8px 0" }}>
-        <DonutRing value={utmTotal} frac={utmTotal / max} label="UTM tags alone" accent="#9CA3AF" track="#F3F4F6" />
-        <DonutRing value={lucidlyTotal} frac={lucidlyTotal / max} label="Lucidly" accent="#7C3AED" track="#EDE9FE" />
+      <div style={{ textAlign: "center" }}>
+        <Text as="h2" variant="headingLg" alignment="center">Meta order attribution: UTM tags vs Lucidly</Text>
+        <div style={{ maxWidth: 620, margin: "6px auto 0" }}>
+          <Text as="p" variant="bodySm" tone="subdued" alignment="center">
+            Share of your Meta-reported conversions matched to a real Shopify order.
+            Lucidly matches orders programmatically without relying on UTMs, removing
+            the restriction and revealing more of your Meta customers.
+          </Text>
+        </div>
+      </div>
+      <div style={{ display: "flex", gap: 32, justifyContent: "center", alignItems: "center", flexWrap: "wrap", padding: "10px 0" }}>
+        <DonutRing pct={data.utmPct} count={data.utmMatched} label="UTM tags alone" accent={utmAccent} track="#F3F4F6" />
+        <DonutRing pct={data.matcherPct} count={data.matcherMatched} label="Lucidly" accent={lucidlyAccent} track="#EDE9FE" />
       </div>
       {extra > 0 && (
-        <div style={{
-          padding: "12px 16px", borderRadius: 10, background: "#F5F3FF",
-          border: "1px solid #DDD6FE", fontSize: 14, color: "#5B21B6", fontWeight: 600,
-        }}>
-          Lucidly attributes {extra.toLocaleString()} more Meta-driven order{extra === 1 ? "" : "s"} this period
-          {mult ? ` - ${mult >= 10 ? Math.round(mult) : mult.toFixed(1)}\u00D7 what UTM tags alone can see` : ""}.
+        <div style={{ textAlign: "center" }}>
+          <div style={{
+            display: "inline-block", padding: "12px 18px", borderRadius: 10, background: "#F5F3FF",
+            border: "1px solid #DDD6FE", fontSize: 14, color: "#5B21B6", fontWeight: 600,
+          }}>
+            Lucidly matches {extra.toLocaleString()} more Meta order{extra === 1 ? "" : "s"}
+            {mult ? ` - ${mult >= 10 ? Math.round(mult) : mult.toFixed(1)}\u00D7 what UTM tags alone can see` : ""}.
+          </div>
         </div>
       )}
+      <Text as="p" variant="bodySm" tone="subdued" alignment="center">
+        Measured against {data.metaConversions.toLocaleString()} Meta-reported conversions · last 90 days
+      </Text>
     </BlockStack>
   );
 }
@@ -1087,7 +1141,7 @@ export default function Index() {
     existingCustomerOrders, totalSpend, netRevenue, netMetaRevenue,
     lastSync, lastMetaSync, metaConnected, metaAdAccountId, attribution,
     currencySymbol, isNewInstall, activeTaskFromServer,
-    utmOnlyCount, utmOnlyRevenue, utmAndLucidlyCount, onboardingCompleted,
+    utmOnlyCount, utmOnlyRevenue, utmAndLucidlyCount, ringsData, onboardingCompleted,
     onboardingPhase, onboardingStartedAt, fitTestScore, fitTestComputedAt,
     webhooksRegisteredAt, webhooksFirstFiredAt, pixelCalibration,
     matchAccuracyDays, matchRate30d, matchRate30dDetail,
@@ -1374,10 +1428,7 @@ export default function Index() {
         <Layout>
           <Layout.Section>
             <Card>
-              <AttributionRings
-                utmTotal={utmAndLucidlyCount + utmOnlyCount}
-                lucidlyTotal={attribution.matched + utmOnlyCount}
-              />
+              <AttributionRings data={ringsData} />
             </Card>
           </Layout.Section>
         </Layout>
