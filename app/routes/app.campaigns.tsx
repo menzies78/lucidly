@@ -14,6 +14,7 @@ import PageSummary, { type SummaryBullet } from "../components/PageSummary";
 import SummaryTile from "../components/SummaryTile";
 import ChangesAnnotationStrip from "../components/ChangesAnnotationStrip";
 import EntityTimelineDrawer, { type EntityRef } from "../components/EntityTimelineDrawer";
+import AwaitingDataTile, { FirstLastClickPreview } from "../components/AwaitingDataTile";
 import { useState, useMemo, useCallback, useRef, useEffect } from "react";
 import { createPortal } from "react-dom";
 import { type ColumnDef } from "@tanstack/react-table";
@@ -5205,6 +5206,13 @@ export default function Campaigns() {
             </BlockStack>
           </Card>
         )}
+
+        {/* Journey-dependent view (web pixel). Greyed until touches arrive. */}
+        <AwaitingDataTile
+          title="First-click vs last-click credit"
+          message="Click journeys are being collected from your storefront. Once enough have been captured, this view will split each ad's credit between the first click that introduced the customer and the last click that closed the sale."
+          preview={<FirstLastClickPreview />}
+        />
       </BlockStack>
       </ReportTabs>
       <EntityTimelineDrawer

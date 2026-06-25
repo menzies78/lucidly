@@ -17,6 +17,7 @@ import { setProgress, failProgress, completeProgress } from "../services/progres
 import { buildOrderExplorerData } from "../services/orderExplorerData.server";
 import AiInsightsPanel from "../components/AiInsightsPanel";
 import OrderExplorerSection from "../components/OrderExplorerSection";
+import AwaitingDataTile, { JourneyTimelinePreview, AcquisitionPathsPreview } from "../components/AwaitingDataTile";
 import PageSummary from "../components/PageSummary";
 import type { SummaryBullet, SummaryTone } from "../components/PageSummary";
 import SummaryTile from "../components/SummaryTile";
@@ -4236,6 +4237,18 @@ export default function Customers() {
             next.set("orderCampaign", v);
             setSearchParams(next, { replace: true });
           }}
+        />
+
+        {/* Journey-dependent views (web pixel). Greyed until touches arrive. */}
+        <AwaitingDataTile
+          title="Customer journey timeline"
+          message="Click-by-click journeys are being collected from your storefront. Each customer's path from Meta ad to checkout will appear here automatically as soon as the first journeys arrive."
+          preview={<JourneyTimelinePreview />}
+        />
+        <AwaitingDataTile
+          title="Acquisition paths"
+          message="The routes Meta-acquired customers take before they buy are being collected from your storefront. This breakdown will appear automatically once enough journeys have been captured."
+          preview={<AcquisitionPathsPreview />}
         />
       </BlockStack>
       </ReportTabs>

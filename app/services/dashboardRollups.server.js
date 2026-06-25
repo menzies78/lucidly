@@ -105,6 +105,52 @@ export async function rebuildMatchAccuracy(shopDomain) {
     }
   }
 
+  // ── UTM-only attribution over the last 90 days (like-for-like) ──
+  // How many Meta conversions could UTM tags ALONE claim? This is the
+  // numerator for the Health page's "UTM tags alone" ring, made directly
+  // comparable to the statistical matcher (same Meta-conversion baseline).
+  //
+  // Standalone from the matcher: each utmConfirmedMeta order is resolved to a
+  // Meta ad using ONLY clean UTM signals - metaAdIdFromUtm (the ad id Elevar
+  // writes into the UTM) or utmContent matched to an ad name. We never read
+  // Order.metaAdId, which the matcher also populates (that would make the
+  // comparison circular). A resolved order only counts if its ad actually
+  // reported conversions, and claims are bounded by per-ad conversion capacity
+  // so UTM can never attribute more than Meta itself recorded.
+  const ninetyStart = new Date(now.getTime() - 90 * DAY_MS);
+  const [insights90, utmOrders90] = await Promise.all([
+    db.metaInsight.findMany({
+      where: { shopDomain, date: { gte: ninetyStart } },
+      select: { adId: true, adName: true, conversions: true },
+    }),
+    db.order.findMany({
+      where: { shopDomain, isOnlineStore: true, utmConfirmedMeta: true, createdAt: { gte: ninetyStart } },
+      select: { metaAdIdFromUtm: true, utmContent: true },
+    }),
+  ]);
+  const convCapByAd = new Map(); // adId -> total conversions in window
+  const adNameToId = new Map();  // adName -> adId (first seen)
+  let metaConv90 = 0;
+  for (const r of insights90) {
+    metaConv90 += r.conversions || 0;
+    if (!r.adId) continue;
+    convCapByAd.set(r.adId, (convCapByAd.get(r.adId) || 0) + (r.conversions || 0));
+    if (r.adName && !adNameToId.has(r.adName)) adNameToId.set(r.adName, r.adId);
+  }
+  const claimedByAd = new Map(); // adId -> claimed so far
+  let utmMatched90 = 0;
+  for (const o of utmOrders90) {
+    let adId = (o.metaAdIdFromUtm && o.metaAdIdFromUtm.trim()) || null;
+    if (!adId && o.utmContent && adNameToId.has(o.utmContent)) adId = adNameToId.get(o.utmContent);
+    if (!adId) continue;                        // UTM didn't resolve to a real Meta ad
+    const cap = convCapByAd.get(adId) || 0;     // ad must have actually converted
+    const used = claimedByAd.get(adId) || 0;
+    if (used >= cap) continue;                  // no conversion capacity left for this ad
+    claimedByAd.set(adId, used + 1);
+    utmMatched90++;
+  }
+  utmMatched90 = Math.min(utmMatched90, Math.round(metaConv90)); // never exceed Meta's count
+
   // ── Bucket by day ──
   const metaConvByDay = new Map();
   for (const r of insights) {
@@ -204,6 +250,10 @@ export async function rebuildMatchAccuracy(shopDomain) {
     conf7dDetail: { matched: c7.matched, confSum: c7.confSum },
     confLifetime: cL.conf,
     confLifetimeDetail: { matched: cL.matched, confSum: cL.confSum },
+    // UTM-only attribution over last 90d (Health rings tile). utmMatched90 is
+    // a standalone, capacity-bounded UTM match (see block above); the matcher
+    // numerator + Meta baseline for the same window come from the days slice.
+    utmMatched90,
     computedAt: new Date().toISOString(),
   };
 

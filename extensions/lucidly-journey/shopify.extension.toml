@@ -10,6 +10,7 @@ api_version = "2026-04"
 [[extensions]]
 name = "Lucidly Journey"
 handle = "lucidly-journey"
+uid = "99de00f4-fa83-1b9f-f3b9-8e6eed6cc7d4b30fd2eb"
 type = "web_pixel_extension"
 runtime_context = "strict"
 

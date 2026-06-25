@@ -47,11 +47,6 @@ export const loader = async ({ request }) => {
   // 7 days ago for "recently stopped campaigns" health alert.
   const now = new Date();
   const sevenDaysAgo = new Date(now.getTime() - 7 * 86400000);
-  // 90-day window for the UTM-vs-Lucidly rings tile. Deliberately a FIXED
-  // window (not the global date selector) so the marketing screenshot is
-  // consistent and the comparison against Meta conversions stays apples-to-
-  // apples with the precomputed match-accuracy blob.
-  const ninetyDaysAgo = new Date(now.getTime() - 90 * 86400000);
 
   // Parallel batch 1: all independent DB queries
   const [
@@ -68,7 +63,6 @@ export const loader = async ({ request }) => {
     matchAccuracyBlob,
     recentlyStoppedCampaigns,
     activeCampaignCount,
-    utmConfirmed90,
   ] = await Promise.all([
     db.order.count({ where: { shopDomain, createdAt: dateFilter } }),
     db.order.findMany({
@@ -137,12 +131,6 @@ export const loader = async ({ request }) => {
     db.metaEntity.count({
       where: { shopDomain, entityType: "campaign", currentStatus: "ACTIVE" },
     }),
-    // UTM-confirmed online orders in the fixed 90-day window — the numerator
-    // for the "UTM tags alone" ring. Orders that self-identify as paid Meta
-    // via their last-click UTM tags (Order.utmConfirmedMeta), set at sync time.
-    db.order.count({
-      where: { shopDomain, isOnlineStore: true, utmConfirmedMeta: true, createdAt: { gte: ninetyDaysAgo } },
-    }),
   ]);
 
   // Count distinct customers who placed orders in this date range
@@ -207,6 +195,7 @@ export const loader = async ({ request }) => {
   let matchConfLifetime: number | null = null;
   let matchConf30dDetail = { matched: 0, confSum: 0 };
   let matchConfLifetimeDetail = { matched: 0, confSum: 0 };
+  let utmMatched90 = 0; // standalone capacity-bounded UTM match (rings tile)
   if (matchAccuracyBlob?.payload) {
     try {
       const parsed = JSON.parse(matchAccuracyBlob.payload);
@@ -230,6 +219,8 @@ export const loader = async ({ request }) => {
       matchConf30dDetail = parsed.conf30dDetail || { matched: 0, confSum: 0 };
       matchConfLifetime = parsed.confLifetime ?? null;
       matchConfLifetimeDetail = parsed.confLifetimeDetail || { matched: 0, confSum: 0 };
+
+      utmMatched90 = parsed.utmMatched90 || 0;
 
       // Old blob (pre-confidence rollup) - derive rate fields from days if
       // they're missing so the tiles still render after a deploy but before
@@ -258,20 +249,22 @@ export const loader = async ({ request }) => {
     }
   }
 
-  // UTM-vs-Lucidly rings: both numerators measured against the same baseline of
-  // Meta-reported conversions over the fixed 90-day window. matched/total come
-  // straight from the precomputed blob (total = SUM Meta conversions, matched =
-  // count of confidence>0 attributions), so no extra heavy query for the
-  // matcher side. utmConfirmed90 is the parallel UTM-tag count.
+  // UTM-vs-Lucidly rings: both numerators measured against the SAME baseline of
+  // Meta-reported conversions over the fixed 90-day window, so they're truly
+  // like-for-like. The matcher numerator + Meta baseline come straight from the
+  // precomputed blob's day slice (total = SUM Meta conversions, matched = count
+  // of confidence>0 attributions). utmMatched90 is the standalone, capacity-
+  // bounded UTM match computed in dashboardRollups - a genuine UTM→conversion
+  // match, not just a tag count.
   const last90 = matchAccuracyDays.slice(-90);
   const metaConv90 = last90.reduce((s, d) => s + d.total, 0);
   const matcherMatched90 = last90.reduce((s, d) => s + d.matched, 0);
   const ringsData = {
     metaConversions: metaConv90,
     matcherMatched: matcherMatched90,
-    utmMatched: utmConfirmed90,
+    utmMatched: utmMatched90,
     matcherPct: metaConv90 > 0 ? Math.min(100, Math.round((matcherMatched90 / metaConv90) * 100)) : 0,
-    utmPct: metaConv90 > 0 ? Math.min(100, Math.round((utmConfirmed90 / metaConv90) * 100)) : 0,
+    utmPct: metaConv90 > 0 ? Math.min(100, Math.round((utmMatched90 / metaConv90) * 100)) : 0,
   };
 
   // UTM health from shop record. Tile is cached — only the nightly audit
