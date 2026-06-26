@@ -9,8 +9,12 @@ import { Card, Text, BlockStack } from "@shopify/polaris";
  * an overlay notification, so the layout reads as "coming soon" rather than
  * looking broken during onboarding.
  *
- * Keep these in NON-prominent positions (bottom of a page). Once real data
- * exists, swap the call site to render the live visualisation instead.
+ * Colours come from the shared design tokens (app/styles/tokens.css) so the
+ * tile matches the rest of the app and respects dark mode. Title uses the same
+ * headingLg size as the other section tiles (e.g. "Top Ads for New Customers").
+ *
+ * Keep these in NON-prominent positions. Once real data exists, swap the call
+ * site to render the live visualisation instead.
  */
 export default function AwaitingDataTile({
   title,
@@ -24,7 +28,7 @@ export default function AwaitingDataTile({
   return (
     <Card>
       <BlockStack gap="300">
-        <Text as="h3" variant="headingMd">
+        <Text as="h2" variant="headingLg">
           {title}
         </Text>
         <div style={{ position: "relative" }}>
@@ -56,12 +60,11 @@ export default function AwaitingDataTile({
               style={{
                 maxWidth: 420,
                 textAlign: "center",
-                background: "rgba(255,255,255,0.92)",
-                border: "1px solid #E1E3E5",
-                borderRadius: 12,
+                background: "var(--l-bg)",
+                border: "1px solid var(--l-border)",
+                borderRadius: "var(--l-radius-md)",
                 padding: "18px 22px",
-                boxShadow: "0 1px 3px rgba(0,0,0,0.08)",
-                backdropFilter: "blur(1px)",
+                boxShadow: "var(--l-shadow-sm)",
               }}
             >
               <div
@@ -70,25 +73,25 @@ export default function AwaitingDataTile({
                   alignItems: "center",
                   gap: 8,
                   marginBottom: 8,
-                  fontSize: 12,
+                  fontSize: "var(--l-font-sm)",
                   fontWeight: 700,
                   letterSpacing: 0.3,
                   textTransform: "uppercase",
-                  color: "#6D28D9",
+                  color: "var(--l-accent-dark)",
                 }}
               >
                 <span
                   style={{
                     width: 8,
                     height: 8,
-                    borderRadius: "50%",
-                    background: "#7C3AED",
+                    borderRadius: "var(--l-radius-full)",
+                    background: "var(--l-accent)",
                     display: "inline-block",
                   }}
                 />
                 Collecting data
               </div>
-              <div style={{ fontSize: 14, color: "#374151", lineHeight: 1.45 }}>
+              <div style={{ fontSize: "var(--l-font-base)", color: "var(--l-text-secondary)", lineHeight: 1.45 }}>
                 {message}
               </div>
             </div>
@@ -112,14 +115,14 @@ export function FirstLastClickPreview() {
       <BlockStack gap="200">
         {rows.map((r) => (
           <div key={r.label} style={{ display: "flex", alignItems: "center", gap: 12 }}>
-            <div style={{ width: 90, fontSize: 12, color: "#6B7280" }}>{r.label}</div>
+            <div style={{ width: 90, fontSize: "var(--l-font-sm)", color: "var(--l-text-secondary)" }}>{r.label}</div>
             <div style={{ flex: 1, display: "flex", gap: 6 }}>
-              <div style={{ height: 16, width: `${r.first}%`, background: "#7C3AED", borderRadius: 3 }} />
-              <div style={{ height: 16, width: `${r.last}%`, background: "#C4B5FD", borderRadius: 3 }} />
+              <div style={{ height: 16, width: `${r.first}%`, background: "var(--l-accent)", borderRadius: 3 }} />
+              <div style={{ height: 16, width: `${r.last}%`, background: "var(--l-accent-40)", borderRadius: 3 }} />
             </div>
           </div>
         ))}
-        <div style={{ display: "flex", gap: 16, fontSize: 11, color: "#6B7280", marginTop: 4 }}>
+        <div style={{ display: "flex", gap: 16, fontSize: "var(--l-font-xs)", color: "var(--l-text-secondary)", marginTop: 4 }}>
           <span>● First-click credit</span>
           <span>● Last-click credit</span>
         </div>
@@ -140,15 +143,15 @@ export function JourneyTimelinePreview() {
                 style={{
                   width: 34,
                   height: 34,
-                  borderRadius: "50%",
-                  background: i === steps.length - 1 ? "#7C3AED" : "#DDD6FE",
+                  borderRadius: "var(--l-radius-full)",
+                  background: i === steps.length - 1 ? "var(--l-accent)" : "var(--l-accent-40)",
                   margin: "0 auto 6px",
                 }}
               />
-              <div style={{ fontSize: 11, color: "#6B7280", maxWidth: 60 }}>{s}</div>
+              <div style={{ fontSize: "var(--l-font-sm)", color: "var(--l-text-secondary)", maxWidth: 60 }}>{s}</div>
             </div>
             {i < steps.length - 1 && (
-              <div style={{ flex: 1, height: 3, background: "#E5E7EB", margin: "0 4px", marginBottom: 18 }} />
+              <div style={{ flex: 1, height: 3, background: "var(--l-border)", margin: "0 4px", marginBottom: 18 }} />
             )}
           </React.Fragment>
         ))}
@@ -169,8 +172,8 @@ export function AcquisitionPathsPreview() {
       <BlockStack gap="200">
         {paths.map((p) => (
           <div key={p.label}>
-            <div style={{ fontSize: 12, color: "#6B7280", marginBottom: 3 }}>{p.label}</div>
-            <div style={{ height: 14, width: `${p.w}%`, background: "#A78BFA", borderRadius: 3 }} />
+            <div style={{ fontSize: "var(--l-font-sm)", color: "var(--l-text-secondary)", marginBottom: 3 }}>{p.label}</div>
+            <div style={{ height: 14, width: `${p.w}%`, background: "var(--l-accent)", borderRadius: 3 }} />
           </div>
         ))}
       </BlockStack>

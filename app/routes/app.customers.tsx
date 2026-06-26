@@ -4219,6 +4219,18 @@ export default function Customers() {
           )},
         ] as TileDef[]} />
 
+        {/* Journey-dependent views (web pixel). Greyed until touches arrive. */}
+        <AwaitingDataTile
+          title="Customer journey timeline"
+          message="Click-by-click journeys are being collected from your storefront. Each customer's path from Meta ad to checkout will appear here automatically as soon as the first journeys arrive."
+          preview={<JourneyTimelinePreview />}
+        />
+        <AwaitingDataTile
+          title="Acquisition paths"
+          message="The routes Meta-acquired customers take before they buy are being collected from your storefront. This breakdown will appear automatically once enough journeys have been captured."
+          preview={<AcquisitionPathsPreview />}
+        />
+
         {/* Order Explorer (moved here from /app/orders) — every Shopify
             order in the selected period, tagged by Meta attribution. */}
         <OrderExplorerSection
@@ -4237,18 +4249,6 @@ export default function Customers() {
             next.set("orderCampaign", v);
             setSearchParams(next, { replace: true });
           }}
-        />
-
-        {/* Journey-dependent views (web pixel). Greyed until touches arrive. */}
-        <AwaitingDataTile
-          title="Customer journey timeline"
-          message="Click-by-click journeys are being collected from your storefront. Each customer's path from Meta ad to checkout will appear here automatically as soon as the first journeys arrive."
-          preview={<JourneyTimelinePreview />}
-        />
-        <AwaitingDataTile
-          title="Acquisition paths"
-          message="The routes Meta-acquired customers take before they buy are being collected from your storefront. This breakdown will appear automatically once enough journeys have been captured."
-          preview={<AcquisitionPathsPreview />}
         />
       </BlockStack>
       </ReportTabs>

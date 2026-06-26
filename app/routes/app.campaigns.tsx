@@ -5083,6 +5083,14 @@ export default function Campaigns() {
                   </BlockStack>
                 </Card>
               )},
+              // Journey-dependent view (web pixel). Greyed until touches arrive.
+              { id: "firstLastClick", label: "First-click vs last-click credit", span: 4, render: () => (
+                <AwaitingDataTile
+                  title="First-click vs last-click credit"
+                  message="Click journeys are being collected from your storefront. Once enough have been captured, this view will split each ad's credit between the first click that introduced the customer and the last click that closed the sale."
+                  preview={<FirstLastClickPreview />}
+                />
+              )},
               { id: "platformPerf", label: "Platform Performance", span: 4, render: () => (
                 <BreakdownPerfTile
                   title="Platform Performance"
@@ -5206,13 +5214,6 @@ export default function Campaigns() {
             </BlockStack>
           </Card>
         )}
-
-        {/* Journey-dependent view (web pixel). Greyed until touches arrive. */}
-        <AwaitingDataTile
-          title="First-click vs last-click credit"
-          message="Click journeys are being collected from your storefront. Once enough have been captured, this view will split each ad's credit between the first click that introduced the customer and the last click that closed the sale."
-          preview={<FirstLastClickPreview />}
-        />
       </BlockStack>
       </ReportTabs>
       <EntityTimelineDrawer
