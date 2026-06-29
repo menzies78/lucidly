@@ -41,7 +41,7 @@ import { runAttribution } from "./matcher.server.js";
 import { sendOnboardingCompleteEmail } from "./email.server.js";
 import { refreshProductImages } from "./productImageSync.server.js";
 import { setProgress, completeProgress } from "./progress.server.js";
-import { unauthenticated } from "../shopify.server";
+import { getOfflineAdmin } from "./offlineToken.server.js";
 import { logIngestEvent, errInfo } from "./ingestEventLog.server.js";
 
 // Retry policy for runPhase: how many times we re-run a failing phase before
@@ -367,7 +367,7 @@ async function runIngest(shopDomain) {
   // pass one - that way resume-on-boot still works.
   let admin = null;
   try {
-    const result = await unauthenticated.admin(shopDomain);
+    const result = await getOfflineAdmin(shopDomain);
     admin = result.admin;
   } catch (err) {
     console.warn(`[ingestOrchestrator] ${shopDomain}: no Shopify admin session available: ${err.message}`);

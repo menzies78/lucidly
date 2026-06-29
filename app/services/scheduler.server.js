@@ -6,7 +6,7 @@ import { syncMetaEntities } from "./metaEntitySync.server";
 import { linkUtmToCampaigns } from "./utmLinkage.server";
 import { getProgress } from "./progress.server";
 import { syncOrders } from "./orderSync.server.js";
-import { unauthenticated } from "../shopify.server";
+import { getOfflineAdmin } from "./offlineToken.server.js";
 import { markSyncStart, markSyncEnd } from "./syncStatus.server.js";
 import { isOnboardingIngestInFlight } from "./ingestOrchestrator.server.js";
 
@@ -167,7 +167,7 @@ async function runHourlyCycle() {
 
         // 1. Pull any Shopify orders missed by webhooks (delta since lastOrderSync)
         try {
-          const { admin } = await unauthenticated.admin(shop.shopDomain);
+          const { admin } = await getOfflineAdmin(shop.shopDomain);
           const orderResult = await syncOrders(admin, shop.shopDomain);
           console.log(`[Scheduler] Shopify order sync for ${shop.shopDomain}: ${orderResult.totalImported} imported, ${orderResult.totalCustomers} customers`);
         } catch (err) {

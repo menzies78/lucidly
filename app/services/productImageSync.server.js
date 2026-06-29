@@ -13,7 +13,7 @@
 // the DB payload stays read-compatible.
 
 import db from "../db.server";
-import { unauthenticated } from "../shopify.server";
+import { getOfflineAdmin } from "./offlineToken.server.js";
 // Use the rollup's canonicaliser so image-map keys match rollup keys -
 // otherwise Vollebak-style trailing-period titles ("Planet Earth Suit Jacket.")
 // produce keys that diverge from the period-stripped rollup product names.
@@ -25,7 +25,7 @@ import { toParentProduct } from "./productRollups.server";
  * Returns { count, shopDomain } on success or throws.
  */
 export async function refreshProductImages(shopDomain) {
-  const { admin } = await unauthenticated.admin(shopDomain);
+  const { admin } = await getOfflineAdmin(shopDomain);
   const imgMap = {};
   let hasNext = true;
   let cursor = null;

@@ -4,7 +4,8 @@ import { Page, Layout, Card, Text, Button, BlockStack, InlineStack, Banner, Prog
 import ReportTabs from "../components/ReportTabs";
 import OnboardingFlow from "../components/OnboardingFlow";
 import { useState, useEffect, useRef, useCallback } from "react";
-import { authenticate, unauthenticated } from "../shopify.server";
+import { authenticate } from "../shopify.server";
+import { getOfflineAdmin } from "../services/offlineToken.server.js";
 import db from "../db.server";
 import { syncOrders } from "../services/orderSync.server";
 import { syncMetaAll } from "../services/metaSync.server";
@@ -417,7 +418,7 @@ export const action = async ({ request }) => {
     // the IIFE - by the time the IIFE actually runs, the request has ended
     // and the session reference is gone, so every GraphQL call throws
     // "Missing access token when creating GraphQL client". Build a fresh
-    // admin client from the offline token via unauthenticated.admin() instead.
+    // admin client from the offline token via getOfflineAdmin() instead.
     (async () => {
       try {
         const { syncOrdersForFitTest } = await import("../services/orderSync.server.js");
@@ -429,7 +430,7 @@ export const action = async ({ request }) => {
           update: { onboardingPhase: "fit-importing", onboardingStartedAt: new Date() },
         });
 
-        const { admin: bgAdmin } = await unauthenticated.admin(shopDomain);
+        const { admin: bgAdmin } = await getOfflineAdmin(shopDomain);
         await syncOrdersForFitTest(bgAdmin, shopDomain);
 
         await db.shop.update({

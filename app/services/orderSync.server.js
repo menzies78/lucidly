@@ -5,7 +5,7 @@ import { isPaidMetaUtm } from "../utils/utmClassification.js";
 import { parseElevarVisitorInfo } from "../utils/parseElevarVisitorInfo.js";
 import { withRetry } from "./retry.server.js";
 import { backfillShopInferredGender } from "./nameGender.server.js";
-import { unauthenticated } from "../shopify.server";
+import { getOfflineAdmin } from "./offlineToken.server.js";
 
 // Wraps admin.graphql with retry on transient errors AND re-auth on 401.
 //
@@ -15,10 +15,11 @@ import { unauthenticated } from "../shopify.server";
 // fails the whole orchestrator track (this is what burned us last run:
 // page ~50 returned 401, syncOrders threw, lastOrderSync never set).
 //
-// Strategy on 401: drop the captured admin, fetch a fresh one via
-// unauthenticated.admin(shopDomain), retry the SAME call once. If that
-// still 401s, re-auth isn't going to help (token actually revoked) - let
-// the exception propagate so the IngestJob fails honestly.
+// Strategy on 401: drop the captured admin, force an offline-token refresh
+// and fetch a fresh admin via getOfflineAdmin(shopDomain, { force: true }),
+// retry the SAME call once. If that still 401s, re-auth isn't going to help
+// (token actually revoked) - let the exception propagate so the IngestJob
+// fails honestly.
 //
 // We pass shopDomain so we can re-acquire. To keep call sites simple we
 // keep `admin` as the first arg but ignore it after a re-auth - the local
@@ -39,7 +40,9 @@ async function graphqlWithRetry(admin, query, variables, label, shopDomain) {
       if (is401 && !reauthAttempted && shopDomain) {
         reauthAttempted = true;
         console.warn(`[${label}] 401 - dropping cached session, re-authenticating ${shopDomain}`);
-        const fresh = await unauthenticated.admin(shopDomain);
+        // Force a token refresh before retrying: a 401 means the current
+        // offline token is bad even if its stored `expires` still looks valid.
+        const fresh = await getOfflineAdmin(shopDomain, { force: true });
         client = fresh.admin;
         const res = await client.graphql(query, variables ? { variables } : undefined);
         const data = await res.json();
