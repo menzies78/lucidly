@@ -1020,7 +1020,11 @@ export async function seedDemoData(shopDomain) {
     where: { shopDomain },
     data: {
       demoMode: true, demoSeededAt: now,
-      onboardingCompleted: true, onboardingPhase: "complete",
+      // NOTE: onboarding is NOT marked complete here. The dashboard reveal is
+      // gated on onboardingPhase === "complete", and the tiles/charts read from
+      // the rollup tables built by rebuildAllRollups() below. Flipping complete
+      // before the rollups exist reveals a blank dashboard until the user
+      // refreshes. We flip to complete only AFTER rebuildAllRollups() returns.
       currencyCode: DEMO_CURRENCY, shopifyCurrency: DEMO_CURRENCY, metaCurrency: DEMO_META_CURRENCY,
       shopifyTimezone: DEMO_TIMEZONE, metaAccountTimezone: DEMO_TIMEZONE,
       // Pretend Meta is connected: a real store couldn't show this data without
@@ -1040,7 +1044,17 @@ export async function seedDemoData(shopDomain) {
     `${attributions.length} attributions, ${insights.length} insights, ${breakdowns.length} breakdowns, ` +
     `${entityRows.length} entities. Building rollups…`);
 
-  await rebuildAllRollups(shopDomain, { force: true });
+  // Rollups feed every tile/chart, so build them BEFORE releasing the spinner.
+  // Completion is flipped in `finally` so a rollup failure still lets the user
+  // into the app (blank, as before) rather than hanging on the spinner forever.
+  try {
+    await rebuildAllRollups(shopDomain, { force: true });
+  } finally {
+    await db.shop.update({
+      where: { shopDomain },
+      data: { onboardingCompleted: true, onboardingPhase: "complete" },
+    });
+  }
 
   console.log(`[demoData] demo store ready for ${shopDomain} in ${Math.round((Date.now() - t0) / 1000)}s`);
   return {
