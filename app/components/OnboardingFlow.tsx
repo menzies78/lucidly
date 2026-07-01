@@ -101,6 +101,22 @@ function ProgressBar({ pct }: { pct: number }) {
   );
 }
 
+// Self-animating bar for phases where we have no real progress signal (the
+// demo seed + rollup build is a fire-and-forget background job). Creeps toward
+// a ceiling on an easing curve so it always looks alive and never stalls at a
+// fixed width, and never reaches 100% until the phase actually completes.
+// `expectedSec` sets the pace: ~63% of the way to the ceiling by that mark.
+function CreepingProgressBar({ ceiling = 95, expectedSec = 75 }: { ceiling?: number; expectedSec?: number }) {
+  const [elapsedMs, setElapsedMs] = useState(0);
+  useEffect(() => {
+    const start = Date.now();
+    const id = setInterval(() => setElapsedMs(Date.now() - start), 200);
+    return () => clearInterval(id);
+  }, []);
+  const pct = ceiling * (1 - Math.exp(-elapsedMs / (expectedSec * 1000)));
+  return <ProgressBar pct={pct} />;
+}
+
 function formatElapsed(ms: number): string {
   const sec = Math.floor(ms / 1000);
   if (sec < 60) return `${sec}s`;
@@ -436,9 +452,13 @@ function DemoSeedingCard() {
             <Text as="p" variant="bodyMd" tone="subdued">
               Loading a year of demo orders, Meta campaigns and customers, then
               computing attribution, lifetime value and benchmarks - exactly as
-              Lucidly would for your real store.
+              Lucidly would for your real store. This usually takes a minute or
+              two - you don't need to do anything.
             </Text>
-            <ProgressBar pct={90} />
+            <CreepingProgressBar />
+            <Text as="p" variant="bodySm" tone="subdued">
+              Building your dashboard - please keep this tab open.
+            </Text>
           </BlockStack>
         </Box>
       </Card>

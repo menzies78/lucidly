@@ -349,6 +349,7 @@ export const loader = async ({ request }) => {
     fitTestComputedAt: shop?.fitTestComputedAt || null,
     webhooksRegisteredAt: shop?.webhooksRegisteredAt || null,
     webhooksFirstFiredAt: shop?.webhooksFirstFiredAt || null,
+    demoMode: shop?.demoMode || false,
     pixelCalibration: {
       calibratedAt: shop?.metaValueCalibratedAt || null,
       samples: shop?.metaValueCalibrationSamples || 0,
@@ -1250,7 +1251,7 @@ export default function Index() {
     currencySymbol, isNewInstall, activeTaskFromServer,
     utmOnlyCount, utmOnlyRevenue, utmAndLucidlyCount, ringsData, onboardingCompleted,
     onboardingPhase, onboardingStartedAt, fitTestScore, fitTestComputedAt,
-    webhooksRegisteredAt, webhooksFirstFiredAt, pixelCalibration,
+    webhooksRegisteredAt, webhooksFirstFiredAt, demoMode, pixelCalibration,
     matchAccuracyDays, matchRate30d, matchRate30dDetail,
     matchRateLifetime, matchRateLifetimeDetail,
     matchConf30d, matchConf30dDetail,
@@ -1428,10 +1429,14 @@ export default function Index() {
             // ensureWebhooks ran before the Shop row existed, or the
             // shop pre-dates the registration column), an arriving
             // webhook proves the registration is live.
-            ok={!!webhooksRegisteredAt || !!webhooksFirstFiredAt}
+            // Demo shops have no real Shopify webhooks (the sample data is
+            // self-contained), so present webhooks as active — matching the
+            // spoofed Meta/sync pills — rather than showing a red "reinstall"
+            // state that misrepresents the demo.
+            ok={demoMode || !!webhooksRegisteredAt || !!webhooksFirstFiredAt}
             warning={false}
             detail={
-              webhooksFirstFiredAt
+              demoMode || webhooksFirstFiredAt
                 ? "active"
                 : webhooksRegisteredAt
                 ? "registered"
