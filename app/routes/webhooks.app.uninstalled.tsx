@@ -13,5 +13,24 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     await db.session.deleteMany({ where: { shop } });
   }
 
+  // Reset onboarding so a reinstall always lands on the standard Welcome screen.
+  // The Shop row (and its imported orders + Meta token) intentionally survives an
+  // uninstall, but the onboarding state machine must NOT: otherwise a merchant who
+  // reinstalls resumes at their last phase (e.g. "fit-ready") and is shown a stale
+  // Fit Report instead of Welcome. Clearing the fit-test artifacts also guarantees
+  // the "not enough order history" empty-state can only appear as the result of an
+  // actively-run Fit Test, never on first load after reinstall.
+  await db.shop.updateMany({
+    where: { shopDomain: shop },
+    data: {
+      onboardingPhase: "welcome",
+      onboardingCompleted: false,
+      onboardingStartedAt: null,
+      fitTestScore: null,
+      fitTestData: null,
+      fitTestComputedAt: null,
+    },
+  });
+
   return new Response();
 };
