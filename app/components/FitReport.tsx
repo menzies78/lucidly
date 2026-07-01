@@ -13,14 +13,18 @@ const PURPLE_LIGHT = "#A78BFA";
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 export type FitReportData = {
-  score: number;
+  // score/aov are absent on the "empty" result runFitTest stores when there
+  // are no online-store orders in the lookback window (see the guard in
+  // FitReport). All the rich fields below are only present on a real result.
+  score: number | null;
+  message?: string;
   verdict: string;
   verdictReason: string;
   ordersAnalysed: number;
   lookbackDays: number;
   ordersPerDay: number;
   histogramPct: Record<string, number>;
-  aov: { mean: number; cv: number; spread: "narrow" | "moderate" | "wide"; currency?: string };
+  aov?: { mean: number; cv: number; spread: "narrow" | "moderate" | "wide"; currency?: string };
   worstHours?: Array<{ dow: number; hour: number; avgRivals: number; orderCount: number }>;
   hourly?: Array<{ hour: number; avgRivals: number; orderCount: number }>;
   daily?: Array<{ date: string; count: number }>;
@@ -236,6 +240,27 @@ export default function FitReport({ d, showConnectCta = false }: {
   d: FitReportData;
   showConnectCta?: boolean;
 }) {
+  // Empty result: runFitTest stores { score: null, ordersAnalysed: 0, message }
+  // when there are no qualifying online-store orders in the lookback window, so
+  // aov / verdict / histogram are absent. Render the explanation instead of
+  // dereferencing the missing fields (this is what crashed on d.aov.currency).
+  if (!d || d.score == null || !d.aov) {
+    const message =
+      d?.message ||
+      "The Fit Test needs online-store order history from the last 90 days to predict match accuracy. Once orders come in, run it again.";
+    return (
+      <Box paddingBlockEnd="600">
+        <BlockStack gap="500">
+          <GradientPill>Fit Report</GradientPill>
+          <Text as="h1" variant="heading2xl">Not enough order history yet</Text>
+          <Banner tone="info">
+            <Text as="p" variant="bodyMd">{message}</Text>
+          </Banner>
+        </BlockStack>
+      </Box>
+    );
+  }
+
   const sym = currencySymbol(d.aov.currency);
   const cvPct = Math.round((d.aov.cv ?? 0) * 100);
   const spreadWord = d.aov.spread.charAt(0).toUpperCase() + d.aov.spread.slice(1);
