@@ -18,7 +18,6 @@ import { buildOrderExplorerData } from "../services/orderExplorerData.server";
 import AiInsightsPanel from "../components/AiInsightsPanel";
 import OrderExplorerSection from "../components/OrderExplorerSection";
 import AwaitingDataTile, { JourneyTimelinePreview, AcquisitionPathsPreview } from "../components/AwaitingDataTile";
-import { isInternalShop } from "../utils/access.server";
 import PageSummary from "../components/PageSummary";
 import type { SummaryBullet, SummaryTone } from "../components/PageSummary";
 import SummaryTile from "../components/SummaryTile";
@@ -35,9 +34,11 @@ export const loader = async ({ request }) => {
   const { session } = await authenticate.admin(request);
   const shopDomain = session.shop;
   // Web-pixel journey tiles are validated on the internal stores (HM +
-  // Vollebak) before public release, so they're shown only to internal shops
-  // (LUCIDLY_INTERNAL_SHOPS) and hidden for every public merchant/reviewer.
-  const journeyReportsEnabled = isInternalShop(shopDomain);
+  // Vollebak) before public release. Gated by a per-APP env flag set in the
+  // VB + HM fly configs; absent (→ false) on the public app, so public
+  // merchants/reviewers never see them. Deliberately NOT tied to isInternalShop
+  // (that also unlocks ops levers we don't want on merchant stores).
+  const journeyReportsEnabled = process.env.JOURNEY_REPORTS_ENABLED === "true";
   const shopForTz = await db.shop.findUnique({ where: { shopDomain } });
   const tz = shopForTz?.shopifyTimezone || "UTC";
   const { fromDate, toDate, fromKey, toKey, preset } = parseDateRange(request, tz);
@@ -4255,8 +4256,8 @@ export default function Customers() {
         ] as TileDef[]} />
 
         {/* Journey-dependent views (web pixel). Greyed until touches arrive.
-            Shown only on internal shops (HM + Vollebak) while being validated;
-            hidden for public merchants/reviewers via isInternalShop. */}
+            Shown only on the HM + Vollebak apps while being validated (per-app
+            JOURNEY_REPORTS_ENABLED flag); hidden on the public app. */}
         {journeyReportsEnabled && (
           <>
             <AwaitingDataTile

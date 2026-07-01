@@ -7,6 +7,10 @@ primary_region = "lhr"
   NODE_ENV = "production"
   DATABASE_URL = "file:/data/lucidly.db"
   PORT = "3000"
+  # Internal app (Hayley Menzies): show the web-pixel journey report tiles that
+  # are still being validated. Absent on the public app (fly.app.toml) so public
+  # merchants/reviewers don't see them.
+  JOURNEY_REPORTS_ENABLED = "true"
 
 [http_service]
   internal_port = 3000

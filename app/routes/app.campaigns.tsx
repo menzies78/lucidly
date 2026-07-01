@@ -15,7 +15,6 @@ import SummaryTile from "../components/SummaryTile";
 import ChangesAnnotationStrip from "../components/ChangesAnnotationStrip";
 import EntityTimelineDrawer, { type EntityRef } from "../components/EntityTimelineDrawer";
 import AwaitingDataTile, { FirstLastClickPreview } from "../components/AwaitingDataTile";
-import { isInternalShop } from "../utils/access.server";
 import { useState, useMemo, useCallback, useRef, useEffect } from "react";
 import { createPortal } from "react-dom";
 import { type ColumnDef } from "@tanstack/react-table";
@@ -1402,9 +1401,9 @@ export const loader = async ({ request }) => {
     stageTotals,
     topTiles,
     adDemographicsByAd,
-    // Web-pixel journey tile shown only on internal shops (HM + Vollebak)
-    // while it's validated; hidden for public merchants/reviewers.
-    journeyReportsEnabled: isInternalShop(shopDomain),
+    // Web-pixel journey tile shown only on the HM + Vollebak apps while it's
+    // validated (per-app JOURNEY_REPORTS_ENABLED flag); hidden on the public app.
+    journeyReportsEnabled: process.env.JOURNEY_REPORTS_ENABLED === "true",
   });
 };
 
@@ -5088,9 +5087,9 @@ export default function Campaigns() {
                   </BlockStack>
                 </Card>
               )},
-              // Journey-dependent view (web pixel). Shown only on internal
-              // shops (HM + Vollebak) while being validated; hidden for public
-              // merchants/reviewers via isInternalShop.
+              // Journey-dependent view (web pixel). Shown only on the HM +
+              // Vollebak apps while being validated (per-app
+              // JOURNEY_REPORTS_ENABLED flag); hidden on the public app.
               ...(journeyReportsEnabled ? [{ id: "firstLastClick", label: "First-click vs last-click credit", span: 4, render: () => (
                 <AwaitingDataTile
                   title="First-click vs last-click credit"
