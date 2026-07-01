@@ -21,6 +21,21 @@ const shopify = shopifyApp({
   distribution: AppDistribution.AppStore,
   future: {
     unstable_newEmbeddedAuthStrategy: true,
+    // Public App Store distribution MUST mint expiring offline tokens — Shopify
+    // now rejects non-expiring tokens on the Admin API with a 403 ("Non-expiring
+    // access tokens are no longer accepted"), which breaks every background
+    // Admin call (order sync, Fit Test, ingest, product images).
+    //
+    // This is env-gated, NOT on unconditionally, on purpose. Custom-distribution
+    // apps (Vollebak / HM) mint non-expiring tokens that Shopify still accepts,
+    // and their webhook auth never refreshes — so they avoid the library's
+    // UNLOCKED webhook-path refresh (ensureValidOfflineSession in
+    // authenticate.webhook), which is the concurrency race that removed
+    // Vollebak's orders/updated webhook on 2026-06-29. Enabling expiring tokens
+    // re-arms that race, so we scope it to the public app (EXPIRING_OFFLINE_TOKENS
+    // set only in fly.app.toml) where it's mandatory, and leave the two healthy
+    // custom apps untouched.
+    expiringOfflineAccessTokens: process.env.EXPIRING_OFFLINE_TOKENS === "true",
   },
   ...(process.env.SHOP_CUSTOM_DOMAIN
     ? { customShopDomains: [process.env.SHOP_CUSTOM_DOMAIN] }

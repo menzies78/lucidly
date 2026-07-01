@@ -7,6 +7,11 @@ primary_region = "lhr"
   NODE_ENV = "production"
   DATABASE_URL = "file:/data/lucidly.db"
   PORT = "3000"
+  # Public distribution must use expiring offline tokens (Shopify rejects
+  # non-expiring tokens on the Admin API with a 403). Gated here so the custom
+  # apps (fly.toml / fly.hm.toml) keep non-expiring tokens and avoid the
+  # library's unlocked webhook-path refresh race. See shopify.server.ts.
+  EXPIRING_OFFLINE_TOKENS = "true"
 
 [http_service]
   internal_port = 3000
