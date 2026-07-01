@@ -16,6 +16,9 @@ primary_region = "lhr"
   # an offline token faults (non-expiring 403 / revoked 401 / refresh race). Needs
   # RESEND_API_KEY set as a Fly secret to actually deliver; no-ops otherwise.
   OPS_ALERT_EMAIL = "see.lucidly@gmail.com"
+  # Verified Resend sending domain (seelucidly.com). All app email (ops alerts +
+  # merchant onboarding) sends from here; DKIM/SPF verified so it won't spam-file.
+  LUCIDLY_FROM_EMAIL = "Lucidly <hello@seelucidly.com>"
 
 [http_service]
   internal_port = 3000

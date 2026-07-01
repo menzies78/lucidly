@@ -14,6 +14,8 @@ primary_region = "lhr"
   # Ops alerting: the Token Health Watchdog + refresh-failure hook email here when
   # an offline token faults. Needs RESEND_API_KEY as a Fly secret to deliver.
   OPS_ALERT_EMAIL = "see.lucidly@gmail.com"
+  # Verified Resend sending domain (seelucidly.com). All app email sends from here.
+  LUCIDLY_FROM_EMAIL = "Lucidly <hello@seelucidly.com>"
 
 [http_service]
   internal_port = 3000
