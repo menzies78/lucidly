@@ -51,6 +51,9 @@ async function getConnectedShops() {
       metaAccessToken: { not: null },
       metaAdAccountId: { not: null },
       onboardingCompleted: true,
+      // Demo shops carry a placeholder Meta token but no real ad account, so
+      // never run live Meta syncs against them (they'd fail and churn the pool).
+      demoMode: false,
     },
     select: { shopDomain: true },
   });
@@ -349,6 +352,9 @@ async function runHistoricalDemographicsBackfillIfNeeded() {
       metaAccessToken: { not: null },
       metaAdAccountId: { not: null },
       onboardingCompleted: true,
+      // Demo shops carry a placeholder Meta token but no real ad account, so
+      // never run live Meta syncs against them (they'd fail and churn the pool).
+      demoMode: false,
     },
     select: { shopDomain: true },
   });

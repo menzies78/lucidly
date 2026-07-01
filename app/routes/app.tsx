@@ -1,6 +1,6 @@
 import type { HeadersFunction, LoaderFunctionArgs } from "@remix-run/node";
 import { redirect } from "@remix-run/node";
-import { Link, Outlet, useLoaderData, useRouteError, useNavigation } from "@remix-run/react";
+import { Link, Outlet, useLoaderData, useRouteError, useNavigation, useFetcher } from "@remix-run/react";
 import { boundary } from "@shopify/shopify-app-remix/server";
 import { AppProvider } from "@shopify/shopify-app-remix/react";
 import { NavMenu } from "@shopify/app-bridge-react";
@@ -43,9 +43,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   const shop = await db.shop.findUnique({
     where: { shopDomain: session.shop },
-    select: { onboardingCompleted: true },
+    select: { onboardingCompleted: true, demoMode: true },
   });
   const onboardingCompleted = shop?.onboardingCompleted ?? false;
+  const demoMode = shop?.demoMode ?? false;
   const isInternal = isInternalShop(session.shop);
 
   // Server-side gate: if onboarding isn't done, every nav target except the
@@ -79,8 +80,66 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     }
   }
 
-  return { apiKey: process.env.SHOPIFY_API_KEY || "", onboardingCompleted, isInternal };
+  return { apiKey: process.env.SHOPIFY_API_KEY || "", onboardingCompleted, demoMode, isInternal };
 };
+
+// Permanent, non-dismissable strip shown on every page while the store is
+// in demo mode. Gives the merchant (or reviewer) a one-click path to wipe
+// the sample data and set up with their real store. Posts exit-demo to the
+// index route action; on success the loader revalidates, demoMode flips
+// false, and the onboarding front door reappears for real setup.
+function DemoBanner() {
+  const fetcher = useFetcher();
+  const clearing = fetcher.state !== "idle";
+  return (
+    <div
+      style={{
+        maxWidth: 998,
+        margin: "12px auto 0",
+        padding: "12px 16px",
+        background: "linear-gradient(135deg, #F5F3FF 0%, #FFFFFF 70%)",
+        border: "1px solid #DDD6FE",
+        borderRadius: 14,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: 16,
+        flexWrap: "wrap",
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 240, flex: 1 }}>
+        <span
+          style={{
+            background: "linear-gradient(90deg, #7C3AED, #A78BFA)",
+            color: "#fff", padding: "3px 10px", borderRadius: 999,
+            fontSize: 11, fontWeight: 700, letterSpacing: 0.3, whiteSpace: "nowrap",
+          }}
+        >
+          SAMPLE DATA
+        </span>
+        <span style={{ fontSize: 13, color: "#4B5563", lineHeight: 1.4 }}>
+          You're exploring Lucidly with a demo store. None of this is your real
+          data.
+        </span>
+      </div>
+      <fetcher.Form method="post" action="/app?index">
+        <input type="hidden" name="action" value="exit-demo" />
+        <button
+          type="submit"
+          disabled={clearing}
+          style={{
+            background: clearing ? "#A78BFA" : "#7C3AED",
+            color: "#fff", border: "none", borderRadius: 10,
+            padding: "9px 16px", fontSize: 13, fontWeight: 600,
+            cursor: clearing ? "default" : "pointer", whiteSpace: "nowrap",
+          }}
+        >
+          {clearing ? "Clearing sample data…" : "Set up with my real data →"}
+        </button>
+      </fetcher.Form>
+    </div>
+  );
+}
 
 function LoadingIndicator() {
   const navigation = useNavigation();
@@ -187,7 +246,7 @@ function LoadingIndicator() {
 }
 
 export default function App() {
-  const { apiKey, onboardingCompleted, isInternal } = useLoaderData<typeof loader>();
+  const { apiKey, onboardingCompleted, demoMode, isInternal } = useLoaderData<typeof loader>();
   // While onboarding is in progress (and the merchant isn't an internal user),
   // collapse the nav to just the home/Health link and hide the date selector.
   // Stops the merchant from clicking through to pages that have no data yet.
@@ -217,6 +276,7 @@ export default function App() {
         {showFullNav && <Link to="/app/utm">UTM Manager</Link>}
       </NavMenu>
       {showFullNav && <DateRangeSelector />}
+      {demoMode && <DemoBanner />}
       <Outlet />
       {/* Merchant-facing data-processing disclosure. Required for the Shopify
           protected-customer-data review: tells merchants what data the app

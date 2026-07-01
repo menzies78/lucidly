@@ -18,6 +18,7 @@ import { buildOrderExplorerData } from "../services/orderExplorerData.server";
 import AiInsightsPanel from "../components/AiInsightsPanel";
 import OrderExplorerSection from "../components/OrderExplorerSection";
 import AwaitingDataTile, { JourneyTimelinePreview, AcquisitionPathsPreview } from "../components/AwaitingDataTile";
+import { isInternalShop } from "../utils/access.server";
 import PageSummary from "../components/PageSummary";
 import type { SummaryBullet, SummaryTone } from "../components/PageSummary";
 import SummaryTile from "../components/SummaryTile";
@@ -33,6 +34,10 @@ import type { ColumnDef } from "@tanstack/react-table";
 export const loader = async ({ request }) => {
   const { session } = await authenticate.admin(request);
   const shopDomain = session.shop;
+  // Web-pixel journey tiles are validated on the internal stores (HM +
+  // Vollebak) before public release, so they're shown only to internal shops
+  // (LUCIDLY_INTERNAL_SHOPS) and hidden for every public merchant/reviewer.
+  const journeyReportsEnabled = isInternalShop(shopDomain);
   const shopForTz = await db.shop.findUnique({ where: { shopDomain } });
   const tz = shopForTz?.shopifyTimezone || "UTC";
   const { fromDate, toDate, fromKey, toKey, preset } = parseDateRange(request, tz);
@@ -375,9 +380,11 @@ export const loader = async ({ request }) => {
     while (key <= toKey) {
       dailyMap[key] = { date: key, metaCustomers: 0, organicCustomers: 0, metaRevenue: 0, organicRevenue: 0, spend: 0, newMetaCustomers: 0, newMetaRevenue: 0, metaRepeatCustomers: 0,
         // Per-cohort daily series for the "Meta Customer Breakdown by Day"
-        // stacked bar chart. Sourced straight from DailyCustomerRollup
-        // segments so the tile reads from the rollup (fast), mirroring the
-        // three cohorts in the Summary donut: New / Repeat / Retargeted.
+        // stacked bar chart. Populated below from donutBreakdown.byDay — the
+        // SAME per-order Meta-attribution tagging the Summary donut uses — so
+        // the two tiles reconcile (the rollup's segment buckets over-include a
+        // retargeted customer's non-Meta first order, which is what made the
+        // Retargeted series disagree with the donut).
         mnCust: 0, mrCust: 0, mrtCust: 0, mnRev: 0, mrRev: 0, mrtRev: 0,
         // Meta Unidentified = matched-as-Meta-conversion but unmatched to a
         // specific Shopify order. Sourced from unmatchedByDay below.
@@ -393,19 +400,13 @@ export const loader = async ({ request }) => {
       dailyMap[key].newMetaRevenue += r.firstOrderRevenue;
       dailyMap[key].metaCustomers += r.newCustomers + r.repeatCustomers;
       dailyMap[key].metaRevenue += r.revenue;
-      dailyMap[key].mnCust += r.newCustomers + r.repeatCustomers;
-      dailyMap[key].mnRev += r.revenue;
     } else if (r.segment === "metaRepeat") {
       dailyMap[key].metaRepeatCustomers += r.repeatCustomers;
       dailyMap[key].metaCustomers += r.repeatCustomers;
       dailyMap[key].metaRevenue += r.revenue;
-      dailyMap[key].mrCust += r.newCustomers + r.repeatCustomers;
-      dailyMap[key].mrRev += r.revenue;
     } else if (r.segment === "metaRetargeted") {
       dailyMap[key].metaCustomers += r.newCustomers + r.repeatCustomers;
       dailyMap[key].metaRevenue += r.revenue;
-      dailyMap[key].mrtCust += r.newCustomers + r.repeatCustomers;
-      dailyMap[key].mrtRev += r.revenue;
     } else {
       dailyMap[key].organicCustomers += r.newCustomers + r.repeatCustomers;
       dailyMap[key].organicRevenue += r.revenue;
@@ -949,7 +950,7 @@ export const loader = async ({ request }) => {
     `${shopDomain}:customerDonutBreakdown:${dateFromStr}:${dateToStr}`,
     DEFAULT_TTL,
     async () => {
-      const empty = { metaNew: { customers: 0, revenue: 0 }, metaRepeat: { customers: 0, revenue: 0 }, metaRetargeted: { customers: 0, revenue: 0 } };
+      const empty = { metaNew: { customers: 0, revenue: 0 }, metaRepeat: { customers: 0, revenue: 0 }, metaRetargeted: { customers: 0, revenue: 0 }, byDay: {} as Record<string, { mnCust: number; mrCust: number; mrtCust: number; mnRev: number; mrRev: number; mrtRev: number }> };
       const orders = await db.order.findMany({
         // Exclude £0 orders (staff / replacement / warranty) - same rule
         // Order Explorer + the rollup apply so customer counts agree.
@@ -959,7 +960,7 @@ export const loader = async ({ request }) => {
           frozenTotalPrice: { gt: 0 },
         },
         select: {
-          shopifyOrderId: true, shopifyCustomerId: true,
+          shopifyOrderId: true, shopifyCustomerId: true, createdAt: true,
           frozenTotalPrice: true, totalRefunded: true,
           customerOrderCountAtPurchase: true,
           utmConfirmedMeta: true,
@@ -988,6 +989,20 @@ export const loader = async ({ request }) => {
       const retargetedCusts = new Set<string>();
       let newRev = 0, repeatRev = 0, retargetedRev = 0;
 
+      // Per-day breakdown for the "Meta Customer Breakdown by Day" stacked
+      // chart, built from the SAME per-order tagging as the donut totals so
+      // the two tiles reconcile by construction. Customers are counted once
+      // per day per cohort (distinct sets keyed by day); revenue is summed.
+      const byDay: Record<string, {
+        mn: Set<string>; mr: Set<string>; mrt: Set<string>;
+        mnRev: number; mrRev: number; mrtRev: number;
+      }> = {};
+      const ensureDay = (k: string) => {
+        let d = byDay[k];
+        if (!d) { d = { mn: new Set(), mr: new Set(), mrt: new Set(), mnRev: 0, mrRev: 0, mrtRev: 0 }; byDay[k] = d; }
+        return d;
+      };
+
       for (const o of orders) {
         const custId = o.shopifyCustomerId;
         if (!custId) continue;
@@ -1010,18 +1025,37 @@ export const loader = async ({ request }) => {
           tag = "metaRepeat";
         }
 
-        if (tag === "metaNew") { newCusts.add(custId); newRev += net; }
-        else if (tag === "metaRepeat") { repeatCusts.add(custId); repeatRev += net; }
-        else if (tag === "metaRetargeted") { retargetedCusts.add(custId); retargetedRev += net; }
+        if (!tag) continue;
+        const dk = shopLocalDayKey(tz, o.createdAt);
+        const day = ensureDay(dk);
+        if (tag === "metaNew") { newCusts.add(custId); newRev += net; day.mn.add(custId); day.mnRev += net; }
+        else if (tag === "metaRepeat") { repeatCusts.add(custId); repeatRev += net; day.mr.add(custId); day.mrRev += net; }
+        else if (tag === "metaRetargeted") { retargetedCusts.add(custId); retargetedRev += net; day.mrt.add(custId); day.mrtRev += net; }
+      }
+
+      const byDayCounts: Record<string, { mnCust: number; mrCust: number; mrtCust: number; mnRev: number; mrRev: number; mrtRev: number }> = {};
+      for (const [k, d] of Object.entries(byDay)) {
+        byDayCounts[k] = { mnCust: d.mn.size, mrCust: d.mr.size, mrtCust: d.mrt.size, mnRev: r2(d.mnRev), mrRev: r2(d.mrRev), mrtRev: r2(d.mrtRev) };
       }
 
       return {
         metaNew: { customers: newCusts.size, revenue: r2(newRev) },
         metaRepeat: { customers: repeatCusts.size, revenue: r2(repeatRev) },
         metaRetargeted: { customers: retargetedCusts.size, revenue: r2(retargetedRev) },
+        byDay: byDayCounts,
       };
     },
   );
+
+  // Overlay the per-cohort daily series onto dailyMap from the donut's
+  // per-order tagging, so "Meta Customer Breakdown by Day" reconciles with the
+  // "Meta Customer Breakdown Summary" donut (single source of truth).
+  for (const [k, d] of Object.entries(donutBreakdown.byDay || {})) {
+    const row = dailyMap[k];
+    if (!row) continue;
+    row.mnCust = d.mnCust; row.mrCust = d.mrCust; row.mrtCust = d.mrtCust;
+    row.mnRev = d.mnRev; row.mrRev = d.mrRev; row.mrtRev = d.mrtRev;
+  }
 
   // Single/Repeat splits - derive from customers
   let metaNewSingleCount = 0, metaNewSingleOrders = 0, metaNewSingleRevenue = 0;
@@ -1271,6 +1305,7 @@ export const loader = async ({ request }) => {
     weeklyCohortSeries,
     fromKey, toKey, preset,
     orderExplorer,
+    journeyReportsEnabled,
   });
 };
 
@@ -2010,7 +2045,7 @@ export default function Customers() {
     unmatchedConversionsWithValue, prevUnmatchedConversions, prevUnmatchedRevenue, prevUnmatchedConversionsWithValue,
   } = data;
   const cs = currencySymbol || currencySymbolFromCode(null);
-  const { aiCachedInsights, aiGeneratedAt, aiIsStale, orderExplorer } = data;
+  const { aiCachedInsights, aiGeneratedAt, aiIsStale, orderExplorer, journeyReportsEnabled } = data;
   const [searchParams, setSearchParams] = useSearchParams();
   const [acqMode, setAcqMode] = useState<"customers" | "revenue">("customers");
   // Independent toggle for the "Meta Customer Breakdown by Day" stacked chart.
@@ -4219,17 +4254,23 @@ export default function Customers() {
           )},
         ] as TileDef[]} />
 
-        {/* Journey-dependent views (web pixel). Greyed until touches arrive. */}
-        <AwaitingDataTile
-          title="Customer journey timeline"
-          message="Click-by-click journeys are being collected from your storefront. Each customer's path from Meta ad to checkout will appear here automatically as soon as the first journeys arrive."
-          preview={<JourneyTimelinePreview />}
-        />
-        <AwaitingDataTile
-          title="Acquisition paths"
-          message="The routes Meta-acquired customers take before they buy are being collected from your storefront. This breakdown will appear automatically once enough journeys have been captured."
-          preview={<AcquisitionPathsPreview />}
-        />
+        {/* Journey-dependent views (web pixel). Greyed until touches arrive.
+            Shown only on internal shops (HM + Vollebak) while being validated;
+            hidden for public merchants/reviewers via isInternalShop. */}
+        {journeyReportsEnabled && (
+          <>
+            <AwaitingDataTile
+              title="Customer journey timeline"
+              message="Click-by-click journeys are being collected from your storefront. Each customer's path from Meta ad to checkout will appear here automatically as soon as the first journeys arrive."
+              preview={<JourneyTimelinePreview />}
+            />
+            <AwaitingDataTile
+              title="Acquisition paths"
+              message="The routes Meta-acquired customers take before they buy are being collected from your storefront. This breakdown will appear automatically once enough journeys have been captured."
+              preview={<AcquisitionPathsPreview />}
+            />
+          </>
+        )}
 
         {/* Order Explorer (moved here from /app/orders) — every Shopify
             order in the selected period, tagged by Meta attribution. */}

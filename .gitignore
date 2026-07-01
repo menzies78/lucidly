@@ -12,6 +12,9 @@ node_modules
 /prisma/dev.sqlite-shm
 /prisma/dev.sqlite-wal
 /prisma/dev.db
+/prisma/demo-test.db
+/prisma/demo-test.db-shm
+/prisma/demo-test.db-wal
 database.sqlite
 
 .env

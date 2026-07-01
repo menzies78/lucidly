@@ -77,6 +77,14 @@ model Shop {
   // dashboard during the 24h backfill.
   onboardingPhase     String     @default("shopify")
   onboardingStartedAt DateTime?
+  // Demo mode - set when a merchant (or App Store reviewer) chooses "Explore
+  // with sample data" at the onboarding front door instead of connecting Meta.
+  // While true, a permanent non-dismissable banner offers a path to wipe the
+  // sample data and set up with real data. Cleared (and all demo rows wiped)
+  // automatically the moment a real Meta account is connected. demoSeededAt
+  // doubles as the "this row's data is fake" marker for safe quarantine/wipe.
+  demoMode            Boolean    @default(false)
+  demoSeededAt        DateTime?
 }
 
 // Persistent record of every async ingest unit so we can resume on

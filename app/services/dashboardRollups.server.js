@@ -157,7 +157,7 @@ export async function rebuildMatchAccuracy(shopDomain) {
   }
 
   const allDays = new Set([...metaConvByDay.keys(), ...matchedByDay.keys()]);
-  const days = Array.from(allDays)
+  const activeDays = Array.from(allDays)
     .sort((a, b) => a.localeCompare(b))
     .map((day) => {
       const matched = matchedByDay.get(day) || 0;
@@ -182,6 +182,37 @@ export async function rebuildMatchAccuracy(shopDomain) {
       const confAvg = confCount > 0 ? Math.round(confSum / confCount) : null;
       return { date: day, matchRate, matched, total, confSum, confCount, confAvg };
     });
+
+  // ── Continuous calendar ──
+  // Expand to one entry per calendar day between the first and last active day.
+  // Days with no Meta delivery and no matched order become null-rate filler
+  // entries (matched/total/confCount all 0) that the dashboard chart draws as a
+  // light-grey "no conversions" bar. This keeps the axis continuous (a 30-day
+  // window shows 30 bars, not just the active ones) and makes the rolling
+  // windows below reflect true calendar days. Filler entries carry zeros, so
+  // sumRate/sumConf ignore them — only the visual series changes, not the rates.
+  const days = [];
+  if (activeDays.length > 0) {
+    const DAY_MS = 86400000;
+    const parseDay = (s) => Date.parse(`${s}T00:00:00Z`);
+    const byDate = new Map(activeDays.map((d) => [d.date, d]));
+    const startT = parseDay(activeDays[0].date);
+    const endT = parseDay(activeDays[activeDays.length - 1].date);
+    for (let t = startT; t <= endT; t += DAY_MS) {
+      const key = new Date(t).toISOString().slice(0, 10);
+      days.push(
+        byDate.get(key) || {
+          date: key,
+          matchRate: null,
+          matched: 0,
+          total: 0,
+          confSum: 0,
+          confCount: 0,
+          confAvg: null,
+        },
+      );
+    }
+  }
 
   // ── Rolling windows ──
   // 30d / 7d / lifetime over the days array. Slice from the end rather than

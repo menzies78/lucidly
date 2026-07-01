@@ -284,11 +284,16 @@ export const loader = async ({ request }) => {
       ? Math.round(((shop?.utmAdsWithTags || 0) / (shop?.utmAdsTotal || 1)) * 100) : null,
   };
 
-  // Sync freshness
-  const syncFreshness = {
-    orderSyncAgo: shop?.lastOrderSync ? Math.round((now.getTime() - new Date(shop.lastOrderSync).getTime()) / 60000) : null,
-    metaSyncAgo: shop?.lastMetaSync ? Math.round((now.getTime() - new Date(shop.lastMetaSync).getTime()) / 60000) : null,
-  };
+  // Sync freshness. Demo shops are skipped by the scheduler (no real Meta
+  // account), so their lastOrderSync/lastMetaSync would otherwise age out and
+  // the status pills would turn stale ("expiring overnight"). Present them as
+  // freshly-synced so the demo always reads as live and up to date.
+  const syncFreshness = shop?.demoMode
+    ? { orderSyncAgo: 8, metaSyncAgo: 6 }
+    : {
+        orderSyncAgo: shop?.lastOrderSync ? Math.round((now.getTime() - new Date(shop.lastOrderSync).getTime()) / 60000) : null,
+        metaSyncAgo: shop?.lastMetaSync ? Math.round((now.getTime() - new Date(shop.lastMetaSync).getTime()) / 60000) : null,
+      };
 
   // Internal-only: list of full-shop backups (newest first). Only loaded
   // when the viewer is an internal shop, so production merchants never
@@ -450,6 +455,44 @@ export const action = async ({ request }) => {
       }
     })();
     return json({ started: true, task: "begin-fit-test" });
+  }
+  // ── Onboarding: Explore with sample data (demo) ────────────────────
+  // The Welcome card's secondary CTA. Installs a fully-populated NORVIK
+  // demo store (12 months of relative-dated sample data) so a merchant -
+  // or an App Store reviewer with no Meta account - can see the whole app
+  // working before connecting anything real. Available to everyone and
+  // disclosed in the submission notes (a documented demo path, NOT
+  // reviewer-detection cloaking). Auto-wiped when real Meta connects.
+  if (actionType === "seed-demo") {
+    (async () => {
+      try {
+        // Intermediate phase so OnboardingFlow's poll unmounts the welcome
+        // card and shows the "building your sample store" screen. seedDemoData
+        // flips the phase to "complete" + onboardingCompleted when finished.
+        await db.shop.upsert({
+          where: { shopDomain },
+          create: { shopDomain, onboardingPhase: "demo-seeding", onboardingStartedAt: new Date() },
+          update: { onboardingPhase: "demo-seeding", onboardingStartedAt: new Date() },
+        });
+        const { seedDemoData } = await import("../services/demoData.server.js");
+        await seedDemoData(shopDomain);
+        const { invalidateShop } = await import("../services/queryCache.server.js");
+        invalidateShop(shopDomain);
+      } catch (err) {
+        console.error(`[seed-demo] failed for ${shopDomain}: ${err.message}`);
+      }
+    })();
+    return json({ started: true, task: "seed-demo" });
+  }
+  // ── Demo: exit to real setup ───────────────────────────────────────
+  // The permanent demo banner's CTA. Wipes all sample data and returns the
+  // merchant to the onboarding front door to set up with their real store.
+  if (actionType === "exit-demo") {
+    const { wipeDemoData } = await import("../services/demoData.server.js");
+    await wipeDemoData(shopDomain);
+    const { invalidateShop } = await import("../services/queryCache.server.js");
+    invalidateShop(shopDomain);
+    return json({ success: true, task: "exit-demo" });
   }
   if (actionType === "syncMeta") {
     runInBackground(async () => {
@@ -844,12 +887,15 @@ function MatchAccuracyChart({ data, accent, metric }: { data: ChartDay[]; accent
 
   const valueOf = (d: ChartDay) => metric === "rate" ? d.matchRate : d.confAvg;
 
-  // Daily bars - no bucketing. Days without data are skipped (filtered out
-  // below) so the bar series only shows days where there's something to
-  // measure. With up to ~730 daily points across 600px the bars become a
-  // dense band you can scan for dips at-a-glance.
-  const points = data.filter(d => valueOf(d) !== null);
-  if (points.length < 2) {
+  // Daily bars - no bucketing. Every calendar day gets a bar so the axis stays
+  // continuous. Days with no Meta conversions (valueOf === null) render as a
+  // light-grey "no delivery" filler bar rather than being dropped, so gaps are
+  // visible instead of silently collapsing 30 calendar days into ~21 bars. With
+  // up to ~730 daily points across 600px the bars become a dense band you can
+  // scan for dips at-a-glance.
+  const points = data;
+  const measurable = points.filter(d => valueOf(d) !== null).length;
+  if (measurable < 2) {
     return (
       <div style={{ padding: "20px", textAlign: "center", color: "#6B7280" }}>
         Not enough data for chart (need at least 2 days)
@@ -924,7 +970,25 @@ function MatchAccuracyChart({ data, accent, metric }: { data: ChartDay[]; accent
 
         {/* Daily bars */}
         {points.map((p, i) => {
-          const v = valueOf(p)!;
+          const raw = valueOf(p);
+          // No Meta conversions this day → light-grey full-height filler bar.
+          if (raw === null) {
+            return (
+              <rect
+                key={i}
+                x={toX(i)}
+                y={toY(100)}
+                width={barW}
+                height={Math.max(1, chartH)}
+                fill="#E5E7EB"
+                opacity={hoverIdx === i ? 0.9 : 0.5}
+                style={{ cursor: "pointer", transition: "opacity 0.1s" }}
+                onMouseEnter={() => setHoverIdx(i)}
+                onMouseLeave={() => setHoverIdx(null)}
+              />
+            );
+          }
+          const v = raw;
           const y = toY(v);
           const h = padT + chartH - y;
           const fill = v >= 90 ? "#10B981" : v >= 70 ? "#F59E0B" : "#EF4444";
@@ -956,7 +1020,7 @@ function MatchAccuracyChart({ data, accent, metric }: { data: ChartDay[]; accent
           style={{
             position: "absolute",
             left: `${((toX(hoverIdx) + barW / 2) / W) * 100}%`,
-            top: `${toY(valueOf(points[hoverIdx])!) - 8}px`,
+            top: `${toY(valueOf(points[hoverIdx]) ?? 100) - 8}px`,
             transform: "translate(-50%, -100%)",
             background: "#1F2937",
             color: "#fff",
@@ -970,7 +1034,13 @@ function MatchAccuracyChart({ data, accent, metric }: { data: ChartDay[]; accent
           }}
         >
           <div style={{ fontWeight: 700 }}>{points[hoverIdx].date}</div>
-          {metric === "rate" ? (
+          {valueOf(points[hoverIdx]) === null ? (
+            <div style={{ opacity: 0.85 }}>
+              {metric === "confidence" && points[hoverIdx].matched > 0
+                ? "Matches this day were UTM-certain (100%)"
+                : "No Meta conversions this day"}
+            </div>
+          ) : metric === "rate" ? (
             <>
               <div>Match rate: {points[hoverIdx].matchRate}%</div>
               <div>{points[hoverIdx].matched} matched / {points[hoverIdx].total} total</div>
@@ -1036,21 +1106,64 @@ function rampGreyPurple(t: number): string {
   return `rgb(${ch[0]}, ${ch[1]}, ${ch[2]})`;
 }
 
+function lightenRgb(rgb: string, amt: number): string {
+  const m = (rgb.match(/\d+/g) || ["124", "58", "237"]).map(Number);
+  const ch = m.map((v) => Math.round(v + (255 - v) * amt));
+  return `rgb(${ch[0]}, ${ch[1]}, ${ch[2]})`;
+}
+
+// Interpolate between two rgb() strings by t∈[0,1].
+function lerpRgbStr(from: string, to: string, t: number): string {
+  const pa = (from.match(/\d+/g) || []).map(Number);
+  const pb = (to.match(/\d+/g) || []).map(Number);
+  const c = Math.max(0, Math.min(1, t));
+  const ch = pa.map((v, i) => Math.round(v + ((pb[i] ?? v) - v) * c));
+  return `rgb(${ch[0]}, ${ch[1]}, ${ch[2]})`;
+}
+
 function DonutRing({ pct, count, label, accent, track }: {
   pct: number; count: number; label: string; accent: string; track: string;
 }) {
   const size = 196, stroke = 20, r = (size - stroke) / 2;
   const C = 2 * Math.PI * r;
-  const dash = Math.max(0, Math.min(1, pct / 100)) * C;
+  const filled = Math.max(0, Math.min(1, pct / 100));
+  // The round end-caps each bulge stroke/2 past the arc's ends, so a raw
+  // filled*C at high percentages visually swallows the remaining gap (at 96%
+  // the ~22px gap is almost fully covered by the 20px of caps, making the ring
+  // look 100% full). Clamp the arc so the two cap tips always stay gapPx apart.
+  // Only bites above ~94.6% (below that the raw length already leaves a gap).
+  const gapPx = 10;
+  const arcLen = Math.min(filled * C, Math.max(0, C - stroke - gapPx));
+  // Render the arc as many short segments whose colour ramps light→dark ALONG
+  // the stroke: lightest at the 0% start (12 o'clock) and darkening toward the
+  // arc's end. SVG linear gradients are directional and can't follow a curve,
+  // so we approximate a true conic/arc gradient by drawing N overlapping
+  // round-cap slices. The start cap is the light tint, the end cap full accent.
+  const N = 64;
+  const step = arcLen / N;
+  const segLen = step * 1.8; // overlap so slices blend into one smooth ring
+  const lightAccent = lightenRgb(accent, 0.6);
+  const segs = [];
+  if (arcLen > 0.5) {
+    for (let k = 0; k < N; k++) {
+      segs.push(
+        <circle
+          key={k}
+          cx={size / 2} cy={size / 2} r={r} fill="none"
+          stroke={lerpRgbStr(lightAccent, accent, N > 1 ? k / (N - 1) : 1)}
+          strokeWidth={stroke} strokeLinecap="round"
+          strokeDasharray={`${segLen} ${C}`}
+          strokeDashoffset={-(k * step)}
+          transform={`rotate(-90 ${size / 2} ${size / 2})`}
+        />,
+      );
+    }
+  }
   return (
     <div style={{ textAlign: "center" }}>
       <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
         <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke={track} strokeWidth={stroke} />
-        <circle
-          cx={size / 2} cy={size / 2} r={r} fill="none" stroke={accent} strokeWidth={stroke}
-          strokeLinecap="round" strokeDasharray={`${dash} ${C - dash}`}
-          transform={`rotate(-90 ${size / 2} ${size / 2})`}
-        />
+        {segs}
         <text x="50%" y="45%" textAnchor="middle" dominantBaseline="middle" fontSize="44" fontWeight="800" fill={accent}>
           {pct}%
         </text>

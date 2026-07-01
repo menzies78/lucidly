@@ -1054,14 +1054,25 @@ export const action = async ({ request }) => {
 
 // ── Product Thumbnail ──
 
-function ProductThumb({ url, size = 44 }: { url?: string; size?: number }) {
+function ProductThumb({ url, title, size = 44 }: { url?: string; title?: string; size?: number }) {
   if (!url) {
+    // Gradient + initial fallback (mirrors the Top Products per Country tile):
+    // a stable hue from the title hash so each product reads as its own colour
+    // when the catalogue image cache hasn't reached it yet.
+    const t = title || "";
+    let h = 0;
+    for (let i = 0; i < t.length; i++) h = (h * 31 + t.charCodeAt(i)) >>> 0;
+    const hue = h % 360;
     return (
       <div style={{
-        width: size, height: size, borderRadius: 6, backgroundColor: "#F3F4F6",
+        width: size, height: size, borderRadius: 6,
+        background: t
+          ? `linear-gradient(135deg, hsl(${hue} 60% 70%), hsl(${(hue + 40) % 360} 60% 55%))`
+          : "#F3F4F6",
         display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0,
-        fontSize: size * 0.4, color: "#9CA3AF",
-      }}>?</div>
+        fontSize: Math.round(size * 0.42), fontWeight: 700,
+        color: t ? "#fff" : "#9CA3AF",
+      }}>{(t[0] || "?").toUpperCase()}</div>
     );
   }
   return (
@@ -1092,7 +1103,7 @@ function RevenueBarChart({ data, cs }: {
             style={{ marginBottom: 4, borderRadius: 6, padding: "6px 8px", transition: "background 0.15s", background: isHovered ? "#F9FAFB" : "transparent" }}
           >
             <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-              <ProductThumb url={item.imageUrl} size={28} />
+              <ProductThumb url={item.imageUrl} title={item.product} size={28} />
               <div style={{ width: 140, fontSize: 12, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flexShrink: 0 }}>
                 {item.product}
               </div>
@@ -1227,7 +1238,7 @@ function ProductJourneyFlow({ topGateway, topSecond, flows, imageMap }: {
                   transition: "opacity 0.2s, background-color 0.2s",
                   cursor: "pointer",
                 }}>
-                <ProductThumb url={imageMap[name]} size={28} />
+                <ProductThumb url={imageMap[name]} title={name} size={28} />
                 <span style={{ fontSize: 13, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>{name}</span>
                 <span style={{ fontSize: 12, color: "#6B7280", flexShrink: 0, fontWeight: 600 }}>{count}</span>
               </div>
@@ -1293,7 +1304,7 @@ function ProductJourneyFlow({ topGateway, topSecond, flows, imageMap }: {
                   transition: "opacity 0.2s, background-color 0.2s",
                   cursor: "pointer",
                 }}>
-                <ProductThumb url={imageMap[name]} size={28} />
+                <ProductThumb url={imageMap[name]} title={name} size={28} />
                 <span style={{ fontSize: 13, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>{name}</span>
                 <span style={{ fontSize: 12, color: "#6B7280", flexShrink: 0, fontWeight: 600 }}>{count}</span>
               </div>
@@ -1652,7 +1663,7 @@ function ProductDemographicsExplorer({ records, countries, gems, nonMetaRecords,
               return (
                 <div key={p.product} style={{ display: "flex", alignItems: "center", gap: "10px" }}>
                   <div style={{ width: "22px", fontSize: "12px", color: "#9CA3AF", fontWeight: 600, textAlign: "right" }}>{i + 1}.</div>
-                  <ProductThumb url={imageMap[p.product]} size={36} />
+                  <ProductThumb url={imageMap[p.product]} title={p.product} size={36} />
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontSize: "13px", fontWeight: 600, color: "#1F2937", marginBottom: "3px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
                       {p.product}
@@ -1820,7 +1831,7 @@ export default function Products() {
       meta: { minWidth: "240px", filterType: "text", description: "Parent product name (variants grouped)" },
       cell: ({ row }) => (
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <ProductThumb url={row.original.imageUrl} size={32} />
+          <ProductThumb url={row.original.imageUrl} title={row.original.product} size={32} />
           <span style={{ fontWeight: 500 }}>{row.original.product}</span>
         </div>
       ) },
@@ -2175,7 +2186,7 @@ export default function Products() {
                         {activeRefundList.map((item, i) => (
                           <tr key={item.product}>
                             <td style={{ color: "#9CA3AF", fontSize: 12 }}>{i + 1}</td>
-                            <td><ProductThumb url={item.imageUrl} size={28} /></td>
+                            <td><ProductThumb url={item.imageUrl} title={item.product} size={28} /></td>
                             <td style={{ fontWeight: 500, maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.product}</td>
                             <td className="num" style={{ fontWeight: 600, color: item.refundRate >= 30 ? "#dc2626" : item.refundRate >= 15 ? "#d97706" : "#374151" }}>
                               {item.refundRate}%
@@ -2218,7 +2229,7 @@ export default function Products() {
                   {activeFirstPurchases.map((item, i) => (
                     <div key={item.product} className="product-list-row">
                       <span className="rank">{i + 1}</span>
-                      <ProductThumb url={imageMap[item.product]} size={28} />
+                      <ProductThumb url={imageMap[item.product]} title={item.product} size={28} />
                       <span className="name" style={{ marginLeft: 8 }}>{item.product}</span>
                       <span className="stat">{item.qty}</span>
                       <span className="stat" style={{ minWidth: 70, fontWeight: 600 }}>{fmtPrice(item.revenue)}</span>
@@ -2280,13 +2291,13 @@ export default function Products() {
                             <td style={{ color: "#9CA3AF", fontSize: 12 }}>{i + 1}</td>
                             <td>
                               <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                                <ProductThumb url={imageMap[item.product1]} size={24} />
+                                <ProductThumb url={imageMap[item.product1]} title={item.product1} size={24} />
                                 <span title={item.product1} style={{ fontSize: 11.5, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 160 }}>{item.product1}</span>
                               </div>
                             </td>
                             <td>
                               <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                                <ProductThumb url={imageMap[item.product2]} size={24} />
+                                <ProductThumb url={imageMap[item.product2]} title={item.product2} size={24} />
                                 <span title={item.product2} style={{ fontSize: 11.5, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 160 }}>{item.product2}</span>
                               </div>
                             </td>
@@ -2340,7 +2351,7 @@ export default function Products() {
                             <td style={{ color: "#9CA3AF", fontSize: 12 }}>{i + 1}</td>
                             <td>
                               <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                                <ProductThumb url={imageMap[item.product]} size={24} />
+                                <ProductThumb url={imageMap[item.product]} title={item.product} size={24} />
                                 <span title={item.product} style={{ fontSize: 11.5, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 200 }}>{item.product}</span>
                               </div>
                             </td>
@@ -2404,7 +2415,7 @@ export default function Products() {
                               <td style={{ color: "#9CA3AF", fontSize: 12 }}>{i + 1}</td>
                               <td>
                                 <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                                  <ProductThumb url={imageMap[item.product]} size={24} />
+                                  <ProductThumb url={imageMap[item.product]} title={item.product} size={24} />
                                   <span title={item.product} style={{ fontSize: 11.5, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 200 }}>{item.product}</span>
                                 </div>
                               </td>

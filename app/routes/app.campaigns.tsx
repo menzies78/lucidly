@@ -15,6 +15,7 @@ import SummaryTile from "../components/SummaryTile";
 import ChangesAnnotationStrip from "../components/ChangesAnnotationStrip";
 import EntityTimelineDrawer, { type EntityRef } from "../components/EntityTimelineDrawer";
 import AwaitingDataTile, { FirstLastClickPreview } from "../components/AwaitingDataTile";
+import { isInternalShop } from "../utils/access.server";
 import { useState, useMemo, useCallback, useRef, useEffect } from "react";
 import { createPortal } from "react-dom";
 import { type ColumnDef } from "@tanstack/react-table";
@@ -1401,6 +1402,9 @@ export const loader = async ({ request }) => {
     stageTotals,
     topTiles,
     adDemographicsByAd,
+    // Web-pixel journey tile shown only on internal shops (HM + Vollebak)
+    // while it's validated; hidden for public merchants/reviewers.
+    journeyReportsEnabled: isInternalShop(shopDomain),
   });
 };
 
@@ -4070,6 +4074,7 @@ export default function Campaigns() {
     funnelTree, stageTotals,
     topTiles,
     adDemographicsByAd,
+    journeyReportsEnabled,
   } = useLoaderData();
   const cs = currencySymbol || currencySymbolFromCode(null);
   const [searchParams, setSearchParams] = useSearchParams();
@@ -5083,14 +5088,16 @@ export default function Campaigns() {
                   </BlockStack>
                 </Card>
               )},
-              // Journey-dependent view (web pixel). Greyed until touches arrive.
-              { id: "firstLastClick", label: "First-click vs last-click credit", span: 4, render: () => (
+              // Journey-dependent view (web pixel). Shown only on internal
+              // shops (HM + Vollebak) while being validated; hidden for public
+              // merchants/reviewers via isInternalShop.
+              ...(journeyReportsEnabled ? [{ id: "firstLastClick", label: "First-click vs last-click credit", span: 4, render: () => (
                 <AwaitingDataTile
                   title="First-click vs last-click credit"
                   message="Click journeys are being collected from your storefront. Once enough have been captured, this view will split each ad's credit between the first click that introduced the customer and the last click that closed the sale."
                   preview={<FirstLastClickPreview />}
                 />
-              )},
+              )}] : []),
               { id: "platformPerf", label: "Platform Performance", span: 4, render: () => (
                 <BreakdownPerfTile
                   title="Platform Performance"

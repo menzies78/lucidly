@@ -58,6 +58,20 @@ export async function rebuildAllRollups(shopDomain, { force }) {
   // DB column, not the in-memory progress map. (Force Rebuild Rollups in
   // app._index.tsx uses a separate "forceRollups" task with its own
   // setProgress/completeProgress lifecycle - see actionType === "forceRollups".)
+  // Compute customer segments FIRST. Product rollups (and their analysis blob,
+  // which drives Entry-to-LTV + Customer Product Journey) read
+  // Customer.metaSegment; on a cold build that field is unset until
+  // rebuildCustomerSegments writes it, so running segments first guarantees
+  // the blob's per-customer entries carry the right segment instead of null.
+  console.log(`[IncrementalSync] Rebuilding customer segments for ${shopDomain}...`);
+  try {
+    const { rebuildCustomerSegments } = await import("./customerRollups.server.js");
+    await rebuildCustomerSegments(shopDomain);
+  } catch (err) {
+    console.error(`[IncrementalSync] Customer segment rebuild failed (non-fatal): ${err.message}`);
+  }
+  if (global.gc) global.gc();
+
   console.log(`[IncrementalSync] Rebuilding product rollups for ${shopDomain}...`);
   try {
     const { rebuildProductRollups } = await import("./productRollups.server.js");
@@ -110,10 +124,12 @@ export async function rebuildAllRollups(shopDomain, { force }) {
     if (global.gc) global.gc();
   }
 
+  // Segments already computed at the top of this function; here we only build
+  // the daily customer rollups + gender daily (both read the segments written
+  // earlier). Re-running segments would be redundant work.
   console.log(`[IncrementalSync] Rebuilding customer rollups for ${shopDomain}...`);
   try {
-    const { rebuildCustomerSegments, rebuildCustomerRollups, rebuildCustomerGenderDaily } = await import("./customerRollups.server.js");
-    await rebuildCustomerSegments(shopDomain);
+    const { rebuildCustomerRollups, rebuildCustomerGenderDaily } = await import("./customerRollups.server.js");
     await rebuildCustomerRollups(shopDomain);
     await rebuildCustomerGenderDaily(shopDomain);
   } catch (err) {

@@ -50,6 +50,43 @@ async function fetchAllPages(url) {
 
 // ── Audit ────────────────────────────────────────────────────────────
 
+// Demo shops have a placeholder Meta token and no real ad account, so the
+// Graph API can't be called. Reconstruct the ad list from the seeded
+// MetaInsight rows (which denormalise campaign/adset/ad names + ids), shaped
+// exactly like the Graph `/ads` response so the rest of auditUtms is unchanged.
+// Deterministic assignment driven by the shop's persisted counts: the first
+// `missingN` ads are missing UTMs, the next `driftedN` carry a drifted pattern,
+// and the remainder carry the dominant template. Driving off the DB counts lets
+// a demo "fix missing UTMs" action (which zeroes utmAdsMissing) reflect back on
+// the next audit, so the fix flow reads coherently without any live API call.
+const DEMO_DOMINANT_UTM = "utm_source=facebook&utm_medium=paid&utm_campaign={{campaign.name}}&utm_content={{ad.name}}";
+const DEMO_DRIFTED_UTM = "utm_source=fb&utm_medium=cpc&utm_campaign={{campaign.name}}";
+async function buildDemoAdsForAudit(shopDomain, missingN = 2, driftedN = 1) {
+  const rows = await db.metaInsight.findMany({
+    where: { shopDomain, adId: { not: null } },
+    select: {
+      adId: true, adName: true, adSetId: true, adSetName: true,
+      campaignId: true, campaignName: true,
+    },
+    distinct: ["adId"],
+    orderBy: { adId: "asc" },
+  });
+  return rows.map((r, i) => {
+    let urlTags = DEMO_DOMINANT_UTM;
+    if (i < missingN) urlTags = "";
+    else if (i < missingN + driftedN) urlTags = DEMO_DRIFTED_UTM;
+    return {
+      id: r.adId,
+      name: r.adName || "",
+      status: "ACTIVE",
+      effective_status: "ACTIVE",
+      creative: { id: `${r.adId}-cr`, url_tags: urlTags, effective_object_story_id: `story_${r.adId}` },
+      campaign: { id: r.campaignId || "", name: r.campaignName || "Unknown" },
+      adset: { id: r.adSetId || "", name: r.adSetName || "" },
+    };
+  });
+}
+
 /**
  * Audits all ads in the Meta ad account for UTM consistency.
  * Returns structured results: patterns found, gaps, recommendations.
@@ -65,10 +102,13 @@ export async function auditUtms(shopDomain) {
 
   console.log(`[UTMManager] Starting audit for ${shopDomain}`);
 
-  // Fetch all ads with effective_status for accurate delivery state
-  const allAds = await fetchAllPages(
-    `https://graph.facebook.com/v21.0/${accountId}/ads?fields=id,name,status,effective_status,creative{id,url_tags,effective_object_story_id},campaign{id,name},adset{id,name}&limit=100&access_token=${token}`
-  );
+  // Fetch all ads with effective_status for accurate delivery state. Demo shops
+  // can't hit the Graph API, so synthesise the same shape from seeded data.
+  const allAds = shop.demoMode
+    ? await buildDemoAdsForAudit(shopDomain, shop.utmAdsMissing ?? 2, shop.utmAdsInconsistent ?? 1)
+    : await fetchAllPages(
+        `https://graph.facebook.com/v21.0/${accountId}/ads?fields=id,name,status,effective_status,creative{id,url_tags,effective_object_story_id},campaign{id,name},adset{id,name}&limit=100&access_token=${token}`
+      );
 
   console.log(`[UTMManager] Fetched ${allAds.length} ads`);
 
@@ -236,6 +276,33 @@ export async function pushUtms(shopDomain, options = {}) {
   console.log(`[UTMManager] Push UTMs for ${shopDomain} (dryRun: ${dryRun}, activeOnly: ${activeOnly})`);
   console.log(`[UTMManager] Template: ${utmTemplate}`);
 
+  // Demo shops: no live account to write to. Resolve the currently-missing ads
+  // from the seeded set and, on a real push, persist them as fixed so the next
+  // audit shows zero missing — a coherent, side-effect-safe demo of the flow.
+  if (shop.demoMode) {
+    const missingN = shop.utmAdsMissing ?? 2;
+    const demoAds = await buildDemoAdsForAudit(shopDomain, missingN, shop.utmAdsInconsistent ?? 1);
+    const toFix = demoAds.filter(ad => !ad.creative?.url_tags);
+    if (dryRun) {
+      return {
+        dryRun: true,
+        wouldFix: toFix.length,
+        template: utmTemplate,
+        ads: toFix.map(ad => ({ adId: ad.id, adName: ad.name, creativeId: ad.creative?.id, status: ad.status })),
+      };
+    }
+    const fixed = toFix.length;
+    await db.shop.update({
+      where: { shopDomain },
+      data: {
+        utmAdsFixed: { increment: fixed },
+        utmAdsMissing: 0,
+        utmAdsWithTags: shop.utmAdsTotal ?? (shop.utmAdsWithTags + fixed),
+      },
+    });
+    return { fixed, failed: 0, skipped: 0, errors: [], template: utmTemplate };
+  }
+
   // Fetch ads - use effective_status to only target actually-delivering ads
   const statusValues = activeOnly
     ? '["ACTIVE"]'
@@ -338,6 +405,23 @@ export async function pushUtmsToAds(shopDomain, adUpdates) {
   const shop = await db.shop.findUnique({ where: { shopDomain } });
   if (!shop?.metaAccessToken || !shop?.metaAdAccountId) {
     return { error: "Meta not connected" };
+  }
+
+  // Demo shops: no live account, so report each requested edit as applied and
+  // draw down the missing/inconsistent counters so the audit reconciles.
+  if (shop.demoMode) {
+    const fixed = adUpdates.length;
+    await db.shop.update({
+      where: { shopDomain },
+      data: {
+        utmAdsFixed: { increment: fixed },
+        utmAdsMissing: Math.max(0, (shop.utmAdsMissing ?? 0) - fixed),
+      },
+    });
+    return {
+      fixed, failed: 0, skipped: 0, errors: [],
+      details: adUpdates.map(u => ({ adId: u.adId, status: "fixed", newCreativeId: `${u.adId}-cr` })),
+    };
   }
 
   const token = shop.metaAccessToken;

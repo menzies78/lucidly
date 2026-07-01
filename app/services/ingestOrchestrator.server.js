@@ -323,6 +323,24 @@ export async function startOnboardingIngest(shopDomain) {
     console.log(`[ingestOrchestrator] ${shopDomain}: ingest already in flight, skipping`);
     return;
   }
+
+  // If this store was exploring with sample data, a real Meta connect means
+  // they're committing to real setup - wipe the demo store first so the real
+  // ingest starts from a clean slate (demo data only ever exists on an
+  // otherwise-empty store, so this can't touch real orders). wipeDemoData
+  // preserves the just-stored Meta token/account; it only clears demo rows
+  // and resets the demo/onboarding flags.
+  try {
+    const shop = await db.shop.findUnique({ where: { shopDomain }, select: { demoMode: true } });
+    if (shop?.demoMode) {
+      console.log(`[ingestOrchestrator] ${shopDomain}: real Meta connect on a demo store - wiping sample data first`);
+      const { wipeDemoData } = await import("./demoData.server.js");
+      await wipeDemoData(shopDomain);
+    }
+  } catch (err) {
+    console.error(`[ingestOrchestrator] ${shopDomain}: demo wipe before ingest failed (non-fatal): ${err.message}`);
+  }
+
   inFlight.add(shopDomain);
 
   // Flip the phase to "ingesting" up front so the UI can render the

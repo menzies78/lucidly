@@ -355,6 +355,9 @@ export default function OnboardingFlow({ shopDomain }: { shopDomain: string }) {
   } else if (phase === "fit-ready" || (phase === "fit" && fitDone)) {
     // ─── State 4: Fit-ready (score + Connect Meta CTA) ─────────────
     content = <FitReadyCard data={status.fitTestData ?? null} metaAuthUrl={status.metaAuthUrl ?? null} />;
+  } else if (phase === "demo-seeding") {
+    // ─── Explore with sample data: building the demo store ─────────
+    content = <DemoSeedingCard />;
   } else if (phase === "complete") {
     // Phase is "complete" but the parent loader hasn't picked up the flag
     // yet (race between this poll and revalidate completing). Show the
@@ -416,6 +419,33 @@ function FinalisingCard() {
   );
 }
 
+// ─── Demo-seeding ────────────────────────────────────────────────────
+// Shown while seedDemoData synthesises 12 months of sample data + builds
+// rollups. seedDemoData flips onboardingPhase to "complete" +
+// onboardingCompleted when done, so the dashboard takes over automatically.
+function DemoSeedingCard() {
+  return (
+    <Box paddingBlockEnd="600">
+      <Card>
+        <Box padding="600">
+          <BlockStack gap="500">
+            <InlineStack gap="300" blockAlign="center">
+              <Spinner size="small" />
+              <Text as="h2" variant="headingLg">Building your sample store</Text>
+            </InlineStack>
+            <Text as="p" variant="bodyMd" tone="subdued">
+              Loading a year of demo orders, Meta campaigns and customers, then
+              computing attribution, lifetime value and benchmarks - exactly as
+              Lucidly would for your real store.
+            </Text>
+            <ProgressBar pct={90} />
+          </BlockStack>
+        </Box>
+      </Card>
+    </Box>
+  );
+}
+
 // ─── Welcome card ────────────────────────────────────────────────────
 function WelcomeCard({ fetcher }: { fetcher: ReturnType<typeof useFetcher> }) {
   // Two states drive button loading:
@@ -434,7 +464,9 @@ function WelcomeCard({ fetcher }: { fetcher: ReturnType<typeof useFetcher> }) {
   // this card). Without #2 the button reverts to idle the instant the action
   // returns, so the merchant can't tell their click registered.
   const [hasSubmitted, setHasSubmitted] = useState(false);
+  const [demoSubmitted, setDemoSubmitted] = useState(false);
   const isSubmitting = fetcher.state !== "idle" || hasSubmitted;
+  const anySubmitted = hasSubmitted || demoSubmitted;
   return (
     <Box paddingBlockEnd="600">
       <BlockStack gap="400">
@@ -510,20 +542,65 @@ function WelcomeCard({ fetcher }: { fetcher: ReturnType<typeof useFetcher> }) {
               </BlockStack>
               <fetcher.Form method="post" onSubmit={() => setHasSubmitted(true)}>
                 <input type="hidden" name="action" value="begin-fit-test" />
-                <Button
-                  variant="primary"
-                  size="large"
-                  submit
-                  loading={isSubmitting}
-                  disabled={hasSubmitted}
-                  fullWidth
+                {/* Purple gradient CTA - exact treatment from the standalone
+                    Fit Test page (FitReport "CONNECT META ADS"): uppercase,
+                    fontWeight 700, fontSize 16, letterSpacing 0.5, gradient +
+                    shadow. Native <button> because Polaris primary renders
+                    black; we need the brand gradient. */}
+                <button
+                  type="submit"
+                  disabled={anySubmitted}
+                  style={{
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    width: "100%", padding: "16px 24px", borderRadius: 10,
+                    color: "#fff", fontWeight: 700, fontSize: 16, letterSpacing: 0.5,
+                    border: "none",
+                    cursor: anySubmitted ? "default" : "pointer",
+                    background: `linear-gradient(90deg, ${PURPLE}, ${PURPLE_LIGHT})`,
+                    boxShadow: "0 4px 14px rgba(124,58,237,0.35)",
+                    opacity: anySubmitted ? 0.7 : 1,
+                  }}
                 >
-                  Run the 10-second Fit Test
-                </Button>
+                  {isSubmitting && !demoSubmitted ? "RUNNING THE FIT TEST\u2026" : "RUN THE 10-SECOND FIT TEST"}
+                </button>
               </fetcher.Form>
             </BlockStack>
           </Box>
         </Card>
+
+        {/* Secondary path: explore with sample data. Its own bordered "Or
+            explore first" card so it reads as a genuine parallel front-door
+            option, not trailing fine print. Unconditionally available to
+            everyone (and the route a reviewer with no Meta account takes -
+            disclosed in submission notes). Installs a fully populated demo
+            store the merchant can clear at any time. */}
+        <div style={{
+          border: `1px solid ${PURPLE_BORDER}`,
+          borderRadius: 16,
+          background: PURPLE_BG,
+          padding: "28px 24px",
+        }}>
+          <BlockStack gap="300" inlineAlign="center">
+            <Text as="h3" variant="headingLg" alignment="center">Or explore first</Text>
+            <Text as="p" variant="bodyMd" tone="subdued" alignment="center">
+              Loads a fully populated sample store onto your account so you can
+              see the whole app working before connecting anything. Clear it and
+              switch to your real data anytime.
+            </Text>
+            <fetcher.Form method="post" onSubmit={() => setDemoSubmitted(true)}>
+              <input type="hidden" name="action" value="seed-demo" />
+              <Button
+                variant="secondary"
+                size="large"
+                submit
+                loading={demoSubmitted}
+                disabled={anySubmitted}
+              >
+                Explore Lucidly with sample data
+              </Button>
+            </fetcher.Form>
+          </BlockStack>
+        </div>
       </BlockStack>
     </Box>
   );
