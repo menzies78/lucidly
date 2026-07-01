@@ -1,4 +1,5 @@
 import { sessionStorage, unauthenticated } from "../shopify.server";
+import { alertOps } from "./opsAlert.server.js";
 
 /**
  * Concurrency-safe offline access token refresh.
@@ -64,6 +65,18 @@ async function doRefresh(shop, session) {
   });
   if (!res.ok) {
     const detail = await res.text().catch(() => "");
+    // Real-time page: a failed refresh is the exact fault that halted Vollebak
+    // (single-use refresh-token rotation racing → invalid_grant → 500s → webhook
+    // removed). Fire immediately (deduped by shop) so we hear about it the moment
+    // it happens, not on the next watchdog cycle. Best-effort — alertOps never
+    // throws, so alerting can't mask the refresh error we're about to raise.
+    alertOps(`token:${shop}`, {
+      severity: "critical",
+      subject: `Offline token refresh FAILED — ${shop}`,
+      title: `Offline token refresh failed for ${shop}`,
+      bodyHtml: `<p>The offline access-token refresh for <strong>${shop}</strong> failed with <strong>${res.status}</strong>. This is the fault class that halts background sync (order sync, Fit Test, ingest) and, under webhook concurrency, can get a webhook subscription removed. Likely invalid_grant from refresh-token rotation racing, or an expired refresh token — the shop may need to re-auth.</p><p style="margin-top:12px;"><strong>Detail:</strong> <code style="font-size:12px;">${detail.slice(0, 200).replace(/</g, "&lt;")}</code></p>`,
+      bodyText: `Offline token refresh failed for ${shop}: ${res.status} ${detail.slice(0, 200)}`,
+    }).catch(() => {});
     throw new Error(
       `[offlineToken] refresh failed for ${shop}: ${res.status} ${detail.slice(0, 200)}`,
     );

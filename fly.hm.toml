@@ -11,6 +11,9 @@ primary_region = "lhr"
   # are still being validated. Absent on the public app (fly.app.toml) so public
   # merchants/reviewers don't see them.
   JOURNEY_REPORTS_ENABLED = "true"
+  # Ops alerting: the Token Health Watchdog + refresh-failure hook email here when
+  # an offline token faults. Needs RESEND_API_KEY as a Fly secret to deliver.
+  OPS_ALERT_EMAIL = "see.lucidly@gmail.com"
 
 [http_service]
   internal_port = 3000

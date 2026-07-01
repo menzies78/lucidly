@@ -9,6 +9,7 @@ import { syncOrders } from "./orderSync.server.js";
 import { getOfflineAdmin } from "./offlineToken.server.js";
 import { markSyncStart, markSyncEnd } from "./syncStatus.server.js";
 import { isOnboardingIngestInFlight } from "./ingestOrchestrator.server.js";
+import { startTokenWatchdog } from "./tokenWatchdog.server.js";
 
 const HOURLY_MS = 60 * 60 * 1000;
 const DAILY_CHECK_MS = 15 * 60 * 1000; // check every 15 min if daily sync is due
@@ -525,4 +526,9 @@ export function startScheduler() {
 
   // Check for daily sync every 15 minutes
   global.__lucidlySchedulerDaily = setInterval(runDailyCycle, DAILY_CHECK_MS);
+
+  // Token Health Watchdog: proactively probe every installed shop's offline
+  // token so the "halt" class (non-expiring 403, revoked 401, refresh race) is
+  // flagged by email before a merchant notices sync has stopped.
+  startTokenWatchdog();
 }
