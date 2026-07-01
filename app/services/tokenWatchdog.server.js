@@ -45,7 +45,7 @@ const NON_EXPIRING_MARKER = "non-expiring access tokens are no longer accepted";
  * Probe one shop's offline token by making a real Admin API call through the
  * background path. Returns { ok, kind, detail } where kind is one of:
  * "healthy" | "refresh_failed" | "non_expiring_rejected" | "unauthorized" |
- * "forbidden" | "no_session" | "error".
+ * "forbidden" | "shop_gone" | "no_session" | "error".
  */
 export async function probeShopToken(shopDomain) {
   let session;
@@ -91,6 +91,14 @@ export async function probeShopToken(shopDomain) {
 
   const text = await httpRes.text().catch(() => "");
   const lower = text.toLowerCase();
+  if (httpRes.status === 404) {
+    // The whole Admin endpoint is Not Found — the store itself no longer exists
+    // (deleted / deauthorized), not a token fault. Most common cause: an
+    // ephemeral Shopify App Review sandbox store that Shopify tore down, leaving
+    // a stale Session row we never got an uninstall webhook for. Distinct kind so
+    // the caller can suppress the page (it's not actionable).
+    return { ok: false, kind: "shop_gone", detail: `404: ${text.slice(0, 200)}` };
+  }
   if (httpRes.status === 401) {
     return { ok: false, kind: "unauthorized", detail: `401: ${text.slice(0, 200)}` };
   }
@@ -159,6 +167,21 @@ export async function checkAllTokens() {
         bodyHtml: `<p>A previously-faulting offline token for <strong>${shop}</strong> is accepted by the Admin API again. Background sync should be running normally.</p>`,
         bodyText: `Offline token healthy again for ${shop}.`,
       });
+      continue;
+    }
+
+    if (r.kind === "shop_gone") {
+      // Store is gone (404), not a token fault — don't page. Clear any prior
+      // alert for this shop and log it. We deliberately DON'T auto-delete the
+      // Session here (the watchdog stays read-only); a stale session for a dead
+      // store is harmless and is cleaned up on the next uninstall/reinstall.
+      await resolveOps(key, {
+        subject: `Shop gone — ${shop}`,
+        title: `Shop no longer exists — ${shop}`,
+        bodyHtml: `<p><strong>${shop}</strong> now returns 404 from the Admin API — the store has been deleted or deauthorized (commonly an ephemeral App Review sandbox). No action needed; this is not a token fault.</p>`,
+        bodyText: `Shop ${shop} returns 404 (store gone) — not a token fault, no action needed.`,
+      });
+      console.log(`[TokenWatchdog] ${shop}: 404 (shop gone) — not paging (stale session for a deleted store)`);
       continue;
     }
 
