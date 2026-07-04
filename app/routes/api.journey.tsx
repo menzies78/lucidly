@@ -1,5 +1,5 @@
 import type { ActionFunctionArgs } from "@remix-run/node";
-import db from "../db.server";
+import { enqueueTouch, enqueueOrderLink } from "../services/journeyIngest.server.js";
 import { isPaidMetaUtm } from "../utils/utmClassification.js";
 import { verifyPixelToken } from "../utils/pixelToken.server";
 
@@ -20,6 +20,15 @@ import { verifyPixelToken } from "../utils/pixelToken.server";
 //   order  - checkout_completed, linking a visitor (clientId) to an order
 //
 // Stitching touches → orders happens later (Phase 2); this route only captures.
+//
+// Writes are NOT awaited here. Each POST enqueues into journeyIngest.server's
+// in-memory buffer and returns immediately; a batched createMany drains it
+// every few seconds. A blocking per-request create() wedged the whole app
+// during the 2026-07 Vollebak sale (pixel firehose > SQLite single-writer
+// throughput → connection pool exhausted → P1008 on every merchant request).
+//
+// Kill switch: set JOURNEY_INGEST_ENABLED=false (Fly secret/env) to ack pixel
+// posts without writing anything - an emergency valve for peak-traffic events.
 
 const CORS = { "Access-Control-Allow-Origin": "*" } as const;
 
@@ -65,46 +74,45 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   if (!clientId) return ok({ ok: false, error: "no clientId" }, 400);
 
   const type = s(payload.type, 16);
+  if (type !== "order" && type !== "touch") {
+    return ok({ ok: false, error: "unknown type" }, 400);
+  }
+
+  // Emergency valve: ack without writing so the pixel keeps behaving normally
+  // while ingest is paused.
+  if (process.env.JOURNEY_INGEST_ENABLED === "false") return ok({ ok: true });
 
   if (type === "order") {
-    await db.journeyOrderLink.create({
-      data: {
-        shopDomain: shop,
-        clientId,
-        shopifyOrderId: s(payload.orderId, 64) || null,
-        checkoutToken: s(payload.checkoutToken, 128),
-        occurredAt: parseDate(payload.occurredAt),
-      },
+    enqueueOrderLink({
+      shopDomain: shop,
+      clientId,
+      shopifyOrderId: s(payload.orderId, 64) || null,
+      checkoutToken: s(payload.checkoutToken, 128),
+      occurredAt: parseDate(payload.occurredAt),
     });
     return ok({ ok: true });
   }
 
-  if (type === "touch") {
-    const source = s(payload.source, 128);
-    const medium = s(payload.medium, 128);
-    const fbclid = s(payload.fbclid, 256);
-    // "Paid Meta" if the UTM source/medium says so OR an fbclid is present
-    // (fbclid only ever rides on a Meta ad click). The stitch step uses this
-    // flag to find ad-driven touches without re-parsing UTMs.
-    const isPaidMeta = isPaidMetaUtm(source, medium) || !!fbclid;
-    await db.journeyTouch.create({
-      data: {
-        shopDomain: shop,
-        clientId,
-        occurredAt: parseDate(payload.occurredAt),
-        source,
-        medium,
-        campaign: s(payload.campaign, 256),
-        content: s(payload.content, 256),
-        term: s(payload.term, 256),
-        fbclid,
-        landingPath: s(payload.landingPath, 512),
-        isPaidMeta,
-        rawUrl: s(payload.rawUrl, 1024),
-      },
-    });
-    return ok({ ok: true });
-  }
-
-  return ok({ ok: false, error: "unknown type" }, 400);
+  const source = s(payload.source, 128);
+  const medium = s(payload.medium, 128);
+  const fbclid = s(payload.fbclid, 256);
+  // "Paid Meta" if the UTM source/medium says so OR an fbclid is present
+  // (fbclid only ever rides on a Meta ad click). The stitch step uses this
+  // flag to find ad-driven touches without re-parsing UTMs.
+  const isPaidMeta = isPaidMetaUtm(source, medium) || !!fbclid;
+  enqueueTouch({
+    shopDomain: shop,
+    clientId,
+    occurredAt: parseDate(payload.occurredAt),
+    source,
+    medium,
+    campaign: s(payload.campaign, 256),
+    content: s(payload.content, 256),
+    term: s(payload.term, 256),
+    fbclid,
+    landingPath: s(payload.landingPath, 512),
+    isPaidMeta,
+    rawUrl: s(payload.rawUrl, 1024),
+  });
+  return ok({ ok: true });
 };
