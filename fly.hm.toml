@@ -25,8 +25,9 @@ primary_region = "lhr"
   min_machines_running = 1
 
 [[vm]]
-  size = "shared-cpu-4x"
-  memory = "8192mb"
+  # Rightsized 2026-07-04 from 4x/8GB: 7-day peak was 1.02GB RAM / 6% of 4 vCPUs.
+  size = "shared-cpu-2x"
+  memory = "4096mb"
 
 [mounts]
   source = "lucidly_hm_data"
