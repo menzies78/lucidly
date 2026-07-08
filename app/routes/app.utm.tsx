@@ -129,6 +129,11 @@ export default function UtmManagement() {
   const auditResult = actionData?.actionType === "audit" ? actionData.result : null;
   // The template every ad should carry: the saved one, else what the audit recommends.
   const recommendedTemplate = data.utmTemplate || auditResult?.recommendedTemplate || "";
+  // What per-ad health is judged against: the DOMINANT live pattern (what most
+  // ads actually carry), matching the audit's own consistency stats. Comparing
+  // against the saved template flagged whole healthy accounts as "Update UTMs"
+  // whenever the stored template was an older variant of the live one.
+  const dominantPattern = auditResult?.dominantPattern || "";
 
   const handleAudit = useCallback(() => {
     const formData = new FormData();
@@ -155,11 +160,11 @@ export default function UtmManagement() {
       const current = ad.urlTags || "";
       let utmState: "missing" | "differs" | "ok";
       if (!current) utmState = "missing";
-      else if (recommendedTemplate && current !== recommendedTemplate) utmState = "differs";
+      else if (dominantPattern && current !== dominantPattern) utmState = "differs";
       else utmState = "ok";
       return { ...ad, currentUtm: current, utmState };
     });
-  }, [auditResult, recommendedTemplate]);
+  }, [auditResult, dominantPattern]);
 
   const needsActionCount = useMemo(
     () => adRows.filter(r => r.utmState !== "ok" && r.effectiveStatus === "ACTIVE").length,
@@ -225,7 +230,9 @@ export default function UtmManagement() {
         if (row.original.utmState === "ok") return <span style={{ color: "#9ca3af", fontSize: "12px" }}>—</span>;
         return (
           <InlineStack gap="150" wrap={false}>
-            <CopyButton text={recommendedTemplate} label="Copy UTMs" size="micro" />
+            {/* Copy what makes this ad CONSISTENT: the dominant live pattern,
+                falling back to the template when no pattern exists yet. */}
+            <CopyButton text={dominantPattern || recommendedTemplate} label="Copy UTMs" size="micro" />
             <Button
               size="micro"
               url={adsManagerUrl(row.original.adId)}
@@ -237,7 +244,7 @@ export default function UtmManagement() {
         );
       },
     },
-  ], [recommendedTemplate, adsManagerUrl]);
+  ], [recommendedTemplate, dominantPattern, adsManagerUrl]);
 
   const defaultVisibleColumns = useMemo(() => [
     "campaignName", "adsetName", "adName", "effectiveStatus", "utmState", "utm", "fix",
@@ -289,10 +296,15 @@ export default function UtmManagement() {
               inconsistent UTM parameters. Lucidly never edits your ads - you stay in full
               control and apply fixes yourself in Ads Manager, using the guide below.
             </Text>
-            <InlineStack gap="300">
+            <InlineStack gap="300" blockAlign="center">
               <Button variant="primary" onClick={handleAudit} loading={isLoading} disabled={isLoading}>
                 {auditResult ? "Re-run UTM tag audit on all Meta ads" : "Run UTM tag audit on all Meta ads"}
               </Button>
+              <Text as="span" variant="bodySm" tone="subdued">
+                {isLoading
+                  ? "Reading every ad in your Meta account - this can take a minute or two on large accounts. Leave this page open."
+                  : "Reads every ad in your Meta account - can take a minute or two on large accounts."}
+              </Text>
             </InlineStack>
           </BlockStack>
         </Card>
