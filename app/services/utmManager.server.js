@@ -119,6 +119,7 @@ export async function auditUtms(shopDomain) {
   console.log(`[UTMManager] Fetched ${allAds.length} ads`);
 
   const patterns = {};
+  const deliveringPatterns = {};
   const inconsistentCampaigns = {};
 
   // Group by effective_status
@@ -137,6 +138,9 @@ export async function auditUtms(shopDomain) {
     if (tags) {
       statusBreakdown[es].withUtm++;
       patterns[tags] = (patterns[tags] || 0) + 1;
+      if (DELIVERING.includes(es)) {
+        deliveringPatterns[tags] = (deliveringPatterns[tags] || 0) + 1;
+      }
       if (!inconsistentCampaigns[campaignName]) inconsistentCampaigns[campaignName] = new Set();
       inconsistentCampaigns[campaignName].add(tags);
     } else {
@@ -168,9 +172,13 @@ export async function auditUtms(shopDomain) {
     }
   }
 
-  // Find the dominant pattern
+  // Find the dominant pattern. Judge health against what DELIVERING ads carry -
+  // large accounts have thousands of paused/archived ads whose (older) pattern
+  // would otherwise outvote the live one and mis-flag every active ad.
   const sortedPatterns = Object.entries(patterns).sort((a, b) => b[1] - a[1]);
-  const dominantPattern = sortedPatterns[0]?.[0] || DEFAULT_UTM_TEMPLATE;
+  const sortedDeliveringPatterns = Object.entries(deliveringPatterns).sort((a, b) => b[1] - a[1]);
+  const dominantPattern =
+    sortedDeliveringPatterns[0]?.[0] || sortedPatterns[0]?.[0] || DEFAULT_UTM_TEMPLATE;
 
   // Flag campaigns with mixed patterns
   const mixedCampaigns = [];
