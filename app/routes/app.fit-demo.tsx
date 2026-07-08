@@ -62,11 +62,12 @@ function ProgressBar({ pct }: { pct: number }) {
 }
 
 // "Who is Lucidly for?" answer: a large primary line + smaller supporting copy,
-// led by an oversized purple tick.
-function WhoBullet({ title, children }: { title: string; children: React.ReactNode }) {
+// led by an oversized purple tick. `caution` swaps it for an amber cross -
+// honest "less suitable" signalling without the alarm of red.
+function WhoBullet({ title, caution, children }: { title: string; caution?: boolean; children: React.ReactNode }) {
   return (
     <InlineStack gap="300" blockAlign="start" wrap={false}>
-      <span style={{ color: PURPLE, fontSize: 24, fontWeight: 800, lineHeight: "30px" }}>{"\u2713"}</span>
+      <span style={{ color: caution ? "#D97706" : PURPLE, fontSize: 24, fontWeight: 800, lineHeight: "30px" }}>{caution ? "\u2715" : "\u2713"}</span>
       <BlockStack gap="050">
         <Text as="span" variant="headingMd">{title}</Text>
         <Text as="span" variant="bodyMd" tone="subdued">{children}</Text>
@@ -190,6 +191,9 @@ export default function FitDemo() {
                       </WhoBullet>
                       <WhoBullet title="Normal day-to-day trading">
                         Outside of a major sale, the Fit Test reflects your real, ongoing match rate.
+                      </WhoBullet>
+                      <WhoBullet title="Less suitable for high volume stores with similar-priced products" caution>
+                        Many orders at the same price in the same time slot are statistically hard to tell apart.
                       </WhoBullet>
                     </BlockStack>
                   </BlockStack>
