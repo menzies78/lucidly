@@ -13,7 +13,11 @@ if (!META_APP_ID || !META_APP_SECRET) {
 export function getMetaAuthUrl(shopDomain, appUrl) {
   const redirectUri = `${appUrl}/meta/callback`;
   const state = Buffer.from(JSON.stringify({ shopDomain })).toString("base64");
-  const scopes = "ads_read,ads_management";
+  // Read-only by design: Lucidly never writes to ad accounts. The UTM Manager
+  // is report-only (merchant applies url_tags themselves in Ads Manager), so
+  // ads_management was dropped 2026-07-08 ahead of Meta App Review - a write
+  // scope we don't use would raise the review bar and scare the consent screen.
+  const scopes = "ads_read";
 
   return `https://www.facebook.com/v21.0/dialog/oauth?client_id=${META_APP_ID}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${scopes}&state=${state}&response_type=code`;
 }

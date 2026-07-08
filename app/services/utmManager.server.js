@@ -1,14 +1,20 @@
 import db from "../db.server";
 
 /**
- * UTM Manager - audits, recommends, and pushes UTM parameters to Meta ads.
+ * UTM Manager - audits Meta ads' UTM parameters and recommends fixes.
+ *
+ * REPORT-ONLY since 2026-07-08: the push-to-Meta write paths (create creative
+ * with url_tags + repoint ad) were removed so the OAuth scope could drop to
+ * ads_read ahead of Meta App Review. The merchant applies the recommended
+ * url_tags themselves in Ads Manager; the UI spells out exactly what to paste
+ * and where. If one-click fixing ever returns, it comes back as an opt-in
+ * incremental re-auth for ads_management - see git history for the old code.
  *
  * Runs during:
- * 1. Onboarding (after Meta connect) - full audit + optional push
- * 2. Nightly entity sync - scan new ads + auto-fill missing UTMs
+ * 1. On-demand audit from the UTM Manager page
+ * 2. Nightly entity sync - scan + flag (never writes)
  *
  * UTMs live on AdCreative.url_tags (not on the Ad object).
- * To update: POST to /{creative-id} with url_tags parameter.
  */
 
 const DEFAULT_UTM_TEMPLATE =
@@ -209,7 +215,7 @@ export async function auditUtms(shopDomain) {
     patternCount: sortedPatterns.length,
     patterns: sortedPatterns.map(([pattern, count]) => ({ pattern, count })),
     dominantPattern,
-    recommendedTemplate: shop.utmTemplate || dominantPattern,
+    recommendedTemplate: shop.utmTemplate || dominantPattern || DEFAULT_UTM_TEMPLATE,
     mixedCampaigns,
     adList,
   };
@@ -246,291 +252,12 @@ export async function auditUtms(shopDomain) {
   return result;
 }
 
-// ── Push UTMs ────────────────────────────────────────────────────────
-
-/**
- * Pushes UTM template to ads that are missing url_tags.
- *
- * Meta creatives are immutable for url_tags - you can't update an existing creative.
- * Instead we: 1) create a NEW creative using the same object_story_id + url_tags,
- *             2) point the ad to the new creative.
- *
- * @param shopDomain - shop identifier
- * @param options.activeOnly - only fix active ads (default: true)
- * @param options.template - UTM template to use (defaults to shop's saved template)
- * @param options.dryRun - if true, just return what would be changed without changing it
- * @returns { fixed, failed, skipped, errors }
- */
-export async function pushUtms(shopDomain, options = {}) {
-  const { activeOnly = true, template, dryRun = false } = options;
-
-  const shop = await db.shop.findUnique({ where: { shopDomain } });
-  if (!shop?.metaAccessToken || !shop?.metaAdAccountId) {
-    return { error: "Meta not connected" };
-  }
-
-  const token = shop.metaAccessToken;
-  const accountId = shop.metaAdAccountId;
-  const utmTemplate = template || shop.utmTemplate || DEFAULT_UTM_TEMPLATE;
-
-  console.log(`[UTMManager] Push UTMs for ${shopDomain} (dryRun: ${dryRun}, activeOnly: ${activeOnly})`);
-  console.log(`[UTMManager] Template: ${utmTemplate}`);
-
-  // Demo shops: no live account to write to. Resolve the currently-missing ads
-  // from the seeded set and, on a real push, persist them as fixed so the next
-  // audit shows zero missing — a coherent, side-effect-safe demo of the flow.
-  if (shop.demoMode) {
-    const missingN = shop.utmAdsMissing ?? 2;
-    const demoAds = await buildDemoAdsForAudit(shopDomain, missingN, shop.utmAdsInconsistent ?? 1);
-    const toFix = demoAds.filter(ad => !ad.creative?.url_tags);
-    if (dryRun) {
-      return {
-        dryRun: true,
-        wouldFix: toFix.length,
-        template: utmTemplate,
-        ads: toFix.map(ad => ({ adId: ad.id, adName: ad.name, creativeId: ad.creative?.id, status: ad.status })),
-      };
-    }
-    const fixed = toFix.length;
-    await db.shop.update({
-      where: { shopDomain },
-      data: {
-        utmAdsFixed: { increment: fixed },
-        utmAdsMissing: 0,
-        utmAdsWithTags: shop.utmAdsTotal ?? (shop.utmAdsWithTags + fixed),
-      },
-    });
-    return { fixed, failed: 0, skipped: 0, errors: [], template: utmTemplate };
-  }
-
-  // Fetch ads - use effective_status to only target actually-delivering ads
-  const statusValues = activeOnly
-    ? '["ACTIVE"]'
-    : '["ACTIVE","PAUSED","ADSET_PAUSED","CAMPAIGN_PAUSED","WITH_ISSUES","PENDING_REVIEW"]';
-  const statusFilter = `&filtering=[{"field":"effective_status","operator":"IN","value":${statusValues}}]`;
-  const allAds = await fetchAllPages(
-    `https://graph.facebook.com/v21.0/${accountId}/ads?fields=id,name,effective_status,creative{id,url_tags,effective_object_story_id}&limit=100${statusFilter}&access_token=${token}`
-  );
-
-  const toFix = allAds.filter(ad => !ad.creative?.url_tags);
-  console.log(`[UTMManager] Found ${toFix.length} ads to fix out of ${allAds.length}`);
-
-  if (dryRun) {
-    return {
-      dryRun: true,
-      wouldFix: toFix.length,
-      template: utmTemplate,
-      ads: toFix.map(ad => ({ adId: ad.id, adName: ad.name, creativeId: ad.creative?.id, status: ad.status })),
-    };
-  }
-
-  let fixed = 0;
-  let failed = 0;
-  let skipped = 0;
-  const errors = [];
-
-  for (const ad of toFix) {
-    const storyId = ad.creative?.effective_object_story_id;
-    if (!storyId) {
-      skipped++;
-      continue;
-    }
-
-    // Step 1: Create a new creative with url_tags using the same story
-    const createResult = await fetchWithRetry(
-      `https://graph.facebook.com/v21.0/${accountId}/adcreatives`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          object_story_id: storyId,
-          url_tags: utmTemplate,
-          access_token: token,
-        }),
-      }
-    );
-
-    if (!createResult?.id) {
-      failed++;
-      errors.push({ adId: ad.id, adName: ad.name, step: "create_creative", error: createResult });
-      continue;
-    }
-
-    // Step 2: Point the ad to the new creative
-    const updateResult = await fetchWithRetry(
-      `https://graph.facebook.com/v21.0/${ad.id}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          creative: { creative_id: createResult.id },
-          access_token: token,
-        }),
-      }
-    );
-
-    if (updateResult?.success) {
-      fixed++;
-      if (fixed % 50 === 0) console.log(`[UTMManager] Fixed ${fixed}/${toFix.length}...`);
-    } else {
-      failed++;
-      errors.push({ adId: ad.id, adName: ad.name, step: "update_ad", newCreativeId: createResult.id, error: updateResult });
-    }
-
-    // Rate limit: small delay between writes to avoid hitting Meta API limits
-    if ((fixed + failed) % 10 === 0) await new Promise(r => setTimeout(r, 500));
-  }
-
-  // Update shop stats
-  await db.shop.update({
-    where: { shopDomain },
-    data: {
-      utmAdsFixed: { increment: fixed },
-      utmAdsMissing: { decrement: fixed },
-    },
-  });
-
-  console.log(`[UTMManager] Push complete: ${fixed} fixed, ${failed} failed, ${skipped} skipped`);
-  return { fixed, failed, skipped, errors: errors.slice(0, 10), template: utmTemplate };
-}
-
-// ── Push UTMs to specific ads ────────────────────────────────────────
-
-/**
- * Push UTM tags to a specific list of ads.
- * Each entry: { adId, urlTags }
- * Creates a new creative with url_tags, then points the ad to it.
- */
-export async function pushUtmsToAds(shopDomain, adUpdates) {
-  const shop = await db.shop.findUnique({ where: { shopDomain } });
-  if (!shop?.metaAccessToken || !shop?.metaAdAccountId) {
-    return { error: "Meta not connected" };
-  }
-
-  // Demo shops: no live account, so report each requested edit as applied and
-  // draw down the missing/inconsistent counters so the audit reconciles.
-  if (shop.demoMode) {
-    const fixed = adUpdates.length;
-    await db.shop.update({
-      where: { shopDomain },
-      data: {
-        utmAdsFixed: { increment: fixed },
-        utmAdsMissing: Math.max(0, (shop.utmAdsMissing ?? 0) - fixed),
-      },
-    });
-    return {
-      fixed, failed: 0, skipped: 0, errors: [],
-      details: adUpdates.map(u => ({ adId: u.adId, status: "fixed", newCreativeId: `${u.adId}-cr` })),
-    };
-  }
-
-  const token = shop.metaAccessToken;
-  const accountId = shop.metaAdAccountId;
-
-  // Fetch ads to get their creative story IDs
-  const adIds = adUpdates.map(u => u.adId);
-  const allAds = await fetchAllPages(
-    `https://graph.facebook.com/v21.0/${accountId}/ads?fields=id,creative{id,effective_object_story_id}&filtering=[{"field":"id","operator":"IN","value":${JSON.stringify(adIds)}}]&limit=100&access_token=${token}`
-  );
-  const adMap = {};
-  for (const ad of allAds) adMap[ad.id] = ad;
-
-  let fixed = 0, failed = 0, skipped = 0;
-  // Per-ad detail surfaced to the UI so the merchant can see exactly which ad
-  // failed and why. Previously we returned only counts, leaving "8 of 9 failed"
-  // a mystery — almost always Advantage+ catalog ads (DPA) where Meta rejects
-  // url_tags on the creative type, or video/dynamic creatives missing a story
-  // ID. Surfacing the Meta error message per-ad lets the merchant act on it.
-  const details = [];
-
-  for (const update of adUpdates) {
-    const ad = adMap[update.adId];
-    const storyId = ad?.creative?.effective_object_story_id;
-    if (!storyId) {
-      skipped++;
-      details.push({
-        adId: update.adId,
-        status: "skipped",
-        reason: "no_story_id",
-        message: "Ad has no story ID — usually a DPA / Advantage+ catalog ad. Fix manually in Ads Manager.",
-      });
-      continue;
-    }
-
-    const createResult = await fetchWithRetry(
-      `https://graph.facebook.com/v21.0/${accountId}/adcreatives`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          object_story_id: storyId,
-          url_tags: update.urlTags,
-          access_token: token,
-        }),
-      }
-    );
-
-    if (!createResult?.id) {
-      failed++;
-      const e = createResult?.error || {};
-      details.push({
-        adId: update.adId,
-        status: "failed",
-        step: "create_creative",
-        errorCode: e.code ?? null,
-        errorSubcode: e.error_subcode ?? null,
-        errorUserMessage: e.error_user_msg || null,
-        message: e.message || "Meta rejected the new creative — common cause: Advantage+ creative or dynamic-creative ad.",
-      });
-      continue;
-    }
-
-    const updateResult = await fetchWithRetry(
-      `https://graph.facebook.com/v21.0/${update.adId}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          creative: { creative_id: createResult.id },
-          access_token: token,
-        }),
-      }
-    );
-
-    if (updateResult?.success) {
-      fixed++;
-      details.push({ adId: update.adId, status: "fixed", newCreativeId: createResult.id });
-    } else {
-      failed++;
-      const e = updateResult?.error || {};
-      details.push({
-        adId: update.adId,
-        status: "failed",
-        step: "update_ad",
-        newCreativeId: createResult.id,
-        errorCode: e.code ?? null,
-        errorSubcode: e.error_subcode ?? null,
-        errorUserMessage: e.error_user_msg || null,
-        message: e.message || "Created the new creative but Meta wouldn't attach it to the ad.",
-      });
-    }
-
-    if ((fixed + failed) % 10 === 0) await new Promise(r => setTimeout(r, 500));
-  }
-
-  console.log(`[UTMManager] Push to specific ads: ${fixed} fixed, ${failed} failed, ${skipped} skipped`);
-  // Keep `errors` for backwards-compat with the older summary banner; `details`
-  // is the per-row source of truth for the new in-table error display.
-  const errors = details.filter(d => d.status === "failed").slice(0, 10);
-  return { fixed, failed, skipped, errors, details };
-}
-
 // ── Nightly audit (called during nightly sync) ──────────────────────
 
 /**
  * Nightly audit: checks active ads for missing/inconsistent UTMs.
- * NEVER auto-pushes - only updates stats so the UI can flag issues.
- * Merchant must explicitly approve and trigger pushes from the UTM Manager page.
+ * Only updates stats so the UI can flag issues - the merchant applies any
+ * fixes themselves in Ads Manager (the app holds no write scope).
  */
 export async function nightlyUtmAudit(shopDomain) {
   const shop = await db.shop.findUnique({ where: { shopDomain } });
