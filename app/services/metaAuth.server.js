@@ -10,7 +10,7 @@ if (!META_APP_ID || !META_APP_SECRET) {
   );
 }
 
-export function getMetaAuthUrl(shopDomain, appUrl) {
+export function getMetaAuthUrl(shopDomain, appUrl, { forceReconsent = false } = {}) {
   const redirectUri = `${appUrl}/meta/callback`;
   const state = Buffer.from(JSON.stringify({ shopDomain })).toString("base64");
   // Read-only by design: Lucidly never writes to ad accounts. The UTM Manager
@@ -19,7 +19,15 @@ export function getMetaAuthUrl(shopDomain, appUrl) {
   // scope we don't use would raise the review bar and scare the consent screen.
   const scopes = "ads_read";
 
-  return `https://www.facebook.com/v21.0/dialog/oauth?client_id=${META_APP_ID}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${scopes}&state=${state}&response_type=code`;
+  // auth_type=rerequest forces Facebook to re-display the permissions consent
+  // dialog even when the user has already granted the scope. Off by default so
+  // real merchant (re)connects stay seamless; opted into via ?reconsent=1 so we
+  // can capture the ads_read consent screen for Meta App Review WITHOUT revoking
+  // the account-wide grant (which would disconnect every store this FB user
+  // connected). No token is invalidated - it only changes the dialog behaviour.
+  const reconsent = forceReconsent ? "&auth_type=rerequest" : "";
+
+  return `https://www.facebook.com/v21.0/dialog/oauth?client_id=${META_APP_ID}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${scopes}&state=${state}&response_type=code${reconsent}`;
 }
 
 export async function exchangeMetaCode(code, appUrl) {

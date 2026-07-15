@@ -12,9 +12,13 @@ export const loader = async ({ request }) => {
 
   const url = new URL(request.url);
   const appUrl = `https://${url.host}`;
+  // ?reconsent=1 forces Facebook to re-show the ads_read consent dialog on an
+  // already-granted account (for capturing the App Review screencast). Does not
+  // revoke anything - see getMetaAuthUrl.
+  const forceReconsent = url.searchParams.get("reconsent") === "1";
 
   const shop = await db.shop.findUnique({ where: { shopDomain } });
-  const authUrl = getMetaAuthUrl(shopDomain, appUrl);
+  const authUrl = getMetaAuthUrl(shopDomain, appUrl, { forceReconsent });
 
   // If connected, fetch current account name from Meta API
   let accountName = null;
