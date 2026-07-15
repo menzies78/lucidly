@@ -1295,6 +1295,18 @@ export default function Index() {
     submit({ action: actionName, ...extraData }, { method: "post" });
   }, [submit]);
 
+  // Disconnect Meta from the pills row. Posts to the meta-connect route's
+  // action (which nulls the stored token) and lets Remix revalidate the
+  // dashboard loader so the Meta pill flips to "not connected".
+  const disconnectingMeta =
+    navigation.state !== "idle" && navigation.formData?.get("intent") === "disconnect";
+  const handleDisconnectMeta = useCallback(() => {
+    if (!window.confirm(
+      "Disconnect Meta Ads?\n\nThis removes Lucidly's stored Meta access token so it can no longer read your ad data. Your previously imported ad metrics are kept, and you can reconnect at any time."
+    )) return;
+    submit({ intent: "disconnect" }, { method: "post", action: "/app/meta-connect" });
+  }, [submit]);
+
   useEffect(() => {
     if (navigation.state === "idle" && pendingTaskRef.current) {
       const taskName = pendingTaskRef.current;
@@ -1450,12 +1462,6 @@ export default function Index() {
             detail={formatMinutes(syncFreshness.orderSyncAgo)}
           />
           <StatusPill
-            label="Meta Sync"
-            ok={syncOk}
-            warning={!syncOk && syncWarning}
-            detail={formatMinutes(syncFreshness.metaSyncAgo)}
-          />
-          <StatusPill
             label="Pixel"
             // A winner is the gold state. Waiting for UTM samples is NOT a
             // problem - it's a "needs more data" state and a new install
@@ -1500,6 +1506,21 @@ export default function Index() {
               return "check pixel value field in Meta Events Manager";
             })()}
           />
+          <StatusPill
+            label="Meta Sync"
+            ok={syncOk}
+            warning={!syncOk && syncWarning}
+            detail={formatMinutes(syncFreshness.metaSyncAgo)}
+          />
+          {/* Disconnect Meta lives here (not a nav tab) so it's reachable
+              without adding a whole page. Styled as a plain grey button so it
+              reads as an action, distinct from the status pills. Hidden on demo
+              stores, whose Meta "connection" is a self-contained placeholder. */}
+          {metaConnected && !demoMode && (
+            <Button size="slim" onClick={handleDisconnectMeta} loading={disconnectingMeta}>
+              Disconnect Meta
+            </Button>
+          )}
         </div>
 
         {/* ═══ Match Rate + Match Confidence ═══ */}

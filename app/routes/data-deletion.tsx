@@ -55,8 +55,9 @@ export default function DataDeletion() {
       <ul>
         <li>
           <strong>Disconnecting Meta inside the app</strong> — open Lucidly in
-          your Shopify admin, go to <em>Connect Meta Ads</em>, and reconnect or
-          remove the account. Removing the connection deletes the stored access
+          your Shopify admin and click <em>Disconnect Meta</em> on the Health
+          dashboard (next to the status pills), or open <em>Connect Meta Ads</em>{" "}
+          and remove the account there. Disconnecting deletes the stored access
           token so Lucidly can no longer read your ad data.
         </li>
         <li>
