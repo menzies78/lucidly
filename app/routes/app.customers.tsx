@@ -1637,7 +1637,7 @@ function JourneyFlow({ firstAOV, gapDays, secondAOV, thirdAOV, gap2to3Days, cust
         display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
       }}>
         <div style={{ fontSize: "11px", fontWeight: 500, opacity: 0.8, textTransform: "uppercase", letterSpacing: "0.5px", whiteSpace: "nowrap" }}>{label}</div>
-        <div style={{ fontSize: "clamp(16px, 22cqw, 28px)", fontWeight: 800, marginTop: "5px", whiteSpace: "nowrap" }}>
+        <div style={{ fontSize: "clamp(16px, 34cqw, 28px)", fontWeight: 800, marginTop: "5px", whiteSpace: "nowrap" }}>
           {hasData ? `${cs}${Math.round(aov)}` : "-"}
         </div>
         <div style={{ fontSize: "11px", opacity: 0.7, marginTop: "2px" }}>
@@ -3145,7 +3145,6 @@ export default function Customers() {
                       <div style={{ fontSize: 22, fontWeight: 800, color: "#1F2937", lineHeight: 1 }}>{w365.repeatRate}%</div>
                       <div style={{ fontSize: 12, color: "#4B5563", lineHeight: 1.5, flex: "1 1 260px" }}>
                         of {journeyScope === "meta" ? "Meta" : "all"} customers acquired 12-24 months ago reordered within their first year ({w365.count.toLocaleString()} customers).
-                        The flow above only counts repeats <em>so far</em> - this settled rate is the benchmark.
                       </div>
                     </div>
                   );
