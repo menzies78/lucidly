@@ -3881,6 +3881,7 @@ export default function Customers() {
                             // "is scaling working" read.
                             type SignalRow = {
                               month: string; n: number;
+                              spend: number; spendDelta: number | null;
                               cohortCac: number; cacDelta: number | null;
                               avgFirst: number; firstDelta: number | null;
                               ageMonths: number; trajDelta: number | null;
@@ -3895,6 +3896,7 @@ export default function Customers() {
                               baseNew += _allMetaByMonth[m] || 0;
                             }
                             const baselineCac = baseNew > 0 ? baseSpend / baseNew : 0;
+                            const baseSpendAvg = baseMonths.length > 0 ? baseSpend / baseMonths.length : 0;
                             // Anchor first-order benchmark (real customers
                             // only - projected boost records carry no
                             // firstOrder field).
@@ -3928,6 +3930,8 @@ export default function Customers() {
                                 }
                                 signalRows.push({
                                   month: m, n: cohort.length,
+                                  spend: spendM,
+                                  spendDelta: baseSpendAvg > 0 && spendM > 0 ? spendM / baseSpendAvg - 1 : null,
                                   cohortCac,
                                   cacDelta: baselineCac > 0 && cohortCac > 0 ? cohortCac / baselineCac - 1 : null,
                                   avgFirst,
@@ -3936,6 +3940,13 @@ export default function Customers() {
                                 });
                               }
                             }
+                            // Is the merchant actually scaling? The signals
+                            // panel greys out when spend is flat - these
+                            // indicators exist to judge a budget change.
+                            // No baseline (young store) = can't judge, keep
+                            // the panel live.
+                            const spendRising = baseSpendAvg <= 0
+                              || signalRows.some((r) => r.spendDelta != null && r.spendDelta >= 0.1);
 
                             const windowOptions: Array<{ value: 1 | 3 | 6 | 12; label: string }> = [
                               { value: 12, label: "12m" }, { value: 6, label: "6m" }, { value: 3, label: "3m" }, { value: 1, label: "1m" },
@@ -4373,45 +4384,83 @@ export default function Customers() {
                                     payback footnotes. */}
                                 {isMeta && cac > 0 && (breakevenCac6 > 0 || breakevenCac12 > 0) && (() => {
                                   const observed = paybackDays != null && !paybackOnProjection;
-                                  const tone = headroom12 >= 2 && observed
-                                    ? { bg: "#ECFDF5", border: "#A7F3D0", text: "#065F46", accent: "#059669" }
-                                    : headroom12 >= 2
-                                    ? { bg: "#F5F3FF", border: "#DDD6FE", text: "#4C1D95", accent: "#7C3AED" }
-                                    : headroom12 >= 1
-                                    ? { bg: "#FFFBEB", border: "#FCD34D", text: "#92400E", accent: "#D97706" }
-                                    : { bg: "#FEF2F2", border: "#FECACA", text: "#991B1B", accent: "#DC2626" };
                                   const marginLbl = Math.round(marginFrac * 100);
+                                  const riseFullPct = Math.max(0, Math.round((headroom12 - 1) * 100));
+                                  // Rule of half: break-even means working a
+                                  // year for zero profit, so only ~half the
+                                  // gap to break-even is a sensible buffer.
+                                  const riseUsablePct = Math.max(0, Math.round(((headroom12 - 1) / 2) * 100));
+                                  const accent = headroom12 >= 2 && observed ? "#059669"
+                                    : headroom12 >= 2 ? "#7C3AED"
+                                    : headroom12 >= 1.25 ? "#1F2937"
+                                    : headroom12 >= 1 ? "#D97706" : "#DC2626";
                                   const action = headroom12 >= 2 && observed
-                                    ? <>Test increasing Meta budget in steps (20-30% at a time). CAC will rise as you scale, but it could roughly {headroom12 >= 3 ? `${Math.floor(headroom12)}×` : "double"} before new customers stop paying back within 12 months. Judge each step by the early signals below, not this month&apos;s ROAS.</>
+                                    ? <>Test increasing Meta budget in steps (20-30% at a time). CAC will rise as you scale, but it has ~{riseFullPct}% to run before customers stop repaying within 12 months - use about half of that (~{riseUsablePct}%) as your working buffer, since break-even means a year of zero profit. Judge each step by the early signals below, not this month&apos;s ROAS.</>
                                     : headroom12 >= 2
                                     ? <>The numbers suggest room to scale, but payback here is projected rather than observed. Increase spend gradually and confirm the early signals below stay on track before committing more.</>
+                                    : headroom12 >= 1.25
+                                    ? <>Moderate headroom. CAC can rise ~{riseFullPct}% before 12-month break-even disappears - which sounds roomy, but break-even means working a year per customer for zero profit, and CAC climbs fastest at the top end of scale. Treat roughly half (~{riseUsablePct}%) as your usable buffer: scale in small steps (10-20%) and stop when the signals below turn.</>
                                     : headroom12 >= 1
-                                    ? <>Limited headroom - CAC can only rise ~{Math.max(0, Math.round((headroom12 - 1) * 100))}% before 12-month break-even disappears. Improve margin or repeat rate before scaling hard.</>
+                                    ? <>Tight - only ~{riseFullPct}% CAC rise erases 12-month break-even. Improve margin or repeat rate before adding spend.</>
                                     : <>At {marginLbl}% margin, customers don&apos;t repay their CAC within 12 months. Fix the unit economics (margin, AOV, repeat rate) or lower CAC before adding spend.</>;
+                                  const stepCard = (n: number, label: string, value: React.ReactNode, sub: React.ReactNode) => (
+                                    <div style={{ flex: "1 1 150px", minWidth: 150, background: "#FFFFFF", border: "1px solid #E5E7EB", borderRadius: 10, padding: "14px 14px 12px", textAlign: "center", display: "flex", flexDirection: "column" }}>
+                                      <div style={{ fontSize: 10.5, fontWeight: 700, color: "#6366F1", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 10 }}>
+                                        <span style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 17, height: 17, borderRadius: "50%", background: "#EEF2FF", color: "#6366F1", fontSize: 10, marginRight: 6, verticalAlign: "middle" }}>{n}</span>
+                                        {label}
+                                      </div>
+                                      <div style={{ fontSize: 27, fontWeight: 800, color: "#1F2937", lineHeight: 1.1, margin: "auto 0" }}>{value}</div>
+                                      <div style={{ fontSize: 11.5, color: "#6B7280", marginTop: 8, lineHeight: 1.45 }}>{sub}</div>
+                                    </div>
+                                  );
+                                  const arrow = (
+                                    <div style={{ alignSelf: "center", color: "#C7CBD4", fontSize: 17, fontWeight: 700, padding: "0 2px" }}>→</div>
+                                  );
                                   return (
-                                    <div style={{ marginTop: 14, padding: "16px 18px", background: tone.bg, border: `1px solid ${tone.border}`, borderRadius: 10 }}>
-                                      <div style={{ fontSize: 15, fontWeight: 800, color: tone.text, marginBottom: 8 }}>What this means</div>
-                                      <div style={{ fontSize: 13, color: tone.text, lineHeight: 1.55 }}>
-                                        <p style={{ margin: "0 0 8px" }}>
-                                          A new Meta customer costs you <strong>{cs}{Math.round(cac).toLocaleString()}</strong>. At {marginLbl}% margin their first order returns ~{cs}{Math.round(firstOrderGross).toLocaleString()} of gross profit
-                                          {floatPerCust > 0
-                                            ? <>, so you&apos;re <strong>{cs}{Math.round(floatPerCust).toLocaleString()} out of pocket per customer</strong>{paybackDays != null ? <> until repeat orders repay it around <strong>day {paybackDays}</strong>{paybackOnProjection ? " (projected)" : ""}</> : <> - and on current data that gap hasn&apos;t yet been repaid within the observed window</>}.</>
-                                            : <> - the first order alone covers the acquisition cost.</>}
-                                        </p>
-                                        <p style={{ margin: "0 0 8px" }}>
-                                          By month 6 the average customer has generated <strong>{cs}{Math.round(breakevenCac6).toLocaleString()}</strong> of gross profit, and <strong>{cs}{Math.round(breakevenCac12).toLocaleString()}</strong> by month 12. Those are your break-even CACs: the most you could pay per customer and still fully recoup within each horizon. Today&apos;s CAC leaves <strong>{headroom6 > 0 ? `${headroom6.toFixed(1)}×` : "-"} headroom on a 6-month view</strong> and <strong>{headroom12 > 0 ? `${headroom12.toFixed(1)}×` : "-"} on a 12-month view</strong>.
-                                        </p>
+                                    <div style={{ marginTop: 16 }}>
+                                      <div style={{ fontSize: 15, fontWeight: 800, color: "#1F2937", marginBottom: 10 }}>What this means</div>
+                                      <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "stretch" }}>
+                                        {stepCard(1, "You pay",
+                                          <>{cs}{Math.round(cac).toLocaleString()}</>,
+                                          <>to acquire one new Meta customer (CAC)</>)}
+                                        {arrow}
+                                        {stepCard(2, "First order returns",
+                                          <>{cs}{Math.round(firstOrderGross).toLocaleString()}</>,
+                                          floatPerCust > 0
+                                            ? <>gross profit at {marginLbl}% margin - leaves <strong>{cs}{Math.round(floatPerCust).toLocaleString()}</strong> still to recover</>
+                                            : <>gross profit at {marginLbl}% margin - covers the CAC on day one</>)}
+                                        {arrow}
+                                        {stepCard(3, "Paid back",
+                                          paybackDays != null ? <>Day {paybackDays}</> : (floatPerCust <= 0 ? <>Day 0</> : <>-</>),
+                                          paybackDays != null
+                                            ? <>{observed ? "observed from your customers' actual repeat orders" : "projected from your long-term repeat curve"}</>
+                                            : (floatPerCust <= 0
+                                                ? <>the first order repays acquisition immediately</>
+                                                : <>cumulative profit hasn&apos;t crossed CAC in the observed window</>))}
+                                        {arrow}
+                                        {stepCard(4, "They generate",
+                                          <div style={{ display: "flex", justifyContent: "center", gap: 14 }}>
+                                            <span>{cs}{Math.round(breakevenCac6).toLocaleString()}<span style={{ fontSize: 11, fontWeight: 600, color: "#9CA3AF", display: "block" }}>by month 6</span></span>
+                                            <span>{cs}{Math.round(breakevenCac12).toLocaleString()}<span style={{ fontSize: 11, fontWeight: 600, color: "#9CA3AF", display: "block" }}>by month 12</span></span>
+                                          </div>,
+                                          <>cumulative gross profit per customer = your <strong>break-even CAC</strong> at each horizon</>)}
+                                        {arrow}
+                                        {stepCard(5, "Headroom",
+                                          <span style={{ color: accent }}>{headroom12 > 0 ? `${headroom12.toFixed(1)}×` : "-"}</span>,
+                                          <>CAC could rise ~{riseFullPct}% before 12-month break-even{headroom6 > 0 ? <> · 6-month view: {headroom6.toFixed(1)}×</> : null}</>)}
+                                      </div>
+                                      <div style={{ marginTop: 10, padding: "12px 16px", background: "#FFFFFF", border: "1px solid #E5E7EB", borderLeft: `4px solid ${accent}`, borderRadius: 10 }}>
+                                        <div style={{ fontSize: 13, color: "#1F2937", lineHeight: 1.55 }}>
+                                          <strong style={{ color: accent }}>Suggested action:</strong> {action}
+                                        </div>
                                         {floatPerCust > 0 && monthlyNew >= 1 && (
-                                          <p style={{ margin: "0 0 8px" }}>
-                                            Scaling means carrying that float. At your current rate (~{Math.round(monthlyNew).toLocaleString()} new Meta customers/month) roughly <strong>{cs}{Math.round(monthlyFloat).toLocaleString()}/month</strong> sits in customers who haven&apos;t paid back yet. Raise spend and this cash-in-flight grows <em>before</em> profit does - make sure you can carry it for ~{paybackDays != null ? `${paybackDays} days` : "the payback period"}.
-                                          </p>
+                                          <div style={{ fontSize: 12, color: "#4B5563", lineHeight: 1.5, marginTop: 6 }}>
+                                            Scaling means carrying the float: at ~{Math.round(monthlyNew).toLocaleString()} new Meta customers/month, roughly <strong>{cs}{Math.round(monthlyFloat).toLocaleString()}/month</strong> sits in customers who haven&apos;t paid back yet. Raise spend and this cash-in-flight grows <em>before</em> profit does.
+                                          </div>
                                         )}
-                                        <p style={{ margin: "0 0 6px" }}>
-                                          <strong style={{ color: tone.accent }}>Suggested action:</strong> {action}
-                                        </p>
-                                        <p style={{ margin: 0, fontSize: 11, opacity: 0.75 }}>
+                                        <div style={{ fontSize: 11, color: "#9CA3AF", marginTop: 6 }}>
                                           Assumes new customers behave like your historic ones - at much higher spend they may not. That&apos;s what the early signals below are for. All figures use your gross margin setting ({marginLbl}%).
-                                        </p>
+                                        </div>
                                       </div>
                                     </div>
                                   );
@@ -4440,6 +4489,7 @@ export default function Customers() {
                                     if (basis >= -0.1) return { label: "On track", bg: "#EFF6FF", color: "#2563EB" };
                                     return { label: "Behind", bg: "#FEF2F2", color: "#DC2626" };
                                   };
+                                  const latest = signalRows[0];
                                   return (
                                     <div style={{ marginTop: 14, padding: "16px 18px", background: "#FFFFFF", border: "1px solid #E5E7EB", borderRadius: 10 }}>
                                       <div style={{ fontSize: 15, fontWeight: 800, color: "#1F2937", marginBottom: 4 }}>Early signals - is increased spend working?</div>
@@ -4447,11 +4497,17 @@ export default function Customers() {
                                         The LTV curve above is historic - it can&apos;t tell you quickly whether extra spend is working. These leading indicators judge your newest monthly cohorts against your long-term customer at the same age.
                                         If CAC jumps <em>and</em> new cohorts run behind the curve, scaling is buying worse customers. If cohorts hold the curve while volume grows, it&apos;s working - even while ROAS dips.
                                       </div>
-                                      <div style={{ overflowX: "auto" }}>
+                                      {!spendRising && (
+                                        <div style={{ marginBottom: 12, padding: "10px 14px", background: "#F9FAFB", border: "1px solid #E5E7EB", borderRadius: 8, fontSize: 12.5, color: "#4B5563", lineHeight: 1.5 }}>
+                                          <strong>Spend is steady</strong>{latest && latest.spend > 0 && baseSpendAvg > 0 ? <> - last month {cs}{Math.round(latest.spend).toLocaleString()} vs a {cs}{Math.round(baseSpendAvg).toLocaleString()}/month baseline</> : null}. These signals matter most after a budget change, so they&apos;re shown greyed for reference. They&apos;ll light up automatically when monthly spend moves ~10% or more above your recent baseline.
+                                        </div>
+                                      )}
+                                      <div style={{ overflowX: "auto", opacity: spendRising ? 1 : 0.45, transition: "opacity 0.2s" }}>
                                         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
                                           <thead>
                                             <tr style={{ color: "#6B7280", textAlign: "left" }}>
                                               <th style={{ padding: "6px 10px", fontWeight: 600 }}>Cohort</th>
+                                              <th style={{ padding: "6px 10px", fontWeight: 600 }}>Spend (vs 6-mo baseline)</th>
                                               <th style={{ padding: "6px 10px", fontWeight: 600 }}>New customers</th>
                                               <th style={{ padding: "6px 10px", fontWeight: 600 }}>CAC (vs 6-mo baseline)</th>
                                               <th style={{ padding: "6px 10px", fontWeight: 600 }}>First order (vs long-term)</th>
@@ -4465,9 +4521,16 @@ export default function Customers() {
                                               const firstP = pct(r.firstDelta);
                                               const trajP = pct(r.trajDelta);
                                               const st = statusOf(r);
+                                              // Spend delta is context, not good/bad -
+                                              // rendered neutral grey either way.
+                                              const spendLbl = r.spendDelta != null ? `${r.spendDelta >= 0 ? "+" : ""}${Math.round(r.spendDelta * 100)}%` : null;
                                               return (
                                                 <tr key={r.month} style={{ borderTop: "1px solid #F3F4F6", color: "#1F2937" }}>
                                                   <td style={{ padding: "7px 10px", fontWeight: 700 }}>{fmtYm(r.month)}</td>
+                                                  <td style={{ padding: "7px 10px" }}>
+                                                    {r.spend > 0 ? `${cs}${Math.round(r.spend).toLocaleString()}` : "-"}
+                                                    {spendLbl && <span style={{ color: "#6B7280", fontWeight: 700, marginLeft: 6 }}>{spendLbl}</span>}
+                                                  </td>
                                                   <td style={{ padding: "7px 10px" }}>{r.n.toLocaleString()}</td>
                                                   <td style={{ padding: "7px 10px" }}>
                                                     {r.cohortCac > 0 ? `${cs}${Math.round(r.cohortCac).toLocaleString()}` : "-"}
