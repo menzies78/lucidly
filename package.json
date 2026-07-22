@@ -47,7 +47,7 @@
     "react-dom": "^18.2.0",
     "react-leaflet": "^4.2.1",
     "supercluster": "^8.0.1",
-    "vite-tsconfig-paths": "^5.0.1"
+    "vite-tsconfig-paths": "^6.1.1"
   },
   "devDependencies": {
     "@remix-run/eslint-config": "^2.16.1",
@@ -63,7 +63,7 @@
     "eslint-config-prettier": "^10.0.1",
     "prettier": "^3.2.4",
     "typescript": "^5.2.2",
-    "vite": "^6.2.2"
+    "vite": "^8.1.3"
   },
   "workspaces": {
     "packages": [
@@ -78,13 +78,13 @@
     "@graphql-codegen/client-preset": "4.7.0",
     "@graphql-codegen/typescript-operations": "4.5.0",
     "minimatch": "9.0.5",
-    "vite": "^6.2.2"
+    "vite": "^8.1.3"
   },
   "overrides": {
     "@graphql-tools/url-loader": "8.0.16",
     "@graphql-codegen/client-preset": "4.7.0",
     "@graphql-codegen/typescript-operations": "4.5.0",
     "minimatch": "9.0.5",
-    "vite": "^6.2.2"
+    "vite": "^8.1.3"
   }
 }
