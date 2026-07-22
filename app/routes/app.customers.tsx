@@ -4450,24 +4450,19 @@ export default function Customers() {
                                           <>{cs}{Math.round(cac).toLocaleString()}</>,
                                           <>to acquire one new Meta customer</>,
                                           <>Your blended CAC over this window</>)}
-                                        {stepCard(2, "First order returns",
+                                        {stepCard(2, "First order gross profit",
                                           <>{cs}{Math.round(firstOrderGross).toLocaleString()}</>,
-                                          <>gross profit at {marginLbl}% margin</>,
+                                          <>based on {marginLbl}% margin</>,
                                           floatPerCust > 0
                                             ? <>Leaves {cs}{Math.round(floatPerCust).toLocaleString()} still to recover</>
                                             : <>Covers the CAC on day one</>)}
                                         {stepCard(3, "Paid back",
                                           paybackDays != null ? <>Day {paybackDays}</> : (floatPerCust <= 0 ? <>Day 0</> : <>-</>),
-                                          paybackDays != null
-                                            ? (observed ? <>observed from actual repeat orders</> : <>projected from your long-term repeat curve</>)
-                                            : (floatPerCust <= 0
-                                                ? <>first order repays acquisition immediately</>
-                                                : <>profit hasn&apos;t crossed CAC in the observed window</>),
-                                          <>When cumulative profit crosses CAC</>)}
+                                          <>when cumulative profit crosses CAC</>)}
                                         {stepCard(4, "They generate",
                                           <>{cs}{Math.round(breakevenCac12).toLocaleString()}</>,
-                                          <>gross profit per customer by month 12 - your <strong>break-even CAC</strong></>,
-                                          breakevenCac6 > 0 ? <>{cs}{Math.round(breakevenCac6).toLocaleString()} by month 6</> : null)}
+                                          <>total gross profit per customer by month 12</>,
+                                          <>= the most you could pay to acquire and still break even{breakevenCac6 > 0 ? <> ({cs}{Math.round(breakevenCac6).toLocaleString()} by month 6)</> : null}</>)}
                                         {stepCard(5, "Headroom",
                                           <span style={{ color: accent }}>{headroom12 > 0 ? `${headroom12.toFixed(1)}×` : "-"}</span>,
                                           <>CAC could rise ~{riseFullPct}% before 12-month break-even</>,
