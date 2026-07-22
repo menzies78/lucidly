@@ -4456,7 +4456,7 @@ export default function Customers() {
                                   // Repeat rate - the whole LTV engine.
                                   if (repeatRate != null && repeatRate < 0.3) {
                                     recs.push({ area: "Repeat rate", title: "Get the second order", score: repeatRate < 0.2 ? 78 : 58,
-                                      body: <>Only <strong>{Math.round(repeatRate * 100)}%</strong> of your long-term Meta customers ever order again. Post-purchase email/SMS flows and a second-order offer raise LTV - and break-even CAC - at zero acquisition cost.</> });
+                                      body: <>Only <strong>{Math.round(repeatRate * 100)}%</strong> of your long-term Meta customers (acquired 12-24 months ago) ever order again. Post-purchase email/SMS flows and a second-order offer raise LTV - and break-even CAC - at zero acquisition cost.</> });
                                   }
                                   // First-order AOV - closes the day-one gap.
                                   if (floatPerCust > 0) {
