@@ -3127,6 +3127,35 @@ export default function Customers() {
                 thirdOrderCount={journeyScope === "meta" ? metaThirdOrderCount : allThirdOrderCount}
                 cs={cs}
               />
+              {/* LONG-TERM REPEAT RATE - the mature benchmark. The flow
+                  above is "repeats SO FAR" for this period's new customers
+                  (young cohorts drag it down); this is the settled rate for
+                  customers with a full year of history. From the rollup's
+                  365-day maturity window (ltvBenchmark), both scopes. */}
+              {(() => {
+                const wins = (journeyScope === "meta" ? ltvBenchmark?.meta?.windows : ltvBenchmark?.all?.windows) || [];
+                const w365 = (wins as any[]).find((w) => w.window === 365);
+                if (w365 && w365.count >= 20) {
+                  return (
+                    <div style={{ padding: "12px 16px", background: "#F9FAFB", border: "1px solid #E5E7EB", borderRadius: 10, display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+                      <div style={{ fontSize: 11, fontWeight: 700, color: "#6366F1", textTransform: "uppercase", letterSpacing: 0.5 }}>Long-term repeat rate</div>
+                      <div style={{ fontSize: 22, fontWeight: 800, color: "#1F2937", lineHeight: 1 }}>{w365.repeatRate}%</div>
+                      <div style={{ fontSize: 12, color: "#4B5563", lineHeight: 1.5, flex: "1 1 260px" }}>
+                        of {journeyScope === "meta" ? "Meta" : "all"} customers acquired 12+ months ago placed a 2nd order within their first year ({w365.count.toLocaleString()} customers).
+                        The flow above counts repeats <em>so far</em> for this period&apos;s new customers - recent joiners haven&apos;t had time yet, so this settled rate is the benchmark to aim for.
+                      </div>
+                    </div>
+                  );
+                }
+                return (
+                  <div style={{ padding: "12px 16px", background: "#F9FAFB", border: "1px solid #E5E7EB", borderRadius: 10, opacity: 0.6 }}>
+                    <div style={{ fontSize: 11, fontWeight: 700, color: "#6B7280", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4 }}>Long-term repeat rate</div>
+                    <div style={{ fontSize: 12, color: "#6B7280", lineHeight: 1.5 }}>
+                      Not enough {journeyScope === "meta" ? "Meta" : ""} customers with 12+ months of history yet. This benchmark lights up as your data matures{journeyScope === "meta" ? " - the All Customers view usually gets there first, since Meta history starts at install" : ""}.
+                    </div>
+                  </div>
+                );
+              })()}
             </BlockStack>
           </Card>
           )},
