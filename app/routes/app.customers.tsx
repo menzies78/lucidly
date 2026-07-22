@@ -3896,7 +3896,12 @@ export default function Customers() {
                               baseNew += _allMetaByMonth[m] || 0;
                             }
                             const baselineCac = baseNew > 0 ? baseSpend / baseNew : 0;
-                            const baseSpendAvg = baseMonths.length > 0 ? baseSpend / baseMonths.length : 0;
+                            // Spend comparison is month-over-month (vs the
+                            // immediately preceding month), NOT a long
+                            // baseline - a 6-month average hides whether the
+                            // merchant is upping spend RIGHT NOW (e.g. a peak
+                            // inside the window masks a fresh increase).
+                            const spendOfMonth = (m: string | undefined) => (m ? (metaSpendByAcqMonth || {})[m] || 0 : 0);
                             // Anchor first-order benchmark (real customers
                             // only - projected boost records carry no
                             // firstOrder field).
@@ -3928,10 +3933,11 @@ export default function Customers() {
                                   const anchorAt = anchorLtvAt(ageMonths);
                                   if (n >= 5 && anchorAt > 0) trajDelta = (sum / n) / anchorAt - 1;
                                 }
+                                const prevSpend = spendOfMonth(completeMonths[completeMonths.indexOf(m) - 1]);
                                 signalRows.push({
                                   month: m, n: cohort.length,
                                   spend: spendM,
-                                  spendDelta: baseSpendAvg > 0 && spendM > 0 ? spendM / baseSpendAvg - 1 : null,
+                                  spendDelta: prevSpend > 0 && spendM > 0 ? spendM / prevSpend - 1 : null,
                                   cohortCac,
                                   cacDelta: baselineCac > 0 && cohortCac > 0 ? cohortCac / baselineCac - 1 : null,
                                   avgFirst,
@@ -3940,13 +3946,13 @@ export default function Customers() {
                                 });
                               }
                             }
-                            // Is the merchant actually scaling? The signals
-                            // panel greys out when spend is flat - these
-                            // indicators exist to judge a budget change.
-                            // No baseline (young store) = can't judge, keep
-                            // the panel live.
-                            const spendRising = baseSpendAvg <= 0
-                              || signalRows.some((r) => r.spendDelta != null && r.spendDelta >= 0.1);
+                            // Is the merchant actually scaling? Judge only
+                            // the LATEST complete month vs the month before
+                            // it - a short, immediate read. No prior data
+                            // (young store) = can't judge, keep panel live.
+                            const latestSpendDelta = signalRows[0]?.spendDelta ?? null;
+                            const spendRising = latestSpendDelta == null || latestSpendDelta >= 0.1;
+                            const prevMonthSpend = spendOfMonth(completeMonths[completeMonths.length - 2]);
 
                             const windowOptions: Array<{ value: 1 | 3 | 6 | 12; label: string }> = [
                               { value: 12, label: "12m" }, { value: 6, label: "6m" }, { value: 3, label: "3m" }, { value: 1, label: "1m" },
@@ -4095,55 +4101,63 @@ export default function Customers() {
                                     </div>
                                   );
                                 })()}
-                                {/* SELECTOR ROW - 12/6/3/1 + Gender + Margin.
-                                    All three reshape the chart cohort. */}
-                                <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "center", gap: "10px 18px", marginBottom: 8 }}>
-                                  {windowSelector}
-                                  <div style={{ display: "inline-flex", border: "1px solid #E5E7EB", borderRadius: 10, padding: 3, background: "#F9FAFB", gap: 2 }}>
-                                    {([
-                                      { value: "All" as const, label: "All" },
-                                      { value: "female" as const, label: "Women" },
-                                      { value: "male" as const, label: "Men" },
-                                    ]).map((opt) => {
-                                      const active = ltvFilterGender === opt.value;
-                                      // Gender filter is fully active on both
-                                      // tabs. On Meta it filters ltvCustomers;
-                                      // on All it picks ltvMonthly.all.byGender
-                                      // (populated by name-inferredGender for
-                                      // every customer in customerRollups).
-                                      return (
-                                        <button
-                                          key={opt.value}
-                                          onClick={() => setLtvFilterGender(opt.value)}
-                                          className={`l-pill${active ? " l-pill--active" : ""}`}
-                                          style={{ padding: "7px 16px", fontSize: "13px" }}
-                                        >{opt.label}</button>
-                                      );
-                                    })}
+                                {/* CONTROLS - three distinct tools, each
+                                    titled with its description directly
+                                    underneath. All reshape the chart. */}
+                                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 28, alignItems: "start", maxWidth: 940, margin: "0 auto 18px" }}>
+                                  <div style={{ textAlign: "center" }}>
+                                    <div style={{ fontSize: 11, fontWeight: 700, color: "#6366F1", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 8 }}>Cohort window</div>
+                                    <div style={{ display: "flex", justifyContent: "center" }}>{windowSelector}</div>
+                                    <div style={{ fontSize: 11.5, color: "#6B7280", lineHeight: 1.5, marginTop: 8 }}>
+                                      Overlays customers acquired in the last {targetM === 12 ? "12" : targetM} month{targetM === 1 ? "" : "s"} on the long-term curve
+                                      {isMeta && (
+                                        <>
+                                          {" · "}
+                                          {targetM === 12
+                                            ? `${anchorN.toLocaleString()} long-term customer${anchorN === 1 ? "" : "s"}`
+                                            : `${anchorN.toLocaleString()} long-term + ${overlayN.toLocaleString()} recent`}
+                                        </>
+                                      )}
+                                    </div>
                                   </div>
-                                  <div
-                                    title="Gross margin = the share of each order's revenue left after product cost, shipping, fulfilment and payment fees. Lucidly can't see your costs, so set this yourself. Every profit and payback figure on this page is calculated from it."
-                                    style={{ display: "inline-flex", alignItems: "center", gap: 10, padding: "6px 14px", border: "1px solid #E5E7EB", borderRadius: 10, background: "#F9FAFB" }}
-                                  >
-                                    <span style={{ fontSize: 11, fontWeight: 700, color: "#6B7280", textTransform: "uppercase", letterSpacing: 0.5 }}>Your gross margin</span>
-                                    <input type="range" min={0} max={100} step={5} value={marginPct} onChange={(e) => handleMarginChange(parseInt(e.target.value, 10))} style={{ width: 110 }} />
-                                    <span style={{ fontSize: 13, fontWeight: 700, color: "#1F2937", minWidth: 36 }}>{marginPct}%</span>
+                                  <div style={{ textAlign: "center" }}>
+                                    <div style={{ fontSize: 11, fontWeight: 700, color: "#6366F1", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 8 }}>Customers</div>
+                                    <div style={{ display: "inline-flex", border: "1px solid #E5E7EB", borderRadius: 10, padding: 3, background: "#F9FAFB", gap: 2 }}>
+                                      {([
+                                        { value: "All" as const, label: "All" },
+                                        { value: "female" as const, label: "Women" },
+                                        { value: "male" as const, label: "Men" },
+                                      ]).map((opt) => {
+                                        const active = ltvFilterGender === opt.value;
+                                        // Gender filter is fully active on both
+                                        // tabs. On Meta it filters ltvCustomers;
+                                        // on All it picks ltvMonthly.all.byGender
+                                        // (populated by name-inferredGender for
+                                        // every customer in customerRollups).
+                                        return (
+                                          <button
+                                            key={opt.value}
+                                            onClick={() => setLtvFilterGender(opt.value)}
+                                            className={`l-pill${active ? " l-pill--active" : ""}`}
+                                            style={{ padding: "7px 16px", fontSize: "13px" }}
+                                          >{opt.label}</button>
+                                        );
+                                      })}
+                                    </div>
+                                    <div style={{ fontSize: 11.5, color: "#6B7280", lineHeight: 1.5, marginTop: 8 }}>
+                                      Filters every figure on this page to women or men (identified from first names)
+                                    </div>
                                   </div>
-                                </div>
-                                <div style={{ fontSize: 12, color: "#6B7280", textAlign: "center", marginBottom: 4, maxWidth: 720, marginLeft: "auto", marginRight: "auto" }}>
-                                  <strong>Your gross margin</strong> is the % of each order left after product, shipping and fulfilment costs.
-                                  Lucidly can&apos;t see your costs, so set it yourself - every profit and payback figure here depends on it. It saves automatically.
-                                </div>
-                                <div style={{ fontSize: 12, color: "#6B7280", textAlign: "center", marginBottom: 14 }}>
-                                  Overlay recent cohorts on top to compare against historic performance
-                                  {isMeta && (
-                                    <>
-                                      {" · "}
-                                      {targetM === 12
-                                        ? `${anchorN.toLocaleString()} long-term customer${anchorN === 1 ? "" : "s"}`
-                                        : `${anchorN.toLocaleString()} long-term + ${overlayN.toLocaleString()} recent (${targetM}m)`}
-                                    </>
-                                  )}
+                                  <div style={{ textAlign: "center" }}>
+                                    <div style={{ fontSize: 11, fontWeight: 700, color: "#6366F1", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 8 }}>Your gross margin</div>
+                                    <div style={{ display: "inline-flex", alignItems: "center", gap: 10, padding: "8px 14px", border: "1px solid #E5E7EB", borderRadius: 10, background: "#F9FAFB" }}>
+                                      <input type="range" min={0} max={100} step={5} value={marginPct} onChange={(e) => handleMarginChange(parseInt(e.target.value, 10))} style={{ width: 130 }} />
+                                      <span style={{ fontSize: 14, fontWeight: 700, color: "#1F2937", minWidth: 38 }}>{marginPct}%</span>
+                                    </div>
+                                    <div style={{ fontSize: 11.5, color: "#6B7280", lineHeight: 1.5, marginTop: 8 }}>
+                                      Gross margin is the % of each order left after product, shipping and fulfilment costs. Lucidly can&apos;t see your costs - set it yourself. Every profit figure here depends on it. Saves automatically.
+                                    </div>
+                                  </div>
                                 </div>
                                 {/* Chart */}
                                 <div ref={ltvChartRef} style={{ position: "relative", width: "70vw", margin: "0 auto" }}>
@@ -4394,7 +4408,7 @@ export default function Customers() {
                                     : headroom12 >= 2 ? "#7C3AED"
                                     : headroom12 >= 1.25 ? "#1F2937"
                                     : headroom12 >= 1 ? "#D97706" : "#DC2626";
-                                  // Verdict + numbered action steps per tier
+                                  // Verdict tier for the headroom read
                                   const tier = headroom12 >= 2 && observed ? "scale"
                                     : headroom12 >= 2 ? "scaleProjected"
                                     : headroom12 >= 1.25 ? "moderate"
@@ -4402,37 +4416,68 @@ export default function Customers() {
                                   const verdict = tier === "scale" ? "Room to scale"
                                     : tier === "scaleProjected" ? "Scale with caution"
                                     : tier === "moderate" ? "Moderate headroom"
-                                    : tier === "tight" ? "Hold - tight headroom"
-                                    : "Don't scale yet";
-                                  const actionSteps: { title: string; body: React.ReactNode }[] =
-                                    tier === "scale" ? [
-                                      { title: "Increase in steps", body: <>Raise Meta budget 20-30% at a time, not all at once. CAC rises as you scale.</> },
-                                      { title: "Know your buffer", body: <>CAC can rise ~{riseFullPct}% before 12-month break-even - but break-even means a year of zero profit, so treat roughly half (~{riseUsablePct}%) as the usable buffer.</> },
-                                      { title: "Judge by early signals", body: <>Score each budget step against the Early Signals table below, not this month&apos;s ROAS.</> },
-                                    ] : tier === "scaleProjected" ? [
-                                      { title: "Payback is projected", body: <>The numbers suggest room, but payback comes from your long-term repeat curve, not observed repeats yet.</> },
-                                      { title: "Increase gradually", body: <>Raise spend in small steps (10-20% at a time).</> },
-                                      { title: "Confirm before committing", body: <>Check the Early Signals below stay on track before each further increase.</> },
-                                    ] : tier === "moderate" ? [
-                                      { title: "Buffer is smaller than it looks", body: <>CAC can rise ~{riseFullPct}% before 12-month break-even - but break-even means a year of zero profit, so treat roughly half (~{riseUsablePct}%) as the usable buffer.</> },
-                                      { title: "Small steps only", body: <>Increase spend 10-20% at a time. CAC climbs fastest at the top end of scale.</> },
-                                      { title: "Stop when signals turn", body: <>Hold spend the moment the Early Signals below show new cohorts falling behind.</> },
-                                    ] : tier === "tight" ? [
-                                      { title: "Hold spend", body: <>Only ~{riseFullPct}% CAC rise erases 12-month break-even - there&apos;s no safe buffer to scale into.</> },
-                                      { title: "Improve unit economics first", body: <>Lift gross margin, AOV or repeat rate before adding budget.</> },
-                                      { title: "Then reassess", body: <>Revisit this panel once margin or repeat behaviour improves.</> },
-                                    ] : [
-                                      { title: "Customers don't repay", body: <>At {marginLbl}% margin, customers don&apos;t cover their CAC within 12 months.</> },
-                                      { title: "Fix the economics", body: <>Improve margin, AOV or repeat rate - or lower CAC with better targeting/creative.</> },
-                                      { title: "Then reassess", body: <>Return here once break-even CAC exceeds today&apos;s CAC.</> },
-                                    ];
-                                  if (floatPerCust > 0 && monthlyNew >= 1 && (tier === "scale" || tier === "scaleProjected" || tier === "moderate")) {
-                                    actionSteps.push({
-                                      title: "Budget for the float",
-                                      body: <>At ~{Math.round(monthlyNew).toLocaleString()} new Meta customers/month, roughly <strong>{cs}{Math.round(monthlyFloat).toLocaleString()}/month</strong> sits in customers who haven&apos;t paid back yet. Raise spend and this cash-in-flight grows <em>before</em> profit does.</>,
-                                    });
+                                    : tier === "tight" ? "Tight headroom"
+                                    : "No headroom";
+                                  // ── Prioritised actions across ALL levers -
+                                  // ad spend is only one of them. Each
+                                  // candidate is scored by how pressing it is
+                                  // for THIS merchant's numbers; the weakest
+                                  // area floats to the top.
+                                  const ltv12Full = marginFrac > 0 ? breakevenCac12 / marginFrac : 0;
+                                  const anchorArr = coreAnchorCusts as any[];
+                                  const repeatRate = anchorArr.length >= 20
+                                    ? anchorArr.filter((c) => (c.orders || 0) >= 2).length / anchorArr.length
+                                    : null;
+                                  type Rec = { area: string; title: string; body: React.ReactNode; score: number };
+                                  const recs: Rec[] = [];
+                                  // Meta spend - always present, but its
+                                  // priority depends on the headroom tier.
+                                  if (tier === "scale") {
+                                    recs.push({ area: "Meta spend", title: "Scale in steps", score: 90,
+                                      body: <>Raise budget 20-30% at a time. CAC can rise ~{riseFullPct}% before 12-month break-even - treat ~{riseUsablePct}% as the usable buffer. Judge each step by the Early Signals below, not this month&apos;s ROAS.</> });
+                                  } else if (tier === "scaleProjected") {
+                                    recs.push({ area: "Meta spend", title: "Scale with caution", score: 85,
+                                      body: <>The numbers suggest room, but payback is projected rather than observed. Increase 10-20% at a time and confirm the Early Signals hold before each further step.</> });
+                                  } else if (tier === "moderate") {
+                                    recs.push({ area: "Meta spend", title: "Small steps only", score: 60,
+                                      body: <>CAC can rise ~{riseFullPct}% before break-even disappears, and it climbs fastest at the top of scale - treat ~{riseUsablePct}% as usable. Move 10-20% at a time and stop when the Early Signals turn.</> });
+                                  } else if (tier === "tight") {
+                                    recs.push({ area: "Meta spend", title: "Hold spend", score: 35,
+                                      body: <>Only ~{riseFullPct}% CAC rise erases 12-month break-even - no safe buffer. Changing ad spend is not the priority right now; the levers above will move the needle more.</> });
+                                  } else {
+                                    recs.push({ area: "Meta spend", title: "Hold or reduce spend", score: 32,
+                                      body: <>At {marginLbl}% margin, customers don&apos;t repay their CAC within 12 months - more spend deepens the loss until the economics improve.</> });
                                   }
-                                  const stepCard = (n: number, label: string, value: React.ReactNode, sub: React.ReactNode, small?: React.ReactNode) => (
+                                  // Gross margin - the biggest lever when low.
+                                  if (marginLbl > 0 && marginLbl < 55 && ltv12Full > 0) {
+                                    recs.push({ area: "Margin", title: "Rebuild gross margin", score: (marginLbl < 45 ? 82 : 62) + (headroom12 < 1.25 ? 10 : 0),
+                                      body: <>At {marginLbl}%, margin may be your biggest lever: every 5 points adds ~<strong>{cs}{Math.round(ltv12Full * 0.05).toLocaleString()}</strong> to your break-even CAC. Review product cost, shipping and discounting before touching ad budget.</> });
+                                  }
+                                  // Repeat rate - the whole LTV engine.
+                                  if (repeatRate != null && repeatRate < 0.3) {
+                                    recs.push({ area: "Repeat rate", title: "Get the second order", score: repeatRate < 0.2 ? 78 : 58,
+                                      body: <>Only <strong>{Math.round(repeatRate * 100)}%</strong> of your long-term Meta customers ever order again. Post-purchase email/SMS flows and a second-order offer raise LTV - and break-even CAC - at zero acquisition cost.</> });
+                                  }
+                                  // First-order AOV - closes the day-one gap.
+                                  if (floatPerCust > 0) {
+                                    recs.push({ area: "First-order value", title: "Close the day-one gap", score: floatPerCust > cac * 0.5 ? 66 : 46,
+                                      body: <>The first order returns {cs}{Math.round(firstOrderGross).toLocaleString()} of a {cs}{Math.round(cac).toLocaleString()} CAC, leaving {cs}{Math.round(floatPerCust).toLocaleString()} exposed{paybackDays != null ? <> until day {paybackDays}</> : null}. Bundles and free-shipping thresholds shrink that gap on day one.</> });
+                                  }
+                                  // CAC itself - cheaper acquisition beats
+                                  // more budget when headroom is thin.
+                                  if (headroom12 > 0 && headroom12 < 1.5) {
+                                    recs.push({ area: "CAC", title: "Lower CAC itself", score: headroom12 < 1.25 ? 80 : 55,
+                                      body: <>Before budget moves, work CAC down: refresh fatigued creative, tighten targeting, cut the worst ad sets. A 10% CAC drop alone lifts headroom from {headroom12.toFixed(1)}× to {(breakevenCac12 / (cac * 0.9)).toFixed(1)}×.</> });
+                                  }
+                                  // Cash float - only relevant if scaling is
+                                  // actually on the table.
+                                  if (floatPerCust > 0 && monthlyNew >= 1 && (tier === "scale" || tier === "scaleProjected" || tier === "moderate")) {
+                                    recs.push({ area: "Cash flow", title: "Budget for the float", score: 44,
+                                      body: <>At ~{Math.round(monthlyNew).toLocaleString()} new Meta customers/month, roughly <strong>{cs}{Math.round(monthlyFloat).toLocaleString()}/month</strong> sits in customers who haven&apos;t paid back yet. Raise spend and this cash-in-flight grows <em>before</em> profit does.</> });
+                                  }
+                                  recs.sort((a, b) => b.score - a.score);
+                                  const topRecs = recs.slice(0, 4);
+                                  const stepCard = (n: number, label: string, value: React.ReactNode, sub: React.ReactNode, small?: React.ReactNode, footer?: React.ReactNode) => (
                                     <div style={{ background: "#FFFFFF", border: "1px solid #E5E7EB", borderRadius: 12, padding: "20px 24px" }}>
                                       <div style={{ fontSize: 11, fontWeight: 700, color: "#6366F1", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6 }}>
                                         Step {n} · {label}
@@ -4440,6 +4485,7 @@ export default function Customers() {
                                       <div style={{ fontSize: 38, fontWeight: 800, color: "#1F2937", lineHeight: 1.05 }}>{value}</div>
                                       <div style={{ fontSize: 12, color: "#4B5563", marginTop: 6 }}>{sub}</div>
                                       {small != null && <div style={{ fontSize: 11, color: "#9CA3AF", marginTop: 2 }}>{small}</div>}
+                                      {footer != null && <div style={{ marginTop: 10 }}>{footer}</div>}
                                     </div>
                                   );
                                   return (
@@ -4461,24 +4507,31 @@ export default function Customers() {
                                           <>when cumulative profit crosses CAC</>)}
                                         {stepCard(4, "They generate",
                                           <>{cs}{Math.round(breakevenCac12).toLocaleString()}</>,
-                                          <>total gross profit per customer by month 12</>,
-                                          <>= the most you could pay to acquire and still break even{breakevenCac6 > 0 ? <> ({cs}{Math.round(breakevenCac6).toLocaleString()} by month 6)</> : null}</>)}
+                                          <>total gross profit per customer by month 12{breakevenCac6 > 0 ? <> ({cs}{Math.round(breakevenCac6).toLocaleString()} by month 6)</> : null}</>,
+                                          <>which makes it your break-even CAC: pay more than this per customer and 12 months of profit won&apos;t cover it</>)}
                                         {stepCard(5, "Headroom",
                                           <span style={{ color: accent }}>{headroom12 > 0 ? `${headroom12.toFixed(1)}×` : "-"}</span>,
                                           <>CAC could rise ~{riseFullPct}% before 12-month break-even</>,
-                                          headroom6 > 0 ? <>6-month view: {headroom6.toFixed(1)}×</> : null)}
+                                          headroom6 > 0 ? <>6-month view: {headroom6.toFixed(1)}×</> : null,
+                                          <span style={{ display: "inline-block", fontSize: 11, fontWeight: 700, color: "#FFFFFF", background: accent, borderRadius: 999, padding: "3px 10px", textTransform: "uppercase", letterSpacing: 0.5 }}>{verdict}</span>)}
                                       </div>
-                                      {/* SUGGESTED ACTION - full section, verdict + numbered steps */}
-                                      <div style={{ marginTop: 20, display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
-                                        <div style={{ fontSize: 15, fontWeight: 800, color: "#1F2937" }}>Suggested action</div>
-                                        <div style={{ fontSize: 11, fontWeight: 700, color: "#FFFFFF", background: accent, borderRadius: 999, padding: "3px 10px", textTransform: "uppercase", letterSpacing: 0.5 }}>{verdict}</div>
+                                      {/* SUGGESTED ACTIONS - prioritised
+                                          across ALL levers, not just spend */}
+                                      <div style={{ marginTop: 20, marginBottom: 10 }}>
+                                        <div style={{ fontSize: 15, fontWeight: 800, color: "#1F2937" }}>Suggested actions</div>
+                                        <div style={{ fontSize: 12, color: "#6B7280", marginTop: 2 }}>
+                                          Ranked by what&apos;s most pressing in your numbers - changing ad spend isn&apos;t always the top lever.
+                                        </div>
                                       </div>
                                       <div style={{ display: "grid", gridTemplateColumns: `repeat(auto-fit, minmax(200px, 1fr))`, gap: 14 }}>
-                                        {actionSteps.map((s, i) => (
+                                        {topRecs.map((s, i) => (
                                           <div key={i} style={{ background: "#FFFFFF", border: "1px solid #E5E7EB", borderRadius: 12, padding: "20px 24px" }}>
-                                            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                                            <div style={{ display: "flex", alignItems: "flex-start", gap: 10, marginBottom: 8 }}>
                                               <span style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 24, height: 24, borderRadius: "50%", background: accent, color: "#FFFFFF", fontSize: 12, fontWeight: 800, flexShrink: 0 }}>{i + 1}</span>
-                                              <span style={{ fontSize: 13, fontWeight: 700, color: "#1F2937" }}>{s.title}</span>
+                                              <span>
+                                                <span style={{ display: "block", fontSize: 10, fontWeight: 700, color: "#9CA3AF", textTransform: "uppercase", letterSpacing: 0.5 }}>{s.area}</span>
+                                                <span style={{ fontSize: 13, fontWeight: 700, color: "#1F2937" }}>{s.title}</span>
+                                              </span>
                                             </div>
                                             <div style={{ fontSize: 12, color: "#4B5563", lineHeight: 1.55 }}>{s.body}</div>
                                           </div>
@@ -4524,7 +4577,7 @@ export default function Customers() {
                                       </div>
                                       {!spendRising && (
                                         <div style={{ marginBottom: 12, padding: "10px 14px", background: "#F9FAFB", border: "1px solid #E5E7EB", borderRadius: 8, fontSize: 12.5, color: "#4B5563", lineHeight: 1.5 }}>
-                                          <strong>Spend is steady</strong>{latest && latest.spend > 0 && baseSpendAvg > 0 ? <> - last month {cs}{Math.round(latest.spend).toLocaleString()} vs a {cs}{Math.round(baseSpendAvg).toLocaleString()}/month baseline</> : null}. These signals matter most after a budget change, so they&apos;re shown greyed for reference. They&apos;ll light up automatically when monthly spend moves ~10% or more above your recent baseline.
+                                          <strong>Spend is steady</strong>{latest && latest.spend > 0 && prevMonthSpend > 0 ? <> - last month {cs}{Math.round(latest.spend).toLocaleString()} vs {cs}{Math.round(prevMonthSpend).toLocaleString()} the month before</> : null}. These signals matter most after a budget change, so they&apos;re shown greyed for reference. They&apos;ll light up automatically when a month&apos;s spend moves ~10% or more above the month before it.
                                         </div>
                                       )}
                                       <div style={{ overflowX: "auto", opacity: spendRising ? 1 : 0.45, transition: "opacity 0.2s" }}>
@@ -4532,7 +4585,7 @@ export default function Customers() {
                                           <thead>
                                             <tr style={{ color: "#6B7280", textAlign: "left" }}>
                                               <th style={{ padding: "6px 10px", fontWeight: 600 }}>Cohort</th>
-                                              <th style={{ padding: "6px 10px", fontWeight: 600 }}>Spend (vs 6-mo baseline)</th>
+                                              <th style={{ padding: "6px 10px", fontWeight: 600 }}>Spend (vs prior month)</th>
                                               <th style={{ padding: "6px 10px", fontWeight: 600 }}>New customers</th>
                                               <th style={{ padding: "6px 10px", fontWeight: 600 }}>CAC (vs 6-mo baseline)</th>
                                               <th style={{ padding: "6px 10px", fontWeight: 600 }}>First order (vs long-term)</th>
