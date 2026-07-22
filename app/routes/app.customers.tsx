@@ -1633,7 +1633,7 @@ function JourneyFlow({ firstAOV, gapDays, secondAOV, thirdAOV, gap2to3Days, cust
         background: hasData ? gradient : "#D1D5DB",
         borderRadius: "13px", padding: "18px clamp(10px, 2vw, 28px)", color: "#fff", textAlign: "center",
         width: "100%", minWidth: 0, boxShadow: hasData ? shadow : "none",
-        containerType: "inline-size",
+        containerType: "inline-size", flex: "1 1 auto",
         display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
       }}>
         <div style={{ fontSize: "11px", fontWeight: 500, opacity: 0.8, textTransform: "uppercase", letterSpacing: "0.5px", whiteSpace: "nowrap" }}>{label}</div>
@@ -1657,7 +1657,7 @@ function JourneyFlow({ firstAOV, gapDays, secondAOV, thirdAOV, gap2to3Days, cust
   );
 
   const arrow = (days: number | null, rate: number, rateLabel: string, gradId: string, colorFrom: string, colorTo: string) => (
-    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "0 4px", minWidth: 0, flex: "1 1 0" }}>
+    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "0 4px", minWidth: 0, flex: "1 1 0", alignSelf: "center" }}>
       <div style={{ display: "flex", flexDirection: "column", alignItems: "center", width: "100%" }}>
         <svg width="100%" height="32" viewBox="0 0 110 32" preserveAspectRatio="xMidYMid meet">
           <defs>
@@ -1690,7 +1690,7 @@ function JourneyFlow({ firstAOV, gapDays, secondAOV, thirdAOV, gap2to3Days, cust
     <div style={{ overflowX: "auto", width: "100%" }}>
       <div style={{
         display: "flex",
-        alignItems: "center",
+        alignItems: "stretch",
         justifyContent: "center",
         gap: "0",
         padding: "22px 8px",
