@@ -1633,9 +1633,11 @@ function JourneyFlow({ firstAOV, gapDays, secondAOV, thirdAOV, gap2to3Days, cust
         background: hasData ? gradient : "#D1D5DB",
         borderRadius: "13px", padding: "18px clamp(10px, 2vw, 28px)", color: "#fff", textAlign: "center",
         width: "100%", minWidth: 0, boxShadow: hasData ? shadow : "none",
+        containerType: "inline-size",
+        display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
       }}>
-        <div style={{ fontSize: "11px", fontWeight: 500, opacity: 0.8, textTransform: "uppercase", letterSpacing: "0.5px" }}>{label}</div>
-        <div style={{ fontSize: "clamp(20px, 3.4vw, 28px)", fontWeight: 800, marginTop: "5px" }}>
+        <div style={{ fontSize: "11px", fontWeight: 500, opacity: 0.8, textTransform: "uppercase", letterSpacing: "0.5px", whiteSpace: "nowrap" }}>{label}</div>
+        <div style={{ fontSize: "clamp(15px, 17cqw, 28px)", fontWeight: 800, marginTop: "5px", whiteSpace: "nowrap" }}>
           {hasData ? `${cs}${Math.round(aov)}` : "-"}
         </div>
         <div style={{ fontSize: "11px", opacity: 0.7, marginTop: "2px" }}>
@@ -3130,10 +3132,11 @@ export default function Customers() {
               {/* LONG-TERM REPEAT RATE - the mature benchmark. The flow
                   above is "repeats SO FAR" for this period's new customers
                   (young cohorts drag it down); this is the settled rate for
-                  customers with a full year of history. From the rollup's
-                  365-day maturity window (ltvBenchmark), both scopes. */}
+                  the rolling 12-24 month cohort. From the rollup's recent
+                  overlay (ltvRecent, window 365 = acquired 365-730 days
+                  ago), both scopes. */}
               {(() => {
-                const wins = (journeyScope === "meta" ? ltvBenchmark?.meta?.windows : ltvBenchmark?.all?.windows) || [];
+                const wins = (journeyScope === "meta" ? ltvRecent?.meta : ltvRecent?.all) || [];
                 const w365 = (wins as any[]).find((w) => w.window === 365);
                 if (w365 && w365.count >= 20) {
                   return (
@@ -3141,7 +3144,7 @@ export default function Customers() {
                       <div style={{ fontSize: 11, fontWeight: 700, color: "#6366F1", textTransform: "uppercase", letterSpacing: 0.5 }}>Long-term repeat rate</div>
                       <div style={{ fontSize: 22, fontWeight: 800, color: "#1F2937", lineHeight: 1 }}>{w365.repeatRate}%</div>
                       <div style={{ fontSize: 12, color: "#4B5563", lineHeight: 1.5, flex: "1 1 260px" }}>
-                        of {journeyScope === "meta" ? "Meta" : "all"} customers acquired 12+ months ago placed a 2nd order within their first year ({w365.count.toLocaleString()} customers).
+                        of {journeyScope === "meta" ? "Meta" : "all"} customers acquired 12-24 months ago placed a 2nd order within their first year ({w365.count.toLocaleString()} customers).
                         The flow above counts repeats <em>so far</em> for this period&apos;s new customers - recent joiners haven&apos;t had time yet, so this settled rate is the benchmark to aim for.
                       </div>
                     </div>
@@ -3151,7 +3154,7 @@ export default function Customers() {
                   <div style={{ padding: "12px 16px", background: "#F9FAFB", border: "1px solid #E5E7EB", borderRadius: 10, opacity: 0.6 }}>
                     <div style={{ fontSize: 11, fontWeight: 700, color: "#6B7280", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4 }}>Long-term repeat rate</div>
                     <div style={{ fontSize: 12, color: "#6B7280", lineHeight: 1.5 }}>
-                      Not enough {journeyScope === "meta" ? "Meta" : ""} customers with 12+ months of history yet. This benchmark lights up as your data matures{journeyScope === "meta" ? " - the All Customers view usually gets there first, since Meta history starts at install" : ""}.
+                      Not enough {journeyScope === "meta" ? "Meta" : ""} customers acquired 12-24 months ago yet. This benchmark lights up as your data matures{journeyScope === "meta" ? " - the All Customers view usually gets there first, since Meta history starts at install" : ""}.
                     </div>
                   </div>
                 );
@@ -4422,56 +4425,43 @@ export default function Customers() {
                                   }
                                   recs.sort((a, b) => b.score - a.score);
                                   const topRecs = recs.slice(0, 4);
-                                  const stepCard = (n: number, label: string, gradient: string, shadow: string, value: React.ReactNode, sub: React.ReactNode, small?: React.ReactNode, footer?: React.ReactNode) => (
-                                    <div style={{ background: gradient, borderRadius: 12, padding: "20px 24px", boxShadow: `0 4px 12px ${shadow}` }}>
-                                      <div style={{ fontSize: 11, fontWeight: 700, color: "rgba(255,255,255,0.75)", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6 }}>
+                                  const stepCard = (n: number, label: string, value: React.ReactNode, sub: React.ReactNode, small?: React.ReactNode, footer?: React.ReactNode) => (
+                                    <div style={{ background: "#FFFFFF", border: "1px solid #E5E7EB", borderRadius: 12, padding: "20px 24px" }}>
+                                      <div style={{ fontSize: 11, fontWeight: 700, color: "#6366F1", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6 }}>
                                         Step {n} · {label}
                                       </div>
-                                      <div style={{ fontSize: 38, fontWeight: 800, color: "#FFFFFF", lineHeight: 1.05 }}>{value}</div>
-                                      <div style={{ fontSize: 12, color: "rgba(255,255,255,0.9)", marginTop: 6 }}>{sub}</div>
-                                      {small != null && <div style={{ fontSize: 11, color: "rgba(255,255,255,0.65)", marginTop: 2 }}>{small}</div>}
+                                      <div style={{ fontSize: 38, fontWeight: 800, color: "#1F2937", lineHeight: 1.05 }}>{value}</div>
+                                      <div style={{ fontSize: 12, color: "#4B5563", marginTop: 6 }}>{sub}</div>
+                                      {small != null && <div style={{ fontSize: 11, color: "#9CA3AF", marginTop: 2 }}>{small}</div>}
                                       {footer != null && <div style={{ marginTop: 10 }}>{footer}</div>}
                                     </div>
                                   );
-                                  const tierGradient: Record<string, [string, string]> = {
-                                    scale: ["linear-gradient(135deg, #059669 0%, #047857 100%)", "rgba(5,150,105,0.3)"],
-                                    scaleProjected: ["linear-gradient(135deg, #7C3AED 0%, #6D28D9 100%)", "rgba(124,58,237,0.3)"],
-                                    moderate: ["linear-gradient(135deg, #1F2937 0%, #111827 100%)", "rgba(31,41,55,0.3)"],
-                                    tight: ["linear-gradient(135deg, #D97706 0%, #B45309 100%)", "rgba(217,119,6,0.3)"],
-                                    fix: ["linear-gradient(135deg, #DC2626 0%, #B91C1C 100%)", "rgba(220,38,38,0.3)"],
-                                  };
-                                  const [tierGrad, tierShadow] = tierGradient[tier] || tierGradient.moderate;
                                   return (
                                     <div style={{ marginTop: 16 }}>
                                       <div style={{ fontSize: 15, fontWeight: 800, color: "#1F2937", marginBottom: 10 }}>What this means</div>
                                       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 14 }}>
                                         {stepCard(1, "You pay",
-                                          "linear-gradient(135deg, #7C3AED 0%, #6D28D9 100%)", "rgba(124,58,237,0.3)",
                                           <>{cs}{Math.round(cac).toLocaleString()}</>,
                                           <>to acquire one new Meta customer</>,
                                           <>Your blended CAC over this window</>)}
                                         {stepCard(2, "First order gross profit",
-                                          "linear-gradient(135deg, #0891B2 0%, #0E7490 100%)", "rgba(8,145,178,0.3)",
                                           <>{cs}{Math.round(firstOrderGross).toLocaleString()}</>,
                                           <>based on {marginLbl}% margin</>,
                                           floatPerCust > 0
                                             ? <>Leaves {cs}{Math.round(floatPerCust).toLocaleString()} still to recover</>
                                             : <>Covers the CAC on day one</>)}
                                         {stepCard(3, "Paid back",
-                                          "linear-gradient(135deg, #2E7D32 0%, #1B5E20 100%)", "rgba(46,125,50,0.3)",
                                           paybackDays != null ? <>Day {paybackDays}</> : (floatPerCust <= 0 ? <>Day 0</> : <>-</>),
                                           <>when cumulative profit crosses CAC</>)}
                                         {stepCard(4, "They generate",
-                                          "linear-gradient(135deg, #4F46E5 0%, #4338CA 100%)", "rgba(79,70,229,0.3)",
                                           <>{cs}{Math.round(breakevenCac12).toLocaleString()}</>,
                                           <>total gross profit per customer by month 12{breakevenCac6 > 0 ? <> ({cs}{Math.round(breakevenCac6).toLocaleString()} by month 6)</> : null}</>,
                                           <>which makes it your break-even CAC: pay more than this per customer and 12 months of profit won&apos;t cover it</>)}
                                         {stepCard(5, "Headroom",
-                                          tierGrad, tierShadow,
-                                          <>{headroom12 > 0 ? `${headroom12.toFixed(1)}×` : "-"}</>,
+                                          <span style={{ color: accent }}>{headroom12 > 0 ? `${headroom12.toFixed(1)}×` : "-"}</span>,
                                           <>CAC could rise ~{riseFullPct}% before 12-month break-even</>,
                                           headroom6 > 0 ? <>6-month view: {headroom6.toFixed(1)}×</> : null,
-                                          <span style={{ display: "inline-block", fontSize: 11, fontWeight: 700, color: accent, background: "#FFFFFF", borderRadius: 999, padding: "3px 10px", textTransform: "uppercase", letterSpacing: 0.5 }}>{verdict}</span>)}
+                                          <span style={{ display: "inline-block", fontSize: 11, fontWeight: 700, color: "#FFFFFF", background: accent, borderRadius: 999, padding: "3px 10px", textTransform: "uppercase", letterSpacing: 0.5 }}>{verdict}</span>)}
                                       </div>
                                       {/* SUGGESTED ACTIONS - prioritised
                                           across ALL levers, not just spend */}
