@@ -4426,7 +4426,7 @@ export default function Customers() {
                                   const topRecs = recs.slice(0, 4);
                                   const stepCard = (n: number, label: string, value: React.ReactNode, sub: React.ReactNode, small?: React.ReactNode, footer?: React.ReactNode) => (
                                     <div style={{ background: "#FFFFFF", border: "1px solid #E5E7EB", borderRadius: 12, padding: "20px 24px" }}>
-                                      <div style={{ fontSize: 11, fontWeight: 700, color: "#6366F1", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6 }}>
+                                      <div style={{ fontSize: 11, fontWeight: 700, color: "#6366F1", textTransform: "uppercase", letterSpacing: 0.5, lineHeight: 1.45, minHeight: 32, marginBottom: 6 }}>
                                         Step {n} · {label}
                                       </div>
                                       <div style={{ fontSize: 38, fontWeight: 800, color: "#1F2937", lineHeight: 1.05 }}>{value}</div>
