@@ -3043,9 +3043,9 @@ function AdExplorerTable({ rows, cs, entityType, adDemographicsByAd, onEntityCli
                 onChange={(e) => setSearchQuery(e.target.value)}
                 placeholder={`Search ${entityNoun}...`}
                 style={{
-                  fontSize: "12px", padding: "6px 12px", borderRadius: "6px",
-                  border: "1px solid #E5E7EB", background: "#fff", color: "#374151",
-                  outline: "none", minWidth: "200px", fontWeight: 500,
+                  fontSize: "13px", padding: "9px 16px", borderRadius: "8px",
+                  border: "2px solid var(--l-accent)", background: "#fff", color: "#374151",
+                  outline: "none", minWidth: "320px", fontWeight: 500,
                 }}
               />
             </>
@@ -3105,9 +3105,9 @@ function AdExplorerTable({ rows, cs, entityType, adDemographicsByAd, onEntityCli
               onChange={(e) => setSearchQuery(e.target.value)}
               placeholder={`Search ${entityNoun}...`}
               style={{
-                fontSize: "12px", padding: "6px 12px", borderRadius: "6px",
-                border: "1px solid #E5E7EB", background: "#fff", color: "#374151",
-                outline: "none", minWidth: "200px", fontWeight: 500,
+                fontSize: "13px", padding: "9px 16px", borderRadius: "8px",
+                border: "2px solid var(--l-accent)", background: "#fff", color: "#374151",
+                outline: "none", minWidth: "320px", fontWeight: 500,
               }}
             />
           </div>

@@ -1451,6 +1451,8 @@ function ProductDemographicsExplorer({ records, countries, gems, nonMetaRecords,
   const [country, setCountry] = useState<string>("All");
   const [sortBy, setSortBy] = useState<"units" | "revenue">("units");
   const [segment, setSegment] = useState<"acquired" | "retargeted" | "all" | "nonMeta">("acquired");
+  const [search, setSearch] = useState("");
+  const [showAll, setShowAll] = useState(false);
 
   // Segment-scoped base pool - filter all other dimensions against this.
   // Non-Meta is sourced from a separate dataset (organic customers - name-
@@ -1508,7 +1510,7 @@ function ProductDemographicsExplorer({ records, countries, gems, nonMetaRecords,
     });
   }, [segmentRecords, gender, ages, country, segment]);
 
-  const topProducts = useMemo(() => {
+  const rankedProducts = useMemo(() => {
     const agg = new Map<string, { units: number; revenue: number }>();
     for (const r of filtered) {
       const e = agg.get(r.product) || { units: 0, revenue: 0 };
@@ -1518,9 +1520,15 @@ function ProductDemographicsExplorer({ records, countries, gems, nonMetaRecords,
     }
     return [...agg.entries()]
       .map(([product, v]) => ({ product, ...v }))
-      .sort((a, b) => sortBy === "units" ? b.units - a.units : b.revenue - a.revenue)
-      .slice(0, 10);
+      .sort((a, b) => sortBy === "units" ? b.units - a.units : b.revenue - a.revenue);
   }, [filtered, sortBy]);
+
+  const searchActive = search.trim().length > 0;
+  const topProducts = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    const pool = q ? rankedProducts.filter((p) => p.product.toLowerCase().includes(q)) : rankedProducts;
+    return (searchActive || showAll) ? pool : pool.slice(0, 10);
+  }, [rankedProducts, search, searchActive, showAll]);
 
   const insight = useMemo(() => {
     if (filtered.length === 0) return "";
@@ -1580,12 +1588,24 @@ function ProductDemographicsExplorer({ records, countries, gems, nonMetaRecords,
 
         {/* Filter bar */}
         <div style={{ display: "flex", flexDirection: "column", gap: "10px", marginTop: 12 }}>
-          {/* Gender */}
+          {/* Gender + search */}
           <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
             <span style={{ fontSize: "12px", fontWeight: 600, color: "#6B7280", width: "70px", textTransform: "uppercase", letterSpacing: "0.5px" }}>Gender</span>
             {(["All", "Female", "Male"] as const).map((g) => (
               <button key={g} onClick={() => setGender(g)} className={`l-pill${gender === g ? " l-pill--active" : ""}`}>{g}</button>
             ))}
+            <span style={{ flex: 1 }} />
+            <input
+              type="search"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search products..."
+              style={{
+                fontSize: "13px", padding: "9px 16px", borderRadius: "8px",
+                border: "2px solid var(--l-accent)", background: "#fff", color: "#374151",
+                outline: "none", minWidth: "320px", fontWeight: 500,
+              }}
+            />
           </div>
 
           {/* Age - hidden for Non Meta scope (no age signal without Meta breakdown). */}
@@ -1646,7 +1666,7 @@ function ProductDemographicsExplorer({ records, countries, gems, nonMetaRecords,
         {/* Bar chart */}
         {topProducts.length === 0 ? (
           <div style={{ color: "#9CA3AF", fontSize: "13px", padding: "24px 0", textAlign: "center" }}>
-            No purchases match these filters.
+            {searchActive ? "No products match this search." : "No purchases match these filters."}
           </div>
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
@@ -1686,6 +1706,20 @@ function ProductDemographicsExplorer({ records, countries, gems, nonMetaRecords,
                 </div>
               );
             })}
+          </div>
+        )}
+
+        {/* View all / top 10 toggle - hidden while a search is active
+            (search already shows every match). */}
+        {!searchActive && rankedProducts.length > 10 && (
+          <div style={{ display: "flex", justifyContent: "center", marginTop: 4 }}>
+            <button
+              onClick={() => setShowAll((v) => !v)}
+              className="l-pill"
+              style={{ padding: "8px 20px", fontSize: "13px", fontWeight: 600 }}
+            >
+              {showAll ? "Show top 10" : `View all ${rankedProducts.length.toLocaleString()} products`}
+            </button>
           </div>
         )}
 
