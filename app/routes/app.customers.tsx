@@ -4145,7 +4145,7 @@ export default function Customers() {
                                       })}
                                     </div>
                                     <div style={{ fontSize: 11.5, color: "#6B7280", lineHeight: 1.5, marginTop: 8 }}>
-                                      Filters every figure on this page to women or men (identified from first names)
+                                      Filters every figure on this page to male or female
                                     </div>
                                   </div>
                                   <div style={{ textAlign: "center" }}>
