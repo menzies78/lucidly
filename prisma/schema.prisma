@@ -56,6 +56,9 @@ model Shop {
   utmDominantPattern    String   @default("")
   utmAdsConsistent      Int      @default(0)
   utmAdsInconsistent    Int      @default(0)
+  // Merchant-set gross margin % (0-100) driving profit/payback maths on the
+  // LTV Explorer. Null = never set; UI falls back to 60.
+  defaultMarginPct      Int?
   onboardingCompleted   Boolean  @default(false)
   webhooksRegisteredAt  DateTime?
   webhooksFirstFiredAt  DateTime?
