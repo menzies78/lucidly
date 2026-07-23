@@ -1588,40 +1588,14 @@ function ProductDemographicsExplorer({ records, countries, gems, nonMetaRecords,
 
         {/* Filter bar */}
         <div style={{ display: "flex", flexDirection: "column", gap: "10px", marginTop: 12 }}>
-          {/* Gender + search */}
+          {/* Gender + Country (search moves here when the Age row is hidden) */}
           <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
             <span style={{ fontSize: "12px", fontWeight: 600, color: "#6B7280", width: "70px", textTransform: "uppercase", letterSpacing: "0.5px" }}>Gender</span>
             {(["All", "Female", "Male"] as const).map((g) => (
               <button key={g} onClick={() => setGender(g)} className={`l-pill${gender === g ? " l-pill--active" : ""}`}>{g}</button>
             ))}
-            <span style={{ flex: 1 }} />
-            <input
-              type="search"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search products..."
-              style={{
-                fontSize: "13px", padding: "9px 16px", borderRadius: "8px",
-                border: "2px solid var(--l-accent)", background: "#fff", color: "#374151",
-                outline: "none", minWidth: "320px", fontWeight: 500,
-              }}
-            />
-          </div>
-
-          {/* Age - hidden for Non Meta scope (no age signal without Meta breakdown). */}
-          {segment !== "nonMeta" && (
-          <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
-            <span style={{ fontSize: "12px", fontWeight: 600, color: "#6B7280", width: "70px", textTransform: "uppercase", letterSpacing: "0.5px" }}>Age</span>
-            <button onClick={() => setAges([])} className={`l-pill${ages.length === 0 ? " l-pill--active" : ""}`}>All</button>
-            {AGE_BRACKETS.filter((b) => availableAges.has(b) || ages.includes(b)).map((b) => (
-              <button key={b} onClick={() => toggleAge(b)} className={`l-pill${ages.includes(b) ? " l-pill--active" : ""}`}>{b}</button>
-            ))}
-          </div>
-          )}
-
-          {/* Country */}
-          <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
-            <span style={{ fontSize: "12px", fontWeight: 600, color: "#6B7280", width: "70px", textTransform: "uppercase", letterSpacing: "0.5px" }}>Country</span>
+            <span style={{ width: "24px", flexShrink: 0 }} />
+            <span style={{ fontSize: "12px", fontWeight: 600, color: "#6B7280", textTransform: "uppercase", letterSpacing: "0.5px" }}>Country</span>
             <select
               value={country}
               onChange={(e) => setCountry(e.target.value)}
@@ -1648,7 +1622,46 @@ function ProductDemographicsExplorer({ records, countries, gems, nonMetaRecords,
                 Clear all filters
               </button>
             )}
+            {segment === "nonMeta" && (
+              <>
+                <span style={{ flex: 1 }} />
+                <input
+                  type="search"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder="Search products..."
+                  style={{
+                    fontSize: "13px", padding: "9px 16px", borderRadius: "8px",
+                    border: "2px solid var(--l-accent)", background: "#fff", color: "#374151",
+                    outline: "none", minWidth: "320px", fontWeight: 500,
+                  }}
+                />
+              </>
+            )}
           </div>
+
+          {/* Age + search - age hidden for Non Meta scope (no age signal without Meta breakdown). */}
+          {segment !== "nonMeta" && (
+          <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+            <span style={{ fontSize: "12px", fontWeight: 600, color: "#6B7280", width: "70px", textTransform: "uppercase", letterSpacing: "0.5px" }}>Age</span>
+            <button onClick={() => setAges([])} className={`l-pill${ages.length === 0 ? " l-pill--active" : ""}`}>All</button>
+            {AGE_BRACKETS.filter((b) => availableAges.has(b) || ages.includes(b)).map((b) => (
+              <button key={b} onClick={() => toggleAge(b)} className={`l-pill${ages.includes(b) ? " l-pill--active" : ""}`}>{b}</button>
+            ))}
+            <span style={{ width: "24px", flexShrink: 0 }} />
+            <input
+              type="search"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search products..."
+              style={{
+                fontSize: "13px", padding: "9px 16px", borderRadius: "8px",
+                border: "2px solid var(--l-accent)", background: "#fff", color: "#374151",
+                outline: "none", minWidth: "320px", fontWeight: 500,
+              }}
+            />
+          </div>
+          )}
         </div>
 
         {/* Sort toggle */}
