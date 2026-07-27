@@ -852,10 +852,13 @@ export const loader = async ({ request }) => {
       );
       const allIds = custs.map(c => c.shopifyCustomerId);
 
+      // ALL channels loaded (web + POS). The FIRST order (acquisition) must be
+      // web — a POS first order disqualifies the customer from the journey
+      // entirely. 2nd/3rd orders count from any channel (store repeats are
+      // real repeats).
       const orders = await db.order.findMany({
         where: {
           shopDomain,
-          isOnlineStore: true,
           shopifyCustomerId: { in: allIds },
           customerOrderCountAtPurchase: { in: [1, 2, 3] },
           // Exclude £0 orders (free-gift / giveaway redemptions). They aren't
@@ -870,14 +873,22 @@ export const loader = async ({ request }) => {
           frozenTotalPrice: true,
           totalRefunded: true,
           createdAt: true,
+          isOnlineStore: true,
         },
       });
 
       type Slot = { val: number; date: Date };
       type Triple = { first?: Slot; second?: Slot; third?: Slot };
       const byCust = new Map<string, Triple>();
+      // Customers whose genuine first order was NOT web: acquisition is
+      // web-only, so they're excluded from the journey outright.
+      const posFirstIds = new Set<string>();
       for (const o of orders) {
         if (!o.shopifyCustomerId) continue;
+        if (o.customerOrderCountAtPurchase === 1 && !o.isOnlineStore) {
+          posFirstIds.add(o.shopifyCustomerId);
+          continue;
+        }
         let t = byCust.get(o.shopifyCustomerId);
         if (!t) { t = {}; byCust.set(o.shopifyCustomerId, t); }
         const val = Math.max(0, (o.frozenTotalPrice || 0) - (o.totalRefunded || 0));
@@ -886,6 +897,7 @@ export const loader = async ({ request }) => {
         else if (o.customerOrderCountAtPurchase === 2) t.second = slot;
         else if (o.customerOrderCountAtPurchase === 3) t.third = slot;
       }
+      for (const id of posFirstIds) byCust.delete(id);
 
       // AOV per cohort uses the MEAN, not the median: large orders are part of
       // the merchant's order DNA (e.g. high-ticket items) and must be counted

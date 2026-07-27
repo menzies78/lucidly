@@ -93,12 +93,17 @@ export async function rebuildCustomerSegments(shopDomain) {
   const discountedOrderIds = new Set(discountedRows.map((r) => r.shopifyOrderId));
 
   const [orders, attributions, customers] = await Promise.all([
+    // ALL channels loaded (web + POS). Acquisition / "first order" stays
+    // WEB ONLY throughout this function; POS orders only ever count as
+    // post-acquisition repeats (see custOrders assembly in the customer
+    // loop). This makes repeat rate / LTV span web + physical store while
+    // a store purchase can never be the acquisition order.
     db.order.findMany({
-      where: { shopDomain, isOnlineStore: true },
+      where: { shopDomain },
       orderBy: { createdAt: "asc" },
       select: {
         shopifyOrderId: true, shopifyCustomerId: true, createdAt: true,
-        frozenTotalPrice: true, totalRefunded: true,
+        frozenTotalPrice: true, totalRefunded: true, isOnlineStore: true,
         utmConfirmedMeta: true, lineItems: true, discountCodes: true,
         metaCampaignName: true, metaAdSetName: true, metaAdName: true,
         utmCampaign: true, utmTerm: true, utmContent: true,
@@ -149,12 +154,17 @@ export async function rebuildCustomerSegments(shopDomain) {
     }
   }
 
-  // Group orders by customer (already sorted by createdAt asc)
-  const ordersByCustomer = new Map();
+  // Group orders by customer (already sorted by createdAt asc).
+  // Split web vs POS: acquisition logic runs on web orders only; POS orders
+  // are merged back in later, but only those placed AFTER the first web order
+  // (post-acquisition repeats / LTV revenue).
+  const ordersByCustomer = new Map();      // web (isOnlineStore) only
+  const posOrdersByCustomer = new Map();   // POS / draft / other channels
   for (const o of orders) {
     if (!o.shopifyCustomerId) continue;
-    let arr = ordersByCustomer.get(o.shopifyCustomerId);
-    if (!arr) { arr = []; ordersByCustomer.set(o.shopifyCustomerId, arr); }
+    const map = o.isOnlineStore ? ordersByCustomer : posOrdersByCustomer;
+    let arr = map.get(o.shopifyCustomerId);
+    if (!arr) { arr = []; map.set(o.shopifyCustomerId, arr); }
     arr.push(o);
   }
 
@@ -312,7 +322,21 @@ export async function rebuildCustomerSegments(shopDomain) {
   for (const c of customers) {
     if (++_custLoopI % YIELD_EVERY === 0) await yieldEventLoop();
     const custId = c.shopifyCustomerId;
-    const custOrders = ordersByCustomer.get(custId) || [];
+    // Web orders anchor the customer: custOrders[0] (the acquisition / first
+    // order) is ALWAYS a web order. POS orders placed AFTER that first web
+    // order are merged in as repeats + LTV revenue. Pre-acquisition POS is
+    // ignored, and POS-only customers keep an empty custOrders (excluded).
+    const webOrders = ordersByCustomer.get(custId) || [];
+    let custOrders = webOrders;
+    const posOrders = posOrdersByCustomer.get(custId);
+    if (posOrders && webOrders.length > 0) {
+      const acqT0 = webOrders[0].createdAt.getTime();
+      const postAcqPos = posOrders.filter((o) => o.createdAt.getTime() > acqT0);
+      if (postAcqPos.length > 0) {
+        custOrders = [...webOrders, ...postAcqPos]
+          .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+      }
+    }
 
     // Determine segment
     let segment = "organic";
