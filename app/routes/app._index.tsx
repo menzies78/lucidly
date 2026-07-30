@@ -324,7 +324,7 @@ export const loader = async ({ request }) => {
   }
 
   // Check if any background task is currently running for this shop
-  const taskNames = ["syncOrders", "syncMeta", "syncMetaHistorical", "runAttribution", "dateRangeRematch", "fillGaps", "incrementalSync", "startOngoingSync", "calibratePixel", "inferGender", "backfillFirstNames", "forceRollups", "refreshAdThumbnails", "backupShop", "wipeShop", "restoreShop", "verifyBackup", "purgeData"];
+  const taskNames = ["syncOrders", "syncMeta", "syncMetaHistorical", "runAttribution", "dateRangeRematch", "fillGaps", "incrementalSync", "startOngoingSync", "calibratePixel", "inferGender", "backfillFirstNames", "forceRollups", "refreshAdThumbnails", "backfillAttributionWindows", "backupShop", "wipeShop", "restoreShop", "verifyBackup", "purgeData"];
   let activeTaskFromServer = null;
   for (const t of taskNames) {
     const p = getProgress(`${t}:${shopDomain}`);
@@ -649,6 +649,18 @@ export const action = async ({ request }) => {
       completeProgress(taskId, result);
     });
     return json({ started: true, task: "refreshAdThumbnails" });
+  }
+  // One-time 12-month attribution-window history pull (storage-only table,
+  // nothing reads it yet). Internal-only: burns real Meta API quota.
+  if (actionType === "backfillAttributionWindows") {
+    if (!isInternalShop(shopDomain)) return json({ success: false, error: "forbidden" });
+    runInBackground(async () => {
+      // Service owns progress on taskId (sets/completes/fails itself) -
+      // no completeProgress here (progress_map_overwrite gotcha).
+      const { backfillAttributionWindows } = await import("../services/metaAttributionWindowSync.server.js");
+      await backfillAttributionWindows(shopDomain, 12, taskId);
+    });
+    return json({ started: true, task: "backfillAttributionWindows" });
   }
   // ── Internal-only: full-shop backup, wipe, restore ──
   // Used to re-experience the new-merchant install flow on a real merchant
@@ -1817,6 +1829,15 @@ export default function Index() {
                     {activeTask === "refreshAdThumbnails" ? "Refreshing..." : "Refresh Ad Thumbnails"}
                   </Button>
                   <Text as="p" variant="bodySm" tone="subdued">Pulls Meta creative thumbnails for the Ad Explorer. Auto-runs nightly; use this to refresh now.</Text>
+                </BlockStack>
+              )}
+              {metaConnected && isInternal && (
+                <BlockStack gap="100">
+                  <Button onClick={() => startTask("backfillAttributionWindows")} disabled={isRunning}
+                    loading={activeTask === "backfillAttributionWindows"}>
+                    {activeTask === "backfillAttributionWindows" ? "Backfilling..." : "Backfill Attribution Windows (12mo)"}
+                  </Button>
+                  <Text as="p" variant="bodySm" tone="subdued">One-time pull of per-window Meta conversions (click / view / engage-through) for the last year. Storage only - rolling 35-day sync keeps it fresh afterwards.</Text>
                 </BlockStack>
               )}
               {/* Backup / Verify / Download / Restore / Wipe - reset a test

@@ -748,15 +748,28 @@ export async function syncMetaAll(shopDomain, daysBack = 7, progressKey = null) 
   const key = progressKey || `syncMeta:${shopDomain}`;
   const breakdownDays = Math.min(daysBack, HOURLY_LIMIT_DAYS);
 
-  setProgress(key, { status: "running", current: 0, total: 100, message: `Step 1/3 · Starting insights sync (${daysBack} days)...` });
+  setProgress(key, { status: "running", current: 0, total: 100, message: `Step 1/4 · Starting insights sync (${daysBack} days)...` });
   const insightResult = await syncMetaInsights(shopDomain, daysBack, key);
 
-  setProgress(key, { status: "running", current: 0, total: 100, message: `Step 2/3 · Starting breakdowns sync (${breakdownDays} days)...` });
+  setProgress(key, { status: "running", current: 0, total: 100, message: `Step 2/4 · Starting breakdowns sync (${breakdownDays} days)...` });
   const breakdownResult = await syncMetaBreakdowns(shopDomain, key, breakdownDays);
 
-  setProgress(key, { status: "running", message: `Step 3/3 · Syncing campaign entities...` });
+  setProgress(key, { status: "running", message: `Step 3/4 · Syncing campaign entities...` });
   const { syncMetaEntities } = await import("./metaEntitySync.server");
   await syncMetaEntities(shopDomain);
+
+  // Step 4: attribution windows (storage-only dataset, daily grain).
+  // Fixed 35-day lookback regardless of daysBack: 28d_click keeps accruing
+  // for 28 days, so 35 days covers full maturation; deep history comes from
+  // the one-time backfill button. Fault-isolated - a windows failure must
+  // never fail the core sync (nothing reads this table yet).
+  setProgress(key, { status: "running", message: `Step 4/4 · Syncing attribution windows...` });
+  try {
+    const { syncAttributionWindows } = await import("./metaAttributionWindowSync.server.js");
+    await syncAttributionWindows(shopDomain, { daysBack: 35, progressKey: key });
+  } catch (err) {
+    console.error(`[MetaSync] Attribution windows step failed (non-fatal): ${err?.message}`);
+  }
 
   completeProgress(key, {
     totalInsightRows: insightResult.totalRows,

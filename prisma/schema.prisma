@@ -415,9 +415,60 @@ model MetaEntity {
   // store the product_set_id so the explorer can render a "D" badge
   // instead of the generic initial-letter placeholder.
   productSetId       String?
+  // Ad set attribution setting: raw JSON from Meta attribution_spec field
+  // (ad sets only). e.g. [{"event_type":"CLICK_THROUGH","window_days":7},
+  // {"event_type":"VIEW_THROUGH","window_days":1}]. Written by
+  // metaAttributionWindowSync, refreshed on each windows sync.
+  attributionSpec    String?
 
   @@unique([shopDomain, entityType, entityId])
   @@index([shopDomain, entityType])
+}
+
+// Per-ad per-day purchase conversions decomposed by Meta attribution window.
+// Pulled via action_attribution_windows on the Insights API (daily level -
+// windows are not reliably available with hourly breakdowns). STORAGE ONLY
+// for now: no report reads from this table yet (2026-07-30).
+//
+// Semantics notes (see ~/Downloads/first-party-ad-attribution-blueprint-v2.md):
+// - purchasesDefault/valueDefault = the ad set's CONFIGURED attribution
+//   setting (Ads Manager parity - the "value" key in the API response).
+// - 1d_ev is Meta's key for engaged-view, redefined March 2026 as
+//   "engage-through" (social interactions + 5s+ video views). Pre-March-2026
+//   rows use the OLD semantics (10s engaged video view); click windows
+//   before March 2026 include non-link clicks. Not like-for-like across
+//   that boundary - any future report must caveat or split at 2026-03-01.
+// - Values are converted to the shop's Shopify currency at sync time,
+//   same as MetaInsight.
+model MetaAttributionWindow {
+  id                String   @id @default(uuid())
+  shopDomain        String
+  date              DateTime // calendar day (Meta ad account timezone, matches MetaInsight daily rows)
+  campaignId        String
+  campaignName      String?
+  adSetId           String?
+  adSetName         String?
+  adId              String?
+  adName            String?
+  // Purchase counts per attribution window (offsite_conversion.fb_pixel_purchase)
+  purchasesDefault  Int      @default(0) // ad set's configured setting
+  purchases1dClick  Int      @default(0)
+  purchases7dClick  Int      @default(0)
+  purchases28dClick Int      @default(0)
+  purchases1dView   Int      @default(0)
+  purchases1dEv     Int      @default(0) // engage-through (post Mar-2026) / engaged-view (pre)
+  // Purchase conversion value per window - Shopify currency
+  valueDefault      Float    @default(0)
+  value1dClick      Float    @default(0)
+  value7dClick      Float    @default(0)
+  value28dClick     Float    @default(0)
+  value1dView       Float    @default(0)
+  value1dEv         Float    @default(0)
+  importedAt        DateTime @default(now())
+
+  @@unique([shopDomain, date, adId])
+  @@index([shopDomain, date])
+  @@index([shopDomain, campaignId, date])
 }
 
 // Meta ad-account activity log - one row per change event fetched from
