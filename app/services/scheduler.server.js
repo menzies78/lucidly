@@ -286,6 +286,30 @@ async function runDailyCycle() {
         } catch (err) {
           console.error(`[Scheduler] Entity lifecycle failed for ${shop.shopDomain}:`, err.message);
         }
+
+        // Attribution-window history self-heal for RECENTLY-onboarded shops
+        // only (the post-onboarding deferred task can be lost to a restart).
+        // Bounded to onboardingStartedAt within 45 days so long-standing
+        // shops (HM etc.) can never be surprise-backfilled; ensureWindowHistory
+        // itself no-ops once history exists or the account has none.
+        try {
+          const db = (await import("../db.server")).default;
+          const rec = await db.shop.findUnique({
+            where: { shopDomain: shop.shopDomain },
+            select: { onboardingCompleted: true, onboardingStartedAt: true },
+          });
+          const recent = rec?.onboardingCompleted && rec?.onboardingStartedAt
+            && (Date.now() - new Date(rec.onboardingStartedAt).getTime()) < 45 * 86400000;
+          if (recent) {
+            const { ensureWindowHistory } = await import("./metaAttributionWindowSync.server.js");
+            const res = await ensureWindowHistory(shop.shopDomain);
+            if (res.status === "backfilled") {
+              console.log(`[Scheduler] Window history self-heal for ${shop.shopDomain}: ${res.rows} rows`);
+            }
+          }
+        } catch (err) {
+          console.error(`[Scheduler] Window history self-heal failed for ${shop.shopDomain}:`, err.message);
+        }
         try {
           const { syncMetaChanges } = await import("./metaChangeSync.server.js");
           const changeResult = await syncMetaChanges(shop.shopDomain, { backfillDays: 7 });
@@ -492,22 +516,9 @@ export function startScheduler() {
   if (attrBackfillShop) {
     global.__lucidlyAttrWindowBackfill = setTimeout(async () => {
       try {
-        const db = (await import("../db.server")).default;
-        const marker = new Date(Date.now() - 40 * 86400000);
-        const already = await db.metaAttributionWindow.count({
-          where: { shopDomain: attrBackfillShop, date: { lt: marker } },
-        });
-        if (already > 0) {
-          console.log(`[Scheduler] Attr-window backfill for ${attrBackfillShop} already done (${already} historical rows) - skipping`);
-          return;
-        }
-        console.log(`[Scheduler] Starting one-shot attr-window backfill for ${attrBackfillShop}...`);
-        const { backfillAttributionWindows, catchUpWindowLabels } =
-          await import("./metaAttributionWindowSync.server.js");
-        const bf = await backfillAttributionWindows(attrBackfillShop, 12);
-        console.log(`[Scheduler] Attr-window backfill complete: ${bf.rows} rows / ${bf.days} days`);
-        const retro = await catchUpWindowLabels(attrBackfillShop, 400);
-        console.log(`[Scheduler] Retro window labels: ${retro.labeled} labeled (${retro.exact} exact) of ${retro.checked} checked`);
+        const { ensureWindowHistory } = await import("./metaAttributionWindowSync.server.js");
+        const res = await ensureWindowHistory(attrBackfillShop);
+        console.log(`[Scheduler] Env-triggered window history for ${attrBackfillShop}: ${res.status}${res.rows ? ` (${res.rows} rows)` : ""}`);
       } catch (err) {
         console.error(`[Scheduler] Attr-window backfill failed (non-fatal): ${err.message}`);
       }

@@ -425,6 +425,23 @@ async function runIngest(shopDomain) {
   });
   console.log(`[ingestOrchestrator] ${shopDomain}: phased ingest finished`);
 
+  // Deferred: 12-month attribution-window history. Deliberately NOT an
+  // onboarding phase - nothing reads this data on first render, and the
+  // Meta account's load-throttle score is at its warmest right after the
+  // main ingest. The 15-minute cooldown lets it decay; the account lock +
+  // governor + chunk ladder then make the pull safe. Idempotent inside
+  // (ensureWindowHistory no-ops if history exists), and if this timer is
+  // lost to a restart the daily-sweep self-heal in the scheduler covers it.
+  setTimeout(async () => {
+    try {
+      const { ensureWindowHistory } = await import("./metaAttributionWindowSync.server.js");
+      const res = await ensureWindowHistory(shopDomain);
+      console.log(`[ingestOrchestrator] ${shopDomain}: window history ${res.status}${res.rows ? ` (${res.rows} rows)` : ""}`);
+    } catch (err) {
+      console.error(`[ingestOrchestrator] ${shopDomain}: window history backfill failed (non-fatal): ${err.message}`);
+    }
+  }, 15 * 60_000);
+
   // Email the merchant. Fire-and-forget - email failures must not roll back
   // the "ingest complete" state. Resolve the recipient via Shopify GraphQL
   // (we have an admin client for the Shopify track) so resume-on-boot still

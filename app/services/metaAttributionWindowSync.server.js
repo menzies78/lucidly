@@ -17,8 +17,10 @@
 //   setting still arrives as the "value" key on every action stat.
 // - action_report_time=conversion to match MetaInsight day-bucketing, so a
 //   future join of this table onto MetaInsight per (adId, date) lines up.
-// - Conversions keep accruing until the longest window closes (28 days), so
-//   the rolling sync re-pulls a 35-day lookback; rows are upserts.
+//   NOTE: under conversion-time reporting a day-row is essentially final
+//   within ~days (conversions land on their conversion date, not the click
+//   date). The rolling 35-day re-pull is restatement insurance (dedup, IVT
+//   removals), not window-maturation - rows are upserts either way.
 // - Meta redefined 1d_ev (engaged-view -> engage-through) and click windows
 //   (link-clicks-only) in March 2026 under the SAME API keys. Historical
 //   backfill rows before 2026-03-01 carry the old semantics.
@@ -445,18 +447,37 @@ export async function catchUpWindowLabels(shopDomain, daysBack = 2) {
     const orderDate = {};
     for (const o of orders) orderDate[o.shopifyOrderId] = o.createdAt.toISOString().split("T")[0];
 
+    const todayUTC = new Date().toISOString().split("T")[0];
     for (const attr of batch) {
       const dateKey = orderDate[attr.shopifyOrderId];
       if (!dateKey) continue; // outside window / order missing
+      // Only trust COMPLETED days. Today's day-row is still filling - a
+      // "pure so far" morning could get exact labels invalidated by an
+      // evening view conversion. Today's NULLs wait for tomorrow's pass.
+      if (dateKey >= todayUTC) continue;
       checked++;
-      const dayBefore = new Date(new Date(dateKey + "T12:00:00Z").getTime() - 86400000)
-        .toISOString().split("T")[0];
+      const noon = new Date(dateKey + "T12:00:00Z").getTime();
+      const dayBefore = new Date(noon - 86400000).toISOString().split("T")[0];
+      const dayAfter = new Date(noon + 86400000).toISOString().split("T")[0];
       const rows = await db.metaAttributionWindow.findMany({
-        where: { shopDomain, adId: attr.metaAdId, date: { in: [new Date(dateKey), new Date(dayBefore)] } },
-        orderBy: { date: "desc" },
+        where: {
+          shopDomain, adId: attr.metaAdId,
+          date: { in: [new Date(dateKey), new Date(dayBefore), new Date(dayAfter)] },
+        },
       });
-      // Prefer the order-date row; fall back to the day before.
-      const row = rows.find((r) => r.date.toISOString().split("T")[0] === dateKey) || rows[0];
+      // Prefer the order-date row. Order dates are UTC while Meta rows are
+      // account-tz days, so a late-night order can land on the neighbouring
+      // Meta day (tz-ahead accounts -> day after; tz-behind -> day before).
+      // Fall back to a neighbour only when exactly ONE has purchase data -
+      // two candidates is ambiguous, so we honestly leave the label NULL.
+      let row = rows.find((r) => r.date.toISOString().split("T")[0] === dateKey);
+      if (!row) {
+        const usable = rows.filter((r) =>
+          r.date.toISOString().split("T")[0] < todayUTC && // completed days only
+          positiveBuckets(bucketCounts(r)).length > 0
+        );
+        row = usable.length === 1 ? usable[0] : null;
+      }
       if (!row) continue;
       const b = bucketCounts(row);
       const pos = positiveBuckets(b);
@@ -481,6 +502,41 @@ export async function catchUpWindowLabels(shopDomain, daysBack = 2) {
     }
   }
   return { labeled, exact: exactCount, checked };
+}
+
+// ------------------------------------------------------------------
+// ensureWindowHistory - idempotent "backfill if missing" entry point.
+// Shared by: post-onboarding deferred task (ingestOrchestrator), the
+// daily-sweep self-heal (scheduler), and the env-gated boot trigger.
+//
+// Done-markers (either -> no-op):
+//   1. Window rows older than 40 days exist -> a backfill already ran.
+//   2. MetaInsight has NO rows older than 40 days -> the ad account itself
+//      has no deep history, so the rolling 35-day sync already covers
+//      everything there is. (Prevents young accounts re-running 12 empty
+//      chunks every day.)
+// ------------------------------------------------------------------
+
+export async function ensureWindowHistory(shopDomain, monthsBack = 12) {
+  const shop = await db.shop.findUnique({ where: { shopDomain } });
+  if (!shop?.metaAccessToken || !shop?.metaAdAccountId) return { status: "not-connected" };
+
+  const marker = new Date(Date.now() - 40 * 86400000);
+  const already = await db.metaAttributionWindow.count({
+    where: { shopDomain, date: { lt: marker } },
+  });
+  if (already > 0) return { status: "already-done", historicalRows: already };
+
+  const oldInsights = await db.metaInsight.count({
+    where: { shopDomain, date: { lt: marker } },
+  });
+  if (oldInsights === 0) return { status: "no-deep-history" };
+
+  console.log(`[AttrWindowSync] ensureWindowHistory: starting ${monthsBack}mo backfill for ${shopDomain}`);
+  const bf = await backfillAttributionWindows(shopDomain, monthsBack);
+  const retro = await catchUpWindowLabels(shopDomain, monthsBack * 31);
+  console.log(`[AttrWindowSync] ensureWindowHistory complete for ${shopDomain}: ${bf.rows} rows, retro ${retro.labeled} labeled (${retro.exact} exact) of ${retro.checked} checked`);
+  return { status: "backfilled", rows: bf.rows, days: bf.days, retro };
 }
 
 // ------------------------------------------------------------------
