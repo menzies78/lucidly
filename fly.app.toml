@@ -12,6 +12,10 @@ primary_region = "lhr"
   # apps (fly.toml / fly.hm.toml) keep non-expiring tokens and avoid the
   # library's unlocked webhook-path refresh race. See shopify.server.ts.
   EXPIRING_OFFLINE_TOKENS = "true"
+  # Web-pixel journey work PARKED 2026-08-01 — stop collecting on public too:
+  # /api/journey acks pixel posts without writing. Reports were never enabled
+  # here (JOURNEY_REPORTS_ENABLED deliberately absent). See journey_pixel_parked.md.
+  JOURNEY_INGEST_ENABLED = "false"
   # Ops alerting: the Token Health Watchdog + refresh-failure hook email here when
   # an offline token faults (non-expiring 403 / revoked 401 / refresh race). Needs
   # RESEND_API_KEY set as a Fly secret to actually deliver; no-ops otherwise.
