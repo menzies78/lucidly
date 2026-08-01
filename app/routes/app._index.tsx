@@ -1548,6 +1548,15 @@ export default function Index() {
           )}
         </div>
 
+        {/* ═══ UTM vs Lucidly attribution rings ═══ */}
+        <Layout>
+          <Layout.Section>
+            <Card>
+              <AttributionRings data={ringsData} />
+            </Card>
+          </Layout.Section>
+        </Layout>
+
         {/* ═══ Match Rate + Match Confidence ═══ */}
         <Layout>
           <Layout.Section variant="oneHalf">
@@ -1579,15 +1588,6 @@ export default function Index() {
               detailLabel="matches"
               detailTotalLabel="orders"
             />
-          </Layout.Section>
-        </Layout>
-
-        {/* ═══ UTM vs Lucidly attribution rings ═══ */}
-        <Layout>
-          <Layout.Section>
-            <Card>
-              <AttributionRings data={ringsData} />
-            </Card>
           </Layout.Section>
         </Layout>
 
