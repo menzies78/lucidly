@@ -10,6 +10,16 @@ import { shopLocalDayKey } from "../utils/shopTime.server";
 import { currencySymbolFromCode } from "../utils/currency";
 import { cached as queryCached, DEFAULT_TTL } from "./queryCache.server";
 
+// Attribution-window mechanism labels (Attribution.windowLabel -> display).
+// Assigned by the hourly delta labeler; see metaAttributionWindowSync.
+const MECHANISM_LABELS: Record<string, string> = {
+  click_1d: "Click ≤1d",
+  click_7d: "Click 1-7d",
+  click_28d: "Click 7-28d",
+  view_1d: "View",
+  engage_1d: "Engage",
+};
+
 export type OrderExplorerArgs = {
   shopDomain: string;
   fromDate: Date;
@@ -162,6 +172,8 @@ export async function buildOrderExplorerData(args: OrderExplorerArgs) {
       netRevenue: Math.round((rev - refunded) * 100) / 100,
       difference, tag, confidence: attr.confidence, method: attr.matchMethod || "",
       attributionSource: order.utmConfirmedMeta ? "UTM & Lucidly" : "Lucidly",
+      mechanism: MECHANISM_LABELS[attr.windowLabel as string] || "",
+      mechanismExact: attr.windowExact ?? null,
       utm: buildUtmString(order),
     });
   }
@@ -186,7 +198,7 @@ export async function buildOrderExplorerData(args: OrderExplorerArgs) {
       netRevenue: attr.metaConversionValue || 0,
       difference: null,
       tag: "Unattributed", confidence: 0, method: attr.matchMethod || "",
-      attributionSource: "Unattributed", utm: "",
+      attributionSource: "Unattributed", mechanism: "", mechanismExact: null, utm: "",
     });
   }
 
@@ -244,7 +256,7 @@ export async function buildOrderExplorerData(args: OrderExplorerArgs) {
       revenue: rev,
       netRevenue: Math.round((rev - refunded) * 100) / 100,
       difference: null, tag, confidence: null, method: "utm",
-      attributionSource: "UTM", utm: buildUtmString(order),
+      attributionSource: "UTM", mechanism: "", mechanismExact: null, utm: buildUtmString(order),
     });
   }
 
@@ -294,7 +306,7 @@ export async function buildOrderExplorerData(args: OrderExplorerArgs) {
       netRevenue: Math.round((rev - refunded) * 100) / 100,
       difference: null, tag,
       confidence: null, method: "",
-      attributionSource: "Unattributed", utm: buildUtmString(order),
+      attributionSource: "Unattributed", mechanism: "", mechanismExact: null, utm: buildUtmString(order),
     });
   }
 

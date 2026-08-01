@@ -98,6 +98,18 @@ export default function OrderExplorerSection({
     { accessorKey: "tag", header: "Type",
       meta: { filterType: "multi-select", description: "How this order relates to Meta ads. Meta New = first-time customer via Meta. Meta Repeat = returning Meta-acquired customer. Meta Retargeted = existing customer converted by Meta. Meta Unmatched New/Repeat/Retargeted = UTM confirms Meta click but no statistical match. Non-Meta = online order with no Meta attribution. Non-Meta POS = in-store/POS order" },
       filterFn: "multiSelect" as any },
+    { accessorKey: "mechanism", header: "Mechanism",
+      meta: { filterType: "multi-select", description: "How Meta says this conversion happened, read from per-window conversion deltas at match time. Click ≤1d / 1-7d / 7-28d = time from ad click to purchase. View = saw the ad but never clicked. Engage = interacted (reaction, share, 5s+ video view) but never clicked. A ~ prefix means probabilistic: several mechanisms registered in the same sync cycle, the dominant one is shown. Labels exist from Aug 2026 onward plus historical orders where the ad-day had a single mechanism" },
+      filterFn: "multiSelect" as any,
+      cell: ({ getValue, row }) => {
+        const v = getValue() as string;
+        if (!v) return "-";
+        const exact = (row.original as any).mechanismExact;
+        return exact === false
+          ? <span style={{ opacity: 0.65 }}>{`~${v}`}</span>
+          : v;
+      },
+    },
     // ── Campaign details ──
     { accessorKey: "campaign", header: "Campaign",
       meta: { maxWidth: "200px", filterType: "multi-select", description: "Meta campaign that drove this order" },
