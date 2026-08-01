@@ -481,6 +481,39 @@ export function startScheduler() {
     }
   }, 30_000);
 
+  // One-shot attribution-window backfill trigger (env-gated, self-disabling).
+  // Set ATTR_WINDOW_BACKFILL_SHOP=<shopDomain> via fly secrets to run the
+  // 12-month windows backfill + retro-labeling without clicking the dashboard
+  // button. Idempotent: skips when the shop already has window rows older
+  // than 40 days (a backfill has already run), so a lingering secret across
+  // restarts is harmless. Unset the secret once confirmed complete.
+  if (global.__lucidlyAttrWindowBackfill) clearTimeout(global.__lucidlyAttrWindowBackfill);
+  const attrBackfillShop = process.env.ATTR_WINDOW_BACKFILL_SHOP;
+  if (attrBackfillShop) {
+    global.__lucidlyAttrWindowBackfill = setTimeout(async () => {
+      try {
+        const db = (await import("../db.server")).default;
+        const marker = new Date(Date.now() - 40 * 86400000);
+        const already = await db.metaAttributionWindow.count({
+          where: { shopDomain: attrBackfillShop, date: { lt: marker } },
+        });
+        if (already > 0) {
+          console.log(`[Scheduler] Attr-window backfill for ${attrBackfillShop} already done (${already} historical rows) - skipping`);
+          return;
+        }
+        console.log(`[Scheduler] Starting one-shot attr-window backfill for ${attrBackfillShop}...`);
+        const { backfillAttributionWindows, catchUpWindowLabels } =
+          await import("./metaAttributionWindowSync.server.js");
+        const bf = await backfillAttributionWindows(attrBackfillShop, 12);
+        console.log(`[Scheduler] Attr-window backfill complete: ${bf.rows} rows / ${bf.days} days`);
+        const retro = await catchUpWindowLabels(attrBackfillShop, 400);
+        console.log(`[Scheduler] Retro window labels: ${retro.labeled} labeled (${retro.exact} exact) of ${retro.checked} checked`);
+      } catch (err) {
+        console.error(`[Scheduler] Attr-window backfill failed (non-fatal): ${err.message}`);
+      }
+    }, 90_000);
+  }
+
   // Reap orphaned ingest jobs and resume any shop that was mid-onboarding
   // when the previous process died. Runs once on boot, slightly delayed so
   // the DB connection pool is fully warm.
