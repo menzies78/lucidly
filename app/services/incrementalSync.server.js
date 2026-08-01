@@ -1695,6 +1695,26 @@ export async function runIncrementalSync(shopDomain) {
     console.error(`[IncrementalSync] Breakdown sync failed (non-fatal): ${err.message}`);
   }
 
+  // Attribution-window mechanism labeling (delta pattern, mirrors demographics
+  // below). Pull yesterday+today window rows, diff against stored rows (they
+  // are the snapshot), label this cycle's matches (click_1d/7d/28d, view,
+  // engage-through), then catch up recent NULLs from pure day-rows once the
+  // lagging window data lands. Fault-isolated - never breaks the cycle.
+  setProgress(`incrementalSync:${shopDomain}`, { status: "running", message: "Assigning attribution windows from cycle deltas..." });
+  try {
+    const { syncTodayWindows, labelWindowsFromDelta, catchUpWindowLabels } =
+      await import("./metaAttributionWindowSync.server.js");
+    const w = await syncTodayWindows(shopDomain, shop.metaAccessToken, shop.metaAdAccountId, [yesterday, today], rate);
+    if (matchedOrderIds.length > 0 && w.deltaMap.size > 0) {
+      const wres = await labelWindowsFromDelta(shopDomain, w.deltaMap, matchedOrderIds);
+      if (wres.labeled > 0) console.log(`[IncrementalSync] Window labels: ${wres.labeled} (${wres.exact} exact)`);
+    }
+    const cu = await catchUpWindowLabels(shopDomain, 2);
+    if (cu.labeled > 0) console.log(`[IncrementalSync] Window label catch-up: ${cu.labeled} (${cu.exact} exact)`);
+  } catch (err) {
+    console.error(`[IncrementalSync] Window labeling failed (non-fatal): ${err.message}`);
+  }
+
   // Delta-based per-order demographic assignment (ground truth, going-forward).
   // Uses the per-cycle deltas captured above to assign demographic tags to the
   // attributions matched in THIS cycle. Attribution gets demographicExact=true

@@ -324,7 +324,7 @@ export const loader = async ({ request }) => {
   }
 
   // Check if any background task is currently running for this shop
-  const taskNames = ["syncOrders", "syncMeta", "syncMetaHistorical", "runAttribution", "dateRangeRematch", "fillGaps", "incrementalSync", "startOngoingSync", "calibratePixel", "inferGender", "backfillFirstNames", "forceRollups", "refreshAdThumbnails", "backfillAttributionWindows", "backupShop", "wipeShop", "restoreShop", "verifyBackup", "purgeData"];
+  const taskNames = ["syncOrders", "syncMeta", "syncMetaHistorical", "runAttribution", "dateRangeRematch", "fillGaps", "incrementalSync", "startOngoingSync", "calibratePixel", "inferGender", "backfillFirstNames", "forceRollups", "refreshAdThumbnails", "backfillAttributionWindows", "retroLabelWindows", "backupShop", "wipeShop", "restoreShop", "verifyBackup", "purgeData"];
   let activeTaskFromServer = null;
   for (const t of taskNames) {
     const p = getProgress(`${t}:${shopDomain}`);
@@ -649,6 +649,19 @@ export const action = async ({ request }) => {
       completeProgress(taskId, result);
     });
     return json({ started: true, task: "refreshAdThumbnails" });
+  }
+  // Retro-label historical matched orders with their attribution-window
+  // mechanism where the ad-day's stored window row is single-bucket (exact)
+  // or >=80% dominant (probabilistic). Run AFTER the 12mo windows backfill.
+  if (actionType === "retroLabelWindows") {
+    if (!isInternalShop(shopDomain)) return json({ success: false, error: "forbidden" });
+    runInBackground(async () => {
+      setProgress(taskId, { status: "running", message: "Retro-labeling matched orders from window day-rows..." });
+      const { catchUpWindowLabels } = await import("../services/metaAttributionWindowSync.server.js");
+      const result = await catchUpWindowLabels(shopDomain, 400);
+      completeProgress(taskId, result);
+    });
+    return json({ started: true, task: "retroLabelWindows" });
   }
   // One-time 12-month attribution-window history pull (storage-only table,
   // nothing reads it yet). Internal-only: burns real Meta API quota.
@@ -1838,6 +1851,15 @@ export default function Index() {
                     {activeTask === "backfillAttributionWindows" ? "Backfilling..." : "Backfill Attribution Windows (12mo)"}
                   </Button>
                   <Text as="p" variant="bodySm" tone="subdued">One-time pull of per-window Meta conversions (click / view / engage-through) for the last year. Storage only - rolling 35-day sync keeps it fresh afterwards.</Text>
+                </BlockStack>
+              )}
+              {metaConnected && isInternal && (
+                <BlockStack gap="100">
+                  <Button onClick={() => startTask("retroLabelWindows")} disabled={isRunning}
+                    loading={activeTask === "retroLabelWindows"}>
+                    {activeTask === "retroLabelWindows" ? "Labeling..." : "Retro-Label Window Mechanisms"}
+                  </Button>
+                  <Text as="p" variant="bodySm" tone="subdued">Assigns click / view / engage-through labels to historical matched orders where the ad-day was single-mechanism. Run after the 12mo windows backfill.</Text>
                 </BlockStack>
               )}
               {/* Backup / Verify / Download / Restore / Wipe - reset a test

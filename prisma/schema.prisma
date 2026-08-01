@@ -327,6 +327,11 @@ model Attribution {
   metaPlatform          String?  // "facebook", "instagram", etc.
   metaPlacement         String?  // "feed", "story", "reels", etc.
   demographicExact      Boolean? // true = unambiguous (1 bucket), false = probabilistic
+  // Attribution-window mechanism - assigned from MetaAttributionWindow deltas
+  // each hourly cycle (same delta pattern as demographics). Click windows nest
+  // (1d ⊂ 7d ⊂ 28d) so the innermost ticking window is the label.
+  windowLabel           String?  // click_1d | click_7d | click_28d | view_1d | engage_1d
+  windowExact           Boolean? // true = single-bucket delta (unambiguous mechanism)
 
   @@unique([shopDomain, shopifyOrderId])
   @@index([shopDomain, layer])

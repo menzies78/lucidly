@@ -289,6 +289,201 @@ export async function syncAttributionWindows(shopDomain, { daysBack = 35, progre
 }
 
 // ------------------------------------------------------------------
+// Per-order mechanism labeling (Andy's delta insight, 2026-08-01)
+//
+// The click windows NEST: 1d_click ⊂ 7d_click ⊂ 28d_click. So window
+// counts decompose EXACTLY into disjoint mechanism buckets:
+//   click_1d   = 1d_click            (clicked ≤1 day before purchase)
+//   click_7d   = 7d_click - 1d_click (clicked 1-7 days before)
+//   click_28d  = 28d_click - 7d_click(clicked 7-28 days before)
+//   view_1d    = 1d_view             (view-through, never clicked)
+//   engage_1d  = 1d_ev               (engage-through, never clicked)
+// A positive cycle-over-cycle delta in exactly one bucket = the new
+// conversion's mechanism, ground truth. Mirrors enrichFromDelta
+// (demographics): exact when unambiguous, flagged when not.
+// ------------------------------------------------------------------
+
+const BUCKETS = ["click_1d", "click_7d", "click_28d", "view_1d", "engage_1d"];
+
+export function bucketCounts(c) {
+  return {
+    click_1d: c.purchases1dClick,
+    click_7d: Math.max(0, c.purchases7dClick - c.purchases1dClick),
+    click_28d: Math.max(0, c.purchases28dClick - c.purchases7dClick),
+    view_1d: c.purchases1dView,
+    engage_1d: c.purchases1dEv,
+  };
+}
+
+function positiveBuckets(b) {
+  return BUCKETS.filter((k) => b[k] > 0);
+}
+
+// Hourly-cycle pull for [yesterday, today]: fetch fresh window rows, diff
+// against the stored MetaAttributionWindow rows (they ARE the previous
+// snapshot), upsert the fresh values, return per-ad positive bucket deltas.
+//
+// deltaMap: adId -> { buckets: {click_1d..engage_1d}, deltaDefault }
+// (summed across the 1-2 days of the cycle - a conversion appears once, and
+// day-boundary skew between our clock and Meta's account tz washes out).
+export async function syncTodayWindows(shopDomain, token, adAccountId, days, rate = 1.0) {
+  const stored = await db.metaAttributionWindow.findMany({
+    where: { shopDomain, date: { in: days.map((d) => new Date(d)) } },
+  });
+  const prevByKey = {};
+  for (const s of stored) prevByKey[`${s.adId}|${s.date.toISOString().split("T")[0]}`] = s;
+
+  const fresh = await fetchWindowRange(token, adAccountId, days[0], days[days.length - 1]);
+
+  const deltaMap = new Map();
+  for (const row of fresh) {
+    const dateKey = row.date.toISOString().split("T")[0];
+    const prev = prevByKey[`${row.adId}|${dateKey}`] || {
+      purchases1dClick: 0, purchases7dClick: 0, purchases28dClick: 0,
+      purchases1dView: 0, purchases1dEv: 0, purchasesDefault: 0,
+    };
+    const nowB = bucketCounts(row);
+    const prevB = bucketCounts(prev);
+    const d = {};
+    let any = false;
+    for (const k of BUCKETS) {
+      d[k] = Math.max(0, nowB[k] - prevB[k]);
+      if (d[k] > 0) any = true;
+    }
+    if (!any) continue;
+    const agg = deltaMap.get(row.adId) || {
+      buckets: { click_1d: 0, click_7d: 0, click_28d: 0, view_1d: 0, engage_1d: 0 },
+      deltaDefault: 0,
+    };
+    for (const k of BUCKETS) agg.buckets[k] += d[k];
+    agg.deltaDefault += Math.max(0, row.purchasesDefault - prev.purchasesDefault);
+    deltaMap.set(row.adId, agg);
+  }
+
+  // Persist fresh values (same write path as the daily sync).
+  const ratesByDate = {};
+  for (const d of days) ratesByDate[d] = rate;
+  const written = await batchUpsert(shopDomain, fresh, ratesByDate);
+
+  return { deltaMap, rows: written };
+}
+
+// Assign windowLabel/windowExact to attributions matched in THIS cycle.
+// Single positive bucket for the ad -> every matched order on that ad gets
+// that label, exact=true (mechanism is unambiguous no matter how many
+// orders). Multiple buckets -> largest bucket, exact=false.
+export async function labelWindowsFromDelta(shopDomain, deltaMap, matchedOrderIds) {
+  if (!matchedOrderIds?.length || !deltaMap || deltaMap.size === 0) {
+    return { labeled: 0, exact: 0 };
+  }
+  const attrs = await db.attribution.findMany({
+    where: {
+      shopDomain,
+      shopifyOrderId: { in: matchedOrderIds },
+      confidence: { gt: 0 },
+      metaAdId: { not: null },
+    },
+    select: { id: true, metaAdId: true },
+  });
+
+  let labeled = 0, exact = 0;
+  for (const attr of attrs) {
+    const agg = deltaMap.get(attr.metaAdId);
+    if (!agg) continue;
+    const pos = positiveBuckets(agg.buckets);
+    if (pos.length === 0) continue;
+    const isExact = pos.length === 1;
+    const label = isExact
+      ? pos[0]
+      : pos.reduce((a, b) => (agg.buckets[b] > agg.buckets[a] ? b : a));
+    await withDbRetry(`label attr ${attr.id}`, () =>
+      db.attribution.update({
+        where: { id: attr.id },
+        data: { windowLabel: label, windowExact: isExact },
+      })
+    );
+    labeled++;
+    if (isExact) exact++;
+  }
+  return { labeled, exact };
+}
+
+// Catch-up + retro labeler. For attributions still windowLabel=NULL (window
+// data lagged the cycle, or the order pre-dates the labeling feature), look
+// at the ad's stored DAY-ROW totals for the order date (falling back to the
+// day before - Meta's account-tz day can differ from the order's UTC day):
+//   - single-bucket day  -> that label, exact=true (whole day is one mechanism)
+//   - dominant bucket >= 80% of the day -> that label, exact=false
+//   - genuinely mixed day -> stays NULL (honest)
+// daysBack=2 for the hourly catch-up; daysBack=400 turns this into the
+// one-time retro pass over historical matches (internal button).
+export async function catchUpWindowLabels(shopDomain, daysBack = 2) {
+  const cutoff = new Date(Date.now() - daysBack * 86400000);
+  // Hourly catch-up (small daysBack): bound by matchedAt so we don't rescan
+  // every permanently-NULL historical row each cycle. Retro pass (large
+  // daysBack): no matchedAt bound - old matches are exactly the target.
+  const candidates = await db.attribution.findMany({
+    where: {
+      shopDomain, windowLabel: null, confidence: { gt: 0 }, metaAdId: { not: null },
+      ...(daysBack <= 7 ? { matchedAt: { gte: cutoff } } : {}),
+    },
+    select: { id: true, shopifyOrderId: true, metaAdId: true },
+  });
+  if (candidates.length === 0) return { labeled: 0, exact: 0, checked: 0 };
+
+  let labeled = 0, exactCount = 0, checked = 0;
+  for (let i = 0; i < candidates.length; i += 500) {
+    const batch = candidates.slice(i, i + 500);
+    const orders = await db.order.findMany({
+      where: {
+        shopDomain,
+        shopifyOrderId: { in: batch.map((a) => a.shopifyOrderId) },
+        createdAt: { gte: cutoff },
+      },
+      select: { shopifyOrderId: true, createdAt: true },
+    });
+    const orderDate = {};
+    for (const o of orders) orderDate[o.shopifyOrderId] = o.createdAt.toISOString().split("T")[0];
+
+    for (const attr of batch) {
+      const dateKey = orderDate[attr.shopifyOrderId];
+      if (!dateKey) continue; // outside window / order missing
+      checked++;
+      const dayBefore = new Date(new Date(dateKey + "T12:00:00Z").getTime() - 86400000)
+        .toISOString().split("T")[0];
+      const rows = await db.metaAttributionWindow.findMany({
+        where: { shopDomain, adId: attr.metaAdId, date: { in: [new Date(dateKey), new Date(dayBefore)] } },
+        orderBy: { date: "desc" },
+      });
+      // Prefer the order-date row; fall back to the day before.
+      const row = rows.find((r) => r.date.toISOString().split("T")[0] === dateKey) || rows[0];
+      if (!row) continue;
+      const b = bucketCounts(row);
+      const pos = positiveBuckets(b);
+      if (pos.length === 0) continue;
+      const total = pos.reduce((s, k) => s + b[k], 0);
+      let label = null, isExact = false;
+      if (pos.length === 1) {
+        label = pos[0]; isExact = true;
+      } else {
+        const top = pos.reduce((a, k) => (b[k] > b[a] ? k : a));
+        if (b[top] / total >= 0.8) { label = top; isExact = false; }
+      }
+      if (!label) continue;
+      await withDbRetry(`catchup label ${attr.id}`, () =>
+        db.attribution.update({
+          where: { id: attr.id },
+          data: { windowLabel: label, windowExact: isExact },
+        })
+      );
+      labeled++;
+      if (isExact) exactCount++;
+    }
+  }
+  return { labeled, exact: exactCount, checked };
+}
+
+// ------------------------------------------------------------------
 // One-time historical backfill - default 12 months, newest-first so the
 // most recently useful data lands first. Triggered from the dashboard
 // (internal-only button); fire-and-forget with its own progress key.
