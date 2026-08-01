@@ -76,10 +76,45 @@ function windowsOf(stat, parse) {
 const toInt = (v) => parseInt(v || "0", 10) || 0;
 const toFloat = (v) => parseFloat(v || "0") || 0;
 
+// Future-proofing: capture window keys we don't recognise. Meta has changed
+// this surface twice recently (Jan 2026 removals, Mar 2026 redefinition) -
+// when a NEW window key appears we store it in extraWindows JSON and log a
+// tripwire, so history accrues before we promote it to a real column.
+const KNOWN_STAT_KEYS = new Set([
+  "action_type", "value", ...WINDOWS,
+  // dead-but-documented windows Meta may still echo as empties
+  "7d_view", "28d_view", "28d_view_first_conversion", "7d_view_first_conversion",
+  "7d_view_all_conversions", "28d_view_all_conversions",
+]);
+const seenUnknownKeys = (globalThis.__lucidlyUnknownWindowKeys ||= new Set());
+
+function collectExtraWindows(pStat, vStat) {
+  const extra = {};
+  for (const stat of [pStat, vStat]) {
+    if (!stat) continue;
+    for (const key of Object.keys(stat)) {
+      if (KNOWN_STAT_KEYS.has(key)) continue;
+      const num = parseFloat(stat[key]);
+      if (!Number.isFinite(num) || num === 0) continue;
+      if (!extra[key]) extra[key] = { purchases: 0, value: 0 };
+      if (stat === pStat) extra[key].purchases = toInt(stat[key]);
+      else extra[key].value = toFloat(stat[key]);
+      if (!seenUnknownKeys.has(key)) {
+        seenUnknownKeys.add(key);
+        console.warn(`[AttrWindowSync] ⚠️ UNKNOWN Meta attribution window key "${key}" detected - capturing to extraWindows. Meta may have added a new window type; consider promoting it to a first-class bucket.`);
+      }
+    }
+  }
+  return Object.keys(extra).length > 0 ? JSON.stringify(extra) : null;
+}
+
 function parseRow(row) {
-  const p = windowsOf(findPurchase(row.actions), toInt);
-  const v = windowsOf(findPurchase(row.action_values), toFloat);
+  const pStat = findPurchase(row.actions);
+  const vStat = findPurchase(row.action_values);
+  const p = windowsOf(pStat, toInt);
+  const v = windowsOf(vStat, toFloat);
   return {
+    extraWindows: collectExtraWindows(pStat, vStat),
     date: new Date(row.date_start),
     campaignId: row.campaign_id, campaignName: row.campaign_name,
     adSetId: row.adset_id, adSetName: row.adset_name,
@@ -97,9 +132,12 @@ function parseRow(row) {
 
 // Rows with zero purchases across every window are noise - the vast
 // majority of ad-days have no conversions. Skip them to keep the table lean.
+// extraWindows counts too: an unknown-window-only row is exactly the case
+// the future-proof capture exists for.
 function hasAnyPurchase(r) {
   return r.purchasesDefault > 0 || r.purchases1dClick > 0 || r.purchases7dClick > 0
-    || r.purchases28dClick > 0 || r.purchases1dView > 0 || r.purchases1dEv > 0;
+    || r.purchases28dClick > 0 || r.purchases1dView > 0 || r.purchases1dEv > 0
+    || r.extraWindows !== null;
 }
 
 // ------------------------------------------------------------------
@@ -147,6 +185,7 @@ async function batchUpsert(shopDomain, rows, ratesByDate) {
             value1dClick: round2(r.value1dClick), value7dClick: round2(r.value7dClick),
             value28dClick: round2(r.value28dClick), value1dView: round2(r.value1dView),
             value1dEv: round2(r.value1dEv),
+            extraWindows: r.extraWindows,
           };
           return db.metaAttributionWindow.upsert({
             where: { shopDomain_date_adId: { shopDomain, date: r.date, adId: r.adId } },

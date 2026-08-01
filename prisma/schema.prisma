@@ -469,6 +469,11 @@ model MetaAttributionWindow {
   value28dClick     Float    @default(0)
   value1dView       Float    @default(0)
   value1dEv         Float    @default(0)
+  // Future-proofing: any window keys Meta returns that we don't recognise
+  // are captured here as JSON {"<key>": {"purchases": n, "value": x}} so a
+  // new Meta window starts accumulating history the day it appears, before
+  // we promote it to a first-class column. Logged loudly when first seen.
+  extraWindows      String?
   importedAt        DateTime @default(now())
 
   @@unique([shopDomain, date, adId])

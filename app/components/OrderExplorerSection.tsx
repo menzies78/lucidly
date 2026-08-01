@@ -98,8 +98,8 @@ export default function OrderExplorerSection({
     { accessorKey: "tag", header: "Type",
       meta: { filterType: "multi-select", description: "How this order relates to Meta ads. Meta New = first-time customer via Meta. Meta Repeat = returning Meta-acquired customer. Meta Retargeted = existing customer converted by Meta. Meta Unmatched New/Repeat/Retargeted = UTM confirms Meta click but no statistical match. Non-Meta = online order with no Meta attribution. Non-Meta POS = in-store/POS order" },
       filterFn: "multiSelect" as any },
-    { accessorKey: "mechanism", header: "Mechanism",
-      meta: { filterType: "multi-select", description: "How Meta says this conversion happened, read from per-window conversion deltas at match time. Click ≤1d / 1-7d / 7-28d = time from ad click to purchase. View = saw the ad but never clicked. Engage = interacted (reaction, share, 5s+ video view) but never clicked. A ~ prefix means probabilistic: several mechanisms registered in the same sync cycle, the dominant one is shown. Labels exist from Aug 2026 onward plus historical orders where the ad-day had a single mechanism" },
+    { accessorKey: "mechanism", header: "Attribution Window",
+      meta: { filterType: "multi-select", description: "Which Meta attribution window claimed this conversion, read from per-window conversion deltas at match time. Click ≤1d / 1-7d / 7-28d = time from ad click to purchase (7-28d is outside Meta's default setting - claimed but not normally credited). View = saw the ad but never clicked. Engage = interacted (reaction, share, 5s+ video view) but never clicked. A ~ prefix means probabilistic: several windows registered in the same sync cycle, the dominant one is shown. Labels exist from Aug 2026 onward plus historical orders where the ad-day had a single window type" },
       filterFn: "multiSelect" as any,
       cell: ({ getValue, row }) => {
         const v = getValue() as string;
