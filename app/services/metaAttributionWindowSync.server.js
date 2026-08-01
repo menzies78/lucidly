@@ -32,6 +32,7 @@ import db from "../db.server";
 import { setProgress, completeProgress, failProgress } from "./progress.server";
 import { prefetchExchangeRates } from "./exchangeRate.server";
 import { fetchAllPages, ReduceDataError } from "./metaFetch.server";
+import { alertOps } from "./opsAlert.server.js";
 
 const PAGE_LIMIT = 1000;
 const DB_BATCH_SIZE = 500;
@@ -102,6 +103,19 @@ function collectExtraWindows(pStat, vStat) {
       if (!seenUnknownKeys.has(key)) {
         seenUnknownKeys.add(key);
         console.warn(`[AttrWindowSync] ⚠️ UNKNOWN Meta attribution window key "${key}" detected - capturing to extraWindows. Meta may have added a new window type; consider promoting it to a first-class bucket.`);
+        // Flag the dev by email (deduped + 6h re-nag via opsAlert; no-ops to
+        // log-only if OPS_ALERT_EMAIL/RESEND_API_KEY unset). Fire-and-forget -
+        // this sits in the parse hot path and must never block or throw.
+        alertOps(`unknown-window-key:${key}`, {
+          severity: "warn",
+          subject: `Unknown Meta attribution window key: "${key}"`,
+          title: `Meta is returning a new attribution window key: "${key}"`,
+          bodyHtml: `
+            <p>The Insights parser found a window key it doesn't recognise on a purchase action stat: <b>${key}</b> (sample value: ${String(stat[key])}).</p>
+            <p>Meta has likely added or renamed an attribution window. The data is <b>already being captured</b> into <code>MetaAttributionWindow.extraWindows</code>, so no history is being lost.</p>
+            <p><b>To do:</b> promote "${key}" to a first-class column + labeling bucket in <code>metaAttributionWindowSync.server.js</code> (KNOWN_STAT_KEYS / WINDOWS / bucketCounts), then backfill from extraWindows.</p>`,
+          bodyText: `Unknown Meta attribution window key "${key}" detected - captured to extraWindows; promote to a first-class bucket when convenient.`,
+        }).catch(() => {});
       }
     }
   }
