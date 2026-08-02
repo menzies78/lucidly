@@ -32,10 +32,18 @@ primary_region = "lhr"
   min_machines_running = 1
 
 [[vm]]
-  # Rightsized 2026-07-04 from 4x/8GB: 7-day peak was 1.21GB RAM / 3% of 4 vCPUs.
-  # Revisit upward as real public-app merchants install.
-  size = "shared-cpu-2x"
-  memory = "4096mb"
+  # 4x/8GB restored 2026-08 for the VB+HM data merge: this box now carries the
+  # merged data of every shop. VB ALONE was kernel-OOM-killed 2x/day on 2x/4GB
+  # (2026-05-05, Fly "OOM: node killed" emails) — same data now lives here, so
+  # 4x/8GB is the floor, not an upgrade. NOTE: the V8 heap cap stays at
+  # --max-old-space-size=3072 in package.json `start` (shared by all apps,
+  # deliberate): the ~5GB non-heap margin is what absorbs SQLite mmap/page
+  # cache, the Prisma engine process, sharp buffers and the 3 matcher worker
+  # threads. Do NOT raise the heap cap unless logs show the V8 FATAL
+  # "JavaScript heap out of memory" signature (kernel OOM = add RAM instead).
+  # shared-cpu-2x hard-caps at 4GB on Fly, so 8GB forces the 4x size.
+  size = "shared-cpu-4x"
+  memory = "8192mb"
 
 [mounts]
   source = "lucidly_app_data"

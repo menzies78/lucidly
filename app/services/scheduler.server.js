@@ -36,7 +36,32 @@ const CATCHUP_MAX_DAYS = 30;
 // conversion attributions, independent of any outage.
 const DAILY_SWEEP_DAYS = 7;
 
-let lastDailyRun = null;
+// ── Per-shop sync stagger ────────────────────────────────────────────
+// All shops share ONE SQLite writer, so firing every shop's sync at the
+// same instant produces one long write burst that collides with page
+// loads. Each shop instead gets a deterministic offset derived from its
+// domain: hourly work starts hash%50 minutes into the hour, daily work
+// runs in the 2-5am UTC hour picked by hash%4. Runs are still strictly
+// serialized through a single promise chain, so two shops never write
+// concurrently — the same guarantee the old sequential for-loop gave.
+function shopHash(shopDomain) {
+  let h = 0;
+  for (let i = 0; i < shopDomain.length; i++) h = (h * 31 + shopDomain.charCodeAt(i)) >>> 0;
+  return h;
+}
+const hourlyOffsetMs = (shopDomain) => (shopHash(shopDomain) % 50) * 60_000; // 0-49 min into the hour
+const dailyHourFor = (shopDomain) => 2 + (shopHash(shopDomain) % 4); // 2, 3, 4 or 5am UTC
+
+function enqueueSerialized(label, fn) {
+  if (!global.__lucidlySyncChain) global.__lucidlySyncChain = Promise.resolve();
+  global.__lucidlySyncChain = global.__lucidlySyncChain
+    .then(fn)
+    .catch((err) => console.error(`[Scheduler] ${label} failed:`, err.message));
+  return global.__lucidlySyncChain;
+}
+
+// Daily-run bookkeeping is per shop now that each shop has its own slot.
+const lastDailyRunByShop = new Map();
 
 async function getConnectedShops() {
   // Only fully-onboarded shops. A shop mid-onboarding (welcome / fit-importing /
@@ -146,83 +171,206 @@ async function runCatchUpIfStale(shopDomain) {
   return true;
 }
 
-async function runHourlyCycle() {
-  console.log(`[Scheduler] Hourly cycle starting at ${new Date().toISOString()}`);
+async function runHourlyForShop(shopDomain) {
   markSyncStart("hourly");
+  try {
+    // Don't compete with manual syncs for Meta API rate limit
+    if (isManualSyncRunning(shopDomain)) return;
+
+    // Don't compete with the onboarding ingest for SQLite connections.
+    // Both paths upsert orders + line items in tight loops; running them
+    // concurrently triggers Prisma socket timeouts (seen 2026-05-10
+    // when the hourly cycle fired mid-onboarding for vollebak).
+    if (isOnboardingIngestInFlight(shopDomain)) {
+      console.log(`[Scheduler] Skipping ${shopDomain} - onboarding ingest in progress`);
+      return;
+    }
+
+    // 1. Pull any Shopify orders missed by webhooks (delta since lastOrderSync)
+    try {
+      const { admin } = await getOfflineAdmin(shopDomain);
+      const orderResult = await syncOrders(admin, shopDomain);
+      console.log(`[Scheduler] Shopify order sync for ${shopDomain}: ${orderResult.totalImported} imported, ${orderResult.totalCustomers} customers`);
+    } catch (err) {
+      console.error(`[Scheduler] Shopify order sync failed for ${shopDomain}:`, err.message);
+    }
+
+    // 2. Meta sync + matcher. If a staleness gap is detected (a previous
+    // cycle was missed — e.g. a Meta outage), run the 7-day catch-up
+    // instead of the normal today+yesterday incremental. The catch-up is a
+    // superset, so we skip the incremental when it fires.
+    const didCatchUp = await runCatchUpIfStale(shopDomain);
+    if (!didCatchUp) {
+      const result = await runIncrementalSync(shopDomain);
+      console.log(`[Scheduler] Incremental sync for ${shopDomain}: ${result.matched} matched, ${result.unmatched} unmatched, ${result.breakdownRows} breakdowns`);
+    }
+
+    // 3. Meta change log delta (last ~36h) - small, quick, lets the
+    // Changes page + campaign chart annotations stay current between
+    // daily refreshes. Non-fatal on failure.
+    try {
+      const { syncMetaChanges } = await import("./metaChangeSync.server.js");
+      const changeResult = await syncMetaChanges(shopDomain);
+      if (changeResult.added || changeResult.updated) {
+        console.log(`[Scheduler] Change log delta for ${shopDomain}: ${changeResult.added} new, ${changeResult.updated} updated (fetched ${changeResult.fetched})`);
+      }
+    } catch (err) {
+      console.error(`[Scheduler] Change log delta failed for ${shopDomain}:`, err.message);
+    }
+
+    // 4. Fill any MetaEntity ad rows that still have no thumbnail. The
+    // daily refreshAdCreatives walks every known ad, but entity
+    // rows added between daily runs (new campaigns, new ads in existing
+    // campaigns) end up with thumbnailFetchedAt=null and would
+    // otherwise wait up to 24h to be resolved - which is why fresh
+    // live ads were surfacing as letter placeholders on the
+    // Campaigns tab. Bounded per run via the function's `limit` arg.
+    try {
+      const { fillBlankThumbnails } = await import("./metaAdCreativeSync.server.js");
+      const blankResult = await fillBlankThumbnails(shopDomain);
+      if (blankResult.attempted > 0) {
+        console.log(`[Scheduler] Fill blank thumbnails for ${shopDomain}: ${blankResult.updated} updated, ${blankResult.missing} unresolved (attempted ${blankResult.attempted})`);
+      }
+    } catch (err) {
+      console.error(`[Scheduler] Fill blank thumbnails failed for ${shopDomain}:`, err.message);
+    }
+  } catch (err) {
+    console.error(`[Scheduler] Incremental sync failed for ${shopDomain}:`, err.message);
+  } finally {
+    markSyncEnd();
+  }
+}
+
+async function runHourlyCycle() {
+  console.log(`[Scheduler] Hourly cycle dispatch at ${new Date().toISOString()}`);
   try {
     const shops = await getConnectedShops();
     if (shops.length === 0) {
       console.log("[Scheduler] No Meta-connected shops, skipping");
       return;
     }
+    global.__lucidlyShopTimers ??= [];
     for (const shop of shops) {
-      try {
-        // Don't compete with manual syncs for Meta API rate limit
-        if (isManualSyncRunning(shop.shopDomain)) continue;
-
-        // Don't compete with the onboarding ingest for SQLite connections.
-        // Both paths upsert orders + line items in tight loops; running them
-        // concurrently triggers Prisma socket timeouts (seen 2026-05-10
-        // when the hourly cycle fired mid-onboarding for vollebak).
-        if (isOnboardingIngestInFlight(shop.shopDomain)) {
-          console.log(`[Scheduler] Skipping ${shop.shopDomain} - onboarding ingest in progress`);
-          continue;
-        }
-
-        // 1. Pull any Shopify orders missed by webhooks (delta since lastOrderSync)
-        try {
-          const { admin } = await getOfflineAdmin(shop.shopDomain);
-          const orderResult = await syncOrders(admin, shop.shopDomain);
-          console.log(`[Scheduler] Shopify order sync for ${shop.shopDomain}: ${orderResult.totalImported} imported, ${orderResult.totalCustomers} customers`);
-        } catch (err) {
-          console.error(`[Scheduler] Shopify order sync failed for ${shop.shopDomain}:`, err.message);
-        }
-
-        // 2. Meta sync + matcher. If a staleness gap is detected (a previous
-        // cycle was missed — e.g. a Meta outage), run the 7-day catch-up
-        // instead of the normal today+yesterday incremental. The catch-up is a
-        // superset, so we skip the incremental when it fires.
-        const didCatchUp = await runCatchUpIfStale(shop.shopDomain);
-        if (!didCatchUp) {
-          const result = await runIncrementalSync(shop.shopDomain);
-          console.log(`[Scheduler] Incremental sync for ${shop.shopDomain}: ${result.matched} matched, ${result.unmatched} unmatched, ${result.breakdownRows} breakdowns`);
-        }
-
-        // 3. Meta change log delta (last ~36h) - small, quick, lets the
-        // Changes page + campaign chart annotations stay current between
-        // daily refreshes. Non-fatal on failure.
-        try {
-          const { syncMetaChanges } = await import("./metaChangeSync.server.js");
-          const changeResult = await syncMetaChanges(shop.shopDomain);
-          if (changeResult.added || changeResult.updated) {
-            console.log(`[Scheduler] Change log delta for ${shop.shopDomain}: ${changeResult.added} new, ${changeResult.updated} updated (fetched ${changeResult.fetched})`);
-          }
-        } catch (err) {
-          console.error(`[Scheduler] Change log delta failed for ${shop.shopDomain}:`, err.message);
-        }
-
-        // 4. Fill any MetaEntity ad rows that still have no thumbnail. The
-        // daily 3am refreshAdCreatives walks every known ad, but entity
-        // rows added between 3am runs (new campaigns, new ads in existing
-        // campaigns) end up with thumbnailFetchedAt=null and would
-        // otherwise wait up to 24h to be resolved - which is why fresh
-        // live ads were surfacing as letter placeholders on the
-        // Campaigns tab. Bounded per run via the function's `limit` arg.
-        try {
-          const { fillBlankThumbnails } = await import("./metaAdCreativeSync.server.js");
-          const blankResult = await fillBlankThumbnails(shop.shopDomain);
-          if (blankResult.attempted > 0) {
-            console.log(`[Scheduler] Fill blank thumbnails for ${shop.shopDomain}: ${blankResult.updated} updated, ${blankResult.missing} unresolved (attempted ${blankResult.attempted})`);
-          }
-        } catch (err) {
-          console.error(`[Scheduler] Fill blank thumbnails failed for ${shop.shopDomain}:`, err.message);
-        }
-      } catch (err) {
-        console.error(`[Scheduler] Incremental sync failed for ${shop.shopDomain}:`, err.message);
-      }
+      const delayMs = hourlyOffsetMs(shop.shopDomain);
+      console.log(`[Scheduler] ${shop.shopDomain}: hourly sync scheduled +${Math.round(delayMs / 60000)}min`);
+      global.__lucidlyShopTimers.push(setTimeout(() => {
+        enqueueSerialized(`hourly:${shop.shopDomain}`, () => runHourlyForShop(shop.shopDomain));
+      }, delayMs));
     }
   } catch (err) {
     console.error("[Scheduler] Hourly cycle error:", err.message);
+  }
+}
+
+async function runDailyForShop(shopDomain) {
+  console.log(`[Scheduler] Daily 7-day sync starting for ${shopDomain} at ${new Date().toISOString()}`);
+  markSyncStart("daily");
+  try {
+    // Don't compete with manual syncs for Meta API rate limit
+    if (isManualSyncRunning(shopDomain)) {
+      console.log(`[Scheduler] Deferring daily sync for ${shopDomain} - manual task running`);
+      lastDailyRunByShop.delete(shopDomain); // retry next 15-min check
+      return;
+    }
+
+    // Same DB-contention reason as the hourly cycle - skip if the
+    // onboarding ingest owns the SQLite pool right now.
+    if (isOnboardingIngestInFlight(shopDomain)) {
+      console.log(`[Scheduler] Deferring daily sync for ${shopDomain} - onboarding ingest in progress`);
+      lastDailyRunByShop.delete(shopDomain);
+      return;
+    }
+
+    // Re-pull 7 days, match each day's new deltas, and rebuild rollups.
+    // Shared with the staleness catch-up so there is one tested path.
+    // (Previously the daily cycle matched but did NOT rebuild rollups,
+    // relying on the next hourly incremental — which left the Ad Campaigns
+    // tiles stale after a backfill until that cycle ran.)
+    await runCatchUp(shopDomain, DAILY_SWEEP_DAYS);
+    console.log(`[Scheduler] Daily sync complete for ${shopDomain}`);
+
+    // Sync campaign/adset/ad created_time metadata
+    try {
+      const entityResult = await syncMetaEntities(shopDomain);
+      console.log(`[Scheduler] Entity sync for ${shopDomain}: ${entityResult.campaigns}c/${entityResult.adsets}as/${entityResult.ads}a`);
+    } catch (err) {
+      console.error(`[Scheduler] Entity sync failed for ${shopDomain}:`, err.message);
+    }
+
+    // Refresh entity lifecycle (current status + scheduled start/end
+    // from Graph, effective start/end from delivery) and top up any
+    // change-log gaps from the last 7 days.
+    try {
+      const { refreshEntityLifecycle, recomputeEntityDeliveryWindows } = await import("./metaEntityLifecycle.server.js");
+      const lifecycle = await refreshEntityLifecycle(shopDomain);
+      const windows = await recomputeEntityDeliveryWindows(shopDomain);
+      console.log(`[Scheduler] Entity lifecycle for ${shopDomain}: ${lifecycle.updated} refreshed, delivery windows c=${windows.campaign} as=${windows.adset} a=${windows.ad}`);
+    } catch (err) {
+      console.error(`[Scheduler] Entity lifecycle failed for ${shopDomain}:`, err.message);
+    }
+
+    // Attribution-window history self-heal for RECENTLY-onboarded shops
+    // only (the post-onboarding deferred task can be lost to a restart).
+    // Bounded to onboardingStartedAt within 45 days so long-standing
+    // shops (HM etc.) can never be surprise-backfilled; ensureWindowHistory
+    // itself no-ops once history exists or the account has none.
+    try {
+      const db = (await import("../db.server")).default;
+      const rec = await db.shop.findUnique({
+        where: { shopDomain },
+        select: { onboardingCompleted: true, onboardingStartedAt: true },
+      });
+      const recent = rec?.onboardingCompleted && rec?.onboardingStartedAt
+        && (Date.now() - new Date(rec.onboardingStartedAt).getTime()) < 45 * 86400000;
+      if (recent) {
+        const { ensureWindowHistory } = await import("./metaAttributionWindowSync.server.js");
+        const res = await ensureWindowHistory(shopDomain);
+        if (res.status === "backfilled") {
+          console.log(`[Scheduler] Window history self-heal for ${shopDomain}: ${res.rows} rows`);
+        }
+      }
+    } catch (err) {
+      console.error(`[Scheduler] Window history self-heal failed for ${shopDomain}:`, err.message);
+    }
+    try {
+      const { syncMetaChanges } = await import("./metaChangeSync.server.js");
+      const changeResult = await syncMetaChanges(shopDomain, { backfillDays: 7 });
+      console.log(`[Scheduler] Change log 7d reconcile for ${shopDomain}: ${changeResult.added} new, ${changeResult.updated} updated`);
+    } catch (err) {
+      console.error(`[Scheduler] Change log reconcile failed for ${shopDomain}:`, err.message);
+    }
+
+    // Link UTM data to Meta campaigns for any newly imported orders
+    try {
+      const linkResult = await linkUtmToCampaigns(shopDomain);
+      console.log(`[Scheduler] UTM linkage for ${shopDomain}: ${linkResult.linked} linked, ${linkResult.noMatch} no match`);
+    } catch (err) {
+      console.error(`[Scheduler] UTM linkage failed for ${shopDomain}:`, err.message);
+    }
+
+    // Refresh product images so new products (e.g. recent launches)
+    // appear with thumbs on the Products page without waiting for the
+    // 24 h DB cache to expire naturally.
+    try {
+      const { refreshProductImages } = await import("./productImageSync.server.js");
+      const imgResult = await refreshProductImages(shopDomain);
+      console.log(`[Scheduler] Product images for ${shopDomain}: ${imgResult.count} cached`);
+    } catch (err) {
+      console.error(`[Scheduler] Product image refresh failed for ${shopDomain}:`, err.message);
+    }
+
+    // Refresh Meta ad creative thumbnails. Meta CDN URLs are signed and
+    // rotate, so this re-pulls every night to keep the Ad Explorer tiles
+    // working.
+    try {
+      const { refreshAdCreatives } = await import("./metaAdCreativeSync.server.js");
+      const creativeResult = await refreshAdCreatives(shopDomain);
+      console.log(`[Scheduler] Ad creatives for ${shopDomain}: ${creativeResult.updated} updated, ${creativeResult.cached || 0} bytes cached, ${creativeResult.missing} unresolved`);
+    } catch (err) {
+      console.error(`[Scheduler] Ad creative refresh failed for ${shopDomain}:`, err.message);
+    }
+  } catch (err) {
+    console.error(`[Scheduler] Daily sync failed for ${shopDomain}:`, err.message);
   } finally {
     markSyncEnd();
   }
@@ -232,129 +380,18 @@ async function runDailyCycle() {
   const now = new Date();
   const hour = now.getUTCHours();
   const today = now.toISOString().split("T")[0];
-
-  // Run daily sync between 3:00-3:14 AM, once per day
-  if (hour !== 3) return;
-  if (lastDailyRun === today) return;
-  lastDailyRun = today;
-
-  console.log(`[Scheduler] Daily 7-day sync starting at ${now.toISOString()}`);
-  markSyncStart("daily");
   try {
     const shops = await getConnectedShops();
     for (const shop of shops) {
-      try {
-        // Don't compete with manual syncs for Meta API rate limit
-        if (isManualSyncRunning(shop.shopDomain)) {
-          console.log(`[Scheduler] Deferring daily sync for ${shop.shopDomain} - manual task running`);
-          lastDailyRun = null; // Reset so it retries next 15-min check
-          continue;
-        }
-
-        // Same DB-contention reason as the hourly cycle - skip if the
-        // onboarding ingest owns the SQLite pool right now.
-        if (isOnboardingIngestInFlight(shop.shopDomain)) {
-          console.log(`[Scheduler] Deferring daily sync for ${shop.shopDomain} - onboarding ingest in progress`);
-          lastDailyRun = null;
-          continue;
-        }
-
-        // Re-pull 7 days, match each day's new deltas, and rebuild rollups.
-        // Shared with the staleness catch-up so there is one tested path.
-        // (Previously the daily cycle matched but did NOT rebuild rollups,
-        // relying on the next hourly incremental — which left the Ad Campaigns
-        // tiles stale after a backfill until that cycle ran.)
-        await runCatchUp(shop.shopDomain, DAILY_SWEEP_DAYS);
-        console.log(`[Scheduler] Daily sync complete for ${shop.shopDomain}`);
-
-        // Sync campaign/adset/ad created_time metadata
-        try {
-          const entityResult = await syncMetaEntities(shop.shopDomain);
-          console.log(`[Scheduler] Entity sync for ${shop.shopDomain}: ${entityResult.campaigns}c/${entityResult.adsets}as/${entityResult.ads}a`);
-        } catch (err) {
-          console.error(`[Scheduler] Entity sync failed for ${shop.shopDomain}:`, err.message);
-        }
-
-        // Refresh entity lifecycle (current status + scheduled start/end
-        // from Graph, effective start/end from delivery) and top up any
-        // change-log gaps from the last 7 days.
-        try {
-          const { refreshEntityLifecycle, recomputeEntityDeliveryWindows } = await import("./metaEntityLifecycle.server.js");
-          const lifecycle = await refreshEntityLifecycle(shop.shopDomain);
-          const windows = await recomputeEntityDeliveryWindows(shop.shopDomain);
-          console.log(`[Scheduler] Entity lifecycle for ${shop.shopDomain}: ${lifecycle.updated} refreshed, delivery windows c=${windows.campaign} as=${windows.adset} a=${windows.ad}`);
-        } catch (err) {
-          console.error(`[Scheduler] Entity lifecycle failed for ${shop.shopDomain}:`, err.message);
-        }
-
-        // Attribution-window history self-heal for RECENTLY-onboarded shops
-        // only (the post-onboarding deferred task can be lost to a restart).
-        // Bounded to onboardingStartedAt within 45 days so long-standing
-        // shops (HM etc.) can never be surprise-backfilled; ensureWindowHistory
-        // itself no-ops once history exists or the account has none.
-        try {
-          const db = (await import("../db.server")).default;
-          const rec = await db.shop.findUnique({
-            where: { shopDomain: shop.shopDomain },
-            select: { onboardingCompleted: true, onboardingStartedAt: true },
-          });
-          const recent = rec?.onboardingCompleted && rec?.onboardingStartedAt
-            && (Date.now() - new Date(rec.onboardingStartedAt).getTime()) < 45 * 86400000;
-          if (recent) {
-            const { ensureWindowHistory } = await import("./metaAttributionWindowSync.server.js");
-            const res = await ensureWindowHistory(shop.shopDomain);
-            if (res.status === "backfilled") {
-              console.log(`[Scheduler] Window history self-heal for ${shop.shopDomain}: ${res.rows} rows`);
-            }
-          }
-        } catch (err) {
-          console.error(`[Scheduler] Window history self-heal failed for ${shop.shopDomain}:`, err.message);
-        }
-        try {
-          const { syncMetaChanges } = await import("./metaChangeSync.server.js");
-          const changeResult = await syncMetaChanges(shop.shopDomain, { backfillDays: 7 });
-          console.log(`[Scheduler] Change log 7d reconcile for ${shop.shopDomain}: ${changeResult.added} new, ${changeResult.updated} updated`);
-        } catch (err) {
-          console.error(`[Scheduler] Change log reconcile failed for ${shop.shopDomain}:`, err.message);
-        }
-
-        // Link UTM data to Meta campaigns for any newly imported orders
-        try {
-          const linkResult = await linkUtmToCampaigns(shop.shopDomain);
-          console.log(`[Scheduler] UTM linkage for ${shop.shopDomain}: ${linkResult.linked} linked, ${linkResult.noMatch} no match`);
-        } catch (err) {
-          console.error(`[Scheduler] UTM linkage failed for ${shop.shopDomain}:`, err.message);
-        }
-
-        // Refresh product images so new products (e.g. recent launches)
-        // appear with thumbs on the Products page without waiting for the
-        // 24 h DB cache to expire naturally.
-        try {
-          const { refreshProductImages } = await import("./productImageSync.server.js");
-          const imgResult = await refreshProductImages(shop.shopDomain);
-          console.log(`[Scheduler] Product images for ${shop.shopDomain}: ${imgResult.count} cached`);
-        } catch (err) {
-          console.error(`[Scheduler] Product image refresh failed for ${shop.shopDomain}:`, err.message);
-        }
-
-        // Refresh Meta ad creative thumbnails. Meta CDN URLs are signed and
-        // rotate, so this re-pulls every night to keep the Ad Explorer tiles
-        // working.
-        try {
-          const { refreshAdCreatives } = await import("./metaAdCreativeSync.server.js");
-          const creativeResult = await refreshAdCreatives(shop.shopDomain);
-          console.log(`[Scheduler] Ad creatives for ${shop.shopDomain}: ${creativeResult.updated} updated, ${creativeResult.cached || 0} bytes cached, ${creativeResult.missing} unresolved`);
-        } catch (err) {
-          console.error(`[Scheduler] Ad creative refresh failed for ${shop.shopDomain}:`, err.message);
-        }
-      } catch (err) {
-        console.error(`[Scheduler] Daily sync failed for ${shop.shopDomain}:`, err.message);
-      }
+      // Each shop runs once per day in its own 2-5am UTC slot.
+      if (hour !== dailyHourFor(shop.shopDomain)) continue;
+      if (lastDailyRunByShop.get(shop.shopDomain) === today) continue;
+      lastDailyRunByShop.set(shop.shopDomain, today);
+      console.log(`[Scheduler] ${shop.shopDomain}: daily 7-day sync dispatched (slot ${dailyHourFor(shop.shopDomain)}:00 UTC)`);
+      enqueueSerialized(`daily:${shop.shopDomain}`, () => runDailyForShop(shop.shopDomain));
     }
   } catch (err) {
     console.error("[Scheduler] Daily cycle error:", err.message);
-  } finally {
-    markSyncEnd();
   }
 }
 
@@ -490,8 +527,13 @@ export function startScheduler() {
   if (global.__lucidlySchedulerBoot) clearTimeout(global.__lucidlySchedulerBoot);
 
   console.log("[Scheduler] Starting in-process scheduler");
-  console.log("[Scheduler] Hourly: incremental sync (Meta insights + matching + breakdowns)");
-  console.log("[Scheduler] Daily @ 3am: 7-day Meta lookback sync");
+  console.log("[Scheduler] Hourly: incremental sync, per-shop stagger (hash%50 min into the hour)");
+  console.log("[Scheduler] Daily: 7-day Meta lookback, per-shop slot 2-5am UTC");
+
+  // Clear any pending per-shop stagger timers from a previous HMR cycle -
+  // their callbacks reference stale modules.
+  (global.__lucidlyShopTimers || []).forEach(clearTimeout);
+  global.__lucidlyShopTimers = [];
 
   // Warm caches 30 seconds after boot. Makes the user's first tab load fast
   // even on a fresh machine (SQLite page cache + in-process queryCache primed).
