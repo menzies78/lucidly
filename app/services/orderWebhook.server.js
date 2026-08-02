@@ -137,7 +137,9 @@ export async function processOrderWebhook(shopDomain, payload, isCreate) {
 
   // Channel detection
   const sourceName = (payload.source_name || "").toLowerCase();
-  const isOnlineStore = sourceName === "web" || sourceName === "shopify_draft_order" || sourceName === "";
+  // "shop"/"shop_app" = Shop app (Shopify's mobile online storefront). Online,
+  // ad-attributable channel - Meta's pixel fires on Shop app checkouts. POS stays excluded.
+  const isOnlineStore = sourceName === "web" || sourceName === "shopify_draft_order" || sourceName === "" || sourceName === "shop" || sourceName === "shop_app";
   const channelName = sourceName === "web" ? "online_store"
     : sourceName === "pos" ? "pos"
     : sourceName || "unknown";

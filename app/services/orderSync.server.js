@@ -504,7 +504,10 @@ export async function syncOrdersForFitTest(admin, shopDomain) {
       const subtotalPrice = parseFloat(order.subtotalPriceSet?.shopMoney?.amount ?? order.totalPriceSet.shopMoney.amount);
       const currency = order.totalPriceSet.shopMoney.currencyCode;
       const channelHandle = order.channelInformation?.channelDefinition?.handle || "unknown";
-      const isOnlineStore = channelHandle === "online_store" || channelHandle === "web" || channelHandle === "unknown";
+      // "shop" = Shop app (Shopify's mobile online storefront). It's an online,
+      // ad-attributable channel - Meta's pixel fires on Shop app checkouts -
+      // so it counts as online store for matching. POS stays excluded.
+      const isOnlineStore = channelHandle === "online_store" || channelHandle === "web" || channelHandle === "unknown" || channelHandle === "shop";
 
       // frozenTotalPrice = the price at order creation. Shopify's totalPriceSet
       // drifts after exchanges (post-edit it returns Σ line items, so an
@@ -747,7 +750,10 @@ export async function syncOrders(admin, shopDomain) {
       const subtotalPrice = parseFloat(order.subtotalPriceSet.shopMoney.amount);
       const currency = order.totalPriceSet.shopMoney.currencyCode;
       const channelHandle = order.channelInformation?.channelDefinition?.handle || "unknown";
-      const isOnlineStore = channelHandle === "online_store" || channelHandle === "web" || channelHandle === "unknown";
+      // "shop" = Shop app (Shopify's mobile online storefront). It's an online,
+      // ad-attributable channel - Meta's pixel fires on Shop app checkouts -
+      // so it counts as online store for matching. POS stays excluded.
+      const isOnlineStore = channelHandle === "online_store" || channelHandle === "web" || channelHandle === "unknown" || channelHandle === "shop";
 
       // frozenTotalPrice = the price at order creation. totalPriceSet drifts
       // after exchanges (post-edit it returns Σ line items - this is what
