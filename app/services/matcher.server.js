@@ -1739,9 +1739,12 @@ export async function runFillGaps(shopDomain, lookbackDays = 30) {
         continue;
       }
 
-      // Delete the unmatched record if we now have matches
+      // Delete the unmatched record if we now have matches.
+      // deleteMany (not delete): the UTM ground-truth pass earlier in this loop
+      // may have already removed this placeholder by prefix; delete() would
+      // throw P2025 on the stale handle and kill the whole run.
       if (hasUnmatchedRecord) {
-        await db.attribution.delete({ where: { id: hasUnmatchedRecord.id } });
+        await db.attribution.deleteMany({ where: { id: hasUnmatchedRecord.id } });
       }
 
       // Per-slot Meta value (same fix as runAttribution)
