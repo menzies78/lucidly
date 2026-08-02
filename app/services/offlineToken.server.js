@@ -112,6 +112,22 @@ async function doRefresh(shop, session) {
 export async function ensureValidOfflineSession(shop, { force = false } = {}) {
   const session = await sessionStorage.loadSession(offlineSessionId(shop));
   if (!session) return null;
+
+  // Guard (public app only): a stored offline session with NO expiry is
+  // invalid-by-construction when expiring tokens are mandatory — it's a legacy
+  // non-expiring token that Shopify will reject with 401, that isExpiring()
+  // would skip forever, and that the library sees as "valid" so embedded loads
+  // never overwrite it (the 2026-08-02 Vollebak deadlock: installed before
+  // EXPIRING_OFFLINE_TOKENS was live). Delete it so the merchant's next
+  // embedded load token-exchanges a fresh expiring token.
+  if (process.env.EXPIRING_OFFLINE_TOKENS === "true" && !session.expires) {
+    console.warn(
+      `[offlineToken] ${shop}: stored offline session has no expiry on an expiring-tokens app — deleting stale non-expiring session so next embedded load re-mints`,
+    );
+    await sessionStorage.deleteSession(offlineSessionId(shop));
+    return null;
+  }
+
   if (!force && !isExpiring(session)) return session;
 
   let p = inflight.get(shop);
@@ -131,6 +147,13 @@ export async function ensureValidOfflineSession(shop, { force = false } = {}) {
  * raw call hands back an expired token on the public app and 401s.
  */
 export async function getOfflineAdmin(shop, opts) {
-  await ensureValidOfflineSession(shop, opts);
+  const session = await ensureValidOfflineSession(shop, opts);
+  if (!session) {
+    const err = new Error(
+      `[offlineToken] no valid offline session for ${shop} — merchant must re-auth (next embedded load re-mints)`,
+    );
+    err.code = "NO_OFFLINE_SESSION";
+    throw err;
+  }
   return unauthenticated.admin(shop);
 }

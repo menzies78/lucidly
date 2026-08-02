@@ -60,6 +60,11 @@ export async function probeShopToken(shopDomain) {
       return { ok: false, kind: "no_session", detail: "no offline session/token" };
     }
   } catch (err) {
+    if (err?.code === "NO_OFFLINE_SESSION") {
+      // Includes the stale-non-expiring-session guard in offlineToken.server.js
+      // deleting the row mid-probe: not a refresh fault, just "needs re-auth".
+      return { ok: false, kind: "no_session", detail: err.message?.slice(0, 300) };
+    }
     return { ok: false, kind: "refresh_failed", detail: err?.message?.slice(0, 300) || String(err) };
   }
 
