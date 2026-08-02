@@ -279,7 +279,9 @@ async function warmShop(shopDomain) {
   tasks.push(() => queryCached(`${shopDomain}:ordersCustomers`, TTL, () =>
     db.customer.findMany({
       where: { shopDomain },
-      select: { shopifyCustomerId: true, firstOrderDate: true, metaSegment: true, customerEmail: true },
+      // MUST stay identical to the select in orderExplorerData.server.ts —
+      // shared cache key; a narrower warmer silently strips fields.
+      select: { shopifyCustomerId: true, firstOrderDate: true, metaSegment: true, customerEmail: true, inferredGender: true, inferredGenderConfidence: true },
     }),
   ));
 

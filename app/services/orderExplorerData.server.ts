@@ -6,6 +6,7 @@
 // multiple loaders does not double-fetch.
 
 import db from "../db.server";
+import { resolveGender } from "./genderResolution.server.js";
 import { shopLocalDayKey } from "../utils/shopTime.server";
 import { currencySymbolFromCode } from "../utils/currency";
 import { cached as queryCached, DEFAULT_TTL } from "./queryCache.server";
@@ -56,7 +57,9 @@ export async function buildOrderExplorerData(args: OrderExplorerArgs) {
     queryCached(`${shopDomain}:ordersCustomers`, DEFAULT_TTL, () =>
       db.customer.findMany({
         where: { shopDomain },
-        select: { shopifyCustomerId: true, firstOrderDate: true, metaSegment: true, customerEmail: true },
+        // MUST stay identical to the warmer's select in cacheWarmer.server.js
+        // (shared cache key).
+        select: { shopifyCustomerId: true, firstOrderDate: true, metaSegment: true, customerEmail: true, inferredGender: true, inferredGenderConfidence: true },
       }),
     ),
   ]);
@@ -174,6 +177,9 @@ export async function buildOrderExplorerData(args: OrderExplorerArgs) {
       attributionSource: order.utmConfirmedMeta ? "UTM & Lucidly" : "Lucidly",
       mechanism: MECHANISM_LABELS[attr.windowLabel as string] || "",
       mechanismExact: attr.windowExact ?? null,
+      gender: resolveGender(attr.metaGender, customer?.inferredGender || null, customer?.inferredGenderConfidence ?? null) || "",
+      ageBracket: attr.metaAge || "",
+      ageExact: attr.demographicExact ?? null,
       utm: buildUtmString(order),
     });
   }
@@ -198,7 +204,11 @@ export async function buildOrderExplorerData(args: OrderExplorerArgs) {
       netRevenue: attr.metaConversionValue || 0,
       difference: null,
       tag: "Unattributed", confidence: 0, method: attr.matchMethod || "",
-      attributionSource: "Unattributed", mechanism: "", mechanismExact: null, utm: "",
+      attributionSource: "Unattributed", mechanism: "", mechanismExact: null,
+      gender: attr.metaGender || "",
+      ageBracket: attr.metaAge || "",
+      ageExact: attr.demographicExact ?? null,
+      utm: "",
     });
   }
 
@@ -256,7 +266,11 @@ export async function buildOrderExplorerData(args: OrderExplorerArgs) {
       revenue: rev,
       netRevenue: Math.round((rev - refunded) * 100) / 100,
       difference: null, tag, confidence: null, method: "utm",
-      attributionSource: "UTM", mechanism: "", mechanismExact: null, utm: buildUtmString(order),
+      attributionSource: "UTM", mechanism: "", mechanismExact: null,
+      gender: resolveGender(null, customer?.inferredGender || null, customer?.inferredGenderConfidence ?? null) || "",
+      ageBracket: "",
+      ageExact: null,
+      utm: buildUtmString(order),
     });
   }
 
@@ -306,7 +320,11 @@ export async function buildOrderExplorerData(args: OrderExplorerArgs) {
       netRevenue: Math.round((rev - refunded) * 100) / 100,
       difference: null, tag,
       confidence: null, method: "",
-      attributionSource: "Unattributed", mechanism: "", mechanismExact: null, utm: buildUtmString(order),
+      attributionSource: "Unattributed", mechanism: "", mechanismExact: null,
+      gender: resolveGender(null, customer?.inferredGender || null, customer?.inferredGenderConfidence ?? null) || "",
+      ageBracket: "",
+      ageExact: null,
+      utm: buildUtmString(order),
     });
   }
 

@@ -69,6 +69,28 @@ export default function OrderExplorerSection({
     { accessorKey: "customerEmail", header: "Email",
       meta: { maxWidth: "240px", filterType: "text", description: "Customer email address. Use the download to export for manual segmentation" },
       cell: ({ getValue }) => getValue() || "-" },
+    { id: "gender", header: "Gender",
+      meta: { filterType: "multi-select", description: "Customer gender. High-confidence name inference (from billing first name + country) takes precedence; otherwise Meta's demographic signal for the matched ad; otherwise lower-confidence name inference. Blank = no signal from either source" },
+      filterFn: "multiSelect" as any,
+      accessorFn: (row: any) => {
+        const v = row.gender;
+        if (!v || v === "unknown") return "";
+        return v.charAt(0).toUpperCase() + v.slice(1);
+      },
+      cell: ({ getValue }) => getValue() || "-",
+    },
+    { accessorKey: "ageBracket", header: "Age Bracket",
+      meta: { filterType: "multi-select", description: "Age bracket of the converter from Meta's demographic breakdown, assigned at match time. Only present on Meta-matched orders where Meta carried a demographic - sparse by nature. A ~ prefix means probabilistic: several demographic buckets registered in the same sync cycle, the dominant one is shown" },
+      filterFn: "multiSelect" as any,
+      cell: ({ getValue, row }) => {
+        const v = getValue() as string;
+        if (!v) return "-";
+        const exact = (row.original as any).ageExact;
+        return exact === false
+          ? <span style={{ opacity: 0.65 }}>{`~${v}`}</span>
+          : v;
+      },
+    },
     { accessorKey: "orderCount", header: "Orders Placed",
       meta: { align: "right", description: "How many orders this customer had placed at the time of this purchase" },
       cell: ({ getValue }) => {
@@ -215,6 +237,8 @@ export default function OrderExplorerSection({
       customerFirstName: "",
       customerLastName: "",
       customerEmail: "",
+      gender: "",
+      ageBracket: "",
       orderCount: "",
       revenue: fmtPrice(revenue),
       netRevenue: fmtPrice(netRev),
