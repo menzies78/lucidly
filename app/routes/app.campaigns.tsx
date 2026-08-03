@@ -22,6 +22,14 @@ import { authenticate } from "../shopify.server";
 import db from "../db.server";
 import { parseDateRange } from "../utils/dateRange.server";
 import { shopLocalDayKey, shopRangeBounds } from "../utils/shopTime.server";
+import { clampRangeForPlan } from "../services/plan.server";
+import { gateTileDefs } from "../components/GatedTile";
+
+// Free (audit) plan: Campaigns tab allowlist — the four headline stat tiles
+// of the main grid. Everything else renders label-over-blur.
+const CAMPAIGNS_FREE_TILE_IDS = new Set([
+  "totalSpend", "totalRevenue", "totalRoas", "costPerOrder",
+]);
 import { currencySymbolFromCode } from "../utils/currency";
 import { getCachedInsights, computeDataHash, generateInsights } from "../services/aiAnalysis.server";
 import { setProgress, failProgress, completeProgress } from "../services/progress.server";
@@ -322,7 +330,21 @@ export const loader = async ({ request }) => {
   const shop = await db.shop.findUnique({ where: { shopDomain } });
   const tz = shop?.shopifyTimezone || "UTC";
 
-  const { fromDate, toDate, fromKey, toKey, preset, compareFrom, compareTo, compareFromKey, compareToKey, hasComparison, compareLabel } = parseDateRange(request, tz);
+  const freePlan = (shop?.plan || "paid") === "free";
+  const parsedRange = parseDateRange(request, tz);
+  const { toDate, toKey, preset, compareFrom, compareTo, compareFromKey, compareToKey, hasComparison, compareLabel } = parsedRange;
+  let { fromDate, fromKey } = parsedRange;
+  // Free (audit) plan: the rolling 90-day window is the paywall. Clamp at
+  // the single parse point so every query below inherits it.
+  let rangeClamped = false;
+  if (freePlan) {
+    const clamp = clampRangeForPlan(shop, { gte: fromDate, lte: toDate });
+    if (clamp.clamped) {
+      fromDate = clamp.gte;
+      fromKey = shopLocalDayKey(tz, fromDate);
+      rangeClamped = true;
+    }
+  }
 
   const _t0 = Date.now();
 
@@ -1404,6 +1426,7 @@ export const loader = async ({ request }) => {
     // Web-pixel journey tile shown only on the HM + Vollebak apps while it's
     // validated (per-app JOURNEY_REPORTS_ENABLED flag); hidden on the public app.
     journeyReportsEnabled: process.env.JOURNEY_REPORTS_ENABLED === "true",
+    freePlan, rangeClamped,
   });
 };
 
@@ -4075,6 +4098,8 @@ export default function Campaigns() {
     adDemographicsByAd,
     journeyReportsEnabled,
   } = useLoaderData();
+  const data = useLoaderData();
+  const freePlan = (data as any).freePlan === true;
   const cs = currencySymbol || currencySymbolFromCode(null);
   const [searchParams, setSearchParams] = useSearchParams();
 
@@ -5016,7 +5041,7 @@ export default function Campaigns() {
                 <AdExplorerTable rows={rankRows} cs={cs} entityType={rankLevel as "campaign" | "adset" | "ad"} adDemographicsByAd={adDemographicsByAd} onEntityClick={(id, name) => setDrawerEntity({ objectType: rankLevel as any, objectId: id, objectName: name })} />
               </BlockStack>
             </Card>
-            <TileGrid pageId="campaigns-v2" columns={4} tiles={[
+            <TileGrid pageId="campaigns-v2" columns={4} tiles={gateTileDefs([
               { id: "totalSpend", label: "Total Ad Spend", render: () => (
                 <SummaryTile label="Meta Ad Spend" value={fmtPrice(effectiveTotals.spend)}
                   tooltip={{ definition: "Total amount spent on Meta ads within the selected date range" }}
@@ -5121,7 +5146,7 @@ export default function Campaigns() {
                   <AdAgeTile adRows={adRows} cs={cs} onAdClick={(id, name) => setDrawerEntity({ objectType: "ad", objectId: id, objectName: name })} />
                 </Card>
               )},
-            ] as TileDef[]} />
+            ] as TileDef[], freePlan, CAMPAIGNS_FREE_TILE_IDS)} />
             </>
           );
         })()}

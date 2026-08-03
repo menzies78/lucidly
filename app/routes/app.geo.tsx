@@ -12,6 +12,15 @@ import { useState, useMemo, useCallback } from "react";
 import { authenticate } from "../shopify.server";
 import db from "../db.server";
 import { parseDateRange } from "../utils/dateRange.server";
+import { shopLocalDayKey } from "../utils/shopTime.server";
+import { clampRangeForPlan } from "../services/plan.server";
+import { gateTileDefs } from "../components/GatedTile";
+
+// Free (audit) plan: Geo tab allowlist — the four superlative country tiles.
+// Everything else renders label-over-blur.
+const GEO_FREE_TILE_IDS = new Set([
+  "highestNewCustRev", "highestROAS", "highestAOV", "lowestCPA",
+]);
 import { currencySymbolFromCode } from "../utils/currency";
 import { getCachedInsights, computeDataHash, generateInsights } from "../services/aiAnalysis.server";
 import { setProgress, failProgress, completeProgress } from "../services/progress.server";
@@ -32,7 +41,21 @@ export const loader = async ({ request }) => {
   const currencySymbol = currencySymbolFromCode(shop?.shopifyCurrency);
 
   const tz = shop?.shopifyTimezone || "UTC";
-  const { fromDate, toDate, fromKey, toKey, preset } = parseDateRange(request, tz);
+  const freePlan = (shop?.plan || "paid") === "free";
+  const parsedRange = parseDateRange(request, tz);
+  const { toDate, toKey, preset } = parsedRange;
+  let { fromDate, fromKey } = parsedRange;
+  // Free (audit) plan: the rolling 90-day window is the paywall. Clamp at
+  // the single parse point so every query below inherits it.
+  let rangeClamped = false;
+  if (freePlan) {
+    const clamp = clampRangeForPlan(shop, { gte: fromDate, lte: toDate });
+    if (clamp.clamped) {
+      fromDate = clamp.gte;
+      fromKey = shopLocalDayKey(tz, fromDate);
+      rangeClamped = true;
+    }
+  }
 
   // ── DailyGeoRollup is rebuilt at the end of every incremental sync. The
   // loader simply scans the window-of-interest and sums in JS. No raw
@@ -388,6 +411,7 @@ export const loader = async ({ request }) => {
     aiGeneratedAt,
     aiIsStale,
     fromKey, toKey, preset,
+    freePlan, rangeClamped,
   });
 };
 
@@ -1291,6 +1315,8 @@ export default function GeoPerformance() {
     aiCachedInsights, aiGeneratedAt, aiIsStale,
     fromKey, toKey, preset,
   } = useLoaderData<typeof loader>();
+  const data = useLoaderData<typeof loader>();
+  const freePlan = (data as any).freePlan === true;
   const cs = currencySymbol || "\u00a3";
 
   const [selectedTab, setSelectedTab] = useState(0);
@@ -1660,7 +1686,7 @@ export default function GeoPerformance() {
               above the metric, with everything centred so the tile reads as
               "country, then number". This is a country-level page; the flag
               is the takeaway, not a decoration. */}
-          <TileGrid pageId="geo-v3" columns={4} tiles={[
+          <TileGrid pageId="geo-v3" columns={4} tiles={gateTileDefs([
             { id: "highestNewCustRev", label: "Highest New Customer Revenue", render: () => (
               <SummaryTile
                 label="Highest New Customer Revenue"
@@ -1717,7 +1743,7 @@ export default function GeoPerformance() {
                 tooltip={{ definition: `Country with the lowest Meta cost per attributed order within the selected date range (min ${quickStats.MIN_ORDERS} orders)` }}
               />
             )},
-          ] as TileDef[]} />
+          ] as TileDef[], freePlan, GEO_FREE_TILE_IDS)} />
 
           {/* ═══ VIPs per Country ═══ */}
           <VipsByCountryTile blob={customerMapBlob} cs={cs} />

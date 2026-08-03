@@ -12,6 +12,14 @@ import { authenticate } from "../shopify.server";
 import db from "../db.server";
 import { parseDateRange } from "../utils/dateRange.server";
 import { shopLocalDayKey, shopRangeBounds } from "../utils/shopTime.server";
+import { clampRangeForPlan } from "../services/plan.server";
+import { gateTileDefs } from "../components/GatedTile";
+
+// Free (audit) plan: Products tab allowlist — the four headline stat tiles.
+// Everything else renders label-over-blur.
+const PRODUCTS_FREE_TILE_IDS = new Set([
+  "metaAdOrders", "topMetaProduct", "bestGateway", "highestRefund",
+]);
 import { cached as queryCached, DEFAULT_TTL } from "../services/queryCache.server";
 import type { ColumnDef } from "@tanstack/react-table";
 import { getCachedInsights, computeDataHash, generateInsights } from "../services/aiAnalysis.server";
@@ -34,7 +42,21 @@ export const loader = async ({ request }) => {
   const shopDomain = session.shop;
   const shopForTz = await db.shop.findUnique({ where: { shopDomain } });
   const tz = shopForTz?.shopifyTimezone || "UTC";
-  const { fromDate, toDate, fromKey, toKey, preset } = parseDateRange(request, tz);
+  const freePlan = (shopForTz?.plan || "paid") === "free";
+  const parsedRange = parseDateRange(request, tz);
+  const { toDate, toKey, preset } = parsedRange;
+  let { fromDate, fromKey } = parsedRange;
+  // Free (audit) plan: the rolling 90-day window is the paywall. Clamp at
+  // the single parse point so every query below inherits it.
+  let rangeClamped = false;
+  if (freePlan) {
+    const clamp = clampRangeForPlan(shopForTz, { gte: fromDate, lte: toDate });
+    if (clamp.clamped) {
+      fromDate = clamp.gte;
+      fromKey = shopLocalDayKey(tz, fromDate);
+      rangeClamped = true;
+    }
+  }
 
   // ── Tile-level window selectors ──
   // Entry-to-LTV and Customer Product Journey deliberately run on their own
@@ -960,6 +982,7 @@ export const loader = async ({ request }) => {
     entryToLtv, entryToLtvCohortAvg,
     entryLtvWin, journeyWin,
     fromKey, toKey, preset,
+    freePlan, rangeClamped,
   });
 };
 
@@ -1812,6 +1835,8 @@ export default function Products() {
     entryLtvWin, journeyWin,
     fromKey, toKey, preset,
   } = useLoaderData<typeof loader>();
+  const data = useLoaderData<typeof loader>();
+  const freePlan = (data as any).freePlan === true;
 
   const fmtPrice = (v: number) => `${cs}${Math.round(v).toLocaleString()}`;
   const [searchParams, setSearchParams] = useSearchParams();
@@ -2126,7 +2151,7 @@ export default function Products() {
         <PageSummary scope="Product" bullets={summaryBullets} fromKey={fromKey} toKey={toKey} preset={preset} />
 
         {/* ── All tiles (drag/drop, show/hide) - everything except main table ── */}
-        <TileGrid pageId="products" columns={4} tiles={[
+        <TileGrid pageId="products" columns={4} tiles={gateTileDefs([
           { id: "metaAdOrders", label: "Meta Product Purchases", render: () => (
             <SummaryTile
               label="Meta Product Purchases"
@@ -2521,7 +2546,7 @@ export default function Products() {
               </BlockStack>
             </Card>
           )},
-        ] as TileDef[]} />
+        ] as TileDef[], freePlan, PRODUCTS_FREE_TILE_IDS)} />
 
         {/* ── Product Table ── */}
         <Card>
