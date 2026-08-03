@@ -11,6 +11,16 @@ import db from "../db.server";
 import { cached as queryCached, DEFAULT_TTL } from "../services/queryCache.server";
 import { parseDateRange } from "../utils/dateRange.server";
 import { shopLocalDayKey, shopRangeBounds } from "../utils/shopTime.server";
+import { clampRangeForPlan } from "../services/plan.server";
+import { GatedTile, gateTileDefs } from "../components/GatedTile";
+
+// Free (audit) plan: Customers tab allowlist — summary tiles + the four
+// identity sections. Everything else renders label-over-blur.
+const CUSTOMERS_FREE_TILE_IDS = new Set([
+  "totalMetaCustomers", "totalMetaRevenue", "newMetaCustomers", "newMetaRevenue",
+  "metaAov", "aovCpa", "repeatCustomers", "newCustCpa",
+  "customerBreakdown", "demographics", "geography", "customerJourney",
+]);
 import { currencySymbolFromCode } from "../utils/currency";
 import { getCachedInsights, computeDataHash, generateInsights } from "../services/aiAnalysis.server";
 import { setProgress, failProgress, completeProgress } from "../services/progress.server";
@@ -41,7 +51,21 @@ export const loader = async ({ request }) => {
   const journeyReportsEnabled = process.env.JOURNEY_REPORTS_ENABLED === "true";
   const shopForTz = await db.shop.findUnique({ where: { shopDomain } });
   const tz = shopForTz?.shopifyTimezone || "UTC";
-  const { fromDate, toDate, fromKey, toKey, preset } = parseDateRange(request, tz);
+  const freePlan = (shopForTz?.plan || "paid") === "free";
+  const parsedRange = parseDateRange(request, tz);
+  const { toDate, toKey, preset } = parsedRange;
+  let { fromDate, fromKey } = parsedRange;
+  // Free (audit) plan: the rolling 90-day window is the paywall. Clamp at
+  // the single parse point so every query below inherits it.
+  let rangeClamped = false;
+  if (freePlan) {
+    const clamp = clampRangeForPlan(shopForTz, { gte: fromDate, lte: toDate });
+    if (clamp.clamped) {
+      fromDate = clamp.gte;
+      fromKey = shopLocalDayKey(tz, fromDate);
+      rangeClamped = true;
+    }
+  }
   const _t0 = Date.now();
 
   const r2 = (v: number) => Math.round(v * 100) / 100;
@@ -1320,6 +1344,27 @@ export const loader = async ({ request }) => {
     fromKey, toKey, preset,
     orderExplorer,
     journeyReportsEnabled,
+    // ── Free-plan sanitization: paid-class data (lifetime aggregates,
+    // cohort/LTV explorers, customer/order rosters) must never cross the
+    // wire on the audit tier — GatedTile renders placeholders, but the
+    // paywall holds HERE, not in CSS. Shapes preserved (0/[]/{}-alikes)
+    // so component-body math can't crash. Window-scoped summary data
+    // ships normally: it's already bounded by the 90-day clamp above.
+    ...(freePlan ? {
+      metaNewCount: 0, mnAvgLtv: 0, mnAvgOrders: 0, mnRepeatRate: 0, mnAvgAov: 0,
+      mnCPA: 0, mnLtvCac: 0, mnPaybackOrders: 0, mnMedianTimeTo2nd: 0, mnReorderWithin90: 0,
+      allCount: 0, allAvgLtv: 0, allAvgOrders: 0, allRepeatRate: 0, allAvgAov: 0,
+      allMedianTimeTo2nd: 0, allReorderWithin90: 0,
+      metaSpendByAcqMonth: {},
+      ltvBenchmark: { meta: { maxWindow: 0, windows: [] }, all: { maxWindow: 0, windows: [] } },
+      ltvTile: { meta: {}, all: {} },
+      ltvRecent: { meta: [], all: [] },
+      ltvMonthly: { meta: { rows: [], maxMonth: 0 }, all: { rows: [], maxMonth: 0 } },
+      ltvCustomers: [],
+      weeklyCohortSeries: { all: [], meta: [] },
+      orderExplorer: null,
+    } : {}),
+    freePlan, rangeClamped,
   });
 };
 
@@ -2025,6 +2070,7 @@ const layoutStyles = `
 
 export default function Customers() {
   const data = useLoaderData<typeof loader>();
+  const freePlan = (data as any).freePlan === true;
   const {
     rows, dailyData, prevDailyData,
     metaCount, organicCount, metaAvgLtv, organicAvgLtv,
@@ -2768,7 +2814,7 @@ export default function Customers() {
         <PageSummary scope="Customer" bullets={summaryBullets} fromKey={data.fromKey} toKey={data.toKey} preset={data.preset} />
 
         {/* ═══ ALL TILES (drag/drop, show/hide) ═══ */}
-        <TileGrid pageId="customers-v8" columns={4} tiles={[
+        <TileGrid pageId="customers-v8" columns={4} tiles={gateTileDefs([
           { id: "customerBreakdown", label: "Meta Customer Breakdown Summary", span: 2, render: () => {
             // Plain-language read of the actual split (no invented benchmarks).
             // "Existing" = repeat (returning Meta-acquired) + retargeted.
@@ -4535,7 +4581,7 @@ export default function Customers() {
               <WeeklyCohortRevenue weekly={weeklyCohortSeries} cs={cs} />
             </Card>
           )},
-        ] as TileDef[]} />
+        ] as TileDef[], freePlan, CUSTOMERS_FREE_TILE_IDS)} />
 
         {/* Journey-dependent views (web pixel). Greyed until touches arrive.
             Shown only on the HM + Vollebak apps while being validated (per-app
@@ -4557,6 +4603,15 @@ export default function Customers() {
 
         {/* Order Explorer (moved here from /app/orders) — every Shopify
             order in the selected period, tagged by Meta attribution. */}
+        {freePlan ? (
+          <Card>
+            <BlockStack gap="300">
+              <Text as="h2" variant="headingLg">Order Explorer</Text>
+              <Text as="p" tone="subdued">Every Shopify order in the selected period, tagged by Meta attribution — with the exact customer behind each one.</Text>
+              <GatedTile gated minHeight={260}>{null}</GatedTile>
+            </BlockStack>
+          </Card>
+        ) : (
         <OrderExplorerSection
           rows={orderExplorer.rows}
           campaigns={orderExplorer.campaigns}
@@ -4574,6 +4629,7 @@ export default function Customers() {
             setSearchParams(next, { replace: true });
           }}
         />
+        )}
       </BlockStack>
       </ReportTabs>
     </Page>
