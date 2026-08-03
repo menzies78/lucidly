@@ -23,6 +23,14 @@ primary_region = "lhr"
   # Verified Resend sending domain (seelucidly.com). All app email (ops alerts +
   # merchant onboarding) sends from here; DKIM/SPF verified so it won't spam-file.
   LUCIDLY_FROM_EMAIL = "Lucidly <hello@seelucidly.com>"
+  # V8 heap cap for `npm start` (package.json parametrized default 3072).
+  # Raised to 4096 on 2026-08-03 after the post-merge hourly IncrementalSync hit
+  # the V8 FATAL "JavaScript heap out of memory" in rebuildCampaignRollups for
+  # Vollebak (621k+ MetaInsight rows loaded in-memory) and crash-looped the
+  # machine (exit 134). 8GB box → ~4GB non-heap margin remains for SQLite
+  # mmap/page cache, Prisma engine, sharp, matcher workers. The real fix is
+  # SQL-side aggregation in campaignRollups; this buys headroom.
+  LUCIDLY_HEAP_MB = "4096"
 
 [http_service]
   internal_port = 3000
@@ -35,12 +43,12 @@ primary_region = "lhr"
   # 4x/8GB restored 2026-08 for the VB+HM data merge: this box now carries the
   # merged data of every shop. VB ALONE was kernel-OOM-killed 2x/day on 2x/4GB
   # (2026-05-05, Fly "OOM: node killed" emails) — same data now lives here, so
-  # 4x/8GB is the floor, not an upgrade. NOTE: the V8 heap cap stays at
-  # --max-old-space-size=3072 in package.json `start` (shared by all apps,
-  # deliberate): the ~5GB non-heap margin is what absorbs SQLite mmap/page
-  # cache, the Prisma engine process, sharp buffers and the 3 matcher worker
-  # threads. Do NOT raise the heap cap unless logs show the V8 FATAL
-  # "JavaScript heap out of memory" signature (kernel OOM = add RAM instead).
+  # 4x/8GB is the floor, not an upgrade. NOTE: the V8 heap cap is env-tunable
+  # via LUCIDLY_HEAP_MB (package.json `start`, default 3072). Set to 4096 here
+  # on 2026-08-03 after the V8 FATAL "JavaScript heap out of memory" signature
+  # appeared post-merge (see LUCIDLY_HEAP_MB above). The remaining ~4GB
+  # non-heap margin absorbs SQLite mmap/page cache, the Prisma engine process,
+  # sharp buffers and the 3 matcher worker threads (kernel OOM = add RAM).
   # shared-cpu-2x hard-caps at 4GB on Fly, so 8GB forces the 4x size.
   size = "shared-cpu-4x"
   memory = "8192mb"

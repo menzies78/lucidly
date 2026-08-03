@@ -9,7 +9,7 @@
     "deploy": "shopify app deploy",
     "config:use": "shopify app config use",
     "env": "shopify app env",
-    "start": "node --expose-gc --max-old-space-size=3072 ./node_modules/@remix-run/serve/dist/cli.js ./build/server/index.js",
+    "start": "node --expose-gc --max-old-space-size=${LUCIDLY_HEAP_MB:-3072} ./node_modules/@remix-run/serve/dist/cli.js ./build/server/index.js",
     "docker-start": "npm run setup && npm run start",
     "setup": "prisma migrate deploy",
     "lint": "eslint --cache --cache-location ./node_modules/.cache/eslint .",
