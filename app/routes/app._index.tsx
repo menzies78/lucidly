@@ -16,6 +16,7 @@ import { parseDateRange } from "../utils/dateRange.server";
 import { currencySymbolFromCode } from "../utils/currency";
 import { cached as queryCached } from "../services/queryCache.server";
 import { isInternalShop } from "../utils/access.server";
+import { planForNewInstall } from "../services/plan.server";
 
 export const loader = async ({ request }) => {
   const { admin, session } = await authenticate.admin(request);
@@ -36,7 +37,13 @@ export const loader = async ({ request }) => {
   if (!shop) {
     await db.shop.upsert({
       where: { shopDomain },
-      create: { shopDomain, onboardingPhase: "welcome" },
+      create: {
+        shopDomain,
+        onboardingPhase: "welcome",
+        // "free" only once FREE_TIER_ENABLED launches; "paid" until then.
+        plan: planForNewInstall(),
+        planChangedAt: new Date(),
+      },
       update: {},
     });
   }

@@ -1,4 +1,5 @@
 import db from "../db.server";
+import { planForNewInstall } from "./plan.server.js";
 import crypto from "crypto";
 import { setProgress, completeProgress, failProgress } from "./progress.server";
 import { isPaidMetaUtm } from "../utils/utmClassification.js";
@@ -454,7 +455,7 @@ export async function syncOrdersForFitTest(admin, shopDomain) {
       if (detectedTimezone) updateData.shopifyTimezone = detectedTimezone;
       await db.shop.upsert({
         where: { shopDomain },
-        create: { shopDomain, ...updateData },
+        create: { shopDomain, ...updateData, plan: planForNewInstall(), planChangedAt: new Date() },
         update: updateData,
       });
     }
@@ -579,7 +580,7 @@ export async function syncOrders(admin, shopDomain) {
       if (detectedTimezone) updateData.shopifyTimezone = detectedTimezone;
       await db.shop.upsert({
         where: { shopDomain },
-        create: { shopDomain, ...updateData },
+        create: { shopDomain, ...updateData, plan: planForNewInstall(), planChangedAt: new Date() },
         update: updateData,
       });
       console.log(`[OrderSync] Detected shop currency: ${detectedCurrency}, timezone: ${detectedTimezone}`);

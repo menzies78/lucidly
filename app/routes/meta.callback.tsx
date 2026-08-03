@@ -1,4 +1,5 @@
 import "dotenv/config";
+import { planForNewInstall } from "../services/plan.server";
 import db from "../db.server";
 import { exchangeMetaCode, getMetaAdAccounts, getMetaAttributionWindow } from "../services/metaAuth.server";
 import { startOnboardingIngest } from "../services/ingestOrchestrator.server";
@@ -166,7 +167,7 @@ export const loader = async ({ request }) => {
     // Save token immediately so it's available for account selection
     await db.shop.upsert({
       where: { shopDomain },
-      create: { shopDomain, metaAccessToken: accessToken },
+      create: { shopDomain, metaAccessToken: accessToken, plan: planForNewInstall(), planChangedAt: new Date() },
       update: { metaAccessToken: accessToken },
     });
 

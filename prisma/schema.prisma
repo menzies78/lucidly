@@ -88,6 +88,22 @@ model Shop {
   // doubles as the "this row's data is fake" marker for safe quarantine/wipe.
   demoMode            Boolean    @default(false)
   demoSeededAt        DateTime?
+  // ── Plan tier (free audit tier vs paid) ──
+  // "free" = audit tier: 90-day rolling window, daily sync, gated tiles.
+  // "trial" = full product on the 30-day trial. "paid" = subscribed.
+  // Schema default is "free" (correct for new installs once FREE_TIER_ENABLED
+  // ships); the migration grandfathers all existing shops to "paid".
+  plan                  String     @default("free")
+  planChangedAt         DateTime?
+  // Oldest imported date for this shop. Frozen as the backfill boundary at
+  // upgrade time; loaders clamp free-plan queries to max(dataWindowStart,
+  // now-90d).
+  dataWindowStart       DateTime?
+  // Upgrade history-extension job: "none" | "pending" | "running" | "complete"
+  // | "failed". Cursor is the last fully-imported day (ISO date) walking
+  // backwards from dataWindowStart — crash-safe resume.
+  historyBackfillStatus String     @default("none")
+  historyBackfillCursor String?
 }
 
 // Persistent record of every async ingest unit so we can resume on
@@ -123,6 +139,11 @@ model Customer {
   firstOrderDate      DateTime?
   lastOrderDate       DateTime?
   secondOrderDate     DateTime?
+  // Evidence grade behind metaSegment: "matched" = live matcher saw the
+  // acquisition; "utm" = first order carried Meta UTMs (Shopify's record,
+  // lower-bound truth); "unknown" = acquired pre-install, unclassifiable
+  // without the paid history backfill. Never render utm/unknown as matched.
+  segmentSource       String   @default("unknown")
   firstOrderValue     Float    @default(0)
   totalOrders         Int      @default(0)
   totalSpent          Float    @default(0)

@@ -81,7 +81,7 @@ async function getConnectedShops() {
       // never run live Meta syncs against them (they'd fail and churn the pool).
       demoMode: false,
     },
-    select: { shopDomain: true },
+    select: { shopDomain: true, plan: true },
   });
 }
 
@@ -251,6 +251,13 @@ async function runHourlyCycle() {
     }
     global.__lucidlyShopTimers ??= [];
     for (const shop of shops) {
+      // Free (audit) tier syncs once a day via the daily cycle — the hourly
+      // loop is the paid plan's freshness. Keeps free-tier compute ~24x
+      // cheaper and makes "hourly matching" a truthful upgrade lever.
+      if (shop.plan === "free") {
+        console.log(`[Scheduler] ${shop.shopDomain}: free plan — daily cycle only`);
+        continue;
+      }
       const delayMs = hourlyOffsetMs(shop.shopDomain);
       console.log(`[Scheduler] ${shop.shopDomain}: hourly sync scheduled +${Math.round(delayMs / 60000)}min`);
       global.__lucidlyShopTimers.push(setTimeout(() => {

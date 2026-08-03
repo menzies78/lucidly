@@ -1,6 +1,7 @@
 // Ensures required webhook subscriptions exist for a shop. Idempotent.
 // Called on auth (install/reauth) and on first app load per process per shop.
 import db from "../db.server";
+import { planForNewInstall } from "./plan.server.js";
 
 const REQUIRED = [
   { topic: "ORDERS_CREATE", path: "/webhooks/orders/create" },
@@ -65,7 +66,7 @@ export async function ensureWebhooks(shopDomain, accessToken) {
   try {
     await db.shop.upsert({
       where: { shopDomain },
-      create: { shopDomain, webhooksRegisteredAt: new Date() },
+      create: { shopDomain, webhooksRegisteredAt: new Date(), plan: planForNewInstall(), planChangedAt: new Date() },
       update: { webhooksRegisteredAt: new Date() },
     });
   } catch (err) {
