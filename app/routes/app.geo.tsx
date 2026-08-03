@@ -14,7 +14,7 @@ import db from "../db.server";
 import { parseDateRange } from "../utils/dateRange.server";
 import { shopLocalDayKey } from "../utils/shopTime.server";
 import { clampRangeForPlan } from "../services/plan.server";
-import { gateTileDefs } from "../components/GatedTile";
+import { GatedTile, gateTileDefs } from "../components/GatedTile";
 
 // Free (audit) plan: Geo tab allowlist — the four superlative country tiles.
 // Everything else renders label-over-blur.
@@ -1644,6 +1644,75 @@ export default function GeoPerformance() {
     </Popover>
   );
 
+  // ═══ 0. QUICK-STAT TILES (geo-v3) ═══
+  // Flag is the hero - rendered at 80px (poster-sized) on its own line
+  // above the metric, with everything centred so the tile reads as
+  // "country, then number". This is a country-level page; the flag
+  // is the takeaway, not a decoration.
+  // Assigned to a variable so the free plan can lead the page with it
+  // (above PageSummary) while paid keeps the original order — one JSX
+  // instance, placed conditionally, never duplicated.
+  const superlativeTiles = (
+    <TileGrid pageId="geo-v3" columns={4} tiles={gateTileDefs([
+      { id: "highestNewCustRev", label: "Highest New Customer Revenue", render: () => (
+        <SummaryTile
+          label="Highest New Customer Revenue"
+          centered
+          value={quickStats.highestNewCustRev ? (
+            <span style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "10px" }}>
+              <span style={{ fontSize: "80px", lineHeight: 1 }}>{countryFlag(quickStats.highestNewCustRev.country)}</span>
+              <span>{fmtCompact(quickStats.highestNewCustRev.newCustomerRevenue, cs)}</span>
+            </span>
+          ) : "-"}
+          subtitle={quickStats.highestNewCustRev ? `${countryName(quickStats.highestNewCustRev.country)} · ${quickStats.highestNewCustRev.newCustomers} new customers` : "No data"}
+          tooltip={{ definition: "Country generating the most revenue from first-time Meta-acquired customers within the selected date range" }}
+        />
+      )},
+      { id: "highestROAS", label: "Highest ROAS", render: () => (
+        <SummaryTile
+          label="Highest ROAS"
+          centered
+          value={quickStats.highestROAS ? (
+            <span style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "10px" }}>
+              <span style={{ fontSize: "80px", lineHeight: 1 }}>{countryFlag(quickStats.highestROAS.country)}</span>
+              <span>{quickStats.highestROAS.blendedROAS}x</span>
+            </span>
+          ) : "-"}
+          subtitle={quickStats.highestROAS ? `${countryName(quickStats.highestROAS.country)} · ${quickStats.highestROAS.attributedOrders} orders` : `Min ${quickStats.MIN_ORDERS} orders needed`}
+          tooltip={{ definition: `Country with the highest Meta blended ROAS within the selected date range (min ${quickStats.MIN_ORDERS} attributed orders)`, calc: "(Matched + unverified revenue) ÷ Meta spend per country" }}
+        />
+      )},
+      { id: "highestAOV", label: "Highest AOV", render: () => (
+        <SummaryTile
+          label="Highest AOV"
+          centered
+          value={quickStats.highestAOV ? (
+            <span style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "10px" }}>
+              <span style={{ fontSize: "80px", lineHeight: 1 }}>{countryFlag(quickStats.highestAOV.country)}</span>
+              <span>{cs}{Math.round(quickStats.highestAOV.aov).toLocaleString()}</span>
+            </span>
+          ) : "-"}
+          subtitle={quickStats.highestAOV ? `${countryName(quickStats.highestAOV.country)} · ${quickStats.highestAOV.attributedOrders} orders` : `Min ${quickStats.MIN_ORDERS} orders needed`}
+          tooltip={{ definition: `Country with the highest average order value among Meta-attributed orders (min ${quickStats.MIN_ORDERS} orders)`, calc: "Attributed revenue ÷ attributed orders per country" }}
+        />
+      )},
+      { id: "lowestCPA", label: "Lowest CPA", render: () => (
+        <SummaryTile
+          label="Lowest CPA"
+          centered
+          value={quickStats.lowestCPA ? (
+            <span style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "10px" }}>
+              <span style={{ fontSize: "80px", lineHeight: 1 }}>{countryFlag(quickStats.lowestCPA.country)}</span>
+              <span>{cs}{Math.round(quickStats.lowestCPA.cpa)}</span>
+            </span>
+          ) : "-"}
+          subtitle={quickStats.lowestCPA ? `${countryName(quickStats.lowestCPA.country)} · ${quickStats.lowestCPA.attributedOrders} orders` : `Min ${quickStats.MIN_ORDERS} orders needed`}
+          tooltip={{ definition: `Country with the lowest Meta cost per attributed order within the selected date range (min ${quickStats.MIN_ORDERS} orders)` }}
+        />
+      )},
+    ] as TileDef[], freePlan, GEO_FREE_TILE_IDS)} />
+  );
+
   if (!hasData) {
     return (
       <Page title="Countries" fullWidth>
@@ -1666,6 +1735,11 @@ export default function GeoPerformance() {
       <ReportTabs>
         <BlockStack gap="500">
 
+          {/* Free (audit) plan: the four superlative tiles lead the page —
+              they're the free tier's hero content, so they render above the
+              summary and everything else. Paid order is unchanged below. */}
+          {freePlan && superlativeTiles}
+
           {/* Hidden for V1 - bring back in V2. Loader wiring kept intact. */}
           {false && (
             <AiInsightsPanel
@@ -1679,77 +1753,48 @@ export default function GeoPerformance() {
           <PageSummary scope="Country" bullets={summaryBullets} fromKey={fromKey} toKey={toKey} preset={preset} />
 
           {/* ═══ CUSTOMER MAP EXPLORER ═══ */}
-          <CustomerMapExplorer blob={customerMapBlob} cs={cs} />
+          {freePlan ? (
+            <Card>
+              <BlockStack gap="300">
+                <Text as="h2" variant="headingLg">Customer Map Explorer</Text>
+                <Text as="p" variant="bodySm" tone="subdued">Every customer plotted on a world map — VIPs, new vs returning, city hotspots.</Text>
+                <GatedTile gated minHeight={220}>{null}</GatedTile>
+              </BlockStack>
+            </Card>
+          ) : (
+            <CustomerMapExplorer blob={customerMapBlob} cs={cs} />
+          )}
 
           {/* ═══ 0. QUICK-STAT TILES ═══ */}
-          {/* Flag is the hero - rendered at 80px (poster-sized) on its own line
-              above the metric, with everything centred so the tile reads as
-              "country, then number". This is a country-level page; the flag
-              is the takeaway, not a decoration. */}
-          <TileGrid pageId="geo-v3" columns={4} tiles={gateTileDefs([
-            { id: "highestNewCustRev", label: "Highest New Customer Revenue", render: () => (
-              <SummaryTile
-                label="Highest New Customer Revenue"
-                centered
-                value={quickStats.highestNewCustRev ? (
-                  <span style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "10px" }}>
-                    <span style={{ fontSize: "80px", lineHeight: 1 }}>{countryFlag(quickStats.highestNewCustRev.country)}</span>
-                    <span>{fmtCompact(quickStats.highestNewCustRev.newCustomerRevenue, cs)}</span>
-                  </span>
-                ) : "-"}
-                subtitle={quickStats.highestNewCustRev ? `${countryName(quickStats.highestNewCustRev.country)} · ${quickStats.highestNewCustRev.newCustomers} new customers` : "No data"}
-                tooltip={{ definition: "Country generating the most revenue from first-time Meta-acquired customers within the selected date range" }}
-              />
-            )},
-            { id: "highestROAS", label: "Highest ROAS", render: () => (
-              <SummaryTile
-                label="Highest ROAS"
-                centered
-                value={quickStats.highestROAS ? (
-                  <span style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "10px" }}>
-                    <span style={{ fontSize: "80px", lineHeight: 1 }}>{countryFlag(quickStats.highestROAS.country)}</span>
-                    <span>{quickStats.highestROAS.blendedROAS}x</span>
-                  </span>
-                ) : "-"}
-                subtitle={quickStats.highestROAS ? `${countryName(quickStats.highestROAS.country)} · ${quickStats.highestROAS.attributedOrders} orders` : `Min ${quickStats.MIN_ORDERS} orders needed`}
-                tooltip={{ definition: `Country with the highest Meta blended ROAS within the selected date range (min ${quickStats.MIN_ORDERS} attributed orders)`, calc: "(Matched + unverified revenue) ÷ Meta spend per country" }}
-              />
-            )},
-            { id: "highestAOV", label: "Highest AOV", render: () => (
-              <SummaryTile
-                label="Highest AOV"
-                centered
-                value={quickStats.highestAOV ? (
-                  <span style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "10px" }}>
-                    <span style={{ fontSize: "80px", lineHeight: 1 }}>{countryFlag(quickStats.highestAOV.country)}</span>
-                    <span>{cs}{Math.round(quickStats.highestAOV.aov).toLocaleString()}</span>
-                  </span>
-                ) : "-"}
-                subtitle={quickStats.highestAOV ? `${countryName(quickStats.highestAOV.country)} · ${quickStats.highestAOV.attributedOrders} orders` : `Min ${quickStats.MIN_ORDERS} orders needed`}
-                tooltip={{ definition: `Country with the highest average order value among Meta-attributed orders (min ${quickStats.MIN_ORDERS} orders)`, calc: "Attributed revenue ÷ attributed orders per country" }}
-              />
-            )},
-            { id: "lowestCPA", label: "Lowest CPA", render: () => (
-              <SummaryTile
-                label="Lowest CPA"
-                centered
-                value={quickStats.lowestCPA ? (
-                  <span style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "10px" }}>
-                    <span style={{ fontSize: "80px", lineHeight: 1 }}>{countryFlag(quickStats.lowestCPA.country)}</span>
-                    <span>{cs}{Math.round(quickStats.lowestCPA.cpa)}</span>
-                  </span>
-                ) : "-"}
-                subtitle={quickStats.lowestCPA ? `${countryName(quickStats.lowestCPA.country)} · ${quickStats.lowestCPA.attributedOrders} orders` : `Min ${quickStats.MIN_ORDERS} orders needed`}
-                tooltip={{ definition: `Country with the lowest Meta cost per attributed order within the selected date range (min ${quickStats.MIN_ORDERS} orders)` }}
-              />
-            )},
-          ] as TileDef[], freePlan, GEO_FREE_TILE_IDS)} />
+          {/* On the free plan this grid renders at the very top of the page
+              instead (see above) — never twice. */}
+          {!freePlan && superlativeTiles}
 
           {/* ═══ VIPs per Country ═══ */}
-          <VipsByCountryTile blob={customerMapBlob} cs={cs} />
+          {freePlan ? (
+            <Card>
+              <BlockStack gap="300">
+                <Text as="h2" variant="headingMd">VIPs per Country</Text>
+                <Text as="p" variant="bodySm" tone="subdued">Which countries your highest-lifetime-value customers live in.</Text>
+                <GatedTile gated minHeight={220}>{null}</GatedTile>
+              </BlockStack>
+            </Card>
+          ) : (
+            <VipsByCountryTile blob={customerMapBlob} cs={cs} />
+          )}
 
           {/* ═══ Top Products per Country ═══ */}
-          <TopProductsByCountryTile data={topProductsByCountry as CountryProducts[]} cs={cs} />
+          {freePlan ? (
+            <Card>
+              <BlockStack gap="300">
+                <Text as="h2" variant="headingMd">Top Products per Country</Text>
+                <Text as="p" variant="bodySm" tone="subdued">The best-selling products in each of your markets.</Text>
+                <GatedTile gated minHeight={220}>{null}</GatedTile>
+              </BlockStack>
+            </Card>
+          ) : (
+            <TopProductsByCountryTile data={topProductsByCountry as CountryProducts[]} cs={cs} />
+          )}
 
           {/* ═══ 2. VISUAL TILES (50/50 row) ═══ */}
           {/* Spend vs Revenue and Untapped Markets read together - one shows
@@ -1764,6 +1809,9 @@ export default function GeoPerformance() {
               <BlockStack gap="300">
                 <Text as="h2" variant="headingSm">Spend vs Revenue</Text>
                 <Text as="p" variant="bodySm" tone="subdued">Where money goes vs where it comes from</Text>
+                {freePlan ? (
+                  <GatedTile gated minHeight={220}>{null}</GatedTile>
+                ) : (
                 <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
                   {spendVsRevBars.map(b => (
                     <div key={b.cc} style={{ fontSize: "12px" }}>
@@ -1792,6 +1840,7 @@ export default function GeoPerformance() {
                     </div>
                   ))}
                 </div>
+                )}
               </BlockStack>
             </Card>
 
@@ -1800,7 +1849,9 @@ export default function GeoPerformance() {
               <BlockStack gap="300">
                 <Text as="h2" variant="headingSm">Untapped Markets</Text>
                 <Text as="p" variant="bodySm" tone="subdued">Countries with Shopify sales but zero Meta ad spend -- where you could expand next</Text>
-                {untappedMarkets.length > 0 ? (
+                {freePlan ? (
+                  <GatedTile gated minHeight={220}>{null}</GatedTile>
+                ) : untappedMarkets.length > 0 ? (
                   <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
                     {untappedMarkets.map(m => (
                       <div key={m.cc} style={{

@@ -20,6 +20,7 @@ import { auditUtms, saveUtmTemplate } from "../services/utmManager.server";
 import { type ColumnDef } from "@tanstack/react-table";
 import InteractiveTable from "../components/InteractiveTable";
 import ReportTabs from "../components/ReportTabs";
+import { GatedTile } from "../components/GatedTile";
 
 export const loader = async ({ request }) => {
   const { session } = await authenticate.admin(request);
@@ -37,12 +38,24 @@ export const loader = async ({ request }) => {
     utmAdsTotal: shop?.utmAdsTotal || 0,
     utmAdsWithTags: shop?.utmAdsWithTags || 0,
     utmAdsMissing: shop?.utmAdsMissing || 0,
+    // Free (audit) plan: the health summary counts above stay fully visible;
+    // the ad-level table + write actions are gated in the component.
+    freePlan: (shop?.plan || "paid") === "free",
   });
 };
 
 export const action = async ({ request }) => {
   const { session } = await authenticate.admin(request);
   const shopDomain = session.shop;
+
+  // Free (audit) plan: UTM actions (audit run, template save) are paid.
+  // The UI disables the buttons, but the paywall holds server-side too —
+  // an audit response would otherwise ship the full ad-level roster.
+  const shopRow = await db.shop.findUnique({ where: { shopDomain }, select: { plan: true } });
+  if ((shopRow?.plan || "paid") === "free") {
+    return json({ error: "UTM actions require a paid plan. Upgrade to run audits and manage templates.", upgradeRequired: true }, { status: 403 });
+  }
+
   const formData = await request.formData();
   const actionType = formData.get("action");
 
@@ -123,6 +136,8 @@ export default function UtmManagement() {
   const submit = useSubmit();
   const navigation = useNavigation();
   const isLoading = navigation.state === "submitting";
+
+  const freePlan = (data as any).freePlan === true;
 
   const [template, setTemplate] = useState(data.utmTemplate);
 
@@ -297,14 +312,20 @@ export default function UtmManagement() {
               control and apply fixes yourself in Ads Manager, using the guide below.
             </Text>
             <InlineStack gap="300" blockAlign="center">
-              <Button variant="primary" onClick={handleAudit} loading={isLoading} disabled={isLoading}>
+              <Button variant="primary" onClick={handleAudit} loading={isLoading} disabled={isLoading || freePlan}>
                 {auditResult ? "Re-run UTM tag audit on all Meta ads" : "Run UTM tag audit on all Meta ads"}
               </Button>
+              {freePlan ? (
+                <Text as="span" variant="bodySm" tone="subdued">
+                  Running audits is part of the paid plan — <a href="/app/plan">upgrade with Lucidly</a> to unlock.
+                </Text>
+              ) : (
               <Text as="span" variant="bodySm" tone="subdued">
                 {isLoading
                   ? "Reading every ad in your Meta account - this can take a minute or two on large accounts. Leave this page open."
                   : "Reads every ad in your Meta account - can take a minute or two on large accounts."}
               </Text>
+              )}
             </InlineStack>
           </BlockStack>
         </Card>
@@ -328,9 +349,14 @@ export default function UtmManagement() {
             />
             <InlineStack gap="300">
               <CopyButton text={template} label="Copy Template" />
-              <Button onClick={handleSaveTemplate} disabled={isLoading || template === data.utmTemplate}>
+              <Button onClick={handleSaveTemplate} disabled={isLoading || freePlan || template === data.utmTemplate}>
                 Save Template
               </Button>
+              {freePlan && (
+                <Text as="span" variant="bodySm" tone="subdued">
+                  Saving templates is part of the paid plan.
+                </Text>
+              )}
               {template !== data.utmTemplate && (
                 <Badge tone="attention">Unsaved changes</Badge>
               )}
@@ -372,6 +398,9 @@ export default function UtmManagement() {
               <Text as="h2" variant="headingLg">
                 All Ads ({auditResult.adList.length})
               </Text>
+              {freePlan ? (
+                <GatedTile gated minHeight={260}>{null}</GatedTile>
+              ) : (
               <InteractiveTable
                 tableId="utm-ads"
                 data={adRows}
@@ -379,6 +408,7 @@ export default function UtmManagement() {
                 defaultVisibleColumns={defaultVisibleColumns}
                 defaultFilters={[{ id: "effectiveStatus", value: ["ACTIVE"] }]}
               />
+              )}
             </BlockStack>
           </Card>
         )}

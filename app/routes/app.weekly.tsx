@@ -1,6 +1,6 @@
 import { json } from "@remix-run/node";
 import { useLoaderData, useSearchParams, useNavigate } from "@remix-run/react";
-import { Page, Text, InlineStack, Button } from "@shopify/polaris";
+import { Page, Text, InlineStack, BlockStack, Button } from "@shopify/polaris";
 import { useEffect, useRef, useState } from "react";
 import ReportTabs from "../components/ReportTabs";
 import { authenticate } from "../shopify.server";
@@ -14,6 +14,7 @@ import {
   shopLocalWeekMonday,
 } from "../utils/shopTime.server";
 import { revenueByParentForOrders } from "../services/productRollups.server";
+import { GatedTile } from "../components/GatedTile";
 
 const SHORT_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
@@ -96,6 +97,38 @@ export const loader = async ({ request }) => {
   const sunday = shopDayBounds(tz, sundayKey).lte;
   const prevMonday = shopDayBounds(tz, prevMondayKey).gte;
   const prevSunday = shopDayBounds(tz, prevSundayKey).lte;
+
+  // ── Free (audit) plan: the Weekly Report is a paid feature. Short-circuit
+  // BEFORE any heavy report queries run — the paywall holds here, not in
+  // CSS. The component only needs the week identifiers + currency for the
+  // page frame; everything else ships shape-preserving empties (empty day
+  // buckets, [] lists) so component math (sumDays etc.) can't crash.
+  const freePlan = (shop?.plan || "paid") === "free";
+  if (freePlan) {
+    const emptyDay = () => ({
+      storeRevenue: 0, adSpend: 0, adOrders: 0, adRevenue: 0,
+      newOrders: 0, newRevenue: 0, repeatOrders: 0, repeatRevenue: 0,
+      retargetedOrders: 0, retargetedRevenue: 0,
+      unmatchedConversions: 0, unmatchedRevenue: 0,
+      metaOrganicReturnOrders: 0, metaOrganicReturnRevenue: 0,
+    });
+    return json({
+      monday: mondayKey,
+      sunday: sundayKey,
+      days: Array.from({ length: 7 }, emptyDay),
+      prevDays: Array.from({ length: 7 }, emptyDay),
+      dateLabels: Array.from({ length: 7 }, (_, i) => addDaysKey(tz, mondayKey, i)),
+      currency,
+      geoNew: [],
+      productNew: [],
+      countrySpend: [],
+      topAdsNew: [],
+      topAdsExisting: [],
+      newlyLaunchedAds: [],
+      adsSwitchedOff: [],
+      freePlan: true,
+    });
+  }
 
   // ── Stage 1: fetch primary data (date-scoped, parallel, cached per week) ──
   // Note: customers + metaEntities are loaded in stage 2 so we can scope them
@@ -550,6 +583,7 @@ export const loader = async ({ request }) => {
     topAdsExisting: sortAds(adsExisting),
     newlyLaunchedAds,
     adsSwitchedOff,
+    freePlan,
   });
 };
 
@@ -834,6 +868,8 @@ function generateSummary(totals: DayData, prevTotals: DayData, currency: string,
 // ══════════════════════════════════════════════════
 export default function WeeklyReport() {
   const { monday, sunday, days, prevDays, dateLabels, currency, geoNew, productNew, countrySpend, topAdsNew, topAdsExisting, newlyLaunchedAds, adsSwitchedOff } = useLoaderData<typeof loader>();
+  const data = useLoaderData<typeof loader>();
+  const freePlan = (data as any).freePlan === true;
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
 
@@ -923,6 +959,57 @@ export default function WeeklyReport() {
             />
           </InlineStack>
         </div>
+
+        {/* Free (audit) plan: page frame + week navigation stay live, but
+            every report section renders as a labelled GatedTile. The loader
+            short-circuited before any report queries ran, so there is no
+            real data behind these placeholders. */}
+        {freePlan ? (
+          <BlockStack gap="300">
+            <SectionTile title="Weekly Summary" titleColor="#16a34a">
+              <GatedTile gated minHeight={180}>{null}</GatedTile>
+            </SectionTile>
+            <div style={{ display: "flex", gap: "12px", alignItems: "stretch" }}>
+              <div style={{ flex: 1 }}>
+                <SectionTile title="New Ads Launched" titleColor="#7c3aed">
+                  <GatedTile gated minHeight={160}>{null}</GatedTile>
+                </SectionTile>
+              </div>
+              <div style={{ flex: 1 }}>
+                <SectionTile title="Ads Switched Off" titleColor="#dc2626">
+                  <GatedTile gated minHeight={160}>{null}</GatedTile>
+                </SectionTile>
+              </div>
+            </div>
+            <SectionTile title="Daily Performance (Mon - Sun + Weekly Total)">
+              <GatedTile gated minHeight={260}>{null}</GatedTile>
+            </SectionTile>
+            <div style={{ display: "flex", gap: "12px", alignItems: "stretch" }}>
+              <div style={{ flex: 1 }}>
+                <SectionTile title="New Meta Customers by Geo" titleColor="#7c3aed">
+                  <GatedTile gated minHeight={200}>{null}</GatedTile>
+                </SectionTile>
+              </div>
+              <div style={{ flex: 1 }}>
+                <SectionTile title="Ad Spend vs Ad Revenue by Country">
+                  <GatedTile gated minHeight={200}>{null}</GatedTile>
+                </SectionTile>
+              </div>
+            </div>
+            <div style={{ display: "flex", gap: "12px", alignItems: "stretch" }}>
+              <div style={{ flex: 1 }}>
+                <SectionTile title="New Customer Product Purchases" titleColor="#7c3aed">
+                  <GatedTile gated minHeight={200}>{null}</GatedTile>
+                </SectionTile>
+              </div>
+              <div style={{ flex: 1 }}>
+                <SectionTile title="Top Performing Ads">
+                  <GatedTile gated minHeight={200}>{null}</GatedTile>
+                </SectionTile>
+              </div>
+            </div>
+          </BlockStack>
+        ) : (<>
 
         {/* ── Weekly Summary (top of page): 3 columns - Summary | New Ads | Switched-Off Ads ── */}
         {/* The Summary's natural height is measured and applied as a maxHeight
@@ -1125,6 +1212,8 @@ export default function WeeklyReport() {
         </div>
 
         {/* Weekly Summary moved to top of page */}
+
+        </>)}
 
       </ReportTabs>
     </Page>

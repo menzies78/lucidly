@@ -6,6 +6,7 @@ import type { ColumnDef } from "@tanstack/react-table";
 
 import ReportTabs from "../components/ReportTabs";
 import InteractiveTable from "../components/InteractiveTable";
+import { GatedTile } from "../components/GatedTile";
 import SummaryTile from "../components/SummaryTile";
 import ChangesAnnotationStrip from "../components/ChangesAnnotationStrip";
 import EntityTimelineDrawer, { type EntityRef } from "../components/EntityTimelineDrawer";
@@ -167,6 +168,7 @@ export const loader = async ({ request }: { request: Request }) => {
   const shopDomain = session.shop;
   const shop = await db.shop.findUnique({ where: { shopDomain } });
   const tz = shop?.shopifyTimezone || "UTC";
+  const freePlan = (shop?.plan || "paid") === "free";
   const { fromDate, toDate, fromKey, toKey } = parseDateRange(request, tz);
 
   const [changes, totalEver] = await Promise.all([
@@ -232,6 +234,10 @@ export const loader = async ({ request }: { request: Request }) => {
     totalEver,
     fromKey,
     toKey,
+    freePlan,
+    // Total rows in the loaded change list — powers the free plan's live
+    // "N campaign changes detected" line. Computed from data already loaded.
+    changeCount: rows.length,
     summary: {
       total: signalRows.length,
       launched: byCategory.launched || 0,
@@ -273,6 +279,9 @@ export const action = async ({ request }: { request: Request }) => {
 
 export default function ChangeLog() {
   const { rows, noiseCount, totalEver, summary, fromKey, toKey, shopDomain } = useLoaderData<typeof loader>();
+  const data = useLoaderData<typeof loader>();
+  const freePlan = (data as any).freePlan === true;
+  const changeCount = Number((data as any).changeCount || 0);
   const submit = useSubmit();
   const revalidator = useRevalidator();
   const [importState, setImportState] = useState<"idle" | "running" | "done" | "error">("idle");
@@ -505,6 +514,21 @@ export default function ChangeLog() {
             </BlockStack>
           </Card>
 
+          {/* Free (audit) plan: the heading + a live count line stay visible
+              (the count comes from the real loaded change list), while the
+              rows/timeline render as a labelled GatedTile. */}
+          {freePlan ? (
+            <Card>
+              <BlockStack gap="300">
+                <Text as="p" variant="bodyLg">
+                  <strong>{changeCount.toLocaleString("en-GB")} campaign change{changeCount === 1 ? "" : "s"} detected</strong> in this period.
+                </Text>
+                <Text as="h3" variant="headingLg">Change timeline</Text>
+                <GatedTile gated minHeight={260}>{null}</GatedTile>
+              </BlockStack>
+            </Card>
+          ) : (<>
+
           <div style={{ display: "grid", gridTemplateColumns: "repeat(6, 1fr)", gap: 12 }}>
             <SummaryTile compact label="Changes in period" value={String(summary.total)} />
             <SummaryTile compact label="Launches" value={String(summary.launched)} />
@@ -574,6 +598,8 @@ export default function ChangeLog() {
               </Card>
             </>
           )}
+
+          </>)}
         </BlockStack>
       </ReportTabs>
       <EntityTimelineDrawer
