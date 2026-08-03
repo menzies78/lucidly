@@ -95,7 +95,32 @@ async function doRefresh(shop, session) {
       Date.now() + data.refresh_token_expires_in * 1000,
     );
   }
-  await sessionStorage.storeSession(session);
+  // Persisting the rotated token is NOT optional: Shopify has already
+  // invalidated the old refresh token, so a failed store here (e.g. P1008
+  // socket timeout while a rollup rebuild holds the write lock) means the
+  // next refresh sends a dead token and 401s with "requires an active
+  // refresh_token". Retry with backoff until the write lands.
+  let stored = false;
+  for (let attempt = 1; attempt <= 4 && !stored; attempt++) {
+    try {
+      await sessionStorage.storeSession(session);
+      stored = true;
+    } catch (err) {
+      if (attempt === 4) {
+        alertOps(`token-store:${shop}`, {
+          severity: "critical",
+          subject: `Rotated offline token NOT persisted — ${shop}`,
+          title: `Refreshed token could not be saved for ${shop}`,
+          bodyHtml: `<p>The offline token for <strong>${shop}</strong> was refreshed at Shopify but storing it failed 4 times (${(err?.message || "").slice(0, 200).replace(/</g, "&lt;")}). The stored refresh token is now stale and the next refresh will 401 until the merchant's next embedded load re-mints.</p>`,
+          bodyText: `Refreshed token could not be saved for ${shop}: ${err?.message?.slice(0, 200)}`,
+        }).catch(() => {});
+        throw err;
+      }
+      const waitMs = 2000 * attempt;
+      console.warn(`[offlineToken] ${shop}: storeSession attempt ${attempt} failed (${err?.message?.slice(0, 120)}), retrying in ${waitMs}ms`);
+      await new Promise((r) => setTimeout(r, waitMs));
+    }
+  }
   console.log(
     `[offlineToken] refreshed offline token for ${shop} (expires ${session.expires?.toISOString?.() || "n/a"})`,
   );

@@ -41,6 +41,13 @@ const PROBE_QUERY = "{ shop { name myshopifyDomain } }";
 // ordinary permission 403.
 const NON_EXPIRING_MARKER = "non-expiring access tokens are no longer accepted";
 
+// Local-DB starvation (P1008 socket timeout / pool timeout while a rollup
+// rebuild holds the SQLite write lock). Not a token fault.
+function isDbStall(err) {
+  const msg = err?.message || "";
+  return err?.code === "P1008" || /socket timeout|timed out fetching a new connection/i.test(msg);
+}
+
 /**
  * Probe one shop's offline token by making a real Admin API call through the
  * background path. Returns { ok, kind, detail } where kind is one of:
@@ -64,6 +71,13 @@ export async function probeShopToken(shopDomain) {
       // Includes the stale-non-expiring-session guard in offlineToken.server.js
       // deleting the row mid-probe: not a refresh fault, just "needs re-auth".
       return { ok: false, kind: "no_session", detail: err.message?.slice(0, 300) };
+    }
+    if (isDbStall(err)) {
+      // Local SQLite couldn't respond (a rollup rebuild's write transaction
+      // holds the lock) — nothing to do with the Shopify token. Reporting
+      // this as refresh_failed paged a false CRITICAL every time the hourly
+      // geo rebuild overlapped a probe.
+      return { ok: false, kind: "db_stall", detail: err?.message?.slice(0, 300) || String(err) };
     }
     return { ok: false, kind: "refresh_failed", detail: err?.message?.slice(0, 300) || String(err) };
   }
@@ -119,6 +133,7 @@ export async function probeShopToken(shopDomain) {
 const SEVERITY_BY_KIND = {
   non_expiring_rejected: "critical",
   refresh_failed: "critical",
+  db_stall: "warn",
   unauthorized: "warn",
   forbidden: "warn",
   no_session: "warn",
@@ -128,6 +143,8 @@ const SEVERITY_BY_KIND = {
 const SUMMARY_BY_KIND = {
   non_expiring_rejected:
     "Shopify is rejecting this shop's offline token as non-expiring. Every background Admin call (order sync, Fit Test, ingest, product images) will fail with 403. Check EXPIRING_OFFLINE_TOKENS on the app minting this shop's token, then delete the stale offline session so token-exchange re-mints an expiring one.",
+  db_stall:
+    "The local database did not respond within the timeout while probing this shop's token (a rollup rebuild was likely holding the write lock). The Shopify token itself is not implicated. Only paged because it persisted across a retry — investigate long write transactions if this recurs.",
   refresh_failed:
     "This shop's offline token refresh FAILED. Likely an invalid_grant from the single-use refresh-token rotation racing (the class that removed Vollebak's orders/updated webhook), or an expired refresh token. Background Admin work will 401 until a fresh token is minted.",
   unauthorized:
@@ -162,6 +179,17 @@ export async function checkAllTokens() {
       r = await probeShopToken(shop);
     } catch (err) {
       r = { ok: false, kind: "error", detail: err?.message || String(err) };
+    }
+    // A db_stall is usually a passing write-lock window (rollup rebuild).
+    // Give it one retry after the window has likely cleared before treating
+    // it as a fault at all.
+    if (!r.ok && r.kind === "db_stall") {
+      await new Promise((res) => setTimeout(res, 15_000));
+      try {
+        r = await probeShopToken(shop);
+      } catch (err) {
+        r = { ok: false, kind: isDbStall(err) ? "db_stall" : "error", detail: err?.message || String(err) };
+      }
     }
     results.push({ shop, ...r });
 

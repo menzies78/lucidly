@@ -21,9 +21,13 @@ if (!(BigInt.prototype as any).toJSON) {
 function buildPrismaClient() {
   const baseUrl = process.env.DATABASE_URL || "file:./prisma/dev.sqlite";
   const sep = baseUrl.includes("?") ? "&" : "?";
+  // socket_timeout must outlast the longest rollup write transaction's lock
+  // hold (geo writes 200k+ rows over ~60-90s) — at 10s, any concurrent write
+  // (session upsert, webhook order) died with P1008 during every hourly
+  // rebuild window.
   const url = baseUrl.includes("connection_limit=")
     ? baseUrl
-    : `${baseUrl}${sep}connection_limit=8&socket_timeout=10`;
+    : `${baseUrl}${sep}connection_limit=8&socket_timeout=60`;
   return new PrismaClient({
     log: process.env.NODE_ENV === "development" ? ["warn", "error"] : ["error"],
     datasources: { db: { url } },
@@ -59,7 +63,7 @@ async function applyPragmas() {
     "PRAGMA cache_size = -131072",     // 128 MB page cache (4 GB VM has plenty of headroom)
     "PRAGMA mmap_size = 536870912",    // 512 MB memory-mapped reads
     "PRAGMA temp_store = MEMORY",
-    "PRAGMA busy_timeout = 5000",
+    "PRAGMA busy_timeout = 30000",  // must survive a rollup rebuild's write-lock window
   ];
   for (const p of pragmas) {
     try {

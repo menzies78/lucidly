@@ -12,6 +12,24 @@
 // breaking the caller (health checks must never crash the scheduler).
 
 import { sendEmail } from "./email.server.js";
+import { readFileSync, writeFileSync, existsSync } from "node:fs";
+
+// Open-fault state must survive machine replacement: a deploy mid-fault
+// otherwise boots with an empty map and the "recovered" email for an
+// already-paged CRITICAL is silently never sent (2026-08-03: the 09:05Z
+// token fault's recovery vanished exactly this way). The Fly volume at
+// /data outlives deploys; local dev (no /data) degrades to memory-only.
+const STATE_FILE = process.env.OPS_ALERT_STATE_FILE
+  || (existsSync("/data") ? "/data/ops_alert_state.json" : null);
+
+function persistState(map) {
+  if (!STATE_FILE) return;
+  try {
+    writeFileSync(STATE_FILE, JSON.stringify(Object.fromEntries(map)));
+  } catch (err) {
+    console.warn(`[opsAlert] failed to persist state: ${err.message}`);
+  }
+}
 
 // While a fault persists, re-send the alert at most once per this window so a
 // long-running outage keeps nagging (a single missed email shouldn't mean the
@@ -22,7 +40,15 @@ const RENAG_MS = 6 * 60 * 60 * 1000; // 6 hours
 // globalThis (same pattern as the scheduler singletons and the perf caches).
 function state() {
   if (!globalThis.__lucidlyOpsAlertState) {
-    globalThis.__lucidlyOpsAlertState = new Map(); // key -> { firstAt, lastAt, count }
+    const m = new Map(); // key -> { firstAt, lastAt, count }
+    if (STATE_FILE && existsSync(STATE_FILE)) {
+      try {
+        for (const [k, v] of Object.entries(JSON.parse(readFileSync(STATE_FILE, "utf8")))) m.set(k, v);
+      } catch {
+        // Corrupt state file — start clean rather than crash alerting.
+      }
+    }
+    globalThis.__lucidlyOpsAlertState = m;
   }
   return globalThis.__lucidlyOpsAlertState;
 }
@@ -57,11 +83,13 @@ export async function alertOps(key, { subject, title, bodyHtml, bodyText, severi
   if (prev && now - prev.lastAt < RENAG_MS) {
     // Still inside the re-nag window — count it but stay quiet.
     prev.count += 1;
+    persistState(s);
     return { sent: false, suppressed: true };
   }
 
   const count = prev ? prev.count + 1 : 1;
   s.set(key, { firstAt: prev?.firstAt || now, lastAt: now, count });
+  persistState(s);
 
   const to = recipient();
   if (!to) {
@@ -91,6 +119,7 @@ export async function resolveOps(key, { subject, title, bodyHtml, bodyText } = {
   const prev = s.get(key);
   if (!prev) return { sent: false }; // was healthy — nothing to clear
   s.delete(key);
+  persistState(s);
 
   const to = recipient();
   if (!to) {
