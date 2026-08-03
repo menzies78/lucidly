@@ -5,9 +5,12 @@ import { shopLocalDayKey } from "../utils/shopTime.server";
  * Rebuild DailyAdRollup rows for a shop.
  *
  * Strategy:
- *  1. Load all MetaInsight rows for the shop (scoped to the relevant date
- *     window - currently full-history; Meta-side churn is low).
- *  2. Sum hour-slot rows into per-(date,adId) buckets with full entity names.
+ *  1. Aggregate MetaInsight rows SQL-side (GROUP BY date, adId). The raw
+ *     table is hourly and grows unbounded (620k+ rows for a mature shop);
+ *     loading it into JS objects previously cost ~1GB of heap and OOM-killed
+ *     the process. The grouped result is ~24x smaller (one row per ad-day).
+ *  2. Merge the grouped rows into per-(shop-local-day, adId) buckets with
+ *     full entity names.
  *  3. Load all matched attributions + their orders within the same window.
  *     For each confident attribution, add the order revenue/count to the
  *     rollup row keyed by (orderDate, attr.metaAdId).
@@ -25,21 +28,40 @@ export async function rebuildCampaignRollups(shopDomain) {
   const shopRow = await db.shop.findUnique({ where: { shopDomain }, select: { shopifyTimezone: true } });
   const tz = shopRow?.shopifyTimezone || "UTC";
 
-  const [insights, attributions, orders] = await Promise.all([
-    db.metaInsight.findMany({
-      where: { shopDomain },
-      select: {
-        date: true, adId: true,
-        campaignId: true, campaignName: true,
-        adSetId: true, adSetName: true, adName: true,
-        spend: true, impressions: true, clicks: true, reach: true,
-        frequency: true,
-        linkClicks: true, landingPageViews: true, viewContent: true,
-        addToCart: true, initiateCheckout: true,
-        conversions: true, conversionValue: true,
-        videoP25: true, videoP50: true, videoP75: true, videoP100: true,
-      },
-    }),
+  // SQLite stores DateTime as epoch-ms INTEGER; raw-query integers come back
+  // as BigInt, so every Int-column aggregate below goes through num().
+  const num = (v) => (typeof v === "bigint" ? Number(v) : v || 0);
+
+  const [insightGroups, attributions, orders] = await Promise.all([
+    db.$queryRaw`
+      SELECT
+        date, adId,
+        MAX(COALESCE(campaignId, ''))   AS campaignId,
+        MAX(COALESCE(campaignName, '')) AS campaignName,
+        MAX(COALESCE(adSetId, ''))      AS adSetId,
+        MAX(COALESCE(adSetName, ''))    AS adSetName,
+        MAX(COALESCE(adName, ''))       AS adName,
+        SUM(spend)            AS spend,
+        SUM(impressions)      AS impressions,
+        SUM(clicks)           AS clicks,
+        SUM(reach)            AS reach,
+        SUM(frequency)        AS frequencySum,
+        SUM(CASE WHEN frequency IS NOT NULL AND frequency != 0 THEN 1 ELSE 0 END) AS frequencyCount,
+        SUM(linkClicks)       AS linkClicks,
+        SUM(landingPageViews) AS landingPageViews,
+        SUM(viewContent)      AS viewContent,
+        SUM(addToCart)        AS addToCart,
+        SUM(initiateCheckout) AS initiateCheckout,
+        SUM(conversions)      AS conversions,
+        SUM(conversionValue)  AS conversionValue,
+        SUM(videoP25)         AS videoP25,
+        SUM(videoP50)         AS videoP50,
+        SUM(videoP75)         AS videoP75,
+        SUM(videoP100)        AS videoP100
+      FROM MetaInsight
+      WHERE shopDomain = ${shopDomain} AND adId IS NOT NULL AND adId != ''
+      GROUP BY date, adId
+    `,
     db.attribution.findMany({
       where: { shopDomain },
       select: {
@@ -106,29 +128,28 @@ export async function rebuildCampaignRollups(shopDomain) {
     return b;
   };
 
-  // 1. Insights → sum per (date, adId)
-  for (const i of insights) {
-    if (!i.adId) continue;
-    const b = getBucket(i.date, i.adId, i);
-    b.spend += i.spend || 0;
-    b.impressions += i.impressions || 0;
-    b.clicks += i.clicks || 0;
-    b.reach += i.reach || 0;
-    if (i.frequency) {
-      b.frequencySum += i.frequency;
-      b.frequencyCount += 1;
-    }
-    b.linkClicks += i.linkClicks || 0;
-    b.landingPageViews += i.landingPageViews || 0;
-    b.viewContent += i.viewContent || 0;
-    b.addToCart += i.addToCart || 0;
-    b.initiateCheckout += i.initiateCheckout || 0;
-    b.metaConversions += i.conversions || 0;
-    b.metaConversionValue += i.conversionValue || 0;
-    b.videoP25 += i.videoP25 || 0;
-    b.videoP50 += i.videoP50 || 0;
-    b.videoP75 += i.videoP75 || 0;
-    b.videoP100 += i.videoP100 || 0;
+  // 1. Pre-grouped insights → merge per (shop-local day, adId). Buckets can
+  // still merge across raw dates when the tz projection folds two UTC dates
+  // into one local day, so this stays a += merge rather than an assignment.
+  for (const g of insightGroups) {
+    const b = getBucket(new Date(num(g.date)), g.adId, g);
+    b.spend += g.spend || 0;
+    b.impressions += num(g.impressions);
+    b.clicks += num(g.clicks);
+    b.reach += num(g.reach);
+    b.frequencySum += g.frequencySum || 0;
+    b.frequencyCount += num(g.frequencyCount);
+    b.linkClicks += num(g.linkClicks);
+    b.landingPageViews += num(g.landingPageViews);
+    b.viewContent += num(g.viewContent);
+    b.addToCart += num(g.addToCart);
+    b.initiateCheckout += num(g.initiateCheckout);
+    b.metaConversions += num(g.conversions);
+    b.metaConversionValue += g.conversionValue || 0;
+    b.videoP25 += num(g.videoP25);
+    b.videoP50 += num(g.videoP50);
+    b.videoP75 += num(g.videoP75);
+    b.videoP100 += num(g.videoP100);
   }
 
   // 2. Matched attributions → join order, add to rollup at order date
@@ -254,6 +275,6 @@ export async function rebuildCampaignRollups(shopDomain) {
     }
   }, { timeout: 600000 });
 
-  console.log(`[campaignRollups] ${shopDomain} rebuilt ${rows.length} rows in ${Date.now() - t0}ms (insights=${insights.length}, attrs=${attributions.length})`);
+  console.log(`[campaignRollups] ${shopDomain} rebuilt ${rows.length} rows in ${Date.now() - t0}ms (insightGroups=${insightGroups.length}, attrs=${attributions.length})`);
   return { rows: rows.length, ms: Date.now() - t0 };
 }
