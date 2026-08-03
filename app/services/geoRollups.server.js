@@ -6,9 +6,13 @@ import { shopLocalDayKey } from "../utils/shopTime.server";
  * ShopAnalysisCache blob.
  *
  * Strategy:
- *  1. Load MetaBreakdown (country) + Order(isOnlineStore) + Attribution
- *     + Customer for the shop. Single full-history scan; geo aggregates roll
- *     over time so historical rebuilds are non-negotiable.
+ *  1. Aggregate MetaBreakdown (country) SQL-side — one GROUP BY query per
+ *     fan-out level (overall/campaign/adset/ad). The raw table is the largest
+ *     in the DB (1.15M+ rows for a mature shop) and loading it into JS
+ *     objects cost ~GBs of heap; the grouped results are the same size as
+ *     the bucket map we build anyway. Order + Attribution stay JS-side
+ *     (small). Geo aggregates roll over time so historical rebuilds are
+ *     non-negotiable.
  *  2. For each shop-local day, build one bucket per (level, entityId, country)
  *     where level ∈ {"overall","campaign","adset","ad"} and entityId is "" for
  *     overall. Aggregate Meta breakdown into ALL applicable buckets
@@ -42,19 +46,62 @@ export async function rebuildGeoRollups(shopDomain) {
   });
   const tz = shopRow?.shopifyTimezone || "UTC";
 
-  const [breakdowns, orders, attributions, lineItems] = await Promise.all([
-    db.metaBreakdown.findMany({
-      where: { shopDomain, breakdownType: "country" },
-      select: {
-        date: true, breakdownValue: true,
-        campaignId: true, campaignName: true,
-        adSetId: true, adSetName: true,
-        adId: true, adName: true,
-        spend: true, impressions: true, clicks: true, reach: true,
-        conversions: true, conversionValue: true,
-        linkClicks: true, landingPageViews: true,
-      },
-    }),
+  // SQLite stores DateTime as epoch-ms INTEGER; raw-query integers come back
+  // as BigInt, so Int-column aggregates go through num().
+  const num = (v) => (typeof v === "bigint" ? Number(v) : v || 0);
+
+  // One grouped query per fan-out level. Every level sums the same measures;
+  // entity levels additionally carry denorm names (MAX picks a deterministic
+  // representative — names are constant within an entity in practice).
+  const AGG = `
+        SUM(spend)            AS spend,
+        SUM(impressions)      AS impressions,
+        SUM(clicks)           AS clicks,
+        SUM(reach)            AS reach,
+        SUM(conversions)      AS conversions,
+        SUM(conversionValue)  AS conversionValue,
+        SUM(linkClicks)       AS linkClicks,
+        SUM(landingPageViews) AS landingPageViews`;
+  const BASE_WHERE = `shopDomain = ? AND breakdownType = 'country'
+        AND breakdownValue IS NOT NULL AND breakdownValue != ''`;
+  const levelQuery = (level) => {
+    if (level === "overall") {
+      return `SELECT date, breakdownValue AS cc, ${AGG}
+        FROM MetaBreakdown WHERE ${BASE_WHERE}
+        GROUP BY date, breakdownValue`;
+    }
+    if (level === "campaign") {
+      return `SELECT date, breakdownValue AS cc, campaignId AS entityId,
+        MAX(COALESCE(campaignName, '')) AS campaignName, ${AGG}
+        FROM MetaBreakdown WHERE ${BASE_WHERE}
+        AND campaignId IS NOT NULL AND campaignId != ''
+        GROUP BY date, breakdownValue, campaignId`;
+    }
+    if (level === "adset") {
+      return `SELECT date, breakdownValue AS cc, adSetId AS entityId,
+        MAX(COALESCE(adSetName, ''))    AS adSetName,
+        MAX(COALESCE(campaignId, ''))   AS campaignId,
+        MAX(COALESCE(campaignName, '')) AS campaignName, ${AGG}
+        FROM MetaBreakdown WHERE ${BASE_WHERE}
+        AND adSetId IS NOT NULL AND adSetId != ''
+        GROUP BY date, breakdownValue, adSetId`;
+    }
+    return `SELECT date, breakdownValue AS cc, adId AS entityId,
+        MAX(COALESCE(adName, ''))       AS adName,
+        MAX(COALESCE(campaignId, ''))   AS campaignId,
+        MAX(COALESCE(campaignName, '')) AS campaignName,
+        MAX(COALESCE(adSetId, ''))      AS adSetId,
+        MAX(COALESCE(adSetName, ''))    AS adSetName, ${AGG}
+        FROM MetaBreakdown WHERE ${BASE_WHERE}
+        AND adId IS NOT NULL AND adId != ''
+        GROUP BY date, breakdownValue, adId`;
+  };
+
+  const [bdOverall, bdCampaign, bdAdset, bdAd, orders, attributions] = await Promise.all([
+    db.$queryRawUnsafe(levelQuery("overall"), shopDomain),
+    db.$queryRawUnsafe(levelQuery("campaign"), shopDomain),
+    db.$queryRawUnsafe(levelQuery("adset"), shopDomain),
+    db.$queryRawUnsafe(levelQuery("ad"), shopDomain),
     db.order.findMany({
       where: { shopDomain, isOnlineStore: true },
       select: {
@@ -77,14 +124,6 @@ export async function rebuildGeoRollups(shopDomain) {
         metaAdSetId: true, metaAdSetName: true,
         metaAdId: true, metaAdName: true,
         matchedAt: true,
-      },
-    }),
-    db.orderLineItem.findMany({
-      where: { shopDomain },
-      select: {
-        shopifyOrderId: true, title: true,
-        quantity: true, refundedQuantity: true,
-        totalPrice: true, refundedAmount: true,
       },
     }),
   ]);
@@ -145,54 +184,42 @@ export async function rebuildGeoRollups(shopDomain) {
     m.set(cc, (m.get(cc) || 0) + conv);
   };
 
-  for (const bd of breakdowns) {
-    const cc = bd.breakdownValue;
-    if (!cc) continue;
-    const day = shopLocalDayKey(tz, bd.date);
-    const sums = {
-      spend: bd.spend || 0,
-      impressions: bd.impressions || 0,
-      clicks: bd.clicks || 0,
-      reach: bd.reach || 0,
-      metaConversions: bd.conversions || 0,
-      metaConversionValue: bd.conversionValue || 0,
-      linkClicks: bd.linkClicks || 0,
-      landingPageViews: bd.landingPageViews || 0,
-    };
-    const addSums = (b) => {
-      b.spend += sums.spend; b.impressions += sums.impressions;
-      b.clicks += sums.clicks; b.reach += sums.reach;
-      b.metaConversions += sums.metaConversions;
-      b.metaConversionValue += sums.metaConversionValue;
-      b.linkClicks += sums.linkClicks; b.landingPageViews += sums.landingPageViews;
-    };
+  // Buckets can still merge across raw dates when the tz projection folds two
+  // UTC dates into one local day, so these stay += merges.
+  const applyGroup = (g, level) => {
+    const day = shopLocalDayKey(tz, new Date(num(g.date)));
+    const seed =
+      level === "overall" ? null
+      : level === "campaign" ? {
+          entityName: g.campaignName || g.entityId,
+          campaignId: g.entityId, campaignName: g.campaignName || null,
+        }
+      : level === "adset" ? {
+          entityName: g.adSetName || g.entityId,
+          campaignId: g.campaignId || null, campaignName: g.campaignName || null,
+          adSetId: g.entityId, adSetName: g.adSetName || null,
+        }
+      : {
+          entityName: g.adName || g.entityId,
+          campaignId: g.campaignId || null, campaignName: g.campaignName || null,
+          adSetId: g.adSetId || null, adSetName: g.adSetName || null,
+        };
+    const b = makeBucket(day, level, level === "overall" ? "" : g.entityId, g.cc, seed);
+    b.spend += g.spend || 0;
+    b.impressions += num(g.impressions);
+    b.clicks += num(g.clicks);
+    b.reach += num(g.reach);
+    b.metaConversions += num(g.conversions);
+    b.metaConversionValue += g.conversionValue || 0;
+    b.linkClicks += num(g.linkClicks);
+    b.landingPageViews += num(g.landingPageViews);
+    if (level !== "overall") recordConv(day, level, g.entityId, g.cc, num(g.conversions));
+  };
 
-    addSums(makeBucket(day, "overall", "", cc, null));
-
-    if (bd.campaignId) {
-      addSums(makeBucket(day, "campaign", bd.campaignId, cc, {
-        entityName: bd.campaignName || bd.campaignId,
-        campaignId: bd.campaignId, campaignName: bd.campaignName,
-      }));
-      recordConv(day, "campaign", bd.campaignId, cc, sums.metaConversions);
-    }
-    if (bd.adSetId) {
-      addSums(makeBucket(day, "adset", bd.adSetId, cc, {
-        entityName: bd.adSetName || bd.adSetId,
-        campaignId: bd.campaignId, campaignName: bd.campaignName,
-        adSetId: bd.adSetId, adSetName: bd.adSetName,
-      }));
-      recordConv(day, "adset", bd.adSetId, cc, sums.metaConversions);
-    }
-    if (bd.adId) {
-      addSums(makeBucket(day, "ad", bd.adId, cc, {
-        entityName: bd.adName || bd.adId,
-        campaignId: bd.campaignId, campaignName: bd.campaignName,
-        adSetId: bd.adSetId, adSetName: bd.adSetName,
-      }));
-      recordConv(day, "ad", bd.adId, cc, sums.metaConversions);
-    }
-  }
+  for (const g of bdOverall) applyGroup(g, "overall");
+  for (const g of bdCampaign) applyGroup(g, "campaign");
+  for (const g of bdAdset) applyGroup(g, "adset");
+  for (const g of bdAd) applyGroup(g, "ad");
 
   // ── 2. Matched attributions (confidence>0) ──
   const matchedOrderIds = new Set();
@@ -354,7 +381,14 @@ export async function rebuildGeoRollups(shopDomain) {
   // ── 6. Wipe + chunked insert ──
   // Atomic delete+insert. Without the transaction, concurrent readers see
   // an empty table mid-rebuild and cache zero-value tile data for up to TTL.
-  const rows = Array.from(buckets.values()).map(b => ({
+  // Destructive conversion: at Vollebak scale the bucket map holds 200k–500k
+  // fat objects (incl. two Sets each); materialising the insert rows as a
+  // second full-size array on top of it doubles peak heap. Deleting each
+  // bucket as it converts lets GC reclaim buckets while rows grow.
+  const rows = [];
+  for (const [bucketKey, b] of buckets) {
+    buckets.delete(bucketKey);
+    rows.push({
     shopDomain,
     date: b.date,
     level: b.level,
@@ -388,7 +422,8 @@ export async function rebuildGeoRollups(shopDomain) {
     unverifiedRevenue: b.unverifiedRevenue,
     shopifyOrders: b.shopifyOrders,
     shopifyRevenue: b.shopifyRevenue,
-  }));
+    });
+  }
 
   const CHUNK = 500;
   // Vollebak-scale shops (128k+ country breakdown rows, 400+ days, 800+ ads)
@@ -413,7 +448,7 @@ export async function rebuildGeoRollups(shopDomain) {
   // Shopify products mid-history (HM dropped "Cotton Jacquard" from titles
   // in Aug 2025 — old long-name rollup keys still dominated USA top-3
   // even at "Last 30 days").
-  console.log(`[geoRollups] ${shopDomain} rebuilt ${rows.length} rows in ${Date.now() - t0}ms (bd=${breakdowns.length}, orders=${orders.length}, attrs=${attributions.length}, li=${lineItems.length})`);
+  console.log(`[geoRollups] ${shopDomain} rebuilt ${rows.length} rows in ${Date.now() - t0}ms (bdGroups=${bdOverall.length + bdCampaign.length + bdAdset.length + bdAd.length}, orders=${orders.length}, attrs=${attributions.length})`);
   return { rows: rows.length, ms: Date.now() - t0 };
 }
 
