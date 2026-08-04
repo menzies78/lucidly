@@ -2657,10 +2657,13 @@ type AdDemographicSlice = {
   existingCustomerOrders: number; existingCustomerRevenue: number;
 };
 
-function AdExplorerTable({ rows, cs, entityType, adDemographicsByAd, onEntityClick, lockFilters = false }: {
+function AdExplorerTable({ rows, cs, entityType, adDemographicsByAd, adParentRows, onEntityClick, lockFilters = false }: {
   rows: any[]; cs: string;
   entityType: "campaign" | "adset" | "ad";
   adDemographicsByAd?: Record<string, AdDemographicSlice[]>;
+  // Ad-level rows (id + parent ids) so campaign/adset levels can aggregate
+  // the per-ad demographic slices upward — the rollup is keyed by adId only.
+  adParentRows?: Array<{ id: string; adSetId?: string | null; campaignId?: string | null }>;
   onEntityClick?: (id: string, name: string) => void;
   // Free plan: pin every filter group (Show / Gender / Age) to its "All"
   // option. Non-All pills stay visible but disabled; the table itself stays
@@ -2686,14 +2689,31 @@ function AdExplorerTable({ rows, cs, entityType, adDemographicsByAd, onEntityCli
   const [ageFilter, setAgeFilter] = useState<string[]>([]);
   // lockFilters pins the demographic query to All by construction — even if
   // filter state somehow drifted, the filtered path never runs when locked.
-  const demoActive = entityType === "ad" && !lockFilters && (genderFilter !== "All" || ageFilter.length > 0);
+  const demoActive = !lockFilters && (genderFilter !== "All" || ageFilter.length > 0);
+
+  // Demographic slices resolved for the CURRENT level. The rollup is per-ad;
+  // campaign/adset levels aggregate their member ads' slices via the parent
+  // ids carried on the ad rows.
+  const slicesByEntity = useMemo<Record<string, AdDemographicSlice[]>>(() => {
+    if (!adDemographicsByAd) return {};
+    if (entityType === "ad") return adDemographicsByAd;
+    const parentKey = entityType === "adset" ? "adSetId" : "campaignId";
+    const map: Record<string, AdDemographicSlice[]> = {};
+    for (const ad of adParentRows || []) {
+      const pid = (ad as any)[parentKey];
+      const slices = adDemographicsByAd[ad.id];
+      if (!pid || !slices || slices.length === 0) continue;
+      (map[pid] ||= []).push(...slices);
+    }
+    return map;
+  }, [adDemographicsByAd, adParentRows, entityType]);
 
   // Apply demographic filter to a row. If active, swap the order/revenue
   // numbers for sums from the matching demographic slices. Spend is left as-is
   // (Meta does not split spend by customer-resolved demographic).
   const applyDemoFilter = useCallback((row: any): any => {
     if (!demoActive) return row;
-    const slices = adDemographicsByAd?.[row.id] || [];
+    const slices = slicesByEntity[row.id] || [];
     const wantGender = genderFilter === "All" ? null : (genderFilter === "Female" ? "female" : "male");
     const ageSet = ageFilter.length === 0 ? null : new Set(ageFilter);
     let attributedOrders = 0, attributedRevenue = 0;
@@ -2715,7 +2735,7 @@ function AdExplorerTable({ rows, cs, entityType, adDemographicsByAd, onEntityCli
       newCustomerOrders, newCustomerRevenue,
       existingCustomerOrders, existingCustomerRevenue,
     };
-  }, [demoActive, adDemographicsByAd, genderFilter, ageFilter]);
+  }, [demoActive, slicesByEntity, genderFilter, ageFilter]);
 
   const filteredRows = useMemo(() => {
     if (!demoActive) return rows;
@@ -2728,16 +2748,14 @@ function AdExplorerTable({ rows, cs, entityType, adDemographicsByAd, onEntityCli
   const META_AGE_BRACKETS = ["13-17", "18-24", "25-34", "35-44", "45-54", "55-64", "65+"];
   const availableAges = useMemo(() => {
     const set = new Set<string>();
-    if (entityType === "ad" && adDemographicsByAd) {
-      for (const row of rows) {
-        const slices = adDemographicsByAd[row.id] || [];
-        for (const s of slices) {
-          if (s.ageBracket && s.ageBracket !== "unknown") set.add(s.ageBracket);
-        }
+    for (const row of rows) {
+      const slices = slicesByEntity[row.id] || [];
+      for (const s of slices) {
+        if (s.ageBracket && s.ageBracket !== "unknown") set.add(s.ageBracket);
       }
     }
     return set;
-  }, [rows, entityType, adDemographicsByAd]);
+  }, [rows, slicesByEntity]);
   const ageBracketsToRender = META_AGE_BRACKETS.filter(b => availableAges.has(b) || ageFilter.includes(b));
 
   const toggleAge = (b: string) => {
@@ -3053,8 +3071,8 @@ function AdExplorerTable({ rows, cs, entityType, adDemographicsByAd, onEntityCli
       ? { disabled: true, style: { opacity: 0.45, cursor: "default" }, title: "Upgrade Lucidly to view" }
       : {};
 
-  const showAgeRow = entityType === "ad" && (availableAges.size > 0 || ageFilter.length > 0);
-  const showGenderRow = entityType === "ad";
+  const showAgeRow = availableAges.size > 0 || ageFilter.length > 0;
+  const showGenderRow = true;
 
   return (
     <div>
@@ -5060,7 +5078,7 @@ export default function Campaigns() {
                   </BlockStack>
                   <BigLevelToggle options={LEVEL_OPTIONS} selected={rankLevel} onChange={setRankLevel} />
                 </InlineStack>
-                <AdExplorerTable rows={rankRows} cs={cs} entityType={rankLevel as "campaign" | "adset" | "ad"} adDemographicsByAd={adDemographicsByAd} lockFilters={freePlan} onEntityClick={(id, name) => setDrawerEntity({ objectType: rankLevel as any, objectId: id, objectName: name })} />
+                <AdExplorerTable rows={rankRows} cs={cs} entityType={rankLevel as "campaign" | "adset" | "ad"} adDemographicsByAd={adDemographicsByAd} adParentRows={rowsByLevel.ad} lockFilters={freePlan} onEntityClick={(id, name) => setDrawerEntity({ objectType: rankLevel as any, objectId: id, objectName: name })} />
               </BlockStack>
             </Card>
             <TileGrid pageId="campaigns-v2" columns={4} tiles={gateTileDefs([
