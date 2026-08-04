@@ -42,6 +42,27 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const status = String(sub.status).toUpperCase();
   console.log(`[Billing] ${shop}: subscription "${sub.name}" → ${status} (was plan=${shopRow.plan})`);
 
+  // The public Free plan ("Free" / handle "free-audit") ALSO creates an
+  // ACTIVE $0 subscription when selected — it must map to the free tier,
+  // not paid. Belt and braces: match by name AND by zero price.
+  const planName = String(sub.name || "").trim().toLowerCase();
+  const price = parseFloat(
+    sub?.line_items?.[0]?.plan?.pricing_details?.price?.amount ??
+    sub?.price ?? "NaN",
+  );
+  const isFreePlan = ["free", "free-audit"].includes(planName) || price === 0;
+
+  if (status === "ACTIVE" && isFreePlan) {
+    if (shopRow.plan !== "free") {
+      await db.shop.update({
+        where: { shopDomain: shop },
+        data: { plan: "free", planChangedAt: new Date() },
+      });
+      console.log(`[Billing] ${shop}: on Free plan (audit tier)${shopRow.plan === "paid" ? " — downgraded from paid, 30-day data grace applies" : ""}`);
+    }
+    return new Response();
+  }
+
   if (status === "ACTIVE") {
     if (shopRow.plan !== "paid") {
       // Freeze the backfill boundary BEFORE flipping the plan: everything
