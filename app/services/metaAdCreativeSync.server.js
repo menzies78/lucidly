@@ -250,6 +250,20 @@ export async function refreshAdCreatives(shopDomain) {
   let nextUrl = initialUrl;
   let pages = 0;
   let pageError = null;
+  // Adaptive page size: Meta's ReduceDataError depends on creative COMPLEXITY,
+  // not just count — Vollebak's Advantage+ ads trip it even at limit=100
+  // (2026-08-04: page 0 failed, which silently killed the nightly refresh and
+  // let every signed thumbnail URL age out). On that error, halve the limit
+  // (floor 10) and retry the same cursor instead of giving up.
+  const shrinkLimit = (url) => {
+    try {
+      const u = new URL(url);
+      const cur = parseInt(u.searchParams.get("limit") || "100", 10);
+      if (cur <= 10) return null;
+      u.searchParams.set("limit", String(Math.max(10, Math.floor(cur / 2))));
+      return u.toString();
+    } catch { return null; }
+  };
   while (nextUrl) {
     try {
       const data = await fetchWithRetry(nextUrl, "MetaAdCreativeSync");
@@ -258,11 +272,19 @@ export async function refreshAdCreatives(shopDomain) {
       pages++;
       nextUrl = data.paging?.next || null;
     } catch (err) {
+      if (/reduce the amount of data/i.test(err.message || "")) {
+        const smaller = shrinkLimit(nextUrl);
+        if (smaller) {
+          console.warn(`[MetaAdCreativeSync] ${shopDomain}: ReduceDataError at page ${pages} — retrying with smaller page size`);
+          nextUrl = smaller;
+          continue;
+        }
+      }
       pageError = err;
       console.warn(`[MetaAdCreativeSync] Bulk fetch stopped after page ${pages} for ${shopDomain}: ${err.message}`);
-      // ReduceDataError or any other mid-walk failure: keep what we collected
-      // and continue to the per-ad fallback for the rest. Hard-fail only when
-      // page 1 itself failed (we have nothing to write).
+      // Any other mid-walk failure: keep what we collected and continue to
+      // the per-ad fallback for the rest. Hard-fail only when page 1 itself
+      // failed at the minimum page size (we have nothing to write).
       break;
     }
   }
