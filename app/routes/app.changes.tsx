@@ -6,7 +6,7 @@ import type { ColumnDef } from "@tanstack/react-table";
 
 import ReportTabs from "../components/ReportTabs";
 import InteractiveTable from "../components/InteractiveTable";
-import { GatedTile } from "../components/GatedTile";
+import { GatedTile, GATED_IMAGES } from "../components/GatedTile";
 import SummaryTile from "../components/SummaryTile";
 import ChangesAnnotationStrip from "../components/ChangesAnnotationStrip";
 import EntityTimelineDrawer, { type EntityRef } from "../components/EntityTimelineDrawer";
@@ -524,7 +524,7 @@ export default function ChangeLog() {
                   <strong>{changeCount.toLocaleString("en-GB")} campaign change{changeCount === 1 ? "" : "s"} detected</strong> in this period.
                 </Text>
                 <Text as="h3" variant="headingLg">Change timeline</Text>
-                <GatedTile gated minHeight={260}>{null}</GatedTile>
+                <GatedTile gated imageSrc={GATED_IMAGES.changesActivity} minHeight={220}>{null}</GatedTile>
               </BlockStack>
             </Card>
           ) : (<>

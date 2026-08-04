@@ -13,7 +13,7 @@ import db from "../db.server";
 import { parseDateRange } from "../utils/dateRange.server";
 import { shopLocalDayKey, shopRangeBounds } from "../utils/shopTime.server";
 import { clampRangeForPlan } from "../services/plan.server";
-import { gateTileDefs } from "../components/GatedTile";
+import { gateTileDefs, GatedTile, GATED_IMAGES } from "../components/GatedTile";
 
 // Free (audit) plan: Products tab allowlist — the four headline stat tiles.
 // Everything else renders label-over-blur.
@@ -938,7 +938,11 @@ export const loader = async ({ request }) => {
   const aiIsStale = aiCached ? aiCached.dataHash !== aiCurrentHash : false;
 
   return json({
-    rows, currencySymbol: cs, imageMap,
+    // Free plan: the Product Breakdown table is gated, so its row data must
+    // not ship to the client. Summary stats above are derived from `rows`
+    // before this point and still ship for the free tiles / PageSummary.
+    rows: freePlan ? [] : rows,
+    currencySymbol: cs, imageMap,
     metaFirstPurchaseList, nonMetaFirstPurchaseList, metaCombos, nonMetaCombos,
     topGateway, topSecond, flows,
     topGatewayAll, topSecondAll, flowsAll,
@@ -2555,16 +2559,20 @@ export default function Products() {
               <Text as="h2" variant="headingLg">Product Breakdown</Text>
               <Text as="p" variant="bodySm" tone="subdued">Every product sold online, with Meta attribution and customer type breakdown. Variants grouped by parent product.</Text>
             </BlockStack>
-            <InteractiveTable
-              columns={columns}
-              data={rows}
-              defaultVisibleColumns={defaultVisibleColumns}
-              tableId="products"
-              footerRow={footerRow}
-              fitContentColumns
-              enableDownload
-              downloadFilename="product-breakdown"
-            />
+            {freePlan ? (
+              <GatedTile gated imageSrc={GATED_IMAGES.productBreakdown} minHeight={300}>{null}</GatedTile>
+            ) : (
+              <InteractiveTable
+                columns={columns}
+                data={rows}
+                defaultVisibleColumns={defaultVisibleColumns}
+                tableId="products"
+                footerRow={footerRow}
+                fitContentColumns
+                enableDownload
+                downloadFilename="product-breakdown"
+              />
+            )}
           </BlockStack>
         </Card>
 

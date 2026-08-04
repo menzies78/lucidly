@@ -14,7 +14,7 @@ import {
   shopLocalWeekMonday,
 } from "../utils/shopTime.server";
 import { revenueByParentForOrders } from "../services/productRollups.server";
-import { GatedTile } from "../components/GatedTile";
+import { GatedTile, GATED_IMAGES } from "../components/GatedTile";
 
 const SHORT_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
@@ -967,7 +967,7 @@ export default function WeeklyReport() {
         {freePlan ? (
           <BlockStack gap="300">
             <SectionTile title="Weekly Summary" titleColor="#16a34a">
-              <GatedTile gated minHeight={180}>{null}</GatedTile>
+              <GatedTile gated imageSrc={GATED_IMAGES.weeklySummary} minHeight={180}>{null}</GatedTile>
             </SectionTile>
             <div style={{ display: "flex", gap: "12px", alignItems: "stretch" }}>
               <div style={{ flex: 1 }}>
@@ -982,7 +982,7 @@ export default function WeeklyReport() {
               </div>
             </div>
             <SectionTile title="Daily Performance (Mon - Sun + Weekly Total)">
-              <GatedTile gated minHeight={260}>{null}</GatedTile>
+              <GatedTile gated imageSrc={GATED_IMAGES.weeklyDaily} minHeight={320}>{null}</GatedTile>
             </SectionTile>
             <div style={{ display: "flex", gap: "12px", alignItems: "stretch" }}>
               <div style={{ flex: 1 }}>

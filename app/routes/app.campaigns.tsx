@@ -23,12 +23,15 @@ import db from "../db.server";
 import { parseDateRange } from "../utils/dateRange.server";
 import { shopLocalDayKey, shopRangeBounds } from "../utils/shopTime.server";
 import { clampRangeForPlan } from "../services/plan.server";
-import { gateTileDefs } from "../components/GatedTile";
+import { gateTileDefs, GatedTile, GATED_IMAGES } from "../components/GatedTile";
 
 // Free (audit) plan: Campaigns tab allowlist — the four headline stat tiles
 // of the main grid. Everything else renders label-over-blur.
+// "adFunnel" (Top Ads for New Customers) passes through gateTileDefs because
+// its render self-gates: heading + description stay readable, the ad-card
+// grid is replaced with the blurred capture.
 const CAMPAIGNS_FREE_TILE_IDS = new Set([
-  "totalSpend", "totalRevenue", "totalRoas", "costPerOrder",
+  "totalSpend", "totalRevenue", "totalRoas", "costPerOrder", "adFunnel",
 ]);
 import { currencySymbolFromCode } from "../utils/currency";
 import { getCachedInsights, computeDataHash, generateInsights } from "../services/aiAnalysis.server";
@@ -726,10 +729,12 @@ export const loader = async ({ request }) => {
     }
   }
 
-  // Breakdown maps - keyed by entity ID, value is array of computed sub-rows
+  // Breakdown maps - keyed by entity ID, value is array of computed sub-rows.
+  // Free plan: the Ad Performance table (sole consumer of breakdown data) is
+  // gated, so skip the query — maps ship empty, hasBreakdownData stays false.
   const breakdownMaps = { campaign: {}, adset: {}, ad: {} };
   let hasBreakdownData = false;
-  if (breakdown !== "none") {
+  if (breakdown !== "none" && !freePlan) {
     const breakdownType = breakdown === "platform" ? "publisher_platform"
       : breakdown === "placement" ? "platform_position"
       : breakdown === "age_gender" ? "age_gender"
@@ -2652,11 +2657,15 @@ type AdDemographicSlice = {
   existingCustomerOrders: number; existingCustomerRevenue: number;
 };
 
-function AdExplorerTable({ rows, cs, entityType, adDemographicsByAd, onEntityClick }: {
+function AdExplorerTable({ rows, cs, entityType, adDemographicsByAd, onEntityClick, lockFilters = false }: {
   rows: any[]; cs: string;
   entityType: "campaign" | "adset" | "ad";
   adDemographicsByAd?: Record<string, AdDemographicSlice[]>;
   onEntityClick?: (id: string, name: string) => void;
+  // Free plan: pin every filter group (Show / Gender / Age) to its "All"
+  // option. Non-All pills stay visible but disabled; the table itself stays
+  // fully readable. Passed from the callsite so paid behaviour is untouched.
+  lockFilters?: boolean;
 }) {
   // Default sort surfaces highest order count - the metric merchants ask
   // about first ("which ads are actually selling?"). Spend sort is one click
@@ -2675,7 +2684,9 @@ function AdExplorerTable({ rows, cs, entityType, adDemographicsByAd, onEntityCli
   // demographic slices.
   const [genderFilter, setGenderFilter] = useState<"All" | "Female" | "Male">("All");
   const [ageFilter, setAgeFilter] = useState<string[]>([]);
-  const demoActive = entityType === "ad" && (genderFilter !== "All" || ageFilter.length > 0);
+  // lockFilters pins the demographic query to All by construction — even if
+  // filter state somehow drifted, the filtered path never runs when locked.
+  const demoActive = entityType === "ad" && !lockFilters && (genderFilter !== "All" || ageFilter.length > 0);
 
   // Apply demographic filter to a row. If active, swap the order/revenue
   // numbers for sums from the matching demographic slices. Spend is left as-is
@@ -2730,6 +2741,7 @@ function AdExplorerTable({ rows, cs, entityType, adDemographicsByAd, onEntityCli
   const ageBracketsToRender = META_AGE_BRACKETS.filter(b => availableAges.has(b) || ageFilter.includes(b));
 
   const toggleAge = (b: string) => {
+    if (lockFilters) return;
     setAgeFilter(prev => prev.includes(b) ? prev.filter(x => x !== b) : [...prev, b]);
   };
 
@@ -2760,6 +2772,7 @@ function AdExplorerTable({ rows, cs, entityType, adDemographicsByAd, onEntityCli
   }, [timelineCache]);
 
   const toggleSegment = (s: Segment) => {
+    if (lockFilters && s !== "all") return;
     setSelectedSegments(prev => {
       const next = new Set(prev);
       if (next.has(s)) {
@@ -2773,9 +2786,10 @@ function AdExplorerTable({ rows, cs, entityType, adDemographicsByAd, onEntityCli
   };
 
   // Stable order: All → New → Existing, regardless of click order.
+  // Locked (free plan): columns are pinned to the All segment only.
   const orderedSegments: Segment[] = useMemo(() => (
-    (["all", "new", "existing"] as Segment[]).filter(s => selectedSegments.has(s))
-  ), [selectedSegments]);
+    (["all", "new", "existing"] as Segment[]).filter(s => lockFilters ? s === "all" : selectedSegments.has(s))
+  ), [selectedSegments, lockFilters]);
 
   // Lookup for the numeric value behind any sort key (segment_metric).
   const getValue = (r: any, key: string): number => {
@@ -3032,6 +3046,12 @@ function AdExplorerTable({ rows, cs, entityType, adDemographicsByAd, onEntityCli
     width: "70px", textTransform: "uppercase", letterSpacing: "0.5px",
   };
   const pillClass = (active: boolean) => `l-pill${active ? " l-pill--active" : ""}`;
+  // Free-plan lock: non-All pills stay visible but inert. Spread LAST on the
+  // button so the disabled title overrides any pill-specific tooltip.
+  const lockedPillProps = (isAllOption: boolean): React.ButtonHTMLAttributes<HTMLButtonElement> =>
+    lockFilters && !isAllOption
+      ? { disabled: true, style: { opacity: 0.45, cursor: "default" }, title: "Upgrade Lucidly to view" }
+      : {};
 
   const showAgeRow = entityType === "ad" && (availableAges.size > 0 || ageFilter.length > 0);
   const showGenderRow = entityType === "ad";
@@ -3052,6 +3072,7 @@ function AdExplorerTable({ rows, cs, entityType, adDemographicsByAd, onEntityCli
                 onClick={() => toggleSegment(s)}
                 title={active && selectedSegments.size === 1 ? "At least one segment must stay selected" : `${active ? "Hide" : "Show"} ${SEGMENT_NAMES[s]} columns`}
                 className={pillClass(active)}
+                {...lockedPillProps(s === "all")}
               >
                 {SEGMENT_NAMES[s]}
               </button>
@@ -3081,8 +3102,9 @@ function AdExplorerTable({ rows, cs, entityType, adDemographicsByAd, onEntityCli
             {(["All", "Female", "Male"] as const).map((g) => (
               <button
                 key={g}
-                onClick={() => setGenderFilter(g)}
+                onClick={() => { if (!lockFilters || g === "All") setGenderFilter(g); }}
                 className={pillClass(genderFilter === g)}
+                {...lockedPillProps(g === "All")}
               >
                 {g}
               </button>
@@ -3104,6 +3126,7 @@ function AdExplorerTable({ rows, cs, entityType, adDemographicsByAd, onEntityCli
                 key={b}
                 onClick={() => toggleAge(b)}
                 className={pillClass(ageFilter.includes(b))}
+                {...lockedPillProps(false)}
               >
                 {b}
               </button>
@@ -5038,7 +5061,7 @@ export default function Campaigns() {
                   </BlockStack>
                   <BigLevelToggle options={LEVEL_OPTIONS} selected={rankLevel} onChange={setRankLevel} />
                 </InlineStack>
-                <AdExplorerTable rows={rankRows} cs={cs} entityType={rankLevel as "campaign" | "adset" | "ad"} adDemographicsByAd={adDemographicsByAd} onEntityClick={(id, name) => setDrawerEntity({ objectType: rankLevel as any, objectId: id, objectName: name })} />
+                <AdExplorerTable rows={rankRows} cs={cs} entityType={rankLevel as "campaign" | "adset" | "ad"} adDemographicsByAd={adDemographicsByAd} lockFilters={freePlan} onEntityClick={(id, name) => setDrawerEntity({ objectType: rankLevel as any, objectId: id, objectName: name })} />
               </BlockStack>
             </Card>
             <TileGrid pageId="campaigns-v2" columns={4} tiles={gateTileDefs([
@@ -5104,11 +5127,15 @@ export default function Campaigns() {
                     <Text as="p" variant="bodySm" tone="subdued">
                       The 10 ads driving the most new customers in the selected period. Sort by orders to see your biggest acquisition engines, or by ROAS to see your most efficient. Click any ad to open its lifecycle.
                     </Text>
-                    <TopAdsForNewCustomersTile
-                      adRows={adRows}
-                      cs={cs}
-                      onAdClick={(id, name) => setDrawerEntity({ objectType: "ad", objectId: id, objectName: name })}
-                    />
+                    {freePlan ? (
+                      <GatedTile gated imageSrc={GATED_IMAGES.topAdsNewCustomers} minHeight={300}>{null}</GatedTile>
+                    ) : (
+                      <TopAdsForNewCustomersTile
+                        adRows={adRows}
+                        cs={cs}
+                        onAdClick={(id, name) => setDrawerEntity({ objectType: "ad", objectId: id, objectName: name })}
+                      />
+                    )}
                   </BlockStack>
                 </Card>
               )},
@@ -5161,6 +5188,7 @@ export default function Campaigns() {
             paddingTop: "4px",
           }}>
             <Text as="h2" variant="headingLg">Ad Performance</Text>
+            {!freePlan && (
             <div style={{ display: "flex", alignItems: "flex-end", marginTop: "12px" }}>
               {TAB_LABELS.map((label, i) => (
                 <button
@@ -5173,7 +5201,13 @@ export default function Campaigns() {
               ))}
               <div style={{ flex: 1, borderBottom: "1px solid var(--l-accent-40)" }} />
             </div>
+            )}
           </div>
+          {freePlan ? (
+            <div style={{ marginTop: "12px" }}>
+              <GatedTile gated imageSrc={GATED_IMAGES.adPerformance} minHeight={320}>{null}</GatedTile>
+            </div>
+          ) : (
           <div style={{
             background: "var(--l-bg)",
             border: "1px solid var(--l-accent-40)",
@@ -5234,9 +5268,10 @@ export default function Campaigns() {
               />
             </BlockStack>
           </div>
+          )}
         </div>
 
-        {breakdown !== "none" && !hasBreakdownData && (
+        {!freePlan && breakdown !== "none" && !hasBreakdownData && (
           <Card>
             <BlockStack gap="200">
               <Text as="p" variant="bodyMd" tone="subdued">
