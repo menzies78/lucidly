@@ -14,7 +14,7 @@ import db from "../db.server";
 import { parseDateRange } from "../utils/dateRange.server";
 import { shopLocalDayKey } from "../utils/shopTime.server";
 import { clampRangeForPlan } from "../services/plan.server";
-import { GatedTile, gateTileDefs } from "../components/GatedTile";
+import { GatedTile, gateTileDefs, GATED_IMAGES } from "../components/GatedTile";
 
 // Free (audit) plan: Geo tab allowlist — the four superlative country tiles.
 // Everything else renders label-over-blur.
@@ -1735,11 +1735,6 @@ export default function GeoPerformance() {
       <ReportTabs>
         <BlockStack gap="500">
 
-          {/* Free (audit) plan: the four superlative tiles lead the page —
-              they're the free tier's hero content, so they render above the
-              summary and everything else. Paid order is unchanged below. */}
-          {freePlan && superlativeTiles}
-
           {/* Hidden for V1 - bring back in V2. Loader wiring kept intact. */}
           {false && (
             <AiInsightsPanel
@@ -1752,13 +1747,18 @@ export default function GeoPerformance() {
           )}
           <PageSummary scope="Country" bullets={summaryBullets} fromKey={fromKey} toKey={toKey} preset={preset} />
 
+          {/* Free (audit) plan: Country Summary leads, then the four
+              superlative tiles, then the gated sections. Paid order keeps
+              the grid at its original position further down. */}
+          {freePlan && superlativeTiles}
+
           {/* ═══ CUSTOMER MAP EXPLORER ═══ */}
           {freePlan ? (
             <Card>
               <BlockStack gap="300">
                 <Text as="h2" variant="headingLg">Customer Map Explorer</Text>
                 <Text as="p" variant="bodySm" tone="subdued">Every customer plotted on a world map — VIPs, new vs returning, city hotspots.</Text>
-                <GatedTile gated minHeight={220}>{null}</GatedTile>
+                <GatedTile gated imageSrc={GATED_IMAGES.geoMapExplorer} minHeight={220}>{null}</GatedTile>
               </BlockStack>
             </Card>
           ) : (
@@ -1776,7 +1776,7 @@ export default function GeoPerformance() {
               <BlockStack gap="300">
                 <Text as="h2" variant="headingMd">VIPs per Country</Text>
                 <Text as="p" variant="bodySm" tone="subdued">Which countries your highest-lifetime-value customers live in.</Text>
-                <GatedTile gated minHeight={220}>{null}</GatedTile>
+                <GatedTile gated imageSrc={GATED_IMAGES.geoVips} minHeight={220}>{null}</GatedTile>
               </BlockStack>
             </Card>
           ) : (

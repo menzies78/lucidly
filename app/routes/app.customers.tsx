@@ -12,13 +12,11 @@ import { cached as queryCached, DEFAULT_TTL } from "../services/queryCache.serve
 import { parseDateRange } from "../utils/dateRange.server";
 import { shopLocalDayKey, shopRangeBounds } from "../utils/shopTime.server";
 import { clampRangeForPlan } from "../services/plan.server";
-import { GatedTile, gateTileDefs } from "../components/GatedTile";
+import { GatedTile, gateTileDefs, GATED_IMAGES } from "../components/GatedTile";
 
 // Free (audit) plan: Customers tab allowlist — summary tiles + the four
 // identity sections. Everything else renders label-over-blur.
 const CUSTOMERS_FREE_TILE_IDS = new Set([
-  "totalMetaCustomers", "totalMetaRevenue", "newMetaCustomers", "newMetaRevenue",
-  "metaAov", "aovCpa", "repeatCustomers", "newCustCpa",
   "customerBreakdown", "demographics", "geography", "customerJourney",
 ]);
 import { currencySymbolFromCode } from "../utils/currency";
@@ -4608,7 +4606,7 @@ export default function Customers() {
             <BlockStack gap="300">
               <Text as="h2" variant="headingLg">Order Explorer</Text>
               <Text as="p" tone="subdued">Every Shopify order in the selected period, tagged by Meta attribution — with the exact customer behind each one.</Text>
-              <GatedTile gated minHeight={260}>{null}</GatedTile>
+              <GatedTile gated imageSrc={GATED_IMAGES.orderExplorer} minHeight={260}>{null}</GatedTile>
             </BlockStack>
           </Card>
         ) : (
