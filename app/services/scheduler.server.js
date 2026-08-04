@@ -531,6 +531,8 @@ export function startScheduler() {
   // Clear previous intervals on HMR restart - old callbacks reference stale modules
   if (global.__lucidlySchedulerHourly) clearInterval(global.__lucidlySchedulerHourly);
   if (global.__lucidlySchedulerDaily) clearInterval(global.__lucidlySchedulerDaily);
+  if (global.__lucidlySchedulerBackfill) clearInterval(global.__lucidlySchedulerBackfill);
+  if (global.__lucidlySchedulerPrune) clearInterval(global.__lucidlySchedulerPrune);
   if (global.__lucidlySchedulerBoot) clearTimeout(global.__lucidlySchedulerBoot);
 
   console.log("[Scheduler] Starting in-process scheduler");
@@ -619,6 +621,39 @@ export function startScheduler() {
 
   // Check for daily sync every 15 minutes
   global.__lucidlySchedulerDaily = setInterval(runDailyCycle, DAILY_CHECK_MS);
+
+  // Upgrade history backfills: pick up pending/crashed runs every 15 min.
+  // Serialized on the sync chain so a backfill never fights the hourly
+  // sync or a rollup rebuild for the SQLite write lock; phase cursor makes
+  // retries resume, not restart.
+  global.__lucidlySchedulerBackfill = setInterval(async () => {
+    try {
+      const { shopsWithPendingBackfill, runHistoryBackfillIfPending } = await import("./historyBackfill.server.js");
+      const pending = await shopsWithPendingBackfill();
+      for (const { shopDomain } of pending) {
+        enqueueSerialized(`backfill:${shopDomain}`, () => runHistoryBackfillIfPending(shopDomain));
+      }
+    } catch (err) {
+      console.error("[Scheduler] backfill check failed:", err.message);
+    }
+  }, DAILY_CHECK_MS);
+
+  // Free-tier prune: Sundays 04:xx UTC (after the daily sync slots).
+  // Cost control only — the loaders' clamp is the paywall. Customer table
+  // and demo shops are never touched; 30-day downgrade grace applies.
+  global.__lucidlySchedulerPrune = setInterval(async () => {
+    const now = new Date();
+    if (now.getUTCDay() !== 0 || now.getUTCHours() !== 4) return;
+    const today = now.toISOString().slice(0, 10);
+    if (global.__lucidlyLastPruneDay === today) return;
+    global.__lucidlyLastPruneDay = today;
+    try {
+      const { pruneFreeShops } = await import("./freeTierPrune.server.js");
+      enqueueSerialized("freeTierPrune", () => pruneFreeShops());
+    } catch (err) {
+      console.error("[Scheduler] prune check failed:", err.message);
+    }
+  }, DAILY_CHECK_MS);
 
   // Token Health Watchdog: proactively probe every installed shop's offline
   // token so the "halt" class (non-expiring 403, revoked 401, refresh race) is

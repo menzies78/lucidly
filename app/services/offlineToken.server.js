@@ -146,6 +146,23 @@ export async function ensureValidOfflineSession(shop, { force = false } = {}) {
   // EXPIRING_OFFLINE_TOKENS was live). Delete it so the merchant's next
   // embedded load token-exchanges a fresh expiring token.
   if (process.env.EXPIRING_OFFLINE_TOKENS === "true" && !session.expires) {
+    // Before deleting, try to self-heal in place: if the session still has
+    // a refresh token, one refresh mints a proper expiring token with no
+    // merchant involvement (2026-08-04: an overnight refresh response
+    // without expires_in left lucidly-test token-less until the morning's
+    // embedded load — this path closes that gap).
+    if (session.refreshToken) {
+      console.warn(
+        `[offlineToken] ${shop}: no-expiry session on expiring-tokens app — attempting in-place refresh before deleting`,
+      );
+      try {
+        await doRefresh(shop, session);
+        const healed = await sessionStorage.loadSession(offlineSessionId(shop));
+        if (healed?.expires) return healed;
+      } catch (err) {
+        console.warn(`[offlineToken] ${shop}: in-place refresh failed (${err?.message?.slice(0, 120)}) — falling through to delete`);
+      }
+    }
     console.warn(
       `[offlineToken] ${shop}: stored offline session has no expiry on an expiring-tokens app — deleting stale non-expiring session so next embedded load re-mints`,
     );
