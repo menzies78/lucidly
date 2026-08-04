@@ -1,7 +1,7 @@
 import { json } from "@remix-run/node";
 import { useLoaderData, useSubmit, useActionData, useRevalidator, useSearchParams } from "@remix-run/react";
 import { Page, Card, Text, BlockStack } from "@shopify/polaris";
-import React, { useState, useMemo, useRef, useEffect } from "react";
+import React, { useState, useMemo, useCallback, useRef, useEffect } from "react";
 import { createPortal } from "react-dom";
 import ReportTabs from "../components/ReportTabs";
 import InteractiveTable from "../components/InteractiveTable";
@@ -2005,7 +2005,7 @@ export default function Products() {
       columns: columns.map(c => (c as any).accessorKey || (c as any).id).filter(Boolean) },
   ], [columns]);
 
-  const footerRow = useMemo(() => ({
+  const footerFor = useCallback((rows: any[]) => (rows.length === 0 ? undefined : {
     product: `${rows.length} products`,
     metaOrders: rows.reduce((s, r) => s + r.metaOrders, 0),
     metaRevenue: fmtPrice(rows.reduce((s, r) => s + r.metaRevenue, 0)),
@@ -2022,7 +2022,7 @@ export default function Products() {
     totalRefunded: fmtPrice(rows.reduce((s, r) => s + r.totalRefunded, 0)),
     firstPurchaseCount: rows.reduce((s, r) => s + r.firstPurchaseCount, 0),
     metaFirstPurchaseCount: rows.reduce((s, r) => s + r.metaFirstPurchaseCount, 0),
-  }), [rows, cs]);
+  }), [cs]);
 
   // ── Page summary bullets ──
   // At-a-glance product read-out for the selected range, pulling from the
@@ -2567,7 +2567,7 @@ export default function Products() {
                 data={rows}
                 defaultVisibleColumns={defaultVisibleColumns}
                 tableId="products"
-                footerRow={footerRow}
+                footerFor={footerFor}
                 fitContentColumns
                 enableDownload
                 downloadFilename="product-breakdown"

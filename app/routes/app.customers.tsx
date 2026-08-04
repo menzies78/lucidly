@@ -1,7 +1,7 @@
 import { json } from "@remix-run/node";
 import { useLoaderData, useSearchParams, useSubmit, useActionData, useRevalidator, useFetcher } from "@remix-run/react";
 import { Page, Card, BlockStack, Text, Select } from "@shopify/polaris";
-import React, { useState, useMemo, useRef, useEffect } from "react";
+import React, { useState, useMemo, useCallback, useRef, useEffect } from "react";
 import ReportTabs from "../components/ReportTabs";
 // import InteractiveTable from "../components/InteractiveTable"; // table removed
 import TileGrid from "../components/TileGrid";
@@ -2528,7 +2528,7 @@ export default function Customers() {
     : geoScope === "new" ? metaNewGeoCount : allMetaGeoCount;
   const geoIsMeta = geoScope === "new" || geoScope === "allMeta";
 
-  const footerRow = useMemo(() => {
+  const footerFor = useCallback((filteredRows: any[]) => {
     if (filteredRows.length === 0) return undefined;
     const sum = (key: string) => filteredRows.reduce((s, r) => s + (r[key] || 0), 0);
     const gross = sum("grossRevenue");
@@ -2554,7 +2554,7 @@ export default function Customers() {
       topProducts: "", discountOrders: "",
       refundRate: "", avgConfidence: "",
     };
-  }, [filteredRows, cs]);
+  }, [cs]);
 
   // ── Page summary bullets ──
   // Seven at-a-glance lines, tied to the currently selected date range.

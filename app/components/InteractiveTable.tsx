@@ -124,6 +124,11 @@ interface InteractiveTableProps {
   // count instead of inline near search.
   downloadAtEnd?: boolean;
   footerRow?: Record<string, React.ReactNode>;
+  // Preferred over footerRow: computed from the CURRENTLY FILTERED rows so
+  // totals always match what the merchant is looking at (search + column
+  // filters applied). footerRow (static) remains for tables without totals
+  // semantics but silently ignores filtering — don't use it for sums.
+  footerFor?: (filteredRows: any[]) => Record<string, React.ReactNode> | undefined;
   stickyTopOffset?: number; // px offset for sticky elements (e.g. if external sticky header above)
   rowBackgroundFn?: (original: any, index: number) => string; // custom row background color
   columnProfiles?: ColumnProfile[];
@@ -255,6 +260,7 @@ export default function InteractiveTable({
   hideColumnPicker,
   downloadAtEnd,
   footerRow,
+  footerFor,
   stickyTopOffset = 0,
   rowBackgroundFn,
   columnProfiles,
@@ -365,6 +371,9 @@ export default function InteractiveTable({
   });
 
   const allRows = table.getRowModel().rows;
+  // Footer recomputed from the filtered+sorted model on every filter change —
+  // totals must always describe the rows actually on screen.
+  const effectiveFooterRow = footerFor ? footerFor(allRows.map((r) => r.original)) : footerRow;
   const totalRows = allRows.length;
 
   const [rowsExpanded, setRowsExpanded] = useState(false);
@@ -577,7 +586,7 @@ export default function InteractiveTable({
       const tableEl = tableRef.current;
       if (!tableEl) return;
       const tableRect = tableEl.getBoundingClientRect();
-      setFooterIsFloating(footerRow ? tableRect.bottom > window.innerHeight + 5 : false);
+      setFooterIsFloating(effectiveFooterRow ? tableRect.bottom > window.innerHeight + 5 : false);
       // Header is floating when the table top has scrolled above the sticky offset
       const stickyPoint = headerTop + headerRowHeight + (hasFilterRow ? 30 : 0);
       setHeaderIsFloating(tableRect.top < stickyPoint - 5);
@@ -589,7 +598,7 @@ export default function InteractiveTable({
       window.removeEventListener("scroll", check, { capture: true });
       window.removeEventListener("resize", check);
     };
-  }, [footerRow, allRows.length, headerTop, headerRowHeight, hasFilterRow]);
+  }, [effectiveFooterRow, allRows.length, headerTop, headerRowHeight, hasFilterRow]);
 
   return (
     <div>
@@ -995,12 +1004,12 @@ export default function InteractiveTable({
             );
           })}
         </tbody>
-        {footerRow && (
+        {effectiveFooterRow && (
           <tfoot ref={tfootRef}>
             <tr>
               {table.getVisibleLeafColumns().map((col, cIdx) => {
                 const isLast = cIdx === table.getVisibleLeafColumns().length - 1;
-                const content = footerRow[col.id];
+                const content = effectiveFooterRow[col.id];
                 return (
                   <td
                     key={col.id}

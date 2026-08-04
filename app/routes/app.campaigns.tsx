@@ -4252,11 +4252,10 @@ export default function Campaigns() {
   const totals = computeClientTotals(filteredRows);
 
   // Footer totals row for the table (use parent rows only to avoid double-counting)
-  const footerSourceRows = useMemo(() =>
-    showBreakdown ? displayRows.filter(r => r._isParent) : displayRows,
-    [displayRows, showBreakdown]
-  );
-  const footerRow = useMemo(() => {
+  const footerFor = useCallback((tableRows: any[]) => {
+    // Breakdown mode nests child rows under parents — totals count parents
+    // only, now computed from the table's FILTERED rows.
+    const footerSourceRows = showBreakdown ? tableRows.filter(r => r._isParent) : tableRows;
     if (footerSourceRows.length === 0) return undefined;
     const r2 = (v: number) => Math.round(v * 100) / 100;
     const sum = (key: string) => footerSourceRows.reduce((s, r) => s + (r[key] || 0), 0);
@@ -4360,7 +4359,7 @@ export default function Campaigns() {
       })()),
     };
     return footer;
-  }, [footerSourceRows, cs, selectedTab, reportingPeriodDays]);
+  }, [showBreakdown, cs, selectedTab, reportingPeriodDays]);
 
   // Drill-down handler
   const handleDrillDown = useCallback((row: any) => {
@@ -5222,7 +5221,7 @@ export default function Campaigns() {
               <InteractiveTable
                 columns={columns}
                 data={displayRows}
-                footerRow={footerRow}
+                footerFor={footerFor}
                 defaultVisibleColumns={defaultVisibleColumns}
                 tableId="campaigns"
                 fitContentColumns

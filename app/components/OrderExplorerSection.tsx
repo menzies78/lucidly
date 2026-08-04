@@ -1,5 +1,5 @@
 import { Card, Text, BlockStack, InlineStack, Select } from "@shopify/polaris";
-import { useMemo } from "react";
+import { useMemo, useCallback } from "react";
 import type { ColumnDef } from "@tanstack/react-table";
 import InteractiveTable from "./InteractiveTable";
 
@@ -221,7 +221,7 @@ export default function OrderExplorerSection({
 
   const fmtPrice = (v: number) => `${cs}${v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
-  const footerRow = useMemo(() => {
+  const footerFor = useCallback((rows: any[]) => {
     if (rows.length === 0) return undefined;
     const sum = (key: string) => rows.reduce((s, r) => s + (r[key] || 0), 0);
     const revenue = sum("revenue");
@@ -254,7 +254,7 @@ export default function OrderExplorerSection({
       lineItems: "", productSkus: "", productCollections: "", discountCodes: "",
       utm: "",
     };
-  }, [rows, cs]);
+  }, [cs]);
 
   return (
     <Card>
@@ -274,7 +274,7 @@ export default function OrderExplorerSection({
           data={rows}
           defaultVisibleColumns={defaultVisibleColumns}
           tableId="orders"
-          footerRow={footerRow}
+          footerFor={footerFor}
           fitContentColumns
           enableDownload
           downloadAtEnd
