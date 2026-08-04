@@ -50,7 +50,14 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     sub?.line_items?.[0]?.plan?.pricing_details?.price?.amount ??
     sub?.price ?? "NaN",
   );
-  const isFreePlan = ["free", "free-audit"].includes(planName) || price === 0;
+  // Name is authoritative (we own the plan catalog). The zero-price check is
+  // only a fallback for unknown names, and NEVER on test subscriptions — a
+  // dev store's Growth test charge is $0 and must still classify as paid
+  // (caught live 2026-08-04: the upgrade test flipped nothing because
+  // price===0 short-circuited the paid branch).
+  const isFreePlan =
+    ["free", "free-audit"].includes(planName) ||
+    (price === 0 && sub?.test !== true);
 
   if (status === "ACTIVE" && isFreePlan) {
     if (shopRow.plan !== "free") {
