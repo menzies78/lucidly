@@ -1745,7 +1745,7 @@ export default function GeoPerformance() {
               currencySymbol={cs}
             />
           )}
-          <PageSummary scope="Country" bullets={summaryBullets} fromKey={fromKey} toKey={toKey} preset={preset} />
+          <PageSummary scope="Country" bullets={freePlan ? summaryBullets.slice(0, 4) : summaryBullets} lockedCount={freePlan ? Math.max(0, summaryBullets.length - 4) : 0} fromKey={fromKey} toKey={toKey} preset={preset} />
 
           {/* Free (audit) plan: Country Summary leads, then the four
               superlative tiles, then the gated sections. Paid order keeps

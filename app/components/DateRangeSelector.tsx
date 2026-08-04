@@ -133,7 +133,7 @@ function formatLabel(from: string, to: string): string {
 
 const HIDDEN_PATHS = ["/app/meta-connect", "/app/weekly"];
 
-export default function DateRangeSelector() {
+export default function DateRangeSelector({ locked = false }: { locked?: boolean } = {}) {
   const location = useLocation();
   const navigate = useNavigate();
   const isHidden = HIDDEN_PATHS.some(p => location.pathname.startsWith(p));
@@ -144,8 +144,26 @@ export default function DateRangeSelector() {
   const preset = searchParams.get("preset") || "";
   const compare = searchParams.get("compare") || "none";
 
+  // Free (audit) plan: the range is pinned to Last 90 days. Rewrite any
+  // other preset/custom range in the URL (incl. restored cookies) so every
+  // load lands on last90 — the loaders' clampRangeForPlan enforces the same
+  // floor server-side regardless.
+  useEffect(() => {
+    if (isHidden || !locked) return;
+    if (preset === "last90") return;
+    const dates = computePresetDates("last90");
+    const params = new URLSearchParams(searchParams);
+    params.set("from", dates.from);
+    params.set("to", dates.to);
+    params.set("preset", "last90");
+    params.delete("compare");
+    setSearchParams(params, { replace: true });
+    saveDateParams({ from: dates.from, to: dates.to, preset: "last90", compare: "none" });
+  }, [isHidden, locked, preset]);
+
   useEffect(() => {
     if (isHidden) return;
+    if (locked) return;
     if (fromParam || toParam || preset) return;
 
     const saved = loadDateParams();
@@ -267,7 +285,13 @@ export default function DateRangeSelector() {
     ? `${presetLabel} (${formatLabel(displayFrom, displayTo)})`
     : formatLabel(displayFrom, displayTo);
 
-  const activator = (
+  const activator = locked ? (
+    <span title="The free plan shows your last 90 days. Upgrade Lucidly to explore your full history.">
+      <Button icon={CalendarIcon} disabled>
+        {buttonLabel}
+      </Button>
+    </span>
+  ) : (
     <Button onClick={togglePopover} icon={CalendarIcon} disclosure>
       {buttonLabel}
     </Button>

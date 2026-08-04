@@ -2152,7 +2152,7 @@ export default function Products() {
             currencySymbol={cs}
           />
         )}
-        <PageSummary scope="Product" bullets={summaryBullets} fromKey={fromKey} toKey={toKey} preset={preset} />
+        <PageSummary scope="Product" bullets={freePlan ? summaryBullets.slice(0, 4) : summaryBullets} lockedCount={freePlan ? Math.max(0, summaryBullets.length - 4) : 0} fromKey={fromKey} toKey={toKey} preset={preset} />
 
         {/* ── All tiles (drag/drop, show/hide) - everything except main table ── */}
         <TileGrid pageId="products" columns={4} tiles={gateTileDefs([

@@ -43,7 +43,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   const shop = await db.shop.findUnique({
     where: { shopDomain: session.shop },
-    select: { onboardingCompleted: true, demoMode: true },
+    select: { onboardingCompleted: true, demoMode: true, plan: true },
   });
   const onboardingCompleted = shop?.onboardingCompleted ?? false;
   const demoMode = shop?.demoMode ?? false;
@@ -80,7 +80,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     }
   }
 
-  return { apiKey: process.env.SHOPIFY_API_KEY || "", onboardingCompleted, demoMode, isInternal };
+  return { apiKey: process.env.SHOPIFY_API_KEY || "", onboardingCompleted, demoMode, isInternal, freePlan: (shop?.plan || "paid") === "free" };
 };
 
 // Permanent, non-dismissable strip shown on every page while the store is
@@ -246,7 +246,7 @@ function LoadingIndicator() {
 }
 
 export default function App() {
-  const { apiKey, onboardingCompleted, demoMode, isInternal } = useLoaderData<typeof loader>();
+  const { apiKey, onboardingCompleted, demoMode, isInternal, freePlan } = useLoaderData<typeof loader>();
   // While onboarding is in progress (and the merchant isn't an internal user),
   // collapse the nav to just the home/Health link and hide the date selector.
   // Stops the merchant from clicking through to pages that have no data yet.
@@ -275,7 +275,7 @@ export default function App() {
         {showFullNav && <Link to="/app/weekly">Weekly Report</Link>}
         {showFullNav && <Link to="/app/utm">UTM Manager</Link>}
       </NavMenu>
-      {showFullNav && <DateRangeSelector />}
+      {showFullNav && <DateRangeSelector locked={freePlan} />}
       {demoMode && <DemoBanner />}
       <Outlet />
       {/* Merchant-facing data-processing disclosure. Required for the Shopify

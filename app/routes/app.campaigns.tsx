@@ -4889,7 +4889,7 @@ export default function Campaigns() {
             currencySymbol={cs}
           />
         )}
-        <PageSummary scope="Ad Campaign" bullets={summaryBullets} fromKey={fromKey} toKey={toKey} preset={preset} />
+        <PageSummary scope="Ad Campaign" bullets={freePlan ? summaryBullets.slice(0, 4) : summaryBullets} lockedCount={freePlan ? Math.max(0, summaryBullets.length - 4) : 0} fromKey={fromKey} toKey={toKey} preset={preset} />
         {/* Breadcrumb */}
         {breadcrumbs.length > 0 && (
           <InlineStack gap="100" blockAlign="center">

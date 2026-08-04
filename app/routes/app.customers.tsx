@@ -2809,7 +2809,7 @@ export default function Customers() {
             currencySymbol={cs}
           />
         )}
-        <PageSummary scope="Customer" bullets={summaryBullets} fromKey={data.fromKey} toKey={data.toKey} preset={data.preset} />
+        <PageSummary scope="Customer" bullets={freePlan ? summaryBullets.slice(0, 4) : summaryBullets} lockedCount={freePlan ? Math.max(0, summaryBullets.length - 4) : 0} fromKey={data.fromKey} toKey={data.toKey} preset={data.preset} />
 
         {/* ═══ ALL TILES (drag/drop, show/hide) ═══ */}
         <TileGrid pageId="customers-v8" columns={4} tiles={gateTileDefs([

@@ -24,7 +24,21 @@ interface PageSummaryProps {
   // Summary for Last 30 days"). Lets each tab identify itself without
   // forcing the caller to build the full title string by hand.
   scope?: string;
+  // Free (audit) plan: number of additional insights that exist but were
+  // NOT shipped (the loader slices bullets to the free allowance before
+  // returning — locked rows render as decorative blurred placeholders here,
+  // so no real text is ever in the payload to un-blur).
+  lockedCount?: number;
 }
+
+// Decorative fake bullet lines rendered under pixel-blur for locked rows.
+// Static — identical for every shop, carries zero information.
+const LOCKED_PLACEHOLDER_TEXTS = [
+  "Returning customers generated £8,412 this period - up 23% vs the previous period.",
+  "Best performer: UK_PROSPECTING - 41 orders at 3.2x ROAS (£4,913 revenue).",
+  "LTV:CAC 2.1x at 1yr (£312 LTV vs £148 CAC) - above the 2x threshold.",
+  "Payback: first order covers CAC (1.24x AOV:CAC ratio).",
+];
 
 // Preset slug → human label. Must stay in sync with PRESETS in
 // DateRangeSelector.tsx.
@@ -75,7 +89,7 @@ const TONE_COLOR: Record<SummaryTone, string> = {
 // tied to the currently selected date range. Always single-column,
 // left-aligned.
 
-export default function PageSummary({ title, bullets, fromKey, toKey, preset, scope }: PageSummaryProps) {
+export default function PageSummary({ title, bullets, fromKey, toKey, preset, scope, lockedCount = 0 }: PageSummaryProps) {
   const presetLabel = preset ? PRESET_LABELS[preset] : undefined;
   const summaryWord = scope ? `${scope} Summary` : "Summary";
   const resolvedTitle = title
@@ -98,6 +112,22 @@ export default function PageSummary({ title, bullets, fromKey, toKey, preset, sc
                 </li>
               );
             })}
+            {Array.from({ length: Math.min(lockedCount, LOCKED_PLACEHOLDER_TEXTS.length) }).map((_, i) => (
+              <li
+                key={`locked-${i}`}
+                aria-hidden
+                style={{ display: "flex", gap: 10, alignItems: "flex-start", fontSize: 13, lineHeight: 1.5, color: "#1F2937", filter: "blur(5px)", userSelect: "none", pointerEvents: "none", opacity: 0.6 }}
+              >
+                <span style={{ color: TONE_COLOR.neutral, fontSize: 14, lineHeight: "22px", flexShrink: 0 }}>●</span>
+                <span>{LOCKED_PLACEHOLDER_TEXTS[i]}</span>
+              </li>
+            ))}
+            {lockedCount > 0 && (
+              <li style={{ display: "flex", gap: 10, alignItems: "center", fontSize: 12, color: "#6B7280" }}>
+                <span style={{ fontSize: 14, lineHeight: "22px", flexShrink: 0 }}>🔒</span>
+                <span>{lockedCount} more insight{lockedCount === 1 ? "" : "s"} in this period — upgrade Lucidly to see them.</span>
+              </li>
+            )}
           </ul>
         )}
       </BlockStack>
