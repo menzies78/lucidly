@@ -45,19 +45,14 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   // The public Free plan ("Free" / handle "free-audit") ALSO creates an
   // ACTIVE $0 subscription when selected — it must map to the free tier,
   // not paid. Belt and braces: match by name AND by zero price.
+  // Name-only classification. We own the plan catalog ("free"/"free-audit"
+  // vs "growth"), and the webhook payload carries NEITHER pricing details
+  // nor a test flag (verified live 2026-08-04: name="growth" price absent,
+  // test undefined on a dev-store charge) — so any price-based fallback
+  // misclassifies test-mode paid plans as free. If a plan is ever renamed
+  // or added in the Partner pricing manager, update this list.
   const planName = String(sub.name || "").trim().toLowerCase();
-  const price = parseFloat(
-    sub?.line_items?.[0]?.plan?.pricing_details?.price?.amount ??
-    sub?.price ?? "NaN",
-  );
-  // Name is authoritative (we own the plan catalog). The zero-price check is
-  // only a fallback for unknown names, and NEVER on test subscriptions — a
-  // dev store's Growth test charge is $0 and must still classify as paid
-  // (caught live 2026-08-04: the upgrade test flipped nothing because
-  // price===0 short-circuited the paid branch).
-  const isFreePlan =
-    ["free", "free-audit"].includes(planName) ||
-    (price === 0 && sub?.test !== true);
+  const isFreePlan = ["free", "free-audit"].includes(planName);
 
   if (status === "ACTIVE" && isFreePlan) {
     if (shopRow.plan !== "free") {
